@@ -1,0 +1,19 @@
+# Copy to config/settings.local.yaml on each machine.
+
+# --- MacBook (production) ---
+machine_role: prod
+paths:
+  inbox: ~/Library/Mobile Documents/com~apple~CloudDocs/Posh/inbox
+  work: ~/thrift/var/work
+  archive: ~/thrift/var/archive
+  failed: ~/thrift/var/failed
+  db: ~/thrift/var/state.db
+  chrome_profile: ~/thrift/chrome-profile
+  control: ~/Library/Mobile Documents/com~apple~CloudDocs/Posh   # PAUSE from the iPhone
+telegram:
+  enabled: true
+
+# --- Windows PC (development) ---
+# machine_role: dev
+# paths:
+#   inbox: C:/thrift/inbox

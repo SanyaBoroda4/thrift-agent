@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+var/
+config/settings.local.yaml
+private/
+eval/fixtures/*/
+!eval/fixtures/.gitkeep
+.idea/
+.DS_Store
+*.egg-info/

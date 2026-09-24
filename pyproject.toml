@@ -1,0 +1,38 @@
+[project]
+name = "thrift-agent"
+version = "0.1.0"
+description = "Photos in, Poshmark/Depop listings out."
+requires-python = ">=3.11"
+dependencies = [
+  "anthropic>=0.40",
+  "pydantic>=2.7",
+  "pyyaml>=6",
+  "python-dotenv>=1.0",
+  "pillow>=10.3",
+  "pillow-heif>=0.16",
+  "imagehash>=4.3",
+  "playwright>=1.45",
+  "typer>=0.12",
+  "httpx>=0.27",
+  "rich>=13",
+  "tzdata>=2024.1; platform_system == 'Windows'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5"]
+
+[project.scripts]
+thrift = "thrift_agent.cli:app"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["thrift_agent*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 130

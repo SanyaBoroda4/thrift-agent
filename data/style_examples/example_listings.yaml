@@ -1,0 +1,15 @@
+# EXAMPLE style guide (invented listings). Real examples live in private/style_examples/.
+good:
+  - title: "Madewell Chocolate Brown Suede Mini Skirt size 4"
+    description: |-
+      Suede mini skirt in chocolate brown with a clean A-line shape and hidden back zip. Easy to dress up or down.
+      Worn twice, no visible wear.
+  - title: "Birkenstock Arizona Taupe Suede Sandals size 8 US / 39 EU"
+    description: |-
+      Classic two-strap sandals in taupe suede with adjustable buckles and a cork footbed.
+      Light wear on the footbed as shown.
+avoid:
+  - problem: "Title with only brand and size ('Nike size 9')"
+    rule: "Brand, item type, key detail, color, US size."
+  - problem: "Condition set to NWT with no hang tag visible"
+    rule: "NWT only with an attached tag in a photo."

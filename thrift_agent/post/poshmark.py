@@ -1,0 +1,153 @@
+"""Poshmark create-listing adapter.
+
+SELECTORS ARE UNVERIFIED. Record them on the Mac against the live form:
+    playwright codegen --channel chrome --user-data-dir ~/thrift/chrome-profile https://poshmark.com/create-listing
+Prefer role/label/placeholder locators over CSS classes. Keep every selector in SEL so a form change
+is a one-file fix. Run `thrift poster --once --dry-run` after any change.
+"""
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+from playwright.async_api import Page
+
+from thrift_agent.post.base import AccountBlocked, Mode, Poster, PosterError, human_type, settle
+from thrift_agent.schema import Render
+
+# Poshmark's stored condition codes (verified on sold listings): nwt, uln (like new), ug (good),
+# not_nwt (legacy). The "fair" code and the on-screen labels still need confirming on the form.
+CONDITION_TO_POSH = {
+    "NWT": "nwt", "NWOT": "uln", "like_new": "uln",
+    "excellent": "ug", "good": "ug", "fair": "uf?",
+}
+
+SEL = {  # UNVERIFIED — replace with recorded locators
+    "photo_input": lambda p: p.locator("input[type=file]").first,
+    "photo_thumbs": lambda p: p.locator("[data-test*=image], .img-item"),
+    "title": lambda p: p.get_by_placeholder(re.compile("what are you selling", re.I)),
+    "description": lambda p: p.get_by_placeholder(re.compile("describe it", re.I)),
+    "category_open": lambda p: p.get_by_text(re.compile("^Select Category$", re.I)),
+    "category_option": lambda p, name: p.get_by_role("menuitem", name=name).or_(p.get_by_text(name, exact=True)),
+    "size_open": lambda p: p.get_by_text(re.compile("^Select Size$", re.I)),
+    "size_option": lambda p, name: p.get_by_role("button", name=name, exact=True),
+    "size_done": lambda p: p.get_by_role("button", name=re.compile("^Done$", re.I)),
+    "brand": lambda p: p.get_by_placeholder(re.compile("enter the brand", re.I)),
+    "brand_option": lambda p, name: p.get_by_role("option", name=re.compile(re.escape(name), re.I)).first,
+    "nwt_yes": lambda p: p.get_by_role("button", name=re.compile("^Yes$", re.I)),
+    "color_open": lambda p: p.get_by_text(re.compile("^Color$", re.I)),
+    "color_option": lambda p, name: p.get_by_role("button", name=name, exact=True),
+    "style_tag": lambda p: p.get_by_placeholder(re.compile("style tag", re.I)),
+    "original_price": lambda p: p.get_by_label(re.compile("original price", re.I)),
+    "listing_price": lambda p: p.get_by_label(re.compile("listing price", re.I)),
+    "sku": lambda p: p.get_by_placeholder(re.compile("sku", re.I)),
+    "next": lambda p: p.get_by_role("button", name=re.compile("^Next$", re.I)),
+    "list_item": lambda p: p.get_by_role("button", name=re.compile("^List This Item$", re.I)),
+    "save_draft": lambda p: p.get_by_role("button", name=re.compile("save draft", re.I)),
+    "restricted_banner": lambda p: p.get_by_text(re.compile("account is restricted", re.I)),
+}
+
+
+class PoshmarkPoster(Poster):
+    name = "poshmark"
+    create_url = "https://poshmark.com/create-listing"
+
+    def __init__(self, username: str):
+        self.username = username
+
+    async def check_account(self, page: Page) -> None:
+        await page.goto(f"https://poshmark.com/closet/{self.username}")
+        await page.wait_for_load_state("domcontentloaded")
+        if "/login" in page.url:
+            raise AccountBlocked("not logged in to Poshmark in the poster profile")
+        if await page.get_by_text(re.compile("captcha|verify you are human", re.I)).count():
+            raise AccountBlocked("CAPTCHA shown — solve it by hand in the poster window")
+        if await SEL["restricted_banner"](page).count():
+            raise AccountBlocked("Poshmark account is restricted (unshipped/cancelled orders)")
+
+    async def fill(self, page: Page, r: Render) -> None:
+        await SEL["photo_input"](page).set_input_files(r.photos)
+        await page.wait_for_function(
+            "n => document.querySelectorAll('img').length >= n", arg=len(r.photos), timeout=90_000)
+        await settle(page, 1, 2)
+        # TODO(M2): confirm the crop dialog if it appears for the cover.
+
+        await human_type(SEL["title"](page), r.title)
+        await settle(page)
+        await SEL["description"](page).fill(r.description)
+        await settle(page)
+
+        await self._pick_category(page, r)
+        if r.size:
+            await SEL["size_open"](page).click()
+            await SEL["size_option"](page, r.size).click()
+            if await SEL["size_done"](page).count():
+                await SEL["size_done"](page).click()
+            await settle(page)
+
+        if r.condition == "NWT":
+            await SEL["nwt_yes"](page).click()
+
+        if r.brand:
+            await human_type(SEL["brand"](page), r.brand)
+            await settle(page, 0.8, 1.6)
+            opt = SEL["brand_option"](page, r.brand)
+            if await opt.count():
+                await opt.click()
+            await settle(page)
+
+        if r.colors:
+            await SEL["color_open"](page).click()
+            for c in r.colors[:2]:
+                await SEL["color_option"](page, c).click()
+            await settle(page)
+
+        for tag in r.tags[:3]:
+            await human_type(SEL["style_tag"](page), tag)
+            await page.keyboard.press("Enter")
+
+        if r.original_price:
+            await SEL["original_price"](page).fill(str(r.original_price))
+        await SEL["listing_price"](page).fill(str(r.price))
+        await SEL["sku"](page).fill(r.sku)
+        await settle(page)
+
+    async def _pick_category(self, page: Page, r: Render) -> None:
+        await SEL["category_open"](page).click()
+        for name in [n for n in (r.department, r.category, r.subcategory) if n]:
+            await SEL["category_option"](page, name).click()
+            await settle(page, 0.3, 0.8)
+
+    async def read_back(self, page: Page) -> dict:
+        async def val(key):
+            loc = SEL[key](page)
+            return await loc.input_value() if await loc.count() else None
+        return {
+            "title": await val("title"),
+            "description": await val("description"),
+            "price": await val("listing_price"),
+            "sku": await val("sku"),
+            # TODO(M2): read category breadcrumb, size, brand, colors from the form's chips.
+        }
+
+    def expected(self, r: Render) -> dict:
+        return {"title": r.title, "description": r.description, "price": r.price, "sku": r.sku}
+
+    async def submit(self, page: Page, mode: Mode) -> str | None:
+        if mode == "draft":
+            btn = SEL["save_draft"](page)
+            if not await btn.count():
+                raise PosterError("no 'save draft' button on the web form")
+            await btn.click()
+            await page.wait_for_load_state("networkidle")
+            return None
+        if await SEL["next"](page).count():
+            await SEL["next"](page).click()
+            await settle(page, 1, 2)
+        await SEL["list_item"](page).click()
+        await page.wait_for_url(re.compile(r"/listing/"), timeout=60_000)
+        return page.url.split("?")[0]
+
+
+def photos_for(r: Render) -> list[Path]:
+    return [Path(p) for p in r.photos]

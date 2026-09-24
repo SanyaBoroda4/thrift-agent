@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.thriftagent.worker</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__HOME__/thrift-agent/.venv/bin/thrift</string>
+    <string>run</string>
+  </array>
+  <key>WorkingDirectory</key><string>__HOME__/thrift-agent</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>60</integer>
+  <key>StandardOutPath</key><string>__HOME__/thrift/logs/worker.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/thrift/logs/worker.err</string>
+</dict>
+</plist>

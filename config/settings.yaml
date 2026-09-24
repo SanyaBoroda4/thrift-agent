@@ -1,0 +1,85 @@
+# Shared defaults. Per-machine overrides go in config/settings.local.yaml (git-ignored).
+# The Mac's local file sets machine_role: prod and points paths.inbox at iCloud Drive.
+
+machine_role: dev          # dev | prod — only prod may publish
+
+paths:
+  inbox: ./var/inbox       # one folder per share from the iPhone
+  work: ./var/work         # normalized photos, item folders, contact sheets
+  archive: ./var/archive   # finished batches
+  failed: ./var/failed     # screenshots + logs for anything that broke
+  db: ./var/state.db
+  chrome_profile: ./var/chrome-profile
+  control: ./var           # PAUSE and HOLD_UNSHIPPED flag files live here
+  harvest: ./private/harvest      # raw pages incl. buyer data — never public
+
+models:
+  segment: claude-sonnet-5
+  extract: claude-sonnet-5
+  copy: claude-sonnet-5
+  verify: claude-haiku-4-5-20251001
+
+images:
+  work_long_edge: 2048
+  llm_long_edge: 1568
+  thumb_long_edge: 384
+  cover_size: 1600
+  dedupe_hamming: 4        # consecutive photos closer than this are treated as duplicates
+
+inbox:
+  done_marker: _done       # the Shortcut writes this file last
+  settle_seconds: 30
+
+segmentation:
+  min_confidence: 0.85
+  always_confirm: true     # send the contact sheet for every batch until the eval says otherwise
+
+gate:
+  min_confidence:
+    brand: 0.85
+    size: 0.85
+    condition: 0.80
+  allow_category_default_price: false
+
+pricing:
+  floor: 20
+  list_markup: 1.35        # most resale sales close via offers — list above the target sale price
+  round_to: 5
+  condition_multiplier:
+    NWT: 1.25
+    NWOT: 1.15
+    like_new: 1.05
+    excellent: 1.00
+    good: 0.85
+    fair: 0.65
+  marketplace_multiplier:
+    poshmark: 1.00
+    depop: 0.90
+
+copy:
+  poshmark_footer: ""        # the closet has never used a footer; add one here if you want it
+  depop_footer: ""
+
+poster:
+  dry_run: true            # fill + screenshot, never click publish. Flip on the Mac after the dry-run week.
+
+marketplaces:
+  poshmark:
+    enabled: true
+    username: ""             # set in private/settings.yaml
+    autopublish: false     # flip after the dry-run week
+    max_photos: 16
+  depop:
+    enabled: false         # turn on after the Poshmark poster is stable
+    autopublish: false
+    max_photos: 8          # verify against the live form
+
+schedule:
+  timezone: America/New_York
+  hours: ["09:00", "21:00"]
+  per_hour_max: 10
+  daily_cap: 25
+  gap_seconds: [150, 420]
+
+telegram:
+  enabled: false

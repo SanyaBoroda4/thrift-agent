@@ -1,0 +1,17 @@
+# EXAMPLE price table. The real one lives in private/brand_tiers.yaml.
+# target = typical SALE price (after offers) in excellent condition.
+brands:
+  birkenstock:  {target: 60}
+  madewell:     {target: 30}
+  nike:         {target: 40}
+  ralph lauren: {target: 50, categories: {Jackets & Coats: 90}}
+  ugg:          {target: 60}
+aliases:
+  ugg australia: ugg
+  polo ralph lauren: ralph lauren
+category_defaults:
+  Shoes: 40
+  Dresses: 35
+  Tops: 20
+  Jackets & Coats: 55
+  Bags: 50
