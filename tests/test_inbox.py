@@ -66,11 +66,12 @@ def test_share_without_marker_waits(tmp_path):
     assert pipeline.ready_folders(s) == []
 
 
-def test_share_still_being_written_waits(tmp_path, monkeypatch):
+def test_share_still_being_written_waits(tmp_path):
     s = _settings(tmp_path)
     d = _share(s, "2026-09-21_1432", age=None)                    # files just written
     assert s["inbox"]["settle_seconds"] > 0 and pipeline.ready_folders(s) == []
-    monkeypatch.setitem(s.data["inbox"], "settle_seconds", 0)
+    for f in d.iterdir():                                          # ...then quiet for longer than the settle window
+        os.utime(f, (OLD, OLD))                                    # (a 0 s settle is flaky: mtime can lead time.time())
     assert pipeline.ready_folders(s) == [d]
 
 
