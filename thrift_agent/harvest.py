@@ -1,4 +1,4 @@
-"""Pull the closet's sales history + listing pages into data/harvest/ for style and pricing.
+"""Pull the closet's sales history + listing pages into paths.harvest (private/harvest — buyer data, never public).
 
 Runs in the poster's Chrome profile (already logged in). Read-only: it only loads pages.
 Order pages expose __INITIAL_STATE__.$_order_details.order (verified); listing pages expose
@@ -10,19 +10,20 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import re
 from pathlib import Path
 
 from thrift_agent.config import PRIVATE_DIR, Settings
 from thrift_agent.post.base import open_browser
 
-STATE_MARK = "__INITIAL_STATE__="
+STATE_MARK = re.compile(r"__INITIAL_STATE__\s*=\s*")
 
 
 def parse_state(html: str) -> dict:
-    i = html.find(STATE_MARK)
-    if i < 0:
+    m = STATE_MARK.search(html)
+    if not m:
         raise ValueError("no __INITIAL_STATE__ on page")
-    obj, _ = json.JSONDecoder().raw_decode(html, i + len(STATE_MARK))
+    obj, _ = json.JSONDecoder().raw_decode(html, m.end())
     return obj
 
 

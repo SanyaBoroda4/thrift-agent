@@ -29,7 +29,11 @@ class AccountBlocked(PosterError):
 
 
 class Mismatch(PosterError):
-    pass
+    """The form on screen differs from the approved Render. Carries the diff so it is recorded."""
+
+    def __init__(self, diff: dict):
+        super().__init__(f"form doesn't match plan: {diff}")
+        self.diff = diff
 
 
 @dataclass
@@ -121,16 +125,20 @@ class Poster(ABC):
             diff = compare(seen, self.expected(r))
             await page.screenshot(path=str(shot), full_page=True)
             if diff:
-                raise Mismatch(f"form doesn't match plan: {diff}")
+                raise Mismatch(diff)
             if dry_run:
                 return Outcome("dryrun", screenshot=str(shot))
             url = await self.submit(page, mode)
-            if mode == "publish":
-                if not url:
-                    raise PosterError("published but no listing URL captured")
+            if mode != "publish":
+                return Outcome("drafted", url=url, screenshot=str(shot))
+            if not url:
+                raise PosterError("published but no listing URL captured")
+            try:
                 await self.verify_live(page, url, r)
-                return Outcome("posted", url=url, screenshot=str(shot))
-            return Outcome("drafted", url=url, screenshot=str(shot))
+            except Exception as e:  # noqa: BLE001 — the listing IS live: keep its URL, never re-post it
+                return Outcome("failed", url=url, screenshot=str(shot),
+                               error=f"published but the live check failed ({type(e).__name__}: {e}) — check {url}")
+            return Outcome("posted", url=url, screenshot=str(shot))
         except AccountBlocked:
             await page.screenshot(path=str(shot), full_page=True)
             raise
@@ -140,6 +148,6 @@ class Poster(ABC):
             except Exception:
                 pass
             return Outcome("failed", screenshot=str(shot), error=f"{type(e).__name__}: {e}",
-                           diff=e.args[0] if isinstance(e, Mismatch) and isinstance(e.args[0], dict) else {})
+                           diff=getattr(e, "diff", {}))
         finally:
             await page.close()

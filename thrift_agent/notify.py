@@ -1,7 +1,11 @@
-"""Telegram pings. No-op (prints) when disabled, so dev on Windows needs no bot."""
+"""Telegram pings. No-op (prints) when disabled, so dev on Windows needs no bot.
+
+Never raises: by the time we ping, the DB row is already written, so a Telegram outage must not fail a batch
+(via _guard) or crash the poster loop. The worst case is a missed message, which goes to stderr instead."""
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import httpx
@@ -14,13 +18,20 @@ def _enabled() -> tuple[bool, str, str]:
     return bool(settings().get("telegram.enabled") and tok and chat), tok, chat
 
 
+def _send(tok: str, method: str, **kw) -> None:
+    try:
+        httpx.post(f"https://api.telegram.org/bot{tok}/{method}", **kw).raise_for_status()
+    except Exception as e:  # noqa: BLE001 - notifications are best-effort
+        print(f"[notify] {method} failed: {type(e).__name__}: {e}", file=sys.stderr)
+
+
 def say(text: str) -> None:
     ok, tok, chat = _enabled()
     if not ok:
         print(f"[notify] {text}")
         return
-    httpx.post(f"https://api.telegram.org/bot{tok}/sendMessage", timeout=20,
-               data={"chat_id": chat, "text": text[:4000], "disable_web_page_preview": True})
+    _send(tok, "sendMessage", timeout=20,
+          data={"chat_id": chat, "text": text[:4000], "disable_web_page_preview": True})
 
 
 def photo(path: Path, caption: str) -> None:
@@ -28,6 +39,11 @@ def photo(path: Path, caption: str) -> None:
     if not ok:
         print(f"[notify] {caption}  ({path})")
         return
-    with open(path, "rb") as f:
-        httpx.post(f"https://api.telegram.org/bot{tok}/sendPhoto", timeout=60,
-                   data={"chat_id": chat, "caption": caption[:1000]}, files={"photo": f})
+    if not Path(path).is_file():                       # e.g. the screenshot itself failed
+        say(f"{caption}\n(no image: {path})")
+        return
+    try:
+        with open(path, "rb") as f:
+            _send(tok, "sendPhoto", timeout=60, data={"chat_id": chat, "caption": caption[:1000]}, files={"photo": f})
+    except OSError as e:
+        say(f"{caption}\n(could not read image {path}: {e})")

@@ -66,27 +66,33 @@ def fix_decimal_commas(s: str) -> str:
     return re.sub(r"(?<=\d),(?=5\b)", ".", s)
 
 
+def _cut_at_word(text: str, limit: int) -> str:
+    """At most `limit` chars, backed up to the last space when there is one."""
+    head = text[:limit + 1]
+    return head.rsplit(" ", 1)[0] if " " in head else text[:limit]
+
+
 def clamp_title(title: str) -> str:
     title = re.sub(r"^\s*copy\s*[-–:]\s*", "", title, flags=re.I)
     title = re.sub(r"\s+", " ", fix_decimal_commas(title)).strip()
     if len(title) <= TITLE_MAX:
         return title
-    cut = title[:TITLE_MAX + 1].rsplit(" ", 1)[0]
-    return cut.rstrip(" -,|")
+    return _cut_at_word(title, TITLE_MAX).rstrip(" -,|")
 
 
 def clean(out: CopyOut) -> CopyOut:
     out.poshmark_title = clamp_title(out.poshmark_title)
     out.poshmark_description = fix_decimal_commas(out.poshmark_description).strip()
-    tags = [re.sub(r"[^\w]", "", t.lower()) for t in out.depop_hashtags][:5]
-    out.depop_hashtags = [t for t in tags if t]
+    out.poshmark_style_tags = [t.strip() for t in out.poshmark_style_tags if t and t.strip()][:3]
+    tags = [re.sub(r"[^\w]", "", t.lower()) for t in out.depop_hashtags]
+    out.depop_hashtags = [t for t in tags if t][:5]
     body = fix_decimal_commas(out.depop_description).strip()
     body = re.sub(r"(\s*#\w+)+\s*$", "", body)             # drop any hashtags the model inlined
     tag_line = " ".join(f"#{t}" for t in out.depop_hashtags)
-    room = DEPOP_MAX - len(tag_line) - 2
-    if len(body) > room:
-        body = body[:room].rsplit(" ", 1)[0].rstrip() + "…"
-    out.depop_description = f"{body}\n\n{tag_line}"
+    limit = DEPOP_MAX - len(tag_line) - 2                    # body + blank line + tag line <= DEPOP_MAX
+    if len(body) > limit:
+        body = _cut_at_word(body, limit - 1).rstrip() + "\u2026"   # one char reserved for the ellipsis
+    out.depop_description = f"{body}\n\n{tag_line}" if tag_line else body
     return out
 
 

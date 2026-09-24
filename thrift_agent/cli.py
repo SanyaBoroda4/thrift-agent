@@ -45,6 +45,17 @@ def _tick(s, db) -> int:
     return n
 
 
+def _safe_tick(s, db) -> int:
+    """One worker iteration that never kills the service: an error while scanning the inbox (iCloud evicting a
+    file mid-scan, a permissions hiccup) is logged and simply retried on the next tick."""
+    try:
+        return _tick(s, db)
+    except Exception as e:  # noqa: BLE001
+        db.log(None, "error", traceback.format_exc())
+        notify.say(f"❌ worker tick: {type(e).__name__}: {e}")
+        return 0
+
+
 def _guard(db, ref, fn, on_fail) -> None:
     try:
         fn()
@@ -61,7 +72,7 @@ def run(interval: int = 15) -> None:
     s.ensure_dirs()
     print(f"worker watching {s.path('inbox')}")
     while True:
-        _tick(s, db)
+        _safe_tick(s, db)
         time.sleep(interval)
 
 
@@ -70,8 +81,12 @@ def process(folder: Path) -> None:
     """One-off: treat FOLDER as a shared batch (dev: point it at any folder of photos)."""
     s, db = settings(), _db()
     s.ensure_dirs()
-    bid = pipeline.register(s, db, folder.resolve()) or db.conn.execute(
-        "SELECT id FROM batches WHERE src_dir=?", (str(folder.resolve()),)).fetchone()[0]
+    bid = pipeline.register(s, db, folder.resolve())
+    if bid is None:                                   # already registered — or nothing to register
+        row = db.conn.execute("SELECT id FROM batches WHERE src_dir=?", (str(folder.resolve()),)).fetchone()
+        if row is None:
+            raise typer.BadParameter(f"no photos found in {folder}")
+        bid = row[0]
     pipeline.process_batch(s, db, bid)
     b = db.batch(bid)
     print(f"batch {bid}: {b['status']}  sheet: {s.path('work') / bid / 'contact_sheet.png'}")
@@ -142,12 +157,14 @@ def status() -> None:
 def show(item_id: str) -> None:
     """Print an item's facts, price, gate and renders."""
     row = _db().item(item_id)
+    if row is None:
+        raise typer.BadParameter(f"unknown item {item_id}")
     print(json.dumps({k: loads(row[k]) for k in ("facts", "price", "gate", "renders")}, indent=1))
 
 
 @app.command()
 def harvest(max_orders: int = 0) -> None:
-    """Pull sales + listing pages from the logged-in poster profile into data/harvest/."""
+    """Pull sales + listing pages from the logged-in poster profile into paths.harvest (private/harvest)."""
     from thrift_agent.harvest import harvest as run_harvest
     print(asyncio.run(run_harvest(settings(), max_orders or None)))
 

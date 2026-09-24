@@ -50,7 +50,9 @@ class Settings:
         return self.path("control") / name
 
     def ensure_dirs(self) -> None:
-        for name in ("inbox", "work", "archive", "failed", "chrome_profile", "control", "harvest"):
+        # Not "harvest": it lives under private/, which must stay absent until the private repo is cloned there
+        # (git clone refuses a non-empty target). harvest() creates it when it runs.
+        for name in ("inbox", "work", "archive", "failed", "chrome_profile", "control"):
             self.path(name).mkdir(parents=True, exist_ok=True)
         self.path("db").parent.mkdir(parents=True, exist_ok=True)
 

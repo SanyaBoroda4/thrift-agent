@@ -74,37 +74,55 @@ def check(seg: SegOut, n: int, min_conf: float) -> list[str]:
 def apply_correction(groups: list[list[int]], cmd: str) -> list[list[int]]:
     """Seller replies from Telegram. Groups are 1-based in commands, photos are indices.
       ok            accept
-      12>2          move photo 12 into item 2
+      12>2          move photo 12 into item 2 (item N+1 starts a new item)
       split 7       photo 7 starts a new item
       merge 2 3     items 2 and 3 are the same item
-    Several commands can be separated by commas."""
+    Several commands can be separated by commas. Item numbers refer to the groups as they were when the
+    command string started (emptied items are dropped only at the end). Anything that would silently lose,
+    duplicate or invent a photo raises ValueError: stop, don't guess."""
     groups = [list(g) for g in groups]
+    universe = sorted(i for g in groups for i in g)
+
+    def item(text: str, allow_new: bool = False) -> int:
+        k = int(text)
+        if not 1 <= k <= len(groups) + (1 if allow_new else 0):
+            raise ValueError(f"no item {k} (items are 1..{len(groups)})")
+        return k - 1
+
+    def owner(photo: int) -> int:
+        for k, g in enumerate(groups):
+            if photo in g:
+                return k
+        raise ValueError(f"no photo {photo} (photos are 0..{universe[-1] if universe else 0})")
+
     for part in [c.strip().lower() for c in cmd.split(",") if c.strip()]:
         if part == "ok":
             continue
         if m := re.fullmatch(r"(\d+)\s*>\s*(\d+)", part):
-            photo, dest = int(m[1]), int(m[2]) - 1
-            for g in groups:
-                if photo in g:
-                    g.remove(photo)
-            while dest >= len(groups):
+            photo = int(m[1])
+            src, dest = owner(photo), item(m[2], allow_new=True)
+            groups[src].remove(photo)
+            if dest == len(groups):
                 groups.append([])
             groups[dest] = sorted(groups[dest] + [photo])
         elif m := re.fullmatch(r"split\s+(\d+)", part):
             photo = int(m[1])
-            for k, g in enumerate(groups):
-                if photo in g:
-                    idx = g.index(photo)
-                    if idx > 0:
-                        groups[k:k + 1] = [g[:idx], g[idx:]]
-                    break
+            k = owner(photo)
+            idx = groups[k].index(photo)
+            if idx > 0:
+                groups[k:k + 1] = [groups[k][:idx], groups[k][idx:]]
         elif m := re.fullmatch(r"merge\s+(\d+)\s+(\d+)", part):
-            a, b = int(m[1]) - 1, int(m[2]) - 1
+            a, b = item(m[1]), item(m[2])
+            if a == b:
+                raise ValueError(f"merge needs two different items, got {m[1]} twice")
             groups[a] = sorted(groups[a] + groups[b])
             groups[b] = []
         else:
             raise ValueError(f"can't read correction: {part!r}")
-    return [g for g in groups if g]
+    out = [g for g in groups if g]
+    if sorted(i for g in out for i in g) != universe:              # belt and braces: still a partition
+        raise ValueError("correction would lose or duplicate photos")
+    return out
 
 
 PALETTE = ["#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#46f0f0", "#f032e6", "#bcf60c"]

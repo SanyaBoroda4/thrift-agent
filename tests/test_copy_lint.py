@@ -40,3 +40,19 @@ def test_lint_catches_past_mistakes(facts):
     assert any("kids" in p for p in kids)
     color = lint(facts(), co(poshmark_description="Light gray flats. Condition: excellent, light wear."))
     assert any("color" in p for p in color)
+
+
+def test_title_hard_limit_without_spaces():
+    assert len(clamp_title("x" * 120)) == 80
+    assert len(clamp_title("a" * 79 + " " + "b" * 10)) <= 80
+
+
+def test_style_tags_are_truncated_not_rejected():
+    out = clean(co(poshmark_style_tags=["a", "b", "c", "d"]))       # 4 tags must validate, then be cut to 3
+    assert out.poshmark_style_tags == ["a", "b", "c"]
+
+
+def test_depop_limit_without_spaces():
+    out = clean(co(depop_description="y" * 1500, depop_hashtags=["a", "b"]))
+    assert len(out.depop_description) <= 1000 and out.depop_description.endswith("#a #b")
+    assert clean(co(depop_description="plain", depop_hashtags=[])).depop_description == "plain"

@@ -59,3 +59,12 @@ def test_prep_and_sheet(tmp_path):
     assert Image.open(cover).size == (300, 300)
     sheet = contact_sheet(kept, [[0, 1], list(range(2, len(kept)))], tmp_path / "sheet.png")
     assert sheet.exists()
+
+
+def test_corrections_reject_nonsense():
+    groups = [[0, 1, 2], [3, 4, 5], [6, 7]]
+    for bad in ("12>0", "99>2", "4>5", "merge 2 2", "merge 0 1", "merge 1 9", "split 99"):
+        with pytest.raises(ValueError):
+            apply_correction(groups, bad)
+    assert apply_correction(groups, "7>4") == [[0, 1, 2], [3, 4, 5], [6], [7]]   # item N+1 = a new item
+    assert groups == [[0, 1, 2], [3, 4, 5], [6, 7]]                              # input never mutated

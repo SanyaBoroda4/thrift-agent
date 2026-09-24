@@ -61,6 +61,8 @@ def process_batch(s: Settings, db: DB, bid: str) -> None:
     src = Path(b["src_dir"])
     work = s.path("work") / bid
     listed = prep.list_photos(src)
+    if not listed:
+        raise ValueError(f"no photos in {src} (moved away, or still downloading from iCloud?)")
     raw = [p for p, _ in listed]
     times = {p.name: t for p, t in listed}
     norm = [prep.normalize(p, work / "all" / f"{i:03d}.jpg", s["images"]["work_long_edge"]) for i, p in enumerate(raw)]
@@ -115,10 +117,31 @@ def split(s: Settings, db: DB, bid: str, groups: list[list[int]]) -> None:
         iid = db.add_item(bid, k, str(d), note)
         db.log(iid, "item_created", {"batch": bid, "photos": g})
     db.set_batch(bid, status="split")
-    src = Path(b["src_dir"])
-    if src.exists():                                             # clears the phone's inbox too
-        dest = s.path("archive") / f"{datetime.now():%Y%m%d}_{src.name}"
+    archive_share(s, db, bid, Path(b["src_dir"]))
+
+
+def archive_share(s: Settings, db: DB, bid: str, src: Path) -> Path | None:
+    """Move a finished share out of the inbox: this is what clears the phone's iCloud folder.
+
+    Only folders inside paths.inbox are touched: `thrift process <any dir>` must never move the caller's folder.
+    Never fatal: the items already exist in the DB, and a folder left behind is skipped by register() because
+    src_dir is UNIQUE. On the Mac this is a cross-volume move (iCloud Drive to local disk), i.e. copy + delete."""
+    inbox = s.path("inbox").resolve()
+    if not src.exists() or inbox not in src.resolve().parents:
+        return None
+    base = s.path("archive") / f"{datetime.now():%Y%m%d}_{src.name}"
+    dest, n = base, 1
+    while dest.exists():                                         # never merge into an earlier archive folder
+        n += 1
+        dest = base.with_name(f"{base.name}_{n}")
+    try:
         shutil.move(str(src), str(dest))
+    except OSError as e:
+        db.log(bid, "archive_failed", {"src": str(src), "dest": str(dest), "error": str(e)})
+        notify.say(f"\u26a0\ufe0f {bid}: could not archive {src.name} ({e}). The items are safe; move the folder by hand.")
+        return None
+    db.log(bid, "archived", {"dest": str(dest)})
+    return dest
 
 
 # ---------- item → ready ----------
@@ -152,8 +175,9 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
                 gate={"decision": gate.decision, "reasons": gate.reasons})
     db.log(iid, "item_processed", {"decision": gate.decision, "reasons": gate.reasons})
 
-    first = next(iter(renders.values()))
-    head = f"{first.title} — ${pr.list_price}" if pr.list_price else first.title
+    first = next(iter(renders.values()), None)                  # no marketplace enabled: still notify
+    title = first.title if first else final.poshmark_title
+    head = f"{title} \u2014 ${pr.list_price}" if pr.list_price else title
     if status == "needs_info":
         notify.photo(d / "photos" / "00.jpg",
                      f"Needs info ({iid}): {head}\n- " + "\n- ".join(gate.reasons) +
@@ -170,10 +194,11 @@ def answer(s: Settings, db: DB, iid: str, note: str) -> None:
 
 def build_renders(s: Settings, iid: str, d: Path, photos: list[Path], facts: Facts, c: CopyOut,
                   pr: PriceResult) -> dict[str, Render]:
-    order = [i for i in facts.photo_order if 0 <= i < len(photos)]
-    order = [facts.cover_photo] + [i for i in order if i != facts.cover_photo] if 0 <= facts.cover_photo < len(photos) \
-        else order or list(range(len(photos)))
-    order += [i for i in range(len(photos)) if i not in order]
+    n = len(photos)
+    order = [i for i in facts.photo_order if 0 <= i < n]
+    if 0 <= facts.cover_photo < n:
+        order = [facts.cover_photo] + order
+    order = list(dict.fromkeys(order + list(range(n))))         # cover first, then the model's order, no repeats
     cover = prep.square_cover(photos[order[0]], d / "cover.jpg", s["images"]["cover_size"])
     ordered = [str(cover)] + [str(photos[i]) for i in order[1:]]
 

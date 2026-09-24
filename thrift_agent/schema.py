@@ -66,9 +66,11 @@ class PriceResult(BaseModel):
 class CopyOut(BaseModel):
     poshmark_title: str = Field(description="≤80 chars. Brand first, item, key detail, color, 'size X'")
     poshmark_description: str
-    poshmark_style_tags: list[str] = Field(description="Up to 3 short style tags", max_length=3)
+    # No max_length on the lists: a model that returns one tag too many must not fail validation and kill
+    # the whole call — copy.clean() truncates instead.
+    poshmark_style_tags: list[str] = Field(default_factory=list, description="Up to 3 short style tags")
     depop_description: str = Field(description="≤1000 chars INCLUDING the hashtag line")
-    depop_hashtags: list[str] = Field(description="Exactly 5, no # sign", max_length=5)
+    depop_hashtags: list[str] = Field(description="Exactly 5, no # sign")
 
 
 class Render(BaseModel):
