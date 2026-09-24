@@ -60,6 +60,8 @@ def check(seg: SegOut, n: int, min_conf: float) -> list[str]:
         dupes = sorted({i for i in seen if seen.count(i) > 1})
         reasons.append(f"photos not partitioned (missing={missing}, duplicated={dupes})")
     for k, g in enumerate(seg.groups, 1):
+        if not g.photos:
+            reasons.append(f"item {k}: empty group")
         if not g.full_item_photos:
             reasons.append(f"item {k}: no full-item photo")
         if len({s.strip().lower() for s in g.sizes_read}) > 1:
@@ -71,7 +73,7 @@ def check(seg: SegOut, n: int, min_conf: float) -> list[str]:
     return reasons
 
 
-def apply_correction(groups: list[list[int]], cmd: str) -> list[list[int]]:
+def apply_correction(groups: list[list[int]], cmd: str, n: int | None = None) -> list[list[int]]:
     """Seller replies from Telegram. Groups are 1-based in commands, photos are indices.
       ok            accept
       12>2          move photo 12 into item 2 (item N+1 starts a new item)
@@ -79,9 +81,12 @@ def apply_correction(groups: list[list[int]], cmd: str) -> list[list[int]]:
       merge 2 3     items 2 and 3 are the same item
     Several commands can be separated by commas. Item numbers refer to the groups as they were when the
     command string started (emptied items are dropped only at the end). Anything that would silently lose,
-    duplicate or invent a photo raises ValueError: stop, don't guess."""
+    duplicate or invent a photo raises ValueError: stop, don't guess.
+    `n` is the batch's photo count: a photo the model left out of every group (the sheet labels it "item 0")
+    can then be placed with `5>2` or `split 5`. Whether the result covers every photo is checked by the caller."""
     groups = [list(g) for g in groups]
     universe = sorted(i for g in groups for i in g)
+    last = n - 1 if n is not None else (universe[-1] if universe else 0)
 
     def item(text: str, allow_new: bool = False) -> int:
         k = int(text)
@@ -89,11 +94,13 @@ def apply_correction(groups: list[list[int]], cmd: str) -> list[list[int]]:
             raise ValueError(f"no item {k} (items are 1..{len(groups)})")
         return k - 1
 
-    def owner(photo: int) -> int:
+    def owner(photo: int) -> int | None:
+        if not 0 <= photo <= last:
+            raise ValueError(f"no photo {photo} (photos are 0..{last})")
         for k, g in enumerate(groups):
             if photo in g:
                 return k
-        raise ValueError(f"no photo {photo} (photos are 0..{universe[-1] if universe else 0})")
+        return None                                              # exists, but the model put it in no item
 
     for part in [c.strip().lower() for c in cmd.split(",") if c.strip()]:
         if part == "ok":
@@ -101,13 +108,17 @@ def apply_correction(groups: list[list[int]], cmd: str) -> list[list[int]]:
         if m := re.fullmatch(r"(\d+)\s*>\s*(\d+)", part):
             photo = int(m[1])
             src, dest = owner(photo), item(m[2], allow_new=True)
-            groups[src].remove(photo)
+            if src is not None:
+                groups[src].remove(photo)
             if dest == len(groups):
                 groups.append([])
             groups[dest] = sorted(groups[dest] + [photo])
         elif m := re.fullmatch(r"split\s+(\d+)", part):
             photo = int(m[1])
             k = owner(photo)
+            if k is None:
+                groups.append([photo])                           # an orphan photo becomes its own item
+                continue
             idx = groups[k].index(photo)
             if idx > 0:
                 groups[k:k + 1] = [groups[k][:idx], groups[k][idx:]]
@@ -120,29 +131,32 @@ def apply_correction(groups: list[list[int]], cmd: str) -> list[list[int]]:
         else:
             raise ValueError(f"can't read correction: {part!r}")
     out = [g for g in groups if g]
-    if sorted(i for g in out for i in g) != universe:              # belt and braces: still a partition
+    got = sorted(i for g in out for i in g)
+    if len(got) != len(set(got)) or not set(universe) <= set(got):   # belt and braces: nothing lost or doubled
         raise ValueError("correction would lose or duplicate photos")
     return out
 
 
 PALETTE = ["#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#46f0f0", "#f032e6", "#bcf60c"]
+LABEL_STRIP = 40           # px under each tile for "#i · item k"; the seller reads this on a phone
 
 
 def contact_sheet(photos: list[Path], groups: list[list[int]], dst: Path, tile: int = 260, cols: int = 5) -> Path:
     owner = {i: k for k, g in enumerate(groups) for i in g}
     rows = (len(photos) + cols - 1) // cols
-    sheet = Image.new("RGB", (cols * tile, rows * (tile + 28)), "white")
+    sheet = Image.new("RGB", (cols * tile, rows * (tile + LABEL_STRIP)), "white")
     draw = ImageDraw.Draw(sheet)
-    font = ImageFont.load_default()
+    font = ImageFont.load_default(size=26)                       # Pillow >= 10.1: a real (scalable) font
     for i, p in enumerate(photos):
         with Image.open(p) as im:
             im = im.convert("RGB")
             im.thumbnail((tile - 12, tile - 12))
-            x, y = (i % cols) * tile, (i // cols) * (tile + 28)
+            x, y = (i % cols) * tile, (i // cols) * (tile + LABEL_STRIP)
             color = PALETTE[owner.get(i, 0) % len(PALETTE)]
             draw.rectangle([x + 2, y + 2, x + tile - 3, y + tile - 3], outline=color, width=6)
             sheet.paste(im, (x + (tile - im.width) // 2, y + (tile - im.height) // 2))
-            draw.text((x + 8, y + tile + 4), f"#{i} · item {owner.get(i, -1) + 1}", fill=color, font=font)
+            draw.rectangle([x, y + tile, x + tile - 1, y + tile + LABEL_STRIP - 1], fill="white")
+            draw.text((x + 8, y + tile + 5), f"#{i} · item {owner.get(i, -1) + 1}", fill=color, font=font)
     dst.parent.mkdir(parents=True, exist_ok=True)
     sheet.save(dst, "PNG")
     return dst

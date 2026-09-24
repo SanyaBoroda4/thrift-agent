@@ -4,9 +4,12 @@ on:
   pull_request:
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # dev is Windows, prod is macOS: run the suite on both, plus Linux.
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
         python: ["3.12", "3.14"]
     steps:
       - uses: actions/checkout@v7

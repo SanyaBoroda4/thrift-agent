@@ -1,9 +1,11 @@
 import re
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
+
+import pytest
 
 from thrift_agent import db as dbmod
 from thrift_agent.config import Settings
-from thrift_agent.scheduler import can_post, in_hours, windows
+from thrift_agent.scheduler import _parse_hour, can_post, in_hours, windows
 
 
 def _settings(tmp_path, **sched):
@@ -17,6 +19,31 @@ def test_in_hours():
     assert in_hours(datetime(2026, 9, 24, 21, 0), ["09:00", "21:00"])
     assert not in_hours(datetime(2026, 9, 24, 21, 1), ["09:00", "21:00"])
     assert not in_hours(datetime(2026, 9, 24, 3, 0), ["09:00", "21:00"])
+
+
+def test_parse_hour_accepts_yaml_ints_and_unpadded_strings():
+    assert _parse_hour(540) == time(9, 0)               # YAML 1.1: an unquoted 9:00 is the sexagesimal int 540
+    assert _parse_hour("9:00") == time(9, 0)
+    assert _parse_hour(" 21:00 ") == time(21, 0)
+    assert _parse_hour(time(7, 30)) == time(7, 30)
+    for bad in (None, 1.5, "9", "25:00", "9pm", 1440, -1, True):
+        with pytest.raises(ValueError, match="schedule.hours"):
+            _parse_hour(bad)
+
+
+def test_in_hours_accepts_yaml_ints_and_unpadded_strings():
+    assert in_hours(datetime(2026, 9, 24, 12, 0), [540, 1260])
+    assert in_hours(datetime(2026, 9, 24, 12, 0), ["9:00", "21:00"])
+    assert not in_hours(datetime(2026, 9, 24, 8, 59), [540, 1260])
+    with pytest.raises(ValueError, match="start, end"):
+        in_hours(datetime(2026, 9, 24, 12, 0), ["09:00"])
+
+
+def test_in_hours_window_crossing_midnight():
+    night = ["21:00", "02:00"]
+    assert in_hours(datetime(2026, 9, 24, 23, 0), night)
+    assert in_hours(datetime(2026, 9, 24, 1, 0), night)
+    assert not in_hours(datetime(2026, 9, 24, 12, 0), night)
 
 
 def test_can_post_windows_and_caps(tmp_path):
@@ -35,6 +62,17 @@ def test_flags_stop_everything(tmp_path):
     assert "unshipped" in can_post(s, 0, 0, noon_ny)[1]
     (tmp_path / "PAUSE").touch()
     assert can_post(s, 0, 0, noon_ny) == (False, "PAUSE flag set")
+
+
+def test_flags_from_the_iphone_stop_everything(tmp_path):
+    s = _settings(tmp_path)
+    noon_ny = datetime(2026, 9, 24, 16, 0, tzinfo=timezone.utc)
+    (tmp_path / "PAUSE.txt").touch()                     # iOS Files / Shortcuts add the extension
+    assert can_post(s, 0, 0, noon_ny) == (False, "PAUSE flag set")
+    (tmp_path / "PAUSE.txt").unlink()
+    assert can_post(s, 0, 0, noon_ny) == (True, "ok")
+    (tmp_path / ".HOLD_UNSHIPPED.txt.icloud").touch()    # placeholder until the Mac downloads it
+    assert "unshipped" in can_post(s, 0, 0, noon_ny)[1]
 
 
 def test_windows_match_the_db_timestamp_format():

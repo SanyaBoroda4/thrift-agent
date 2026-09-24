@@ -2,6 +2,8 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from thrift_agent.post.base import Poster, compare
 from thrift_agent.schema import Render
 
@@ -24,9 +26,20 @@ class FakePage:
         pass
 
 
+class CloseFailsPage(FakePage):
+    """Chrome sometimes reports 'Target closed' on page.close() right after a navigation."""
+    async def close(self):
+        raise RuntimeError("Target page, context or browser has been closed")
+
+
 class FakeCtx:
+    def __init__(self, page=None, new_page_error=None):
+        self.page, self.new_page_error = page, new_page_error
+
     async def new_page(self):
-        return FakePage()
+        if self.new_page_error:
+            raise self.new_page_error
+        return self.page or FakePage()
 
 
 class StubPoster(Poster):
@@ -57,8 +70,8 @@ class StubPoster(Poster):
             raise TimeoutError("page never loaded")
 
 
-def run(p, mode="publish", dry_run=False, shots=None):
-    return asyncio.run(p.post(FakeCtx(), RENDER, mode, dry_run, shots))
+def run(p, mode="publish", dry_run=False, shots=None, ctx=None):
+    return asyncio.run(p.post(ctx or FakeCtx(), RENDER, mode, dry_run, shots))
 
 
 def test_dry_run_never_submits(tmp_path):
@@ -91,7 +104,41 @@ def test_draft_mode(tmp_path):
     assert out.status == "drafted" and p.submitted == "draft"
 
 
+def test_page_close_error_keeps_the_outcome(tmp_path):
+    """An exception in `finally` would replace the returned Outcome: a live listing with no record (invariant 4)."""
+    p = StubPoster({"title": "Tory Burch Red Flats size 7.5", "price": "85"})
+    out = run(p, shots=tmp_path, ctx=FakeCtx(page=CloseFailsPage()))
+    assert out.status == "posted" and out.url.endswith("/listing/abc") and p.submitted == "publish"
+
+
+def test_new_page_error_is_a_failed_outcome(tmp_path):
+    p = StubPoster({"title": "Tory Burch Red Flats size 7.5", "price": "85"})
+    out = run(p, shots=tmp_path, ctx=FakeCtx(new_page_error=RuntimeError("browser has been closed")))
+    assert out.status == "failed" and p.submitted is None and "browser has been closed" in out.error
+
+
+def test_account_blocked_propagates_despite_close_error(tmp_path):
+    from thrift_agent.post.base import AccountBlocked
+
+    class Blocked(StubPoster):
+        async def check_account(self, page):
+            raise AccountBlocked("not logged in")
+
+    p = Blocked({"title": "Tory Burch Red Flats size 7.5", "price": "85"})
+    with pytest.raises(AccountBlocked):
+        run(p, shots=tmp_path, ctx=FakeCtx(page=CloseFailsPage()))
+    assert p.submitted is None
+
+
 def test_compare_normalises():
     assert compare({"title": "  Red  Flats ", "price": "$85", "colors": ["red", "Pink"]},
                    {"title": "red flats", "price": 85, "colors": ["Pink", "Red"]}) == {}
-    assert compare({"price": "85.00"}, {"price": 85}) == {"price": (85, "85.00")}
+    for echoed in ("85.00", "$85", "85", "$85.00", " 85 ", 85, 85.0):      # what a price field may echo back
+        assert compare({"price": echoed}, {"price": 85}) == {}, echoed
+    assert compare({"price": "80"}, {"price": 85}) == {"price": (85, "80")}
+    assert compare({"price": None}, {"price": 85}) == {"price": (85, None)}
+    assert compare({"price": "n/a"}, {"price": 85}) == {"price": (85, "n/a")}
+    assert compare({"original_price": ""}, {"original_price": None}) == {}
+    assert compare({}, {"original_price": None}) == {}
+    assert compare({"original_price": "120"}, {"original_price": None}) == {"original_price": (None, "120")}
+    assert compare({"photos": 15}, {"photos": 16}) == {"photos": (16, 15)}

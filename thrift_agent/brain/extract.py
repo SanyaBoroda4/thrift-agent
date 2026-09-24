@@ -21,6 +21,8 @@ Rules:
   NWOT = unworn, no tag: pristine soles/insoles, no pilling, no wear.
   like_new / excellent / good / fair for used items; list every visible flaw with its photo.
   When unsure between two grades, choose the lower one.
+  - condition_evidence: always fill it for every grade — the photos and what you saw that justify the grade,
+    with your confidence in the grade.
 - A seller note, if present, is authoritative: use source=note, confidence 1.0.
 - cover_photo = cleanest full-item shot. photo_order = every index: cover, back/sides, details,
   labels, flaws.

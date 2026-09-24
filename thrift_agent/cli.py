@@ -65,11 +65,22 @@ def _guard(db, ref, fn, on_fail) -> None:
         notify.say(f"❌ {ref}: {type(e).__name__}: {e}")
 
 
+def _tick_unless_worker(s, db) -> None:
+    """Dev: process the new rows right now. Prod: leave them to the `thrift run` worker — a second process
+    ticking the same DB can pick the same 'new' row (double LLM spend, double pings, last writer wins)."""
+    if s.is_prod:
+        print("queued — the worker will pick it up within 15 s")
+    else:
+        _tick(s, db)
+
+
 @app.command()
 def run(interval: int = 15) -> None:
     """Watch the inbox and process batches/items forever (the worker service)."""
     s, db = settings(), _db()
     s.ensure_dirs()
+    if s.is_prod:
+        notify.check(s)                                   # a silent Telegram is not an option on the Mac
     print(f"worker watching {s.path('inbox')}")
     while True:
         _safe_tick(s, db)
@@ -91,7 +102,7 @@ def process(folder: Path) -> None:
     b = db.batch(bid)
     print(f"batch {bid}: {b['status']}  sheet: {s.path('work') / bid / 'contact_sheet.png'}")
     if b["status"] == "split":
-        _tick(s, db)
+        _tick_unless_worker(s, db)
 
 
 @app.command()
@@ -99,8 +110,8 @@ def confirm(batch_id: str, cmd: str = typer.Argument("ok")) -> None:
     """Accept or correct a batch split: ok | 12>2 | split 7 | merge 2 3"""
     s, db = settings(), _db()
     pipeline.confirm(s, db, batch_id, cmd)
-    _tick(s, db)
     print(f"[green]split[/] {batch_id}")
+    _tick_unless_worker(s, db)
 
 
 @app.command()
@@ -108,14 +119,17 @@ def answer(item_id: str, note: str) -> None:
     """Answer a needs-info item, e.g.  thrift answer i_... "size 8, brand Vince" """
     s, db = settings(), _db()
     pipeline.answer(s, db, item_id, note)
-    _tick(s, db)
+    _tick_unless_worker(s, db)
 
 
 @app.command()
 def poster(once: bool = False, dry_run: bool = False) -> None:
     """Run the Chrome poster (the poster service on the Mac)."""
     from thrift_agent.post.runner import run as run_poster
-    asyncio.run(run_poster(settings(), _db(), once=once, force_dry=dry_run))
+    s = settings()
+    if s.is_prod:
+        notify.check(s)
+    asyncio.run(run_poster(s, _db(), once=once, force_dry=dry_run))
 
 
 @app.command()
@@ -179,12 +193,8 @@ def build_style(keep: int = 30) -> None:
 @app.command("eval")
 def eval_(fixtures: Path = Path("eval/fixtures")) -> None:
     """Score segmentation + extraction against eval/fixtures/*/expected.yaml."""
-    from thrift_agent.eval import run_case, summarize
-    s = settings()
-    results = [run_case(s, c) for c in sorted(fixtures.iterdir()) if (c / "expected.yaml").exists()]
-    for r in results:
-        print(r)
-    print(summarize(results))
+    from thrift_agent.eval import run_all, summarize
+    print(summarize(run_all(settings(), fixtures)))     # one failing case no longer discards the paid results
 
 
 if __name__ == "__main__":

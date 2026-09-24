@@ -62,6 +62,7 @@ copy:
 
 poster:
   dry_run: true            # fill + screenshot, never click publish. Flip on the Mac after the dry-run week.
+  max_consecutive_failures: 3   # after this many failed items in a row the poster writes PAUSE and stops (stop, don't guess)
 
 marketplaces:
   poshmark:

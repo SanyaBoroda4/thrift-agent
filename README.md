@@ -41,8 +41,14 @@ No Homebrew. Shell is bash.
 git clone git@github.com:SanyaBoroda4/thrift-agent.git ~/thrift-agent && cd ~/thrift-agent
 bash deploy/mac_setup.sh
 ```
-Then: `.env`, `config/settings.local.yaml` (`machine_role: prod`), `thrift login`, record selectors, dry-run week,
-then start the two launchd services. Deploy updates from Windows with `deploy\deploy.ps1`.
+Then: `.env`, `config/settings.local.yaml` (`machine_role: prod`), `thrift login --site poshmark`, record selectors,
+and start the two launchd services (worker + poster) for the dry-run week:
+```bash
+bash deploy/services.sh start      # also: stop | restart | status
+```
+`thrift login` needs the poster's Chrome profile to itself: `bash deploy/services.sh stop` first, `start` afterwards.
+Deploy updates from Windows with `deploy\deploy.ps1` (pull, test, `services.sh restart`; a red test rolls the Mac back
+to the previous commit).
 
 ## iPhone Shortcut — "New item"
 Same Apple ID as the Mac, iCloud Drive on, folders `iCloud Drive/Posh/inbox`.

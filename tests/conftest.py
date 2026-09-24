@@ -3,6 +3,22 @@ import pytest
 from thrift_agent.schema import Ev, Facts
 
 
+@pytest.fixture(autouse=True)
+def no_telegram(monkeypatch):
+    """Nothing in the suite may reach Telegram.
+
+    test_pipeline calls the real notify with the machine's merged settings; on the Mac settings.local.yaml enables
+    Telegram and .env holds the token, so a bare `pytest` (deploy.ps1, mac_setup.sh) would ping the seller a photo
+    of a synthetic batch on every deploy. Force the disabled (print) path and make any HTTP call fail loudly.
+    test_notify's own tests re-patch _enabled / httpx.post inside the test body, which overrides this."""
+    def no_network(*a, **k):
+        raise AssertionError("network call in tests")
+    monkeypatch.setattr("thrift_agent.notify._enabled", lambda: (False, "", ""))
+    monkeypatch.setattr("thrift_agent.notify.httpx.post", no_network)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+
+
 @pytest.fixture
 def facts():
     def make(**kw):

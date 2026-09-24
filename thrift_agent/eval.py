@@ -12,7 +12,9 @@ eval/fixtures/<case>/
 """
 from __future__ import annotations
 
+import json
 import shutil
+from datetime import datetime
 from pathlib import Path
 
 import yaml
@@ -54,13 +56,44 @@ def run_case(s: Settings, case: Path) -> dict:
     return result
 
 
+def run_all(s: Settings, fixtures: Path) -> list[dict]:
+    """Score every fixture case (a dir with expected.yaml), printing each result as it completes.
+
+    A case that blows up (bad expected.yaml, API error, unreadable photo) becomes {"case", "error"} instead of
+    throwing away the paid-for results of the others. Rows are written to eval/results_<stamp>.json after every
+    case, so a partial or interrupted run is still inspectable.
+    """
+    cases = [c for c in sorted(fixtures.iterdir()) if (c / "expected.yaml").exists()]
+    out = fixtures.parent / f"results_{datetime.now():%Y%m%d-%H%M%S}.json"
+    results: list[dict] = []
+
+    def save() -> None:
+        out.write_text(json.dumps(results, indent=1, default=str), encoding="utf-8")
+
+    print(f"{len(cases)} cases -> {out}")
+    save()
+    for case in cases:
+        try:
+            r = run_case(s, case)
+        except Exception as e:  # keep going; the row says what broke
+            r = {"case": case.name, "error": f"{type(e).__name__}: {e}"}
+        results.append(r)
+        print(r)
+        save()
+    return results
+
+
 def summarize(results: list[dict]) -> dict:
-    seg_ok = sum(r["segmentation_ok"] for r in results)
+    scored = [r for r in results if "error" not in r]
+    seg_ok = sum(r["segmentation_ok"] for r in scored)
     per_field = {f: [0, 0] for f in FIELDS}
-    for r in results:
+    for r in scored:
         for fields in r["fields"].values():
             for f, v in fields.items():
                 per_field[f][0] += v["ok"]
                 per_field[f][1] += 1
-    return {"segmentation": f"{seg_ok}/{len(results)}",
-            **{f: f"{a}/{b}" for f, (a, b) in per_field.items() if b}}
+    out = {"segmentation": f"{seg_ok}/{len(scored)}",
+           **{f: f"{a}/{b}" for f, (a, b) in per_field.items() if b}}
+    if len(scored) != len(results):
+        out["errors"] = len(results) - len(scored)
+    return out

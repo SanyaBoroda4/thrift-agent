@@ -2,8 +2,18 @@
 
 SELECTORS ARE UNVERIFIED. Record them on the Mac against the live form:
     playwright codegen --channel chrome --user-data-dir ~/thrift/chrome-profile https://poshmark.com/create-listing
-Prefer role/label/placeholder locators over CSS classes. Keep every selector in SEL so a form change
-is a one-file fix. Run `thrift poster --once --dry-run` after any change.
+Prefer role/label/placeholder locators over CSS classes. Keep every selector in SEL — including the CAPTCHA
+text, the thumbnail locator and the published-listing URL pattern — so a form change is a one-file fix.
+Run `thrift poster --once --dry-run` after any change.
+
+TODO(M2), while recording on the Mac:
+  - SEL["photo_thumbs"] must match uploaded thumbnails ONLY (no placeholders): fill() waits for
+    baseline + len(photos) of them and read_back() reports the count as "photos", which is diffed against
+    len(r.photos), so any extra match would fail every item.
+  - SEL["captcha"]: confirm the wording Poshmark shows for its bot check.
+  - SEL["listing_url"]: confirm what the address bar shows right after "List This Item".
+  - Condition options (see CONDITION_TO_POSH) and the crop dialog for the cover photo.
+  - read_back(): category breadcrumb, size, brand, colors from the form's chips.
 """
 from __future__ import annotations
 
@@ -45,7 +55,12 @@ SEL = {  # UNVERIFIED — replace with recorded locators
     "list_item": lambda p: p.get_by_role("button", name=re.compile("^List This Item$", re.I)),
     "save_draft": lambda p: p.get_by_role("button", name=re.compile("save draft", re.I)),
     "restricted_banner": lambda p: p.get_by_text(re.compile("account is restricted", re.I)),
+    "captcha": lambda p: p.get_by_text(re.compile("captcha|verify you are human", re.I)),
+    "listing_url": re.compile(r"/listing/"),   # a value, not a locator: the address bar once the item is live
 }
+
+THUMB_TIMEOUT_MS = 90_000                      # 16 photos over home Wi-Fi can take a while
+THUMB_POLL_MS = 500
 
 
 class PoshmarkPoster(Poster):
@@ -60,15 +75,26 @@ class PoshmarkPoster(Poster):
         await page.wait_for_load_state("domcontentloaded")
         if "/login" in page.url:
             raise AccountBlocked("not logged in to Poshmark in the poster profile")
-        if await page.get_by_text(re.compile("captcha|verify you are human", re.I)).count():
+        if await SEL["captcha"](page).count():
             raise AccountBlocked("CAPTCHA shown — solve it by hand in the poster window")
         if await SEL["restricted_banner"](page).count():
             raise AccountBlocked("Poshmark account is restricted (unshipped/cancelled orders)")
 
+    async def _wait_for_thumbs(self, page: Page, want: int) -> None:
+        """Poll SEL["photo_thumbs"] until every upload shows, so read_back() sees the finished form.
+        A shortfall after the timeout fails the item here; a shortfall at read_back time is a Mismatch."""
+        thumbs = SEL["photo_thumbs"](page)
+        waited = 0
+        while (have := await thumbs.count()) < want:
+            if waited >= THUMB_TIMEOUT_MS:
+                raise PosterError(f"only {have}/{want} photo thumbnails after {THUMB_TIMEOUT_MS // 1000}s")
+            await page.wait_for_timeout(THUMB_POLL_MS)
+            waited += THUMB_POLL_MS
+
     async def fill(self, page: Page, r: Render) -> None:
+        baseline = await SEL["photo_thumbs"](page).count()
         await SEL["photo_input"](page).set_input_files(r.photos)
-        await page.wait_for_function(
-            "n => document.querySelectorAll('img').length >= n", arg=len(r.photos), timeout=90_000)
+        await self._wait_for_thumbs(page, baseline + len(r.photos))
         await settle(page, 1, 2)
         # TODO(M2): confirm the crop dialog if it appears for the cover.
 
@@ -127,11 +153,13 @@ class PoshmarkPoster(Poster):
             "description": await val("description"),
             "price": await val("listing_price"),
             "sku": await val("sku"),
+            "photos": await SEL["photo_thumbs"](page).count(),   # fewer than planned = Mismatch, never publish
             # TODO(M2): read category breadcrumb, size, brand, colors from the form's chips.
         }
 
     def expected(self, r: Render) -> dict:
-        return {"title": r.title, "description": r.description, "price": r.price, "sku": r.sku}
+        return {"title": r.title, "description": r.description, "price": r.price, "sku": r.sku,
+                "photos": len(r.photos)}
 
     async def submit(self, page: Page, mode: Mode) -> str | None:
         if mode == "draft":
@@ -145,7 +173,7 @@ class PoshmarkPoster(Poster):
             await SEL["next"](page).click()
             await settle(page, 1, 2)
         await SEL["list_item"](page).click()
-        await page.wait_for_url(re.compile(r"/listing/"), timeout=60_000)
+        await page.wait_for_url(SEL["listing_url"], timeout=60_000)
         return page.url.split("?")[0]
 
 

@@ -8,9 +8,14 @@ import yaml
 
 from thrift_agent.brain import llm
 from thrift_agent.config import style_dir
-from thrift_agent.schema import CONDITION_LABEL, CopyOut, Facts
+from thrift_agent.schema import CONDITION_LABEL, CopyOut, Ev, Facts, VerifyOut
 
 TITLE_MAX, DEPOP_MAX = 80, 1000
+TEXT_FIELDS = ("poshmark_title", "poshmark_description", "depop_description")
+VIEW_EXCLUDE = {"cover_photo", "photo_order", "questions"}
+KEEP_EMPTY = {"flaws"}          # an empty flaws list tells the writer there is nothing to disclose
+TAG_LINE = re.compile(r"(?m)^[ \t]*(#\w+[ \t]*)+\r?$")   # a line that is nothing but hashtags
+TRAILING_TAGS = re.compile(r"(\s*#\w+)+\s*$")           # hashtags tacked onto the end of the last sentence
 
 
 def style_examples() -> str:
@@ -50,9 +55,23 @@ HARD RULES
 - Never copy wording from the examples — match their shape, not their text."""
 
 
-def write(facts: Facts, model: str, cfg: dict) -> CopyOut:
-    view = facts.model_dump(exclude={"cover_photo", "photo_order", "questions"})
+def facts_view(facts: Facts) -> dict:
+    """The facts as the copywriter sees them. Null facts are omitted (invariant 1): an Ev with no value, a None
+    scalar or an empty list is simply absent, so there is nothing null for the model to restate."""
+    view: dict = {}
+    for name, val in facts.model_dump(exclude=VIEW_EXCLUDE).items():
+        if isinstance(getattr(facts, name), Ev):
+            if val["value"] is None:
+                continue
+        elif val is None or (val == [] and name not in KEEP_EMPTY):
+            continue
+        view[name] = val
     view["condition_label"] = CONDITION_LABEL[facts.condition]
+    return view
+
+
+def write(facts: Facts, model: str, cfg: dict) -> CopyOut:
+    view = facts_view(facts)
     content = [llm.text(
         "STYLE EXAMPLES\n" + style_examples() +
         "\n\nFACTS\n" + json.dumps(view, indent=1) +
@@ -80,14 +99,38 @@ def clamp_title(title: str) -> str:
     return _cut_at_word(title, TITLE_MAX).rstrip(" -,|")
 
 
+def strip_tag_lines(body: str) -> str:
+    """Remove hashtag-only lines anywhere in the body (plus a run of hashtags at its very end), then tidy the gaps.
+
+    Anywhere, not just the tail: after the verifier appends a sentence below the model's tag line, a trailing-only
+    strip would leave those hashtags in the body and clean() would add a second tag line."""
+    body = TAG_LINE.sub("", body)
+    body = TRAILING_TAGS.sub("", body)
+    return re.sub(r"\n{3,}", "\n\n", body).strip()
+
+
+def changed_fields(draft: CopyOut, audit: VerifyOut) -> list[str]:
+    """Names of the copy fields whose text the verifier actually changed.
+
+    Compared after whitespace normalisation (any run of whitespace -> one space, stripped, casefolded); the Depop
+    body is compared without its hashtag line, which the verifier never sees (verify() strips it)."""
+
+    def norm(name: str, text: str) -> str:
+        if name == "depop_description":
+            text = strip_tag_lines(text)
+        return re.sub(r"\s+", " ", text).strip().casefold()
+
+    return [name for name in TEXT_FIELDS
+            if norm(name, getattr(draft, name)) != norm(name, getattr(audit, name))]
+
+
 def clean(out: CopyOut) -> CopyOut:
     out.poshmark_title = clamp_title(out.poshmark_title)
     out.poshmark_description = fix_decimal_commas(out.poshmark_description).strip()
     out.poshmark_style_tags = [t.strip() for t in out.poshmark_style_tags if t and t.strip()][:3]
     tags = [re.sub(r"[^\w]", "", t.lower()) for t in out.depop_hashtags]
     out.depop_hashtags = [t for t in tags if t][:5]
-    body = fix_decimal_commas(out.depop_description).strip()
-    body = re.sub(r"(\s*#\w+)+\s*$", "", body)             # drop any hashtags the model inlined
+    body = strip_tag_lines(fix_decimal_commas(out.depop_description))   # the model's own hashtags, wherever they are
     tag_line = " ".join(f"#{t}" for t in out.depop_hashtags)
     limit = DEPOP_MAX - len(tag_line) - 2                    # body + blank line + tag line <= DEPOP_MAX
     if len(body) > limit:

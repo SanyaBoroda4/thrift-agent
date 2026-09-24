@@ -17,7 +17,12 @@ PRIVATE_DIR = ROOT / "private"      # separate private repo, git-ignored here
 def _merge(base: dict, over: dict) -> dict:
     out = dict(base)
     for k, v in over.items():
-        out[k] = _merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _merge(out[k], v)
+        elif v is None and isinstance(out.get(k), dict):
+            continue            # an uncommented `paths:` whose children are still commented out is not an override
+        else:
+            out[k] = v
     return out
 
 
@@ -46,8 +51,18 @@ class Settings:
         return self.data.get("machine_role") == "prod"
 
     def flag(self, name: str) -> Path:
-        """Control files: PAUSE, HOLD_UNSHIPPED."""
+        """Control files: PAUSE, HOLD_UNSHIPPED. This is the path *we* write; test presence with flag_set()."""
         return self.path("control") / name
+
+    def flag_set(self, name: str) -> bool:
+        """Is the control flag present, in any of the spellings it arrives in?
+
+        Prod points `control` at the iCloud Posh folder so the seller can pause from the iPhone: iOS Files and
+        Shortcuts save `PAUSE.txt`, and until the Mac has downloaded it the entry shows as `.PAUSE.txt.icloud`."""
+        d = self.path("control")
+        if not d.is_dir():
+            return False
+        return any(p.name.lstrip(".").split(".")[0] == name for p in d.iterdir())
 
     def ensure_dirs(self) -> None:
         # Not "harvest": it lives under private/, which must stay absent until the private repo is cloned there

@@ -7,6 +7,7 @@ config/settings.local.yaml
 private/
 eval/fixtures/*/
 !eval/fixtures/.gitkeep
+eval/results_*.json
 .idea/
 .DS_Store
 *.egg-info/

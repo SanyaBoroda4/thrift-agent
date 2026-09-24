@@ -23,6 +23,23 @@ def test_check_flags_problems():
     assert "low confidence" in text and "non-contiguous" in text
 
 
+def test_check_flags_empty_group():
+    reasons = check(SegOut(groups=[g([0, 1, 2]), Group(photos=[], summary="?", full_item_photos=[], confidence=0.9)]),
+                    3, 0.85)
+    assert "item 2: empty group" in reasons
+
+
+def test_corrections_can_place_a_photo_the_model_left_out():
+    groups = [[0, 1], [3, 4]]                                    # photo 2 is in no item (sheet shows "item 0")
+    assert apply_correction(groups, "ok", n=5) == groups           # accepted as-is; the caller checks coverage
+    assert apply_correction(groups, "2>1", n=5) == [[0, 1, 2], [3, 4]]
+    assert apply_correction(groups, "2>3", n=5) == [[0, 1], [3, 4], [2]]
+    assert apply_correction(groups, "split 2", n=5) == [[0, 1], [3, 4], [2]]
+    for bad in ("5>1", "99>1", "split 5"):                       # n=5: photos are 0..4
+        with pytest.raises(ValueError, match="no photo"):
+            apply_correction(groups, bad, n=5)
+
+
 def test_corrections():
     groups = [[0, 1, 2], [3, 4, 5], [6, 7]]
     assert apply_correction(groups, "ok") == groups
@@ -59,6 +76,19 @@ def test_prep_and_sheet(tmp_path):
     assert Image.open(cover).size == (300, 300)
     sheet = contact_sheet(kept, [[0, 1], list(range(2, len(kept)))], tmp_path / "sheet.png")
     assert sheet.exists()
+
+
+def test_sheet_labels_are_phone_readable(tmp_path):
+    photos = []
+    for i, c in enumerate(["red", "blue", "green"]):
+        p = tmp_path / f"{i}.jpg"
+        Image.new("RGB", (120, 160), c).save(p)
+        photos.append(p)
+    with Image.open(contact_sheet(photos, [[0, 1], [2]], tmp_path / "sheet.png", tile=200, cols=3)) as sheet:
+        assert sheet.size == (600, 240)                                       # one row: tile + 40 px label strip
+        strip = sheet.crop((0, 200, 200, 240)).convert("L")
+        dark = sum(1 for v in strip.tobytes() if v < 200)
+        assert dark > 150                                                     # 26 px text, not the 10 px bitmap font
 
 
 def test_corrections_reject_nonsense():

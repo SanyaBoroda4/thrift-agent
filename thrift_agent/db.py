@@ -105,16 +105,35 @@ class DB:
         return self.conn.execute("SELECT * FROM posts WHERE item_id=? AND marketplace=?", (iid, mp)).fetchone()
 
     def upsert_post(self, iid: str, mp: str, **fields: Any) -> None:
+        """Create the row if needed, then set `fields`. With no fields it is just a touch of updated_at."""
         if self.post(iid, mp) is None:
             self.conn.execute("INSERT INTO posts (item_id, marketplace, status, updated_at) VALUES (?,?,?,?)",
                               (iid, mp, fields.get("status", "queued"), now()))
-        sets = ", ".join(f"{k}=?" for k in fields) + ", updated_at=?"
+        sets = ", ".join(f"{k}=?" for k in [*fields, "updated_at"])
         self.conn.execute(f"UPDATE posts SET {sets} WHERE item_id=? AND marketplace=?",
                           (*fields.values(), now(), iid, mp))
 
+    def claim_post(self, iid: str, mp: str, mode: str) -> bool:
+        """Atomically take (item, marketplace) for posting: True for exactly one caller.
+
+        The single conditional UPDATE is the lock — two poster processes can never both open the form for one
+        item (invariant 4). Only 'queued' and 'dryrun' rows are claimable; 'posting' (crashed mid-form),
+        'posted', 'drafted' and 'failed' rows are refused and need a human to reconcile against the closet.
+        """
+        self.conn.execute(
+            "INSERT OR IGNORE INTO posts (item_id, marketplace, status, updated_at) VALUES (?,?,'queued',?)",
+            (iid, mp, now()))
+        cur = self.conn.execute(
+            "UPDATE posts SET status='posting', mode=?, attempts=attempts+1, last_error=NULL, updated_at=? "
+            "WHERE item_id=? AND marketplace=? AND status IN ('queued','dryrun')",
+            (mode, now(), iid, mp))
+        return cur.rowcount == 1
+
     def posted_since(self, since_iso: str) -> int:
+        """Rows that hit the site since `since_iso` — dry-runs included. A dry-run fills the real create form,
+        photo uploads and all, so it must count against per_hour_max / daily_cap like a publish (invariant 6)."""
         return self.conn.execute(
-            "SELECT COUNT(*) FROM posts WHERE status IN ('posted','drafted') AND posted_at >= ?",
+            "SELECT COUNT(*) FROM posts WHERE status IN ('posted','drafted','dryrun') AND posted_at >= ?",
             (since_iso,)).fetchone()[0]
 
     def _update(self, table: str, key: str, value: str, fields: dict[str, Any]) -> None:

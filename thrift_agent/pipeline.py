@@ -20,6 +20,9 @@ from thrift_agent.db import DB, loads
 from thrift_agent.ingest import prep, segment as seg
 from thrift_agent.schema import CopyOut, Facts, PriceResult, Render
 
+MAX_SEGMENT_PHOTOS = 90        # the Messages API takes at most 100 image blocks per request; keep headroom
+ANSWERABLE = ("needs_info", "ready", "failed", "new")   # item statuses a seller note may reset to 'new'
+
 # ---------- inbox ----------
 
 
@@ -45,11 +48,18 @@ def ready_folders(s: Settings) -> list[Path]:
 
 def register(s: Settings, db: DB, folder: Path) -> str | None:
     photos = [p for p in folder.iterdir() if prep.is_photo(p)]
-    if not photos:
-        return None
     bid = db.add_batch(str(folder), len(photos))
-    if bid:
-        db.log(bid, "batch_registered", {"folder": folder.name, "photos": len(photos)})
+    if bid is None:                                   # already known (src_dir is UNIQUE)
+        return None
+    if not photos:
+        # A share of only .dng/.mov/_done must still be recorded, pinged and archived; otherwise it sits in the
+        # inbox and is re-scanned every tick forever, and the seller never learns why nothing was listed.
+        db.set_batch(bid, status="failed", reasons=["no usable photos"])
+        db.log(bid, "batch_failed", {"folder": folder.name, "reason": "no usable photos"})
+        notify.say(f"batch {folder.name}: no usable photos (jpg/jpeg/png/heic/heif/webp)")
+        archive_share(s, db, bid, folder)
+        return None
+    db.log(bid, "batch_registered", {"folder": folder.name, "photos": len(photos)})
     return bid
 
 
@@ -73,6 +83,9 @@ def process_batch(s: Settings, db: DB, bid: str) -> None:
     note_file = src / "notes.txt"
     note = note_file.read_text(encoding="utf-8").strip() if note_file.exists() else None
 
+    if len(kept) > MAX_SEGMENT_PHOTOS:
+        raise ValueError(f"batch has {len(kept)} photos after dedupe; the model takes at most {MAX_SEGMENT_PHOTOS} "
+                         "— share it in smaller sets")
     if len(kept) == 1:
         groups, reasons, summaries = [[0]], [], ["single photo"]
     else:
@@ -100,23 +113,60 @@ def confirm(s: Settings, db: DB, bid: str, cmd: str) -> None:
     b = db.batch(bid)
     if b is None or b["status"] != "needs_confirm":
         raise ValueError(f"batch {bid} isn't waiting for confirmation")
-    groups = seg.apply_correction(loads(b["segmentation"])["groups"], cmd)
+    segd = loads(b["segmentation"])
+    groups = seg.apply_correction(segd["groups"], cmd, n=len(segd["photos"]))
     split(s, db, bid, groups)
 
 
+def partition_problems(groups: list[list[int]], n: int) -> list[str]:
+    """Why `groups` is not a partition of range(n), in the seller's words (empty list = it is one)."""
+    problems = []
+    seen = [i for g in groups for i in g]
+    if missing := sorted(set(range(n)) - set(seen)):
+        m = missing[0]
+        problems.append(f"photos {missing} are in no item — reply e.g. '{m}>{max(len(groups), 1)}' "
+                        f"(add photo {m} to item {max(len(groups), 1)}) or 'split {m}' (its own item)")
+    if dupes := sorted({i for i in seen if seen.count(i) > 1}):
+        problems.append(f"photos {dupes} appear twice")
+    if unknown := sorted(set(seen) - set(range(n))):
+        problems.append(f"photos {unknown} don't exist (photos are 0..{n - 1})")
+    problems.extend(f"item {k} is empty" for k, g in enumerate(groups, 1) if not g)
+    return problems
+
+
 def split(s: Settings, db: DB, bid: str, groups: list[list[int]]) -> None:
+    """Turn a confirmed grouping into item rows. All-or-nothing: the disk copies happen first, then the rows,
+    the log and the batch status commit in one transaction. A crash half-way through must not leave orphan
+    'new' items that the worker lists while a re-confirm creates the same garment again."""
     b = db.batch(bid)
     segd = loads(b["segmentation"])
     photos = [Path(p) for p in segd["photos"]]
-    note = segd.get("note") if len(groups) == 1 else None      # a batch note is only unambiguous for one item
+    if problems := partition_problems(groups, len(photos)):
+        raise ValueError(f"batch {bid}: " + "; ".join(problems))
+    if db.conn.execute("SELECT COUNT(*) FROM items WHERE batch_id=?", (bid,)).fetchone()[0]:
+        raise ValueError(f"batch {bid} already has items — it was split before")
+    note = segd.get("note")
+    item_note = note if len(groups) == 1 else None      # a batch note is only unambiguous for one item
+
+    dirs = []
     for k, g in enumerate(groups, 1):
         d = s.path("work") / bid / f"item_{k:02d}"
-        (d / "photos").mkdir(parents=True, exist_ok=True)
+        if (d / "photos").exists():                      # a previous, failed attempt: never keep its extra photos
+            shutil.rmtree(d / "photos")
+        (d / "photos").mkdir(parents=True)
         for j, idx in enumerate(g):
             shutil.copy2(photos[idx], d / "photos" / f"{j:02d}.jpg")
-        iid = db.add_item(bid, k, str(d), note)
-        db.log(iid, "item_created", {"batch": bid, "photos": g})
-    db.set_batch(bid, status="split")
+        dirs.append(d)
+
+    with db.tx():
+        iids = [db.add_item(bid, k, str(d), item_note) for k, d in enumerate(dirs, 1)]
+        for iid, g in zip(iids, groups):
+            db.log(iid, "item_created", {"batch": bid, "photos": g})
+        db.set_batch(bid, status="split")
+
+    if note and len(groups) > 1:
+        notify.say(f"⚠️ Batch {bid}: the note \"{note}\" was not applied — it can't be matched to one of the "
+                   f"{len(groups)} items ({', '.join(iids)}). Re-apply it with: thrift answer <item> \"{note}\"")
     archive_share(s, db, bid, Path(b["src_dir"]))
 
 
@@ -160,6 +210,10 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
         poshmark_style_tags=draft.poshmark_style_tags, depop_description=audit.depop_description,
         depop_hashtags=draft.depop_hashtags))
     problems = lint(facts, final)
+    if not audit.unsupported:
+        # The gate only sees the verifier's self-reported count. A verifier that rewrites the text but reports
+        # nothing would otherwise publish an LLM-rewritten listing that nobody reviewed.
+        problems += [f"verifier rewrote {f} without reporting a claim" for f in copywriter.changed_fields(draft, audit)]
     gate = evaluate(facts, pr, problems, len(audit.unsupported), s["gate"], s["pricing"])
 
     renders = build_renders(s, iid, d, photos, facts, final, pr)
@@ -187,9 +241,21 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
 
 
 def answer(s: Settings, db: DB, iid: str, note: str) -> None:
+    """Seller note for one item: merge it in and send the item through the pipeline again."""
     it = db.item(iid)
+    if it is None:
+        raise ValueError(f"unknown item {iid}")
+    if it["status"] in ("posted", "posting"):
+        raise ValueError(f"item {iid} is already listed/posting — edit it on the marketplace")
+    if it["status"] not in ANSWERABLE:
+        raise ValueError(f"item {iid} is {it['status']} — a note can't reopen it")
     merged = f"{it['note']}; {note}" if it["note"] else note
-    db.set_item(iid, note=merged, status="new")
+    with db.tx():
+        # Forget earlier dry-runs / queue entries, or next_job would skip the corrected listing (dryrun + dry).
+        # posting/posted/drafted/failed rows stay: those are history the poster must never repeat blindly.
+        db.conn.execute("DELETE FROM posts WHERE item_id=? AND status IN ('dryrun','queued')", (iid,))
+        db.set_item(iid, note=merged, status="new")
+        db.log(iid, "answered", {"note": note})
 
 
 def build_renders(s: Settings, iid: str, d: Path, photos: list[Path], facts: Facts, c: CopyOut,

@@ -12,6 +12,11 @@
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>60</integer>
+  <!-- Seconds launchd waits after SIGTERM before SIGKILL (default 20): let the batch in flight finish. -->
+  <key>ExitTimeOut</key><integer>120</integer>
+  <!-- Python block-buffers stdout when it is a file: unbuffered, so worker.log fills live and nothing is lost on kickstart. -->
+  <key>EnvironmentVariables</key>
+  <dict><key>PYTHONUNBUFFERED</key><string>1</string></dict>
   <key>StandardOutPath</key><string>__HOME__/thrift/logs/worker.log</string>
   <key>StandardErrorPath</key><string>__HOME__/thrift/logs/worker.err</string>
 </dict>

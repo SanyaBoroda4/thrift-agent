@@ -69,13 +69,24 @@ def _norm(v) -> str:
     return re.sub(r"\s+", " ", str(v or "")).strip().lower()
 
 
+def _money(v) -> float | None:
+    """Price fields as numbers, so a form echoing '85.00' or '$85' matches a plan of 85.
+    None / blank → None (matches only a None plan); unparseable → NaN, which matches nothing."""
+    if v is None or str(v).strip() == "":
+        return None
+    try:
+        return float(re.sub(r"[^\d.]", "", str(v)))
+    except ValueError:
+        return float("nan")
+
+
 def compare(seen: dict, expected: dict) -> dict:
     """{field: (expected, seen)} for every field that differs."""
     diff = {}
     for k, want in expected.items():
         got = seen.get(k)
         if k in ("price", "original_price"):
-            ok = (want is None and not got) or (want is not None and str(got).replace("$", "").strip() == str(want))
+            ok = _money(got) == _money(want)
         elif isinstance(want, list):
             ok = sorted(map(_norm, want)) == sorted(map(_norm, got or []))
         else:
@@ -112,11 +123,17 @@ class Poster(ABC):
             raise PosterError(f"live page at {url} doesn't show the title")
 
     async def post(self, ctx: BrowserContext, r: Render, mode: Mode, dry_run: bool, shots: Path) -> Outcome:
-        shots.mkdir(parents=True, exist_ok=True)
+        """Returns an Outcome for everything that happens once the page exists; only AccountBlocked propagates.
+
+        Nothing after `submit` may raise out of here: an exception in `finally` would REPLACE the returned
+        Outcome, and a live listing without a recorded URL is exactly the double-post invariant 4 forbids.
+        """
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         shot = shots / f"{r.sku}-{self.name}-{stamp}.png"
-        page = await ctx.new_page()
+        page: Page | None = None
         try:
+            shots.mkdir(parents=True, exist_ok=True)
+            page = await ctx.new_page()
             await self.check_account(page)
             await page.goto(self.create_url)
             await page.wait_for_load_state("domcontentloaded")
@@ -140,14 +157,23 @@ class Poster(ABC):
                                error=f"published but the live check failed ({type(e).__name__}: {e}) — check {url}")
             return Outcome("posted", url=url, screenshot=str(shot))
         except AccountBlocked:
-            await page.screenshot(path=str(shot), full_page=True)
+            try:
+                if page:
+                    await page.screenshot(path=str(shot), full_page=True)
+            except Exception:  # noqa: BLE001 — the screenshot is a courtesy; the block itself is what matters
+                pass
             raise
         except Exception as e:  # noqa: BLE001 — record everything, never retry blindly
             try:
-                await page.screenshot(path=str(shot), full_page=True)
-            except Exception:
+                if page:
+                    await page.screenshot(path=str(shot), full_page=True)
+            except Exception:  # noqa: BLE001
                 pass
             return Outcome("failed", screenshot=str(shot), error=f"{type(e).__name__}: {e}",
                            diff=getattr(e, "diff", {}))
         finally:
-            await page.close()
+            if page:
+                try:
+                    await page.close()
+                except Exception:  # noqa: BLE001 — a close error must never eat the Outcome
+                    pass

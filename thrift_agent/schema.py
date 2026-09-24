@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 Condition = Literal["NWT", "NWOT", "like_new", "excellent", "good", "fair"]
 Color = Literal["Red", "Pink", "Orange", "Yellow", "Green", "Blue", "Purple", "Gold", "Silver",
@@ -23,6 +23,16 @@ class Ev(BaseModel):
     source: Source = Field("none", description="photo = read from a photo; note = seller's note; "
                                                "derived = standard conversion (e.g. EU→US shoe size)")
     confidence: float = Field(0.0, ge=0, le=1)
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def _coerce_value(cls, v):
+        """A size the model emits as a JSON number (7.5, 8) is still a value; a blank string is not one."""
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return str(int(v)) if isinstance(v, float) and v.is_integer() else str(v)
+        if isinstance(v, str):
+            return v.strip() or None
+        return v
 
 
 class Flaw(BaseModel):
@@ -46,7 +56,9 @@ class Facts(BaseModel):
     color_name: str | None = Field(None, description="Natural color words for copy, e.g. 'chocolate brown'")
     material: Ev = Field(default_factory=Ev, description="Only from a care/content label or insole stamp")
     condition: Condition
-    condition_evidence: Ev = Field(description="For NWT: the photo showing the attached hang tag")
+    condition_evidence: Ev = Field(description="Photo(s) and the observation that justify the condition grade "
+                                               "(soles, insoles, pilling, tag). For NWT this MUST be the photo "
+                                               "showing the attached hang tag.")
     flaws: list[Flaw] = Field(default_factory=list)
     features: list[str] = Field(default_factory=list, description="Visible details: lining, hardware, heel height…")
     cover_photo: int = Field(description="Best photo for the cover (full item, clean)")
@@ -64,12 +76,15 @@ class PriceResult(BaseModel):
 
 
 class CopyOut(BaseModel):
-    poshmark_title: str = Field(description="≤80 chars. Brand first, item, key detail, color, 'size X'")
-    poshmark_description: str
+    # min_length=1 on the texts: an empty field fails validation, which llm.ask sends back for a one-shot repair
+    # instead of letting an empty listing through.
+    poshmark_title: str = Field(min_length=1,
+                                description="≤80 chars. Brand first, item, key detail, color, 'size X'")
+    poshmark_description: str = Field(min_length=1)
     # No max_length on the lists: a model that returns one tag too many must not fail validation and kill
     # the whole call — copy.clean() truncates instead.
     poshmark_style_tags: list[str] = Field(default_factory=list, description="Up to 3 short style tags")
-    depop_description: str = Field(description="≤1000 chars INCLUDING the hashtag line")
+    depop_description: str = Field(min_length=1, description="≤1000 chars INCLUDING the hashtag line")
     depop_hashtags: list[str] = Field(description="Exactly 5, no # sign")
 
 
@@ -99,20 +114,24 @@ class Unsupported(BaseModel):
 class VerifyOut(BaseModel):
     unsupported: list[Unsupported] = Field(default_factory=list,
                                            description="Claims in the copy not backed by the facts")
-    poshmark_title: str
-    poshmark_description: str
-    depop_description: str
+    poshmark_title: str = Field(min_length=1)
+    poshmark_description: str = Field(min_length=1)
+    depop_description: str = Field(min_length=1)
 
 
 def tool_schema(model: type[BaseModel]) -> dict:
-    """Pydantic JSON schema with $refs inlined (safer for tool input_schema)."""
+    """Pydantic JSON schema with $refs inlined (safer for tool input_schema).
+
+    A field like `size_us: Ev = Field(description=...)` is emitted as {"$ref": ..., "description": ...}; the
+    siblings of the $ref (the field's own description) win over the referenced model's docstring."""
     schema = model.model_json_schema()
     defs = schema.pop("$defs", {})
 
     def resolve(node):
         if isinstance(node, dict):
             if "$ref" in node:
-                return resolve(defs[node["$ref"].split("/")[-1]])
+                siblings = {k: resolve(v) for k, v in node.items() if k != "$ref"}
+                return {**resolve(defs[node["$ref"].split("/")[-1]]), **siblings}
             return {k: resolve(v) for k, v in node.items()}
         if isinstance(node, list):
             return [resolve(x) for x in node]
