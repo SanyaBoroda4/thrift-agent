@@ -1,6 +1,6 @@
 # Thrift Agent
 
-![tests](https://github.com/<you>/thrift-agent/actions/workflows/tests.yml/badge.svg)
+![tests](https://github.com/SanyaBoroda4/thrift-agent/actions/workflows/tests.yml/badge.svg)
 
 An AI listing agent for a resale closet: shoot items on an iPhone, tap **Share → New Item**, and the agent
 splits the photo roll into items, reads brand/size/condition from the photos with evidence for every fact,
@@ -18,7 +18,7 @@ Seller data (price table from real sales, real listings, account notes, username
 **private** repo cloned into this folder and git-ignored here. Without it, the code runs on the example files in
 `config/*.example.yaml` and `data/style_examples/`.
 ```
-git clone git@github.com:<you>/thrift-agent-private.git private
+git clone git@github.com:SanyaBoroda4/thrift-agent-private.git private
 ```
 
 ## Windows (development)
@@ -38,7 +38,7 @@ In PyCharm: set `.venv` as the interpreter and add a pytest run configuration.
 macOS 27, Python 3.14 (python.org installer), Google Chrome, Apple Command Line Tools (`xcode-select --install`).
 No Homebrew. Shell is bash.
 ```bash
-git clone git@github.com:<you>/thrift-agent.git ~/thrift-agent && cd ~/thrift-agent
+git clone git@github.com:SanyaBoroda4/thrift-agent.git ~/thrift-agent && cd ~/thrift-agent
 bash deploy/mac_setup.sh
 ```
 Then: `.env`, `config/settings.local.yaml` (`machine_role: prod`), `thrift login`, record selectors, dry-run week,
