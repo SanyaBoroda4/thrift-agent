@@ -82,7 +82,7 @@ class Facts(BaseModel):
 class PriceResult(BaseModel):
     target: int | None
     list_price: int | None
-    source: Literal["brand", "brand_category", "category_default", "note", "none"]
+    source: Literal["brand", "brand_category", "category_default", "note", "owner", "none"]
     by_marketplace: dict[str, int] = Field(default_factory=dict)
     basis: str = ""
     original_price: int | None = None      # retail price from a seller note; a retailer screenshot takes precedence

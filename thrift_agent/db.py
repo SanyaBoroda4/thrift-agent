@@ -30,14 +30,25 @@ CREATE TABLE IF NOT EXISTS posts (
 CREATE TABLE IF NOT EXISTS events (
   ts TEXT NOT NULL, ref TEXT, kind TEXT NOT NULL, detail TEXT
 );
+CREATE TABLE IF NOT EXISTS outbox (
+  chat_id TEXT NOT NULL, message_id INTEGER NOT NULL, kind TEXT NOT NULL, ref TEXT NOT NULL,
+  sent_at TEXT NOT NULL, resolved_at TEXT,
+  PRIMARY KEY (chat_id, message_id)
+);
+CREATE TABLE IF NOT EXISTS kv (
+  key TEXT PRIMARY KEY, value TEXT
+);
 """
 
-# batch: new → segmented | needs_confirm → split | failed
-# item:  new → extracted → ready | needs_info → (posting → posted | drafted | failed) → sold
+# batch: new → needs_confirm → split | failed
+# item:  new → awaiting_price | needs_info → ready → (posting → posted | drafted | failed) → sold
+#        needs_owner: the poster asked the owner a question; the reply reprocesses the item
 # post:  queued → posting → posted | drafted | failed | dryrun   (failed/dryrun with no URL → queued via `thrift requeue`)
+# outbox: every Telegram message the agent sent that expects a reply (kind batch | item | owner_q), so a reply or a
+#        button press can be mapped back to its batch/item; kv holds the getUpdates offset.
 
 # Columns added after the first release; applied with ALTER TABLE when an older DB is opened.
-MIGRATIONS = {"items": {"cover_hash": "TEXT"}}
+MIGRATIONS = {"items": {"cover_hash": "TEXT", "owner_price": "INTEGER"}}
 
 
 def now() -> str:
@@ -116,6 +127,36 @@ class DB:
 
     def posts_for(self, iid: str) -> list[sqlite3.Row]:
         return self.conn.execute("SELECT * FROM posts WHERE item_id=? ORDER BY marketplace", (iid,)).fetchall()
+
+    # key/value (the Telegram getUpdates offset)
+    def kv_get(self, key: str, default: str | None = None) -> str | None:
+        row = self.conn.execute("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
+        return row[0] if row else default
+
+    def kv_set(self, key: str, value: str) -> None:
+        self.conn.execute("INSERT INTO kv (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                          (key, value))
+
+    # outbox: Telegram messages that expect a reply
+    def add_outbox(self, chat_id: str, message_id: int, kind: str, ref: str) -> None:
+        self.conn.execute("INSERT OR REPLACE INTO outbox (chat_id, message_id, kind, ref, sent_at, resolved_at) "
+                          "VALUES (?,?,?,?,?,NULL)", (str(chat_id), int(message_id), kind, ref, now()))
+
+    def outbox_lookup(self, chat_id: str, message_id: int) -> sqlite3.Row | None:
+        return self.conn.execute("SELECT * FROM outbox WHERE chat_id=? AND message_id=?",
+                                 (str(chat_id), int(message_id))).fetchone()
+
+    def outbox_pending(self, older_than_iso: str | None = None) -> list[sqlite3.Row]:
+        """The latest unresolved message per (kind, ref), optionally only those sent before `older_than_iso`."""
+        rows = self.conn.execute(
+            "SELECT o.* FROM outbox o JOIN (SELECT kind, ref, MAX(sent_at) AS last FROM outbox WHERE resolved_at IS NULL "
+            "GROUP BY kind, ref) m ON o.kind=m.kind AND o.ref=m.ref AND o.sent_at=m.last WHERE o.resolved_at IS NULL "
+            "ORDER BY o.sent_at").fetchall()
+        return [r for r in rows if older_than_iso is None or r["sent_at"] < older_than_iso]
+
+    def outbox_resolve(self, kind: str, ref: str) -> None:
+        self.conn.execute("UPDATE outbox SET resolved_at=? WHERE kind=? AND ref=? AND resolved_at IS NULL",
+                          (now(), kind, ref))
 
     # posts
     def post(self, iid: str, mp: str) -> sqlite3.Row | None:

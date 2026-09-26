@@ -39,11 +39,12 @@ duplicates:
   max_distance: 8          # phash Hamming distance; under this the item is held as a possible re-share
 
 gate:
+  # Owner rule: the owner's only routine input is the price, so the gate asks about brand, size or condition
+  # only when the model is genuinely unsure. NWT is not confidence-based: it needs hang_tag_photo or a note.
   min_confidence:
-    brand: 0.85
-    size: 0.85
-    condition: 0.80
-  allow_category_default_price: false
+    brand: 0.70
+    size: 0.70
+    condition: 0.70
 
 pricing:
   floor: 20
@@ -89,3 +90,5 @@ schedule:
 
 telegram:
   enabled: false
+  resend_after_hours: 6    # a batch or item still waiting this long gets its message sent again (Telegram keeps updates 24 h)
+  poll_timeout: 15         # getUpdates long-poll seconds; the worker ticks between polls

@@ -25,8 +25,9 @@ from thrift_agent.ingest import prep, segment as seg
 from thrift_agent.schema import CopyOut, Facts, PriceResult, Render
 
 MAX_SEGMENT_PHOTOS = 90        # the Messages API takes at most 100 image blocks per request; keep headroom
-ANSWERABLE = ("needs_info", "ready", "failed", "new")   # item statuses a seller note may reset to 'new'
+ANSWERABLE = ("needs_info", "ready", "failed", "new", "awaiting_price", "needs_owner")   # a note resets these to 'new'
 REQUEUEABLE = ("failed", "dryrun")                      # post statuses `thrift requeue` may send back to the queue
+PRICEABLE = ("awaiting_price", "needs_info", "ready", "needs_owner")   # item statuses an owner price may be set on
 MANIFEST = "photos.json"                                # per item: which photos are the seller's own vs retail screenshots
 NOT_A_DUPLICATE = re.compile(r"different item|not a duplicate", re.I)   # seller's reply that clears the re-share hold
 
@@ -338,6 +339,31 @@ def requeue(s: Settings, db: DB, iid: str, marketplace: str | None = None) -> li
             db.set_item(iid, status="ready")
         db.log(iid, "requeued", {"marketplaces": [r["marketplace"] for r in rows]})
     return [r["marketplace"] for r in rows]
+
+
+def set_price(s: Settings, db: DB, iid: str, amount: int) -> str:
+    """The owner's price for an item (Telegram reply/button or `thrift price`). Persisted as items.owner_price so a
+    later reprocessing (a note, a needs_owner answer) keeps it and does not ask again. An item that was only
+    waiting for the price becomes ready; anything else keeps its status. Returns the resulting status."""
+    it = db.item(iid)
+    if it is None:
+        raise ValueError(f"unknown item {iid}")
+    if it["status"] not in PRICEABLE:
+        raise ValueError(f"item {iid} is {it['status']} — the price can't be changed now")
+    amount = int(amount)
+    if amount <= 0:
+        raise ValueError(f"price must be a positive whole number, got {amount}")
+    renders = loads(it["renders"]) or {}
+    for r in renders.values():
+        r["price"] = amount
+    pr = loads(it["price"]) or {}
+    pr.update(list_price=amount, source="owner", basis=f"owner price ${amount}",
+              by_marketplace={mp: amount for mp in renders} or pr.get("by_marketplace", {}))
+    status = "ready" if it["status"] == "awaiting_price" else it["status"]
+    with db.tx():
+        db.set_item(iid, owner_price=amount, price=pr, renders=renders, status=status)
+        db.log(iid, "price_set", {"amount": amount, "status": status})
+    return status
 
 
 def answer(s: Settings, db: DB, iid: str, note: str) -> None:
