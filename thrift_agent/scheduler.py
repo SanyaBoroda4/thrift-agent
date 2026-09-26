@@ -38,13 +38,14 @@ def in_hours(now_local: datetime, hours: list) -> bool:
 
 
 def can_post(s: Settings, posted_last_hour: int, posted_today: int, now: datetime | None = None) -> tuple[bool, str]:
+    """May the poster touch the site at all? PAUSE, listing hours and the pacing caps.
+
+    HOLD_UNSHIPPED is not checked here: it holds *publishing* only (runner.next_job), drafts and dry-runs still run."""
     sch = s["schedule"]
     now = now or datetime.now(timezone.utc)
     local = now.astimezone(ZoneInfo(sch["timezone"]))
     if s.flag_set("PAUSE"):
         return False, "PAUSE flag set"
-    if s.flag_set("HOLD_UNSHIPPED"):
-        return False, "unshipped orders — ship first"
     if not in_hours(local, sch["hours"]):
         return False, f"outside listing hours {sch['hours']}"
     if posted_last_hour >= sch["per_hour_max"]:

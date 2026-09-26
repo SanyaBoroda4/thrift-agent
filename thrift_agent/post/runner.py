@@ -16,17 +16,31 @@ from thrift_agent.scheduler import can_post, next_gap, windows
 from thrift_agent.schema import Render
 
 
+DEV_BROWSER_MSG = ("machine_role is 'dev': the dev machine never touches the shop (CLAUDE.md). A dry-run still opens "
+                   "Chrome, visits the create-listing page and uploads photos. Pass --allow-dev-browser to do that on "
+                   "purpose; it stays a dry-run.")
+HOLD_REASON = "unshipped orders — publish held (drafts and dry-runs still run)"
+
+
 def posters(s: Settings) -> dict[str, Poster]:
     out: dict[str, Poster] = {}
-    mps = s["marketplaces"]
-    if mps["poshmark"]["enabled"]:
-        out["poshmark"] = PoshmarkPoster(s.get("marketplaces.poshmark.username", ""))
-    if mps["depop"]["enabled"]:
-        out["depop"] = DepopPoster()
+    for mp in ("poshmark", "depop"):
+        if not s.get(f"marketplaces.{mp}.enabled", False):
+            continue
+        username = str(s.get(f"marketplaces.{mp}.username") or "").strip()
+        if not username:
+            raise ValueError(f"marketplaces.{mp}.username is empty — set it in private/settings.yaml "
+                             "(the poster checks the closet page to detect a logged-out or restricted account)")
+        out[mp] = PoshmarkPoster(username) if mp == "poshmark" else DepopPoster()
     return out
 
 
-def next_job(s: Settings, db: DB, enabled: list[str], dry: bool) -> tuple[str, str, Render, str] | None:
+def next_job(s: Settings, db: DB, enabled: list[str], dry: bool,
+             allow_publish: bool = True) -> tuple[str, str, Render, str] | None:
+    """The next (item, marketplace, render, mode) to post, or None.
+
+    `allow_publish=False` (HOLD_UNSHIPPED) skips jobs that would go live; drafts still run, and so does a dry-run of
+    a publish-gated item, since a dry-run never submits."""
     for it in db.items("ready"):
         gate = loads(it["gate"]) or {}
         renders = loads(it["renders"]) or {}
@@ -40,6 +54,8 @@ def next_job(s: Settings, db: DB, enabled: list[str], dry: bool) -> tuple[str, s
                 continue
             autop = s.get(f"marketplaces.{mp}.autopublish", False) and s.is_prod
             mode = "publish" if gate.get("decision") == "publish" and autop else "draft"
+            if mode == "publish" and not allow_publish and not dry:
+                continue        # ship first; the item stays 'ready' and is picked up once the hold is lifted
             return it["id"], mp, Render.model_validate(renders[mp]), mode
     return None
 
@@ -69,8 +85,10 @@ def _halt(s: Settings, reason: str, text: str) -> None:
     notify.say(text)
 
 
-async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False) -> None:
+async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, allow_dev_browser: bool = False) -> None:
     dry = force_dry or not s.is_prod or s.get("poster.dry_run", True)
+    if not s.is_prod and not allow_dev_browser:
+        raise RuntimeError(DEV_BROWSER_MSG)
     max_fail = int(s.get("poster.max_consecutive_failures", 3))
     ps = posters(s)
     stop = asyncio.Event()
@@ -85,10 +103,13 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False) 
                 return
             hour_ago, midnight = windows(tz=s["schedule"]["timezone"])
             ok, why = can_post(s, db.posted_since(hour_ago), db.posted_since(midnight))
-            job = next_job(s, db, list(ps), dry) if ok else None
+            # HOLD_UNSHIPPED (invariant 8) holds publishing only: drafts and dry-runs never reach a buyer, and the
+            # flag can appear mid-run (n8n sees a late order), so it is re-read every time round the loop.
+            hold = s.flag_set("HOLD_UNSHIPPED")
+            job = next_job(s, db, list(ps), dry, allow_publish=not hold) if ok else None
             if job is None:
                 if once:
-                    print(f"nothing to do ({why})")
+                    print(f"nothing to do ({HOLD_REASON if ok and hold else why})")
                     return
                 await _pause(stop, 60)
                 continue
@@ -124,8 +145,10 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False) 
             else:
                 notify.say(f"✅ {out.status} on {mp}: {render.title} — ${render.price}\n{out.url or ''}")
 
-            if all((db.post(iid, m) or {"status": ""})["status"] in ("posted", "drafted") for m in ps):
-                db.set_item(iid, status="posted")
+            # The item is done once every enabled marketplace holds it; 'drafted' until all of them went live.
+            statuses = [(db.post(iid, m) or {"status": ""})["status"] for m in ps]
+            if all(st in ("posted", "drafted") for st in statuses):
+                db.set_item(iid, status="posted" if all(st == "posted" for st in statuses) else "drafted")
 
             # Circuit breaker: N failures in a row means the form, the account or the network changed, not
             # the items. Every further attempt is 16 uploads of noise on the account, so stop and ask.

@@ -1,15 +1,16 @@
 """The poster loop with the browser and Telegram stubbed: job selection, recording, the circuit breaker, and stop."""
 import asyncio
-import copy
 from pathlib import Path
 
 import pytest
 
 from thrift_agent import notify
-from thrift_agent.config import Settings, settings
+from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
 from thrift_agent.post import runner
 from thrift_agent.post.base import AccountBlocked, Outcome
+from thrift_agent.post.depop import DepopPoster
+from thrift_agent.post.poshmark import PoshmarkPoster
 from thrift_agent.schema import Render
 
 RENDER = Render(marketplace="poshmark", title="Tory Burch Red Flats size 7.5", description="Red flats.", brand="Tory Burch",
@@ -17,16 +18,20 @@ RENDER = Render(marketplace="poshmark", title="Tory Burch Red Flats size 7.5", d
                 price=85, photos=[], sku="i_1")
 
 
-def _settings(tmp_path, role="dev", autopublish=False, dry_run=True, max_fail=3) -> Settings:
-    data = copy.deepcopy(settings().data)
-    data["paths"] = {k: str(tmp_path / k) for k in data["paths"]}
-    data["paths"]["db"] = str(tmp_path / "state.db")
-    data["machine_role"] = role
-    data["poster"] = {**data.get("poster", {}), "dry_run": dry_run, "max_consecutive_failures": max_fail}
-    data["marketplaces"]["poshmark"]["autopublish"] = autopublish
-    data["marketplaces"]["poshmark"]["enabled"] = True
-    data["marketplaces"]["depop"]["enabled"] = False
-    s = Settings(data)
+def _settings(tmp_path, role="dev", autopublish=False, dry_run=True, max_fail=3, username="closet", depop=False) -> Settings:
+    """Built from scratch, not from config/settings.yaml: the tests must not depend on the checked-in file."""
+    paths = {k: str(tmp_path / k) for k in ("inbox", "work", "archive", "failed", "chrome_profile", "control")}
+    s = Settings({
+        "machine_role": role,
+        "paths": {**paths, "db": str(tmp_path / "state.db")},
+        "poster": {"dry_run": dry_run, "max_consecutive_failures": max_fail},
+        "schedule": {"timezone": "America/New_York", "hours": ["09:00", "21:00"], "per_hour_max": 10, "daily_cap": 25,
+                     "gap_seconds": [150, 420]},
+        "marketplaces": {
+            "poshmark": {"enabled": True, "username": username, "autopublish": autopublish, "max_photos": 16},
+            "depop": {"enabled": depop, "username": username, "autopublish": False},
+        },
+    })
     s.ensure_dirs()
     return s
 
@@ -37,6 +42,25 @@ def _ready_item(db: DB, seq: int = 1, decision: str = "publish") -> str:
     db.set_item(iid, status="ready", gate={"decision": decision, "reasons": []},
                 renders={"poshmark": RENDER.model_dump()})
     return iid
+
+
+# ---------------------------------------------------------------- posters
+
+def test_posters_builds_one_per_enabled_marketplace(tmp_path):
+    ps = runner.posters(_settings(tmp_path, depop=True))
+    assert isinstance(ps["poshmark"], PoshmarkPoster) and isinstance(ps["depop"], DepopPoster)
+    assert list(runner.posters(_settings(tmp_path, depop=False))) == ["poshmark"]
+
+
+@pytest.mark.parametrize("mp", ["poshmark", "depop"])
+@pytest.mark.parametrize("username", ["", "   ", None])
+def test_posters_require_a_username_for_each_enabled_marketplace(tmp_path, mp, username):
+    s = _settings(tmp_path, depop=True)
+    s.data["marketplaces"][mp]["username"] = username
+    with pytest.raises(ValueError, match=rf"marketplaces\.{mp}\.username is empty .* private/settings\.yaml"):
+        runner.posters(s)
+    s.data["marketplaces"][mp]["enabled"] = False                # a disabled marketplace needs no username
+    assert mp not in runner.posters(s)
 
 
 # ---------------------------------------------------------------- next_job
@@ -77,6 +101,28 @@ def test_next_job_mode(tmp_path, role, autopublish, decision, mode):
     db = DB(s.path("db"))
     _ready_item(db, decision=decision)
     assert runner.next_job(s, db, ["poshmark"], False)[3] == mode
+
+
+def test_next_job_hold_skips_publish_but_still_returns_drafts(tmp_path):
+    """HOLD_UNSHIPPED (allow_publish=False) holds only what would go live; the held item stays 'ready' behind it."""
+    s = _settings(tmp_path, role="prod", autopublish=True)
+    db = DB(s.path("db"))
+    live = _ready_item(db, seq=1, decision="publish")
+    draft = _ready_item(db, seq=2, decision="draft")
+    assert runner.next_job(s, db, ["poshmark"], False)[0] == live               # no hold: the publish goes first
+    job = runner.next_job(s, db, ["poshmark"], False, allow_publish=False)
+    assert job is not None and (job[0], job[3]) == (draft, "draft")
+    db.upsert_post(draft, "poshmark", status="drafted")
+    assert runner.next_job(s, db, ["poshmark"], False, allow_publish=False) is None
+    assert db.item(live)["status"] == "ready"
+
+
+def test_next_job_hold_does_not_stop_a_dry_run(tmp_path):
+    s = _settings(tmp_path, role="prod", autopublish=True)
+    db = DB(s.path("db"))
+    live = _ready_item(db, decision="publish")
+    job = runner.next_job(s, db, ["poshmark"], True, allow_publish=False)
+    assert job is not None and (job[0], job[3]) == (live, "publish")           # a dry-run never submits
 
 
 # ---------------------------------------------------------------- run()
@@ -134,7 +180,38 @@ def harness(monkeypatch):
 
 def _run(monkeypatch, s, db, poster, **kw):
     monkeypatch.setattr(runner, "posters", lambda s: {"poshmark": poster})
+    kw.setdefault("allow_dev_browser", True)                  # the (stubbed) browser on dev is the point of these tests
     asyncio.run(runner.run(s, db, **kw))
+
+
+def test_run_refuses_to_open_the_browser_on_dev_without_the_flag(tmp_path, monkeypatch, harness):
+    s = _settings(tmp_path)                                   # role=dev
+    db = DB(s.path("db"))
+    _ready_item(db)
+    poster = StubPoster(Outcome("dryrun"))
+    opened: list[tuple] = []
+
+    async def spying_open_browser(profile_dir, timezone_id):
+        opened.append((profile_dir, timezone_id))
+        return FakePW(), FakeCtx()
+
+    monkeypatch.setattr(runner, "open_browser", spying_open_browser)
+    with pytest.raises(RuntimeError, match="machine_role is 'dev'.*--allow-dev-browser.*stays a dry-run"):
+        _run(monkeypatch, s, db, poster, once=True, allow_dev_browser=False)
+    assert opened == [] and poster.calls == []
+
+    _run(monkeypatch, s, db, poster, once=True, allow_dev_browser=True)
+    assert len(opened) == 1 and poster.calls == [("i_1", "draft", True)]       # still a dry-run
+
+
+def test_run_prod_needs_no_dev_browser_flag(tmp_path, monkeypatch, harness):
+    s = _settings(tmp_path, role="prod", dry_run=True)
+    db = DB(s.path("db"))
+    _ready_item(db)
+    poster = StubPoster(Outcome("dryrun"))
+    monkeypatch.setattr(runner, "posters", lambda s: {"poshmark": poster})
+    asyncio.run(runner.run(s, db, once=True))
+    assert poster.calls == [("i_1", "draft", True)]
 
 
 def test_run_records_a_posted_outcome(tmp_path, monkeypatch, harness):
@@ -153,6 +230,38 @@ def test_run_records_a_posted_outcome(tmp_path, monkeypatch, harness):
     assert db.item(iid)["status"] == "posted"
     assert any("posted on poshmark" in m for m in said) and not s.flag("PAUSE").exists()
     assert [e["kind"] for e in db.conn.execute("SELECT kind FROM events WHERE ref=?", (iid,))] == ["post_posted"]
+
+
+def test_run_records_a_drafted_outcome(tmp_path, monkeypatch, harness):
+    said, _ = harness
+    s = _settings(tmp_path, role="prod", autopublish=False, dry_run=False)
+    db = DB(s.path("db"))
+    iid = _ready_item(db)
+    poster = StubPoster(Outcome("drafted", url="https://poshmark.com/listing/draft1"))
+    _run(monkeypatch, s, db, poster, once=True)
+
+    assert poster.calls == [("i_1", "draft", False)]
+    row = db.post(iid, "poshmark")
+    assert (row["status"], row["mode"], row["url"]) == ("drafted", "draft", "https://poshmark.com/listing/draft1")
+    assert row["posted_at"] and db.posted_since("2000-01-01T00:00:00+00:00") == 1
+    assert db.item(iid)["status"] == "drafted"                # not 'posted': nothing is live yet
+    assert any("drafted on poshmark" in m for m in said)
+
+
+def test_run_hold_unshipped_holds_publish_and_says_so_when_idle(tmp_path, monkeypatch, harness, capsys):
+    s = _settings(tmp_path, role="prod", autopublish=True, dry_run=False)
+    db = DB(s.path("db"))
+    iid = _ready_item(db, decision="publish")
+    s.flag("HOLD_UNSHIPPED").touch()
+    poster = StubPoster(Outcome("posted", url="https://poshmark.com/listing/abc"))
+    _run(monkeypatch, s, db, poster, once=True)
+
+    assert poster.calls == [] and db.post(iid, "poshmark") is None and db.item(iid)["status"] == "ready"
+    assert "nothing to do (unshipped orders — publish held (drafts and dry-runs still run))" in capsys.readouterr().out
+
+    s.flag("HOLD_UNSHIPPED").unlink()                         # shipped: the same item now goes live
+    _run(monkeypatch, s, db, poster, once=True)
+    assert poster.calls == [("i_1", "publish", False)] and db.item(iid)["status"] == "posted"
 
 
 def test_run_dry_run_is_stamped_and_counts_toward_pacing(tmp_path, monkeypatch, harness):

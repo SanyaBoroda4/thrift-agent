@@ -55,16 +55,18 @@ def test_can_post_windows_and_caps(tmp_path):
     assert can_post(s, 0, 25, noon_ny)[1] == "daily cap reached"
 
 
-def test_flags_stop_everything(tmp_path):
+def test_pause_stops_everything_hold_unshipped_does_not(tmp_path):
+    """HOLD_UNSHIPPED holds publishing only (runner.next_job); drafts and dry-runs may still touch the site."""
     s = _settings(tmp_path)
     noon_ny = datetime(2026, 9, 24, 16, 0, tzinfo=timezone.utc)
     (tmp_path / "HOLD_UNSHIPPED").touch()
-    assert "unshipped" in can_post(s, 0, 0, noon_ny)[1]
+    assert s.flag_set("HOLD_UNSHIPPED")
+    assert can_post(s, 0, 0, noon_ny) == (True, "ok")
     (tmp_path / "PAUSE").touch()
     assert can_post(s, 0, 0, noon_ny) == (False, "PAUSE flag set")
 
 
-def test_flags_from_the_iphone_stop_everything(tmp_path):
+def test_flags_from_the_iphone_are_seen(tmp_path):
     s = _settings(tmp_path)
     noon_ny = datetime(2026, 9, 24, 16, 0, tzinfo=timezone.utc)
     (tmp_path / "PAUSE.txt").touch()                     # iOS Files / Shortcuts add the extension
@@ -72,7 +74,8 @@ def test_flags_from_the_iphone_stop_everything(tmp_path):
     (tmp_path / "PAUSE.txt").unlink()
     assert can_post(s, 0, 0, noon_ny) == (True, "ok")
     (tmp_path / ".HOLD_UNSHIPPED.txt.icloud").touch()    # placeholder until the Mac downloads it
-    assert "unshipped" in can_post(s, 0, 0, noon_ny)[1]
+    assert s.flag_set("HOLD_UNSHIPPED")                  # the runner reads it; can_post stays open for drafts
+    assert can_post(s, 0, 0, noon_ny) == (True, "ok")
 
 
 def test_windows_match_the_db_timestamp_format():
