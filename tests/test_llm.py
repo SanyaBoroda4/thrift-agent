@@ -86,3 +86,32 @@ def test_retry_budget_is_finite(monkeypatch):
     with pytest.raises(APIStatusError):
         llm.ask("m", "sys", [llm.text("hi")], Out, "t", "desc", retries=3)
     assert len(calls) == 3
+
+
+def cut_off():
+    # The model ran out of output tokens before it got to the tool block: text only, no tool_use.
+    return SimpleNamespace(content=[SimpleNamespace(type="text", text="Let me look...")], stop_reason="max_tokens")
+
+
+def test_missing_tool_block_is_retried_once_with_doubled_max_tokens(monkeypatch):
+    c, calls = fake_client([cut_off(), resp(block({"tags": ["a"], "n": 0}))])
+    monkeypatch.setattr(llm, "client", lambda: c)
+    assert llm.ask("m", "sys", [llm.text("hi")], Out, "t", "desc", max_tokens=4096).n == 0
+    assert len(calls) == 2
+    assert calls[0]["max_tokens"] == 4096 and calls[1]["max_tokens"] == 8192
+    assert calls[1]["messages"] == calls[0]["messages"]      # same request, just more room
+
+
+def test_missing_tool_block_twice_raises(monkeypatch):
+    c, calls = fake_client([cut_off(), cut_off(), resp(block({"tags": [], "n": 0}))])
+    monkeypatch.setattr(llm, "client", lambda: c)
+    with pytest.raises(RuntimeError, match="stop_reason=max_tokens"):
+        llm.ask("m", "sys", [llm.text("hi")], Out, "t", "desc")
+    assert len(calls) == 2                                    # one retry, not an endless loop
+
+
+def test_max_tokens_retry_is_capped(monkeypatch):
+    c, calls = fake_client([cut_off(), resp(block({"tags": [], "n": 0}))])
+    monkeypatch.setattr(llm, "client", lambda: c)
+    llm.ask("m", "sys", [llm.text("hi")], Out, "t", "desc", max_tokens=12000)
+    assert calls[1]["max_tokens"] == llm.MAX_TOKENS_CAP == 16000

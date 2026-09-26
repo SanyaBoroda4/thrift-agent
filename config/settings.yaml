@@ -6,7 +6,7 @@ machine_role: dev          # dev | prod — only prod may publish
 paths:
   inbox: ./var/inbox       # one folder per share from the iPhone
   work: ./var/work         # normalized photos, item folders, contact sheets
-  archive: ./var/archive   # finished batches
+  archive: ./var/archive   # finished shares; prod keeps this inside iCloud (Posh/archive, a sibling of inbox)
   failed: ./var/failed     # screenshots + logs for anything that broke
   db: ./var/state.db
   chrome_profile: ./var/chrome-profile
@@ -33,6 +33,10 @@ inbox:
 segmentation:
   min_confidence: 0.85
   always_confirm: true     # send the contact sheet for every batch until the eval says otherwise
+
+duplicates:
+  lookback_days: 60        # a new item's cover is compared with covers of items from this window
+  max_distance: 8          # phash Hamming distance; under this the item is held as a possible re-share
 
 gate:
   min_confidence:
@@ -72,6 +76,7 @@ marketplaces:
     max_photos: 16
   depop:
     enabled: false         # turn on after the Poshmark poster is stable
+    username: ""           # set in private/settings.yaml; posters() fails fast when an enabled marketplace has none
     autopublish: false
     max_photos: 8          # verify against the live form
 

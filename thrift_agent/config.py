@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -82,12 +83,45 @@ def settings() -> Settings:
     return Settings(data)
 
 
+_BRAND_SECTIONS = ("brands", "aliases")
+
+
+def _warn_yaml_bool(file: str, section: str, what: str, value: bool) -> None:
+    example = '{...}' if section == "brands" else "<brand>"
+    print(f'{file}: {what} under {section} was parsed as YAML boolean {value} — quote it, e.g. '
+          f'"{"on" if value else "off"}": {example}', file=sys.stderr)
+
+
+def _normalise_brand_sections(data: Any, file: str) -> Any:
+    """Lowercase the keys of `brands` / `aliases` (and alias values) so they match the model's normalised brand.
+
+    YAML 1.1 reads an unquoted `on`, `off`, `yes` or `no` as a boolean, so a brand called On (the running-shoe maker)
+    silently becomes the key True. The key is still coerced to a string, but we warn so the user quotes it."""
+    if not isinstance(data, dict):
+        return data
+    for section in _BRAND_SECTIONS:
+        sec = data.get(section)
+        if not isinstance(sec, dict):
+            continue
+        out: dict[str, Any] = {}
+        for k, v in sec.items():
+            if isinstance(k, bool):
+                _warn_yaml_bool(file, section, "a key", k)
+            if section == "aliases" and v is not None:
+                if isinstance(v, bool):
+                    _warn_yaml_bool(file, section, "an alias value", v)
+                v = str(v).lower()
+            out[str(k).lower()] = v
+        data[section] = out
+    return data
+
+
 def load_yaml(name: str) -> dict:
     """private/<name> → config/<name> → config/<stem>.example.yaml"""
     stem = Path(name).stem
     for p in (PRIVATE_DIR / name, CONFIG_DIR / name, CONFIG_DIR / f"{stem}.example.yaml"):
         if p.exists():
-            return yaml.safe_load(p.read_text(encoding="utf-8"))
+            return _normalise_brand_sections(yaml.safe_load(p.read_text(encoding="utf-8")), p.name)
     raise FileNotFoundError(name)
 
 

@@ -16,6 +16,7 @@ from thrift_agent.schema import tool_schema
 T = TypeVar("T", bound=BaseModel)
 _client: Anthropic | None = None
 RETRY_STATUS = (429, 500, 529)
+MAX_TOKENS_CAP = 16000      # the one retry after a cut-off response doubles max_tokens up to this
 
 
 def client() -> Anthropic:
@@ -43,12 +44,14 @@ def ask(model: str, system: str, content: list[dict], out: type[T], tool: str, d
         max_tokens: int = 4096, retries: int = 3) -> T:
     """One forced tool call, validated into `out`.
 
-    Transient API failures (connection/timeout, 429/500/529) are retried with a short backoff. A response that
-    fails pydantic validation (a colour outside the palette, a confidence of 1.2, a bad enum) is sent back to the
-    model ONCE as an error tool_result so it can correct the call, instead of failing the whole item."""
+    Transient API failures (connection/timeout, 429/500/529) are retried with a short backoff. A response with no
+    tool call (typically stop_reason == "max_tokens": the model ran out of room before the block) is retried ONCE
+    with max_tokens doubled, capped at MAX_TOKENS_CAP. A response that fails pydantic validation (a colour outside
+    the palette, a confidence of 1.2, a bad enum) is sent back to the model ONCE as an error tool_result so it can
+    correct the call, instead of failing the whole item."""
     tools = [{"name": tool, "description": description, "input_schema": tool_schema(out)}]
     messages: list[dict] = [{"role": "user", "content": content}]
-    api_attempts, repaired = 0, False
+    api_attempts, repaired, grown = 0, False, False
     while True:
         try:
             resp = client().messages.create(
@@ -64,6 +67,10 @@ def ask(model: str, system: str, content: list[dict], out: type[T], tool: str, d
             raise
         block = next((b for b in resp.content if b.type == "tool_use" and b.name == tool), None)
         if block is None:
+            if not grown:
+                grown = True
+                max_tokens = min(max_tokens * 2, MAX_TOKENS_CAP)
+                continue
             raise RuntimeError(f"no {tool} call in response (stop_reason={resp.stop_reason})")
         try:
             return out.model_validate(block.input)

@@ -98,6 +98,17 @@ def test_note_price_still_respects_floor(facts, pricing_cfg):
     assert r.list_price == 20 and r.by_marketplace["poshmark"] == 20 and r.by_marketplace["depop"] == 20
 
 
+def test_price_carries_original_price_from_note(facts, pricing_cfg):
+    r = price(facts(), TIERS, pricing_cfg, note="retail 200, price 60")
+    assert r.source == "note" and r.list_price == 60 and r.original_price == 200
+    assert price(facts(), TIERS, pricing_cfg).original_price is None
+    # A retail mention alone does not set the asking price; it only fills Original Price next to the brand price.
+    r = price(facts(), TIERS, pricing_cfg, note="original price $120")
+    assert r.source == "brand" and r.list_price == 85 and r.original_price == 120
+    # ...and survives the no-price path too, so the copy can still show it.
+    assert price(facts(), None, pricing_cfg, note="paid 40").original_price == 40
+
+
 @pytest.mark.parametrize("tiers", [
     {"brands": None, "aliases": None, "category_defaults": None},   # `aliases:` with nothing under it
     {},

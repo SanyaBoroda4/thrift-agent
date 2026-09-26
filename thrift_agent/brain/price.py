@@ -73,6 +73,7 @@ def price(facts: Facts, tiers: dict | None, cfg: dict, note: str | None = None) 
 
     floor = max(cfg["floor"], note_floor(note) or 0)
     mkt = cfg["marketplace_multiplier"]
+    original = note_original_price(note)     # what it cost new: shown as "Original Price", never the asking price
 
     def finish(list_price: int, target: int | None, source: str, basis: str) -> PriceResult:
         list_price = max(list_price, floor)
@@ -82,7 +83,8 @@ def price(facts: Facts, tiers: dict | None, cfg: dict, note: str | None = None) 
             by_mp = {mp: list_price if m == 1 else max(floor, _round_half_up(list_price * m)) for mp, m in mkt.items()}
         else:
             by_mp = {mp: max(floor, nice_round(list_price * m, cfg["round_to"])) for mp, m in mkt.items()}
-        return PriceResult(target=target, list_price=list_price, source=source, by_marketplace=by_mp, basis=basis)
+        return PriceResult(target=target, list_price=list_price, source=source, by_marketplace=by_mp, basis=basis,
+                           original_price=original)
 
     if (fixed := note_price(note)) is not None:
         return finish(fixed, None, "note", f"seller note price ${fixed}")
@@ -96,7 +98,8 @@ def price(facts: Facts, tiers: dict | None, cfg: dict, note: str | None = None) 
     elif (default := defaults.get(facts.category)) is not None:
         target, source = default, "category_default"
     if target is None:
-        return PriceResult(target=None, list_price=None, source="none", basis="no brand or category price")
+        return PriceResult(target=None, list_price=None, source="none", basis="no brand or category price",
+                           original_price=original)
 
     cond = cfg["condition_multiplier"][facts.condition]
     list_price = nice_round(target * cond * cfg["list_markup"], cfg["round_to"])

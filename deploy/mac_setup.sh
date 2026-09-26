@@ -19,7 +19,7 @@ python3 -m venv .venv
 echo "== folders"
 mkdir -p ~/thrift/logs ~/thrift/var
 ICLOUD="$HOME/Library/Mobile Documents/com~apple~CloudDocs/Posh"
-mkdir -p "$ICLOUD/inbox"
+mkdir -p "$ICLOUD/inbox" "$ICLOUD/archive"     # archive stays inside iCloud, next to inbox
 [ -f config/settings.local.yaml ] || cp config/settings.local.example.yaml config/settings.local.yaml
 [ -f .env ] || cp .env.example .env
 .venv/bin/thrift init
