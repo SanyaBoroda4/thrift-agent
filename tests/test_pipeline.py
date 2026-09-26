@@ -1,6 +1,8 @@
 """End-to-end with the model stubbed out: inbox folder → batch → confirm → items → gate → renders."""
 import re
 import json
+import os
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -51,6 +53,14 @@ def fake_ask(facts_factory, audit: VerifyOut | None = None):
     return ask
 
 
+def _settle(share):
+    """Age every file by an hour so the share counts as quiet. Never rely on a 0 s settle window: on some Windows
+    runners a fresh file's mtime is a few ms ahead of time.time() and ready_folders() would skip the share."""
+    old = time.time() - 3600
+    for f in share.iterdir():
+        os.utime(f, (old, old))
+
+
 def test_end_to_end(tmp_path, monkeypatch, facts):
     base = settings().data
     data = {**base, "paths": {k: str(tmp_path / k) for k in base["paths"]}}
@@ -73,7 +83,7 @@ def test_end_to_end(tmp_path, monkeypatch, facts):
         exif.get_ifd(0x8769)[36867] = (t0 + timedelta(seconds=4 * i)).strftime("%Y:%m:%d %H:%M:%S")
         img.save(share / f"IMG_{i:04d}.jpg", exif=exif)
     (share / "_done").touch()
-    monkeypatch.setitem(s.data["inbox"], "settle_seconds", 0)
+    _settle(share)
 
     [folder] = pipeline.ready_folders(s)
     bid = pipeline.register(s, db, folder)
@@ -357,6 +367,7 @@ def _mixed_share(s):
     _screenshot(share / "IMG_0010.PNG", "white", 1)          # sorts after the EXIF-dated photos -> index 4
     _screenshot(share / "IMG_0011.PNG", "lightblue", 2)      # index 5
     (share / "_done").touch()
+    _settle(share)                                             # mtimes stay later than the 2026-09-22 EXIF times
     return share
 
 
@@ -386,7 +397,6 @@ def test_retail_screenshots_are_detected_assigned_by_content_and_rendered_last(t
     s = _settings(tmp_path)
     db = DB(s.path("db"))
     _mixed_share(s)
-    monkeypatch.setitem(s.data["inbox"], "settle_seconds", 0)
     seen = {}
     seg_out = SegOut(groups=[Group(photos=[0, 1, 4], summary="red flats", full_item_photos=[0], confidence=0.95),
                              Group(photos=[2, 3, 5], summary="blue dress", full_item_photos=[2], confidence=0.95)])
@@ -428,7 +438,6 @@ def test_unassigned_screenshot_can_be_dropped_or_placed(tmp_path, monkeypatch, f
     s = _settings(tmp_path)
     db = DB(s.path("db"))
     _mixed_share(s)
-    monkeypatch.setitem(s.data["inbox"], "settle_seconds", 0)
     seg_out = SegOut(groups=[Group(photos=[0, 1], summary="red flats", full_item_photos=[0], confidence=0.95),
                              Group(photos=[2, 3], summary="blue dress", full_item_photos=[2], confidence=0.95)],
                      unassigned=[4, 5])
