@@ -55,3 +55,27 @@ def test_worker_refuses_to_start_on_prod_without_telegram(monkeypatch, tmp_path)
     monkeypatch.setattr(cli, "_safe_tick", lambda s, db: pytest.fail("the worker must not start"))
     r = CliRunner().invoke(cli.app, ["run"])
     assert r.exit_code != 0 and isinstance(r.exception, RuntimeError)
+
+
+def test_requeue_command_reports_marketplaces(monkeypatch):
+    from typer.testing import CliRunner
+    calls = []
+    monkeypatch.setattr(cli.pipeline, "requeue", lambda s, db, iid, mp=None: calls.append((iid, mp)) or ["poshmark"])
+    monkeypatch.setattr(cli, "_db", lambda: object())
+    result = CliRunner().invoke(cli.app, ["requeue", "i_1", "poshmark"])
+    assert result.exit_code == 0 and calls == [("i_1", "poshmark")] and "poshmark" in result.output
+
+
+def test_poster_passes_allow_dev_browser(monkeypatch):
+    from typer.testing import CliRunner
+    import thrift_agent.post.runner as runner
+    seen = {}
+
+    async def fake_run(s, db, once=False, force_dry=False, allow_dev_browser=False):
+        seen.update(once=once, force_dry=force_dry, allow_dev_browser=allow_dev_browser)
+    monkeypatch.setattr(runner, "run", fake_run)
+    monkeypatch.setattr(cli, "_db", lambda: object())
+    assert CliRunner().invoke(cli.app, ["poster", "--once", "--allow-dev-browser"]).exit_code == 0
+    assert seen == {"once": True, "force_dry": False, "allow_dev_browser": True}
+    CliRunner().invoke(cli.app, ["poster"])
+    assert seen["allow_dev_browser"] is False

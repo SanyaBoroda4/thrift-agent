@@ -1,5 +1,6 @@
 """End-to-end with the model stubbed out: inbox folder → batch → confirm → items → gate → renders."""
 import re
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -318,3 +319,196 @@ def test_register_share_without_photos_fails_and_archives(tmp_path, monkeypatch)
     assert not share.exists() and any(p.name.endswith("2026-09-22_0900") for p in s.path("archive").iterdir())
     assert len(said) == 1 and "no usable photos" in said[0] and "2026-09-22_0900" in said[0]
     assert pipeline.ready_folders(s) == []                                     # nothing left to rescan
+
+
+# ---------- WO2: retail screenshots, drops, re-share check, requeue ----------
+
+from thrift_agent.schema import Ev  # noqa: E402
+
+
+def _own_photo(path, color, when, seed):
+    """A phone photo: camera EXIF + capture time, 3:4."""
+    img = Image.new("RGB", (300, 400), color)
+    for x in range(0, 300, 11 + 5 * seed):
+        img.paste((255, 255, 255), (x, 0, x + 2, 400))
+    exif = Image.Exif()
+    exif[271], exif[272] = "Apple", "iPhone"
+    exif.get_ifd(0x8769)[36867] = when.strftime("%Y:%m:%d %H:%M:%S")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(path, exif=exif)
+    return path
+
+
+def _screenshot(path, color, seed):
+    """A retailer screenshot: no EXIF, phone-screen aspect; its capture time falls back to mtime (now = last)."""
+    img = Image.new("RGB", (117, 253), color)
+    for y in range(0, 253, 9 + 3 * seed):
+        img.paste((0, 0, 0), (0, y, 117, y + 1))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(path)
+    return path
+
+
+def _mixed_share(s):
+    share = s.path("inbox") / "2026-09-22_1000"
+    t0 = datetime(2026, 9, 22, 10, 0)
+    for i, c in enumerate(["red", "darkred", "navy", "blue"]):
+        _own_photo(share / f"IMG_{i:04d}.jpg", c, t0 + timedelta(seconds=4 * i), i)
+    _screenshot(share / "IMG_0010.PNG", "white", 1)          # sorts after the EXIF-dated photos -> index 4
+    _screenshot(share / "IMG_0011.PNG", "lightblue", 2)      # index 5
+    (share / "_done").touch()
+    return share
+
+
+def _wo2_ask(facts, seen, seg_out, facts_kw):
+    def ask(model, system, content, out, tool, description, **kw):
+        labels = [c["text"] for c in content if c["type"] == "text"]
+        if out is SegOut:
+            seen["segment"] = labels
+            return seg_out
+        if out.__name__ == "Facts":
+            seen["extract"] = labels
+            return facts(**facts_kw)
+        if out is CopyOut:
+            return CopyOut(poshmark_title="Tory Burch Minnie Red Suede Ballet Flats size 7.5",
+                           poshmark_description="Red suede flats with a bow.\nCondition: excellent, light sole wear.",
+                           poshmark_style_tags=[], depop_description="red tory burch minnie flats, light wear",
+                           depop_hashtags=["toryburch", "flats", "red", "ballet", "shoes"])
+        if out is VerifyOut:
+            return VerifyOut(poshmark_title="Tory Burch Minnie Red Suede Ballet Flats size 7.5",
+                             poshmark_description="Red suede flats with a bow.\nCondition: excellent, light sole wear.",
+                             depop_description="red tory burch minnie flats, light wear")
+        raise AssertionError(out)
+    return ask
+
+
+def test_retail_screenshots_are_detected_assigned_by_content_and_rendered_last(tmp_path, monkeypatch, facts):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    _mixed_share(s)
+    monkeypatch.setitem(s.data["inbox"], "settle_seconds", 0)
+    seen = {}
+    seg_out = SegOut(groups=[Group(photos=[0, 1, 4], summary="red flats", full_item_photos=[0], confidence=0.95),
+                             Group(photos=[2, 3, 5], summary="blue dress", full_item_photos=[2], confidence=0.95)])
+    facts_kw = dict(photo_order=[0, 1, 2], cover_photo=2,                   # the model picks the screenshot as cover
+                    retail_price=Ev(value="$128.00", photos=[2], source="photo", confidence=0.9),
+                    style_name=Ev(value="Minnie", photos=[2], source="photo", confidence=0.9),
+                    size_us=Ev(value="7.5", photos=[2], source="photo", confidence=0.95))   # screenshot-only evidence
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", _wo2_ask(facts, seen, seg_out, facts_kw))
+    monkeypatch.setattr("thrift_agent.pipeline.load_yaml",
+                        lambda name: {"brands": {"tory burch": {"target": 70}}, "aliases": {}, "category_defaults": {}})
+
+    [folder] = pipeline.ready_folders(s)
+    bid = pipeline.register(s, db, folder)
+    pipeline.process_batch(s, db, bid)
+    segd = loads(db.batch(bid)["segmentation"])
+    assert segd["kinds"] == ["own", "own", "own", "own", "retail", "retail"]
+    assert any("retail screenshot" in t for t in seen["segment"])
+    assert not any("non-contiguous" in r for r in loads(db.batch(bid)["reasons"]) or [])
+
+    pipeline.confirm(s, db, bid, "ok")
+    items = db.items("new")
+    assert len(items) == 2
+    d1 = Path(items[0]["dir"])
+    manifest = json.loads((d1 / "photos.json").read_text(encoding="utf-8"))
+    assert [m["kind"] for m in manifest] == ["own", "own", "retail"] and manifest[2]["src"] == 4   # own first, retail last
+
+    pipeline.process_item(s, db, items[0]["id"])
+    it = db.item(items[0]["id"])
+    r = loads(it["renders"])["poshmark"]
+    assert any("(retail screenshot)" in t for t in seen["extract"])
+    assert r["photos"][0].endswith("cover.jpg") and Path(r["photos"][-1]).name == "02.jpg"   # never the cover, always last
+    assert r["original_price"] == 128
+    assert r["description"].rstrip().endswith("Retail $128.")
+    assert loads(it["facts"])["size_us"]["value"] is None            # a screenshot is not size evidence
+    assert it["status"] == "needs_info" and any("size unclear" in x for x in loads(it["gate"])["reasons"])
+
+
+def test_unassigned_screenshot_can_be_dropped_or_placed(tmp_path, monkeypatch, facts):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    _mixed_share(s)
+    monkeypatch.setitem(s.data["inbox"], "settle_seconds", 0)
+    seg_out = SegOut(groups=[Group(photos=[0, 1], summary="red flats", full_item_photos=[0], confidence=0.95),
+                             Group(photos=[2, 3], summary="blue dress", full_item_photos=[2], confidence=0.95)],
+                     unassigned=[4, 5])
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", _wo2_ask(facts, {}, seg_out, {}))
+    [folder] = pipeline.ready_folders(s)
+    bid = pipeline.register(s, db, folder)
+    pipeline.process_batch(s, db, bid)
+    b = db.batch(bid)
+    assert b["status"] == "needs_confirm" and any("screenshot 4 matches no item" in r for r in loads(b["reasons"]))
+    with pytest.raises(ValueError, match="in no item"):
+        pipeline.confirm(s, db, bid, "ok")                               # screenshots still unplaced: stop, don't guess
+    with pytest.raises(ValueError, match="can't drop"):
+        pipeline.confirm(s, db, bid, "drop 9")
+    pipeline.confirm(s, db, bid, "drop 4, 5>2")
+    items = db.items("new")
+    kinds = [[m["kind"] for m in json.loads((Path(it["dir"]) / "photos.json").read_text(encoding="utf-8"))]
+             for it in items]
+    assert kinds == [["own", "own"], ["own", "own", "retail"]]
+    assert any(r["kind"] == "photos_dropped" for r in db.conn.execute("SELECT kind FROM events WHERE ref=?", (bid,)))
+
+
+def test_reshared_item_is_held_as_a_possible_duplicate(tmp_path, monkeypatch, facts):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", fake_ask(facts))
+    monkeypatch.setattr("thrift_agent.pipeline.load_yaml",
+                        lambda name: {"brands": {"tory burch": {"target": 70}}, "aliases": {}, "category_defaults": {}})
+    bid = db.add_batch("share", 3)
+    iids = []
+    for k in (1, 2):                                                       # the same three photos shared twice
+        d = tmp_path / f"item_{k}"
+        for i, c in enumerate(["red", "green", "blue"]):
+            _jpg(d / "photos" / f"{i:02d}.jpg", c)
+        iids.append(db.add_item(bid, k, str(d)))
+    pipeline.process_item(s, db, iids[0])
+    first = db.item(iids[0])
+    assert first["status"] == "ready" and first["cover_hash"]
+    pipeline.process_item(s, db, iids[1])
+    second = db.item(iids[1])
+    assert second["status"] == "needs_info"
+    assert any(f"looks like item {iids[0]}" in r for r in loads(second["gate"])["reasons"])
+    pipeline.answer(s, db, iids[1], "different item")                    # the seller's word clears the hold
+    pipeline.process_item(s, db, iids[1])
+    assert db.item(iids[1])["status"] == "ready"
+
+
+def test_requeue_only_failed_or_dryrun_rows_without_a_url(tmp_path):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    bid = db.add_batch("share", 1)
+    iid = db.add_item(bid, 1, str(tmp_path / "item"))
+    db.set_item(iid, status="ready")
+    with pytest.raises(ValueError, match="nothing to requeue"):
+        pipeline.requeue(s, db, iid)
+    db.upsert_post(iid, "poshmark", status="failed", last_error="Mismatch")
+    assert pipeline.requeue(s, db, iid) == ["poshmark"]
+    assert db.post(iid, "poshmark")["status"] == "queued" and db.post(iid, "poshmark")["last_error"] is None
+    db.upsert_post(iid, "poshmark", status="dryrun")
+    assert pipeline.requeue(s, db, iid, "poshmark") == ["poshmark"]
+    db.upsert_post(iid, "poshmark", status="failed", url="https://example.invalid/listing/1")
+    with pytest.raises(ValueError, match="listing URL"):                  # it reached the site: reconcile by hand
+        pipeline.requeue(s, db, iid)
+    db.upsert_post(iid, "poshmark", status="posted", url=None)
+    with pytest.raises(ValueError, match="only failed/dryrun"):
+        pipeline.requeue(s, db, iid)
+    db.upsert_post(iid, "poshmark", status="failed")
+    db.set_item(iid, status="needs_info")
+    with pytest.raises(ValueError, match="not ready"):
+        pipeline.requeue(s, db, iid)
+    with pytest.raises(ValueError, match="unknown item"):
+        pipeline.requeue(s, db, "i_nope")
+
+
+def test_archive_can_live_next_to_the_inbox(tmp_path):
+    """A13: on the Mac the archive is Posh/archive, a sibling of Posh/inbox inside the iCloud container."""
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    s.data["paths"]["archive"] = str(s.path("inbox").parent / "archive")
+    s.path("archive").mkdir(exist_ok=True)
+    inside = _jpg(s.path("inbox") / "2026-09-21_1432" / "a.jpg").parent
+    bid = db.add_batch(str(inside), 1)
+    dest = pipeline.archive_share(s, db, bid, inside)
+    assert dest and dest.parent == s.path("inbox").parent / "archive" and not inside.exists()

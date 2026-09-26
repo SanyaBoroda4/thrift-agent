@@ -3,16 +3,20 @@ from __future__ import annotations
 
 import json
 import platform
+import re
 import shutil
 import subprocess
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import imagehash
+from PIL import Image
 
 from thrift_agent import notify
 from thrift_agent.brain import copy as copywriter
-from thrift_agent.brain.extract import extract
-from thrift_agent.brain.gate import evaluate
+from thrift_agent.brain.extract import extract, strip_screenshot_evidence
+from thrift_agent.brain.gate import GateResult, evaluate
 from thrift_agent.brain.price import price
 from thrift_agent.brain.verify import lint, verify
 from thrift_agent.config import Settings, load_yaml
@@ -22,6 +26,9 @@ from thrift_agent.schema import CopyOut, Facts, PriceResult, Render
 
 MAX_SEGMENT_PHOTOS = 90        # the Messages API takes at most 100 image blocks per request; keep headroom
 ANSWERABLE = ("needs_info", "ready", "failed", "new")   # item statuses a seller note may reset to 'new'
+REQUEUEABLE = ("failed", "dryrun")                      # post statuses `thrift requeue` may send back to the queue
+MANIFEST = "photos.json"                                # per item: which photos are the seller's own vs retail screenshots
+NOT_A_DUPLICATE = re.compile(r"different item|not a duplicate", re.I)   # seller's reply that clears the re-share hold
 
 # ---------- inbox ----------
 
@@ -75,10 +82,12 @@ def process_batch(s: Settings, db: DB, bid: str) -> None:
         raise ValueError(f"no photos in {src} (moved away, or still downloading from iCloud?)")
     raw = [p for p, _ in listed]
     times = {p.name: t for p, t in listed}
+    kinds_raw = prep.photo_kinds(raw)                     # from the originals: normalize() strips the EXIF
     norm = [prep.normalize(p, work / "all" / f"{i:03d}.jpg", s["images"]["work_long_edge"]) for i, p in enumerate(raw)]
     norm_times = [times[p.name] for p in raw]
     kept, dropped = prep.drop_near_duplicates(norm, norm_times, s["images"]["dedupe_hamming"])
     kept_times = [times[raw[int(p.stem)].name] for p in kept]
+    kept_kinds = [kinds_raw[int(p.stem)] for p in kept]
 
     note_file = src / "notes.txt"
     note = note_file.read_text(encoding="utf-8").strip() if note_file.exists() else None
@@ -87,15 +96,18 @@ def process_batch(s: Settings, db: DB, bid: str) -> None:
         raise ValueError(f"batch has {len(kept)} photos after dedupe; the model takes at most {MAX_SEGMENT_PHOTOS} "
                          "— share it in smaller sets")
     if len(kept) == 1:
-        groups, reasons, summaries = [[0]], [], ["single photo"]
+        groups, reasons, summaries, unassigned = [[0]], [], ["single photo"], []
     else:
-        out = seg.segment(list(zip(kept, kept_times)), s["models"]["segment"], s["images"]["thumb_long_edge"])
+        out = seg.segment(list(zip(kept, kept_times)), s["models"]["segment"], s["images"]["thumb_long_edge"],
+                          kinds=kept_kinds)
         groups = [g.photos for g in out.groups]
         summaries = [g.summary for g in out.groups]
-        reasons = seg.check(out, len(kept), s["segmentation"]["min_confidence"])
+        unassigned = list(out.unassigned)                 # screenshots the model could not match to an item
+        reasons = seg.check(out, len(kept), s["segmentation"]["min_confidence"], kinds=kept_kinds)
 
-    sheet = seg.contact_sheet(kept, groups, work / "contact_sheet.png")
+    sheet = seg.contact_sheet(kept, groups, work / "contact_sheet.png", kinds=kept_kinds)
     db.set_batch(bid, segmentation={"groups": groups, "summaries": summaries, "photos": [str(p) for p in kept],
+                                    "kinds": kept_kinds, "unassigned": unassigned,
                                     "dropped": [str(p) for p in dropped], "note": note},
                  reasons=reasons)
 
@@ -104,7 +116,7 @@ def process_batch(s: Settings, db: DB, bid: str) -> None:
         lines = [f"item {k}: {summaries[k - 1]} — photos {g}" for k, g in enumerate(groups, 1)]
         why = ("\n⚠️ " + "; ".join(reasons)) if reasons else ""
         notify.photo(sheet, f"Batch {bid}: {len(kept)} photos → {len(groups)} items\n" + "\n".join(lines) + why +
-                     f"\nReply: thrift confirm {bid} ok   (or 12>2, split 7, merge 2 3)")
+                     f"\nReply: thrift confirm {bid} ok   (or 12>2, split 7, merge 2 3, drop 7)")
         return
     split(s, db, bid, groups)
 
@@ -114,18 +126,23 @@ def confirm(s: Settings, db: DB, bid: str, cmd: str) -> None:
     if b is None or b["status"] != "needs_confirm":
         raise ValueError(f"batch {bid} isn't waiting for confirmation")
     segd = loads(b["segmentation"])
-    groups = seg.apply_correction(segd["groups"], cmd, n=len(segd["photos"]))
-    split(s, db, bid, groups)
+    n = len(segd["photos"])
+    rest, drops = seg.parse_drops(cmd)                    # "drop 7": a screenshot (or a bad shot) that belongs nowhere
+    if bad := [i for i in drops if not 0 <= i < n]:
+        raise ValueError(f"can't drop {bad}: photos are 0..{n - 1}")
+    groups = [[i for i in g if i not in drops] for g in segd["groups"]]
+    groups = seg.apply_correction(groups, rest, n=n)
+    split(s, db, bid, groups, dropped=drops)
 
 
-def partition_problems(groups: list[list[int]], n: int) -> list[str]:
-    """Why `groups` is not a partition of range(n), in the seller's words (empty list = it is one)."""
+def partition_problems(groups: list[list[int]], n: int, dropped: list[int] | tuple[int, ...] = ()) -> list[str]:
+    """Why `groups` is not a partition of range(n) minus `dropped`, in the seller's words (empty list = it is one)."""
     problems = []
     seen = [i for g in groups for i in g]
-    if missing := sorted(set(range(n)) - set(seen)):
+    if missing := sorted(set(range(n)) - set(seen) - set(dropped)):
         m = missing[0]
         problems.append(f"photos {missing} are in no item — reply e.g. '{m}>{max(len(groups), 1)}' "
-                        f"(add photo {m} to item {max(len(groups), 1)}) or 'split {m}' (its own item)")
+                        f"(add photo {m} to item {max(len(groups), 1)}), 'split {m}' (its own item) or 'drop {m}'")
     if dupes := sorted({i for i in seen if seen.count(i) > 1}):
         problems.append(f"photos {dupes} appear twice")
     if unknown := sorted(set(seen) - set(range(n))):
@@ -134,14 +151,18 @@ def partition_problems(groups: list[list[int]], n: int) -> list[str]:
     return problems
 
 
-def split(s: Settings, db: DB, bid: str, groups: list[list[int]]) -> None:
+def split(s: Settings, db: DB, bid: str, groups: list[list[int]], dropped: list[int] | tuple[int, ...] = ()) -> None:
     """Turn a confirmed grouping into item rows. All-or-nothing: the disk copies happen first, then the rows,
     the log and the batch status commit in one transaction. A crash half-way through must not leave orphan
-    'new' items that the worker lists while a re-confirm creates the same garment again."""
+    'new' items that the worker lists while a re-confirm creates the same garment again.
+
+    Inside each item the seller's own photos come first (capture order) and retail screenshots last; the
+    item's photos.json manifest records which is which for extraction and rendering."""
     b = db.batch(bid)
     segd = loads(b["segmentation"])
     photos = [Path(p) for p in segd["photos"]]
-    if problems := partition_problems(groups, len(photos)):
+    kinds = segd.get("kinds") or ["own"] * len(photos)
+    if problems := partition_problems(groups, len(photos), dropped):
         raise ValueError(f"batch {bid}: " + "; ".join(problems))
     if db.conn.execute("SELECT COUNT(*) FROM items WHERE batch_id=?", (bid,)).fetchone()[0]:
         raise ValueError(f"batch {bid} already has items — it was split before")
@@ -154,14 +175,19 @@ def split(s: Settings, db: DB, bid: str, groups: list[list[int]]) -> None:
         if (d / "photos").exists():                      # a previous, failed attempt: never keep its extra photos
             shutil.rmtree(d / "photos")
         (d / "photos").mkdir(parents=True)
-        for j, idx in enumerate(g):
+        ordered = [i for i in g if kinds[i] != "retail"] + [i for i in g if kinds[i] == "retail"]
+        for j, idx in enumerate(ordered):
             shutil.copy2(photos[idx], d / "photos" / f"{j:02d}.jpg")
+        (d / MANIFEST).write_text(json.dumps([{"file": f"{j:02d}.jpg", "kind": kinds[idx], "src": idx}
+                                              for j, idx in enumerate(ordered)], indent=1), encoding="utf-8")
         dirs.append(d)
 
     with db.tx():
         iids = [db.add_item(bid, k, str(d), item_note) for k, d in enumerate(dirs, 1)]
         for iid, g in zip(iids, groups):
             db.log(iid, "item_created", {"batch": bid, "photos": g})
+        if dropped:
+            db.log(bid, "photos_dropped", {"photos": list(dropped)})
         db.set_batch(bid, status="split")
 
     if note and len(groups) > 1:
@@ -197,11 +223,54 @@ def archive_share(s: Settings, db: DB, bid: str, src: Path) -> Path | None:
 # ---------- item → ready ----------
 
 
+def photo_kinds_of(d: Path, photos: list[Path]) -> list[str]:
+    """'own' | 'retail' per photo, from the item's manifest (items split before the manifest existed are all own)."""
+    manifest = d / MANIFEST
+    if not manifest.exists():
+        return ["own"] * len(photos)
+    by_file = {e["file"]: e["kind"] for e in json.loads(manifest.read_text(encoding="utf-8"))}
+    return [by_file.get(p.name, "own") for p in photos]
+
+
+def _dollars(value: str | None) -> int | None:
+    """'$128.00' / '128' / '1,250' -> 128 / 128 / 1250; None when there is no number."""
+    if not value:
+        return None
+    m = re.search(r"\d+(?:\.\d+)?", value.replace(",", ""))
+    return int(round(float(m.group()))) if m else None
+
+
+def duplicate_check(s: Settings, db: DB, iid: str, cover: Path, note: str | None) -> tuple[str, str | None]:
+    """phash of the cover, plus a needs-info reason when an item from the lookback window has a near-identical
+    cover (the same photos shared twice = the same garment listed twice). The seller clears it by answering
+    "different item"."""
+    with Image.open(cover) as im:
+        h = imagehash.phash(im)
+    if note and NOT_A_DUPLICATE.search(note):
+        return str(h), None
+    cfg = s.get("duplicates") or {}
+    days, max_distance = int(cfg.get("lookback_days", 60)), int(cfg.get("max_distance", 8))
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+    for row in db.recent_covers(since, exclude=iid):
+        try:
+            other = imagehash.hex_to_hash(row["cover_hash"])
+        except ValueError:
+            continue
+        if h - other <= max_distance:
+            title = next(iter((loads(row["renders"]) or {}).values()), {}).get("title", "")
+            return str(h), (f"looks like item {row['id']} ({title}) — same item? "
+                            f"Reply: thrift answer {iid} \"different item\" to list it anyway")
+    return str(h), None
+
+
 def process_item(s: Settings, db: DB, iid: str) -> None:
     it = db.item(iid)
     d = Path(it["dir"])
     photos = sorted((d / "photos").glob("*.jpg"))
-    facts = extract(photos, it["note"], s["models"]["extract"], s["images"]["llm_long_edge"])
+    kinds = photo_kinds_of(d, photos)
+    retail = {i for i, k in enumerate(kinds) if k == "retail"}
+    facts = extract(photos, it["note"], s["models"]["extract"], s["images"]["llm_long_edge"], kinds=kinds)
+    facts = strip_screenshot_evidence(facts, retail)     # a screenshot is never evidence for condition, size or flaws
     pr = price(facts, load_yaml("brand_tiers.yaml"), s["pricing"], it["note"])
     draft = copywriter.write(facts, s["models"]["copy"], s["copy"])
     audit = verify(facts, draft, s["models"]["verify"])
@@ -209,6 +278,7 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
         poshmark_title=audit.poshmark_title, poshmark_description=audit.poshmark_description,
         poshmark_style_tags=draft.poshmark_style_tags, depop_description=audit.depop_description,
         depop_hashtags=draft.depop_hashtags))
+    final.poshmark_description = copywriter.ensure_retail_line(final.poshmark_description, facts)
     problems = lint(facts, final)
     if not audit.unsupported:
         # The gate only sees the verifier's self-reported count. A verifier that rewrites the text but reports
@@ -216,7 +286,10 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
         problems += [f"verifier rewrote {f} without reporting a claim" for f in copywriter.changed_fields(draft, audit)]
     gate = evaluate(facts, pr, problems, len(audit.unsupported), s["gate"], s["pricing"])
 
-    renders = build_renders(s, iid, d, photos, facts, final, pr)
+    renders = build_renders(s, iid, d, photos, facts, final, pr, kinds)
+    cover_hash, twin = duplicate_check(s, db, iid, d / "cover.jpg", it["note"])
+    if twin:
+        gate = GateResult("needs_info", [twin] + gate.reasons)
     (d / "item.json").write_text(json.dumps({
         "facts": facts.model_dump(), "price": pr.model_dump(),
         "renders": {k: v.model_dump() for k, v in renders.items()},
@@ -226,7 +299,7 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
     status = "needs_info" if gate.decision == "needs_info" else "ready"
     db.set_item(iid, status=status, facts=facts.model_dump(), price=pr.model_dump(),
                 renders={k: v.model_dump() for k, v in renders.items()},
-                gate={"decision": gate.decision, "reasons": gate.reasons})
+                gate={"decision": gate.decision, "reasons": gate.reasons}, cover_hash=cover_hash)
     db.log(iid, "item_processed", {"decision": gate.decision, "reasons": gate.reasons})
 
     first = next(iter(renders.values()), None)                  # no marketplace enabled: still notify
@@ -238,6 +311,33 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
                      f"\nReply: thrift answer {iid} \"size 8, NWT\"")
     elif gate.decision == "draft":
         notify.say(f"Queued as draft ({iid}): {head}\n- " + "\n- ".join(gate.reasons))
+
+
+def requeue(s: Settings, db: DB, iid: str, marketplace: str | None = None) -> list[str]:
+    """Send failed / dry-run post rows back to the queue. Only rows with NO listing URL: a row that reached the
+    site (a URL, or 'posting'/'posted'/'drafted') is reconciled against the closet by hand, never re-posted
+    (invariant 4). Returns the marketplaces requeued; raises ValueError with the reason otherwise."""
+    it = db.item(iid)
+    if it is None:
+        raise ValueError(f"unknown item {iid}")
+    rows = [r for r in db.posts_for(iid) if marketplace is None or r["marketplace"] == marketplace]
+    if not rows:
+        raise ValueError(f"item {iid} has no {marketplace or ''} post rows — nothing to requeue".replace("  ", " "))
+    for r in rows:
+        if r["status"] not in REQUEUEABLE:
+            raise ValueError(f"{r['marketplace']}: status is {r['status']} — only failed/dryrun rows can be requeued")
+        if r["url"]:
+            raise ValueError(f"{r['marketplace']}: has a listing URL ({r['url']}) — it reached the site; "
+                             "check the closet and fix it by hand")
+    if it["status"] not in ("ready", "drafted"):
+        raise ValueError(f"item {iid} is {it['status']}, not ready — fix the item first (thrift answer)")
+    with db.tx():
+        for r in rows:
+            db.upsert_post(iid, r["marketplace"], status="queued", last_error=None)
+        if it["status"] != "ready":
+            db.set_item(iid, status="ready")
+        db.log(iid, "requeued", {"marketplaces": [r["marketplace"] for r in rows]})
+    return [r["marketplace"] for r in rows]
 
 
 def answer(s: Settings, db: DB, iid: str, note: str) -> None:
@@ -259,18 +359,22 @@ def answer(s: Settings, db: DB, iid: str, note: str) -> None:
 
 
 def build_renders(s: Settings, iid: str, d: Path, photos: list[Path], facts: Facts, c: CopyOut,
-                  pr: PriceResult) -> dict[str, Render]:
+                  pr: PriceResult, kinds: list[str] | None = None) -> dict[str, Render]:
     n = len(photos)
+    kinds = kinds or ["own"] * n
     order = [i for i in facts.photo_order if 0 <= i < n]
     if 0 <= facts.cover_photo < n:
         order = [facts.cover_photo] + order
     order = list(dict.fromkeys(order + list(range(n))))         # cover first, then the model's order, no repeats
+    own = [i for i in order if kinds[i] != "retail"]
+    order = (own + [i for i in order if kinds[i] == "retail"]) if own else order   # screenshots last, never the cover
     cover = prep.square_cover(photos[order[0]], d / "cover.jpg", s["images"]["cover_size"])
     ordered = [str(cover)] + [str(photos[i]) for i in order[1:]]
 
     common = dict(brand=facts.brand.value, department=facts.department, category=facts.category,
                   subcategory=facts.subcategory, size=facts.size_us.value, colors=list(facts.colors),
-                  condition=facts.condition, sku=iid)
+                  condition=facts.condition, sku=iid,
+                  original_price=_dollars(facts.retail_price.value) or pr.original_price)   # screenshot beats note
     out = {}
     for mp, mcfg in s["marketplaces"].items():
         if not mcfg.get("enabled"):

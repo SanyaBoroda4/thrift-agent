@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS items (
   id TEXT PRIMARY KEY, batch_id TEXT NOT NULL REFERENCES batches(id),
   seq INTEGER NOT NULL, status TEXT NOT NULL, dir TEXT NOT NULL,
   note TEXT, facts TEXT, price TEXT, renders TEXT, gate TEXT,
-  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, cover_hash TEXT
 );
 CREATE TABLE IF NOT EXISTS posts (
   item_id TEXT NOT NULL REFERENCES items(id), marketplace TEXT NOT NULL,
@@ -33,8 +33,11 @@ CREATE TABLE IF NOT EXISTS events (
 """
 
 # batch: new → segmented | needs_confirm → split | failed
-# item:  new → extracted → ready | needs_info → (posting → posted | failed) → sold
-# post:  queued → posting → posted | drafted | failed | dryrun
+# item:  new → extracted → ready | needs_info → (posting → posted | drafted | failed) → sold
+# post:  queued → posting → posted | drafted | failed | dryrun   (failed/dryrun with no URL → queued via `thrift requeue`)
+
+# Columns added after the first release; applied with ALTER TABLE when an older DB is opened.
+MIGRATIONS = {"items": {"cover_hash": "TEXT"}}
 
 
 def now() -> str:
@@ -52,6 +55,11 @@ class DB:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
+        for table, cols in MIGRATIONS.items():
+            have = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+            for col, typ in cols.items():
+                if col not in have:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
 
     @contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:
@@ -87,8 +95,8 @@ class DB:
     # items
     def add_item(self, batch_id: str, seq: int, dir_: str, note: str | None = None) -> str:
         iid = new_id("i")
-        self.conn.execute("INSERT INTO items VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                          (iid, batch_id, seq, "new", dir_, note, None, None, None, None, now(), now()))
+        self.conn.execute("INSERT INTO items (id, batch_id, seq, status, dir, note, created_at, updated_at) "
+                          "VALUES (?,?,?,?,?,?,?,?)", (iid, batch_id, seq, "new", dir_, note, now(), now()))
         return iid
 
     def set_item(self, iid: str, **fields: Any) -> None:
@@ -99,6 +107,15 @@ class DB:
 
     def items(self, status: str) -> list[sqlite3.Row]:
         return self.conn.execute("SELECT * FROM items WHERE status=? ORDER BY created_at, seq", (status,)).fetchall()
+
+    def recent_covers(self, since_iso: str, exclude: str | None = None) -> list[sqlite3.Row]:
+        """(id, cover_hash, renders) of items created since `since_iso` that have a cover hash: the re-share check."""
+        return self.conn.execute(
+            "SELECT id, cover_hash, renders FROM items WHERE cover_hash IS NOT NULL AND created_at >= ? AND id != ? "
+            "ORDER BY created_at DESC", (since_iso, exclude or "")).fetchall()
+
+    def posts_for(self, iid: str) -> list[sqlite3.Row]:
+        return self.conn.execute("SELECT * FROM posts WHERE item_id=? ORDER BY marketplace", (iid,)).fetchall()
 
     # posts
     def post(self, iid: str, mp: str) -> sqlite3.Row | None:

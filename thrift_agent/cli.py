@@ -107,7 +107,7 @@ def process(folder: Path) -> None:
 
 @app.command()
 def confirm(batch_id: str, cmd: str = typer.Argument("ok")) -> None:
-    """Accept or correct a batch split: ok | 12>2 | split 7 | merge 2 3"""
+    """Accept or correct a batch split: ok | 12>2 | split 7 | merge 2 3 | drop 7"""
     s, db = settings(), _db()
     pipeline.confirm(s, db, batch_id, cmd)
     print(f"[green]split[/] {batch_id}")
@@ -123,13 +123,26 @@ def answer(item_id: str, note: str) -> None:
 
 
 @app.command()
-def poster(once: bool = False, dry_run: bool = False) -> None:
+def requeue(item_id: str, marketplace: str = typer.Argument(None)) -> None:
+    """Queue a failed or dry-run post again (only rows with NO listing URL: anything that reached the site is
+    reconciled by hand, never re-posted). e.g.  thrift requeue i_...  |  thrift requeue i_... poshmark"""
+    s, db = settings(), _db()
+    done = pipeline.requeue(s, db, item_id, marketplace)
+    print(f"[green]queued[/] {item_id}: {', '.join(done)}")
+
+
+@app.command()
+def poster(once: bool = False, dry_run: bool = False,
+           allow_dev_browser: bool = typer.Option(False, "--allow-dev-browser",
+                                                  help="Open Chrome against the live site on a dev machine "
+                                                       "(still a dry-run). The dev machine never touches the shop "
+                                                       "otherwise.")) -> None:
     """Run the Chrome poster (the poster service on the Mac)."""
     from thrift_agent.post.runner import run as run_poster
     s = settings()
     if s.is_prod:
         notify.check(s)
-    asyncio.run(run_poster(s, _db(), once=once, force_dry=dry_run))
+    asyncio.run(run_poster(s, _db(), once=once, force_dry=dry_run, allow_dev_browser=allow_dev_browser))
 
 
 @app.command()
