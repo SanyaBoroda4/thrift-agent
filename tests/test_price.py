@@ -1,12 +1,23 @@
-import pytest
+from pathlib import Path
 
-from thrift_agent.brain.price import nice_round, note_original_price, note_price, price
+import pytest
+import yaml
+
+from thrift_agent.brain.price import category_default, nice_round, note_original_price, note_price, price
+from thrift_agent.schema import Ev
 
 TIERS = {
     "brands": {"tory burch": {"target": 70}, "ugg": {"target": 65}, "h&m": {"target": 22}},
     "aliases": {"ugg australia": "ugg"},
-    "category_defaults": {"Shoes": 45},
+    "category_defaults": {"Shoes": 45},                         # the old flat shape: one table for every department
 }
+NESTED = {
+    "brands": {"tory burch": {"target": 70}},
+    "category_defaults": {"Women": {"Shoes": 40, "Dresses": 35},
+                          "Kids": {"Shoes": 22, "Jackets & Coats": 25, "Tops": 10, "other": 12}},
+}
+NOBODY = Ev(value="Nobody Knows", photos=[3], source="photo", confidence=0.9)
+EXAMPLE_TIERS = Path(__file__).resolve().parents[1] / "config" / "brand_tiers.example.yaml"
 
 
 def test_brand_price_uses_markup_and_condition(facts, pricing_cfg):
@@ -26,6 +37,37 @@ def test_alias_and_nwt(facts, pricing_cfg):
 def test_unknown_brand_falls_back_to_category(facts, pricing_cfg):
     f = facts(brand=facts().brand.model_copy(update={"value": "Nobody Knows"}))
     assert price(f, TIERS, pricing_cfg).source == "category_default"
+
+
+def test_category_defaults_are_per_department(facts, pricing_cfg):
+    r = price(facts(brand=NOBODY, department="Kids"), NESTED, pricing_cfg)
+    assert r.source == "category_default" and r.target == 22 and "Kids 'Shoes'" in r.basis
+    r = price(facts(brand=NOBODY, department="Kids", category="Sweaters"), NESTED, pricing_cfg)
+    assert r.source == "category_default" and r.target == 12 and "Kids 'other'" in r.basis
+    assert price(facts(brand=NOBODY), NESTED, pricing_cfg).target == 40                        # Women Shoes
+    assert price(facts(brand=NOBODY, category="Sweaters"), NESTED, pricing_cfg).source == "none"   # no Women other
+    r = price(facts(brand=NOBODY, department="Unisex"), NESTED, pricing_cfg)                  # department not listed
+    assert r.source == "none" and r.list_price is None
+    assert price(facts(department="Kids"), NESTED, pricing_cfg).source == "brand"             # a brand hit wins
+
+
+def test_flat_category_defaults_apply_to_every_department(facts, pricing_cfg):
+    for dept in ("Women", "Men", "Kids"):
+        r = price(facts(brand=NOBODY, department=dept), TIERS, pricing_cfg)
+        assert r.source == "category_default" and r.target == 45, dept
+    assert category_default({"Shoes": 45, "other": 10}, "Kids", "Tops") == (10, "other")
+    assert category_default({"shoes": 45}, "Kids", "Shoes") == (45, "Shoes")                 # keys match loosely
+    assert category_default({"Women": {"Shoes": 40}, "Kids": None}, "Kids", "Shoes") is None   # `Kids:` left empty
+    assert category_default(None, "Women", "Shoes") is None
+
+
+def test_example_tier_file_has_kids_defaults(facts, pricing_cfg):
+    tiers = yaml.safe_load(EXAMPLE_TIERS.read_text(encoding="utf-8"))
+    r = price(facts(brand=NOBODY, department="Kids"), tiers, pricing_cfg)
+    assert r.source == "category_default" and r.target == 22
+    assert price(facts(brand=NOBODY, department="Kids", category="Sweaters"), tiers, pricing_cfg).target == 12
+    assert price(facts(brand=NOBODY, department="Home", category="Decor"), tiers, pricing_cfg).target == 20
+    assert price(facts(brand=NOBODY), tiers, pricing_cfg).target == 40
 
 
 def test_floor_and_note(facts, pricing_cfg):

@@ -12,6 +12,8 @@ Rules:
 - Every field that comes from a photo lists the photo indices that show it.
 - If a label is not legible, value=null with low confidence and add a question. Never guess brand,
   size or material. Material only from a fiber-content/care label or an insole/sole stamp.
+- item_type and features must not name a material (leather, suede, wool, silk...) unless `material` has
+  evidence from a label or stamp; texture words (woven, quilted, ribbed, glitter, knit) are fine.
 - Shoes: the "label" is the insole stamp, inside the tongue/heel, the sole, or the box end. EU sizes
   convert to US women's with the standard chart (source=derived, confidence ≤0.9); if the item is
   men's or unisex say so.

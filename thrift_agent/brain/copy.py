@@ -7,6 +7,7 @@ import re
 import yaml
 
 from thrift_agent.brain import llm
+from thrift_agent.brain.sizes import size_label
 from thrift_agent.config import style_dir
 from thrift_agent.schema import CONDITION_LABEL, CopyOut, Ev, Facts, VerifyOut
 
@@ -35,6 +36,9 @@ POSHMARK
   Include the style name when known — buyers search for it (e.g. "Birkenstock Arizona ...").
   Add "New" at the start only for NWT/NWOT. Use the room — short titles don't get found.
   Decimal sizes use a dot (7.5), never a comma. No emojis, no ALL CAPS words except brand styling.
+- Kids: the size always carries its system in the title and the description, e.g. "EU 24 / US Toddler 7.5"
+  (C sizes = Toddler / Little Kid, Y = Big Kid); never a bare "size 7.5" for kids. The facts give the exact
+  string as size_label — use it verbatim.
 - Description, in this closet's proven shape:
   1) 2–4 short sentences describing what the photos show (type, color, material if known, details).
      Plain and specific; at most one adjective like "chic" or "versatile" — never a string of them.
@@ -51,7 +55,8 @@ DEPOP
 
 HARD RULES
 - Use ONLY the facts given. If a field is null, don't mention it. No guessed fabric, fit,
-  measurements, era, "authentic", "smoke-free", or "true to size".
+  measurements, era, "authentic", "smoke-free", or "true to size". A material word (leather, suede, silk...)
+  only when `material` states it — an item_type or feature wording is not evidence.
 - Color words must match the facts' colors; department words must match the department
   (never "kids" or "men's" for a Women's item) — past listings lost buyers over exactly this.
 - Condition wording must match the facts' condition exactly; mention every flaw.
@@ -69,6 +74,8 @@ def facts_view(facts: Facts) -> dict:
         elif val is None or (val == [] and name not in KEEP_EMPTY):
             continue
         view[name] = val
+    if (label := size_label(facts)) is not None:      # "EU 24 / US Toddler 7.5" for a kids shoe, size_us otherwise
+        view["size_label"] = label
     view["condition_label"] = CONDITION_LABEL[facts.condition]
     return view
 

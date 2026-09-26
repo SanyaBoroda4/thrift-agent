@@ -58,6 +58,22 @@ def note_original_price(note: str | None) -> int | None:
     return None
 
 
+def category_default(defaults: dict | None, department: str, category: str) -> tuple[int, str] | None:
+    """The table's fallback target for a brand it doesn't list, and the key it matched: defaults[department][category],
+    then defaults[department]["other"], else None. A flat {category: price} mapping (the old shape) applies to every
+    department. Department and category keys match the model's spelling case-insensitively."""
+    defaults = defaults or {}
+    if any(isinstance(v, dict) for v in defaults.values()):
+        table = next((v for k, v in defaults.items() if _norm_key(k) == _norm_key(department)), None) or {}
+    else:
+        table = defaults
+    by_key = {_norm_key(k): v for k, v in table.items()}
+    for key in (category, "other"):
+        if (target := by_key.get(_norm_key(key))) is not None:
+            return target, key
+    return None
+
+
 def note_floor(note: str | None) -> int | None:
     if note and (m := re.search(r"\bfloor\s*\$?(\d{1,4})\b", note, re.I)):
         return int(m[1])
@@ -91,18 +107,19 @@ def price(facts: Facts, tiers: dict | None, cfg: dict, note: str | None = None) 
 
     brand = norm_brand(facts.brand.value, aliases)
     entry = brands.get(brand) if brand else None
-    target, source = None, "none"
+    target, source, matched = None, "none", ""
     if entry:
         cat_override = (entry.get("categories") or {}).get(facts.category)
         target, source = (cat_override, "brand_category") if cat_override else (entry["target"], "brand")
-    elif (default := defaults.get(facts.category)) is not None:
-        target, source = default, "category_default"
+        matched = repr(brand)
+    elif default := category_default(defaults, facts.department, facts.category):
+        target, source = default[0], "category_default"
+        matched = f"{facts.department} {default[1]!r}"       # "Kids 'Shoes'", "Kids 'other'"
     if target is None:
         return PriceResult(target=None, list_price=None, source="none", basis="no brand or category price",
                            original_price=original)
 
     cond = cfg["condition_multiplier"][facts.condition]
     list_price = nice_round(target * cond * cfg["list_markup"], cfg["round_to"])
-    matched = f" {brand!r}" if source in ("brand", "brand_category") else f" {facts.category!r}"
-    basis = f"{source}{matched}: target ${target} × {facts.condition} {cond} × markup {cfg['list_markup']}"
+    basis = f"{source} {matched}: target ${target} × {facts.condition} {cond} × markup {cfg['list_markup']}"
     return finish(list_price, target, source, basis)

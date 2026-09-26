@@ -9,9 +9,28 @@ brands:
 aliases:
   ugg australia: ugg
   polo ralph lauren: ralph lauren
+# Fallback targets for a brand that is not in the table, per department: <department>.<category>, then
+# <department>.other. A department that is not listed (or a category with no `other`) gets no default, and the
+# owner sets the price from the approval message. The old flat shape ({Shoes: 40, ...}) still loads and applies
+# to every department.
 category_defaults:
-  Shoes: 40
-  Dresses: 35
-  Tops: 20
-  Jackets & Coats: 55
-  Bags: 50
+  Women:
+    Shoes: 40
+    Dresses: 35
+    Tops: 20
+    Jackets & Coats: 55
+    Bags: 50
+  Men:
+    Shoes: 40
+    Dresses: 35
+    Tops: 20
+    Jackets & Coats: 55
+    Bags: 50
+  Kids:
+    Shoes: 22
+    Jackets & Coats: 25
+    Dresses: 15
+    Tops: 10
+    other: 12
+  Home:
+    other: 20

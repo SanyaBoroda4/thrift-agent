@@ -84,5 +84,4 @@ def pricing_cfg():
 
 @pytest.fixture
 def gate_cfg():
-    return {"min_confidence": {"brand": 0.85, "size": 0.85, "condition": 0.8},
-            "allow_category_default_price": False}
+    return {"min_confidence": {"brand": 0.70, "size": 0.70, "condition": 0.70}}

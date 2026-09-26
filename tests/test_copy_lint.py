@@ -6,9 +6,10 @@ from thrift_agent.schema import CopyOut, Ev, Flaw, VerifyOut
 
 
 def co(**kw):
-    base = dict(poshmark_title="Tory Burch Red Suede Bow Ballet Flats size 7.5",
+    # No material word by default: the facts fixture has no material, and a material word without one is a lint problem.
+    base = dict(poshmark_title="Tory Burch Red Bow Ballet Flats size 7.5",
                 poshmark_description="Classic flats.\n\nCondition: excellent, light wear on soles.",
-                poshmark_style_tags=["classic"], depop_description="cute red suede flats, light wear on the soles",
+                poshmark_style_tags=["classic"], depop_description="cute red flats, light wear on the soles",
                 depop_hashtags=["torybur ch", "flats"])
     base.update(kw)
     return CopyOut(**base)
@@ -111,7 +112,7 @@ def test_verify_sends_depop_body_without_tags_and_includes_style_tags(facts, mon
     draft = clean(co(poshmark_style_tags=["classic", "preppy"], depop_hashtags=["a", "b", "c"]))
     verify(facts(), draft, "m")
     sent = json.loads(seen["text"].split("\n\nCOPY\n", 1)[1])
-    assert "#" not in sent["depop_description"] and sent["depop_description"].startswith("cute red suede flats")
+    assert "#" not in sent["depop_description"] and sent["depop_description"].startswith("cute red flats")
     assert sent["poshmark_style_tags"] == ["classic", "preppy"]
 
 
@@ -133,6 +134,74 @@ def test_lint_size_check_is_not_vacuous(facts):
     assert msg not in lint(eight, co(poshmark_title="Tory Burch Flats Size 8"))
     assert msg not in lint(m, co(poshmark_title="Tory Burch Top size M"))
     assert msg not in lint(facts(), co())                                     # "size 7.5"
+
+
+def test_lint_material_words_are_claims(facts):
+    def material_probs(text, **kw):
+        c = co(poshmark_title="Nike Air Max Sneakers size 7.5", poshmark_description=text,
+               depop_description="cute sneakers, light wear on the soles")
+        return [p for p in lint(facts(**kw), c) if "material" in p]
+    # The first real run: item_type said "leather sneakers", material was null, the copy said leather twice.
+    d = "Leather sneakers with a leather heel tab. Condition: excellent, light wear."
+    assert material_probs(d, item_type="leather sneakers") == ["material not in facts: leather"]     # once per word
+    assert material_probs(d, material=ev("leather upper")) == []
+    assert material_probs(d, material=ev("Leather / rubber")) == []
+    faux = "Faux leather sneakers. Condition: excellent, light wear."
+    assert material_probs(faux, material=ev("faux leather")) == []
+    assert material_probs(faux, material=ev("faux-leather")) == []
+    assert material_probs(faux, material=ev("leather")) == ["material not in facts: faux leather"]
+    canvas = "Canvas sneakers with a rubber sole. Condition: excellent, light wear."
+    assert material_probs(canvas, style_name=ev("Canvas")) == ["material not in facts: rubber"]     # a style name
+    assert material_probs(canvas, material=ev("canvas upper, rubber sole")) == []
+    assert material_probs("Cotton On tee. Condition: excellent, light wear.", brand=ev("Cotton On")) == []
+    assert material_probs("Silky soft, furry lining, woolly look. Condition: excellent, light wear.") == []  # not words
+    assert material_probs("Wool blend, a silk bow. Condition: excellent, light wear.", material=ev("wool")) == \
+        ["material not in facts: silk"]
+    # The title, the Depop body and the style tags are checked too.
+    assert "material not in facts: suede" in lint(facts(), co(poshmark_title="Tory Burch Red Suede Flats size 7.5"))
+    assert "material not in facts: suede" in lint(facts(), co(depop_description="cute red suede flats, light wear"))
+    assert "material not in facts: linen" in lint(facts(), co(poshmark_style_tags=["linen"]))
+    assert not any("material" in p for p in lint(facts(), co()))
+
+
+def test_lint_size_accepts_every_form_the_copy_rules_produce(facts):
+    msg = "US size missing from title"
+    kids = dict(department="Kids", size_eu=ev("24"), size_printed=ev("EU 24"))
+    title = "Nike Air Max Kids Sneakers size 24 (US 7.5)"                          # the first real run's title
+    assert msg not in lint(facts(**kids), co(poshmark_title=title))
+    assert msg not in lint(facts(), co(poshmark_title="Nike Air Max Sneakers size 24 (US 7.5)"))
+    assert msg in lint(facts(**kids), co(poshmark_title="Nike Kids Sneakers 7.5"))          # no keyword
+    for t in ("Nike Sneakers US 7.5", "Nike Sneakers (US 7.5)", "Nike Sneakers EU 24 / US Toddler 7.5",
+              "Nike Sneakers, size 7.5", "Nike Sneakers Size 7.5"):
+        assert msg not in lint(facts(**kids), co(poshmark_title=t)), t
+    assert msg not in lint(facts(**kids, size_us=ev("12C")), co(poshmark_title="Nike Kids Sneakers US Little Kid 12"))
+    assert msg not in lint(facts(**kids, size_us=ev("4Y")), co(poshmark_title="Nike Kids Sneakers US Big Kid 4"))
+    assert msg not in lint(facts(**kids, size_us=ev("4Y")), co(poshmark_title="Nike Kids Sneakers size 4Y"))
+    assert msg in lint(facts(**kids, size_us=ev("12C")), co(poshmark_title="Nike Kids Sneakers US Little Kid 1"))
+    assert msg in lint(facts(**kids), co(poshmark_title="Nike Kids Sneakers US 7.55"))
+    assert msg in lint(facts(**kids), co(poshmark_title="Nike Kids Sneakers US 17.5"))
+
+
+def test_lint_kids_size_needs_its_system(facts):
+    msg = "kids size without its system (Toddler / Little Kid / Big Kid)"
+    kid = facts(department="Kids", size_eu=ev("24"))
+    assert msg in lint(kid, co(poshmark_title="Nike Kids Sneakers size 7.5"))
+    assert msg in lint(kid, co(poshmark_title="Nike Kids Sneakers US 7.5"))
+    assert msg in lint(kid, co(poshmark_title="Nike Air Max Kids Sneakers size 24 (US 7.5)"))    # "24" is not "EU 24"
+    assert msg not in lint(kid, co(poshmark_title="Nike Kids Sneakers EU 24 / US Toddler 7.5"))
+    assert msg not in lint(kid, co(poshmark_title="Nike Kids Sneakers US Toddler 7.5"))
+    assert msg not in lint(kid, co(poshmark_title="Nike Kids Sneakers EU 24 US 7.5"))
+    assert msg not in lint(facts(), co(poshmark_title="Tory Burch Flats size 7.5"))               # not Kids
+    tee = facts(department="Kids", category="Tops", size_us=ev("5"))
+    assert msg not in lint(tee, co(poshmark_title="Nike Kids Tee size 5"))                      # clothing has no groups
+    assert not any("size" in p for p in lint(kid, co(poshmark_title="Nike Kids Sneakers 7.5")) if "system" in p)
+
+
+def test_facts_view_carries_the_size_label(facts):
+    assert facts_view(facts())["size_label"] == "7.5"
+    kid = facts(department="Kids", size_eu=ev("24"), size_printed=ev("EU 24"))
+    assert facts_view(kid)["size_label"] == "EU 24 / US Toddler 7.5"
+    assert "size_label" not in facts_view(facts(size_us=Ev()))
 
 
 def test_lint_kids_words(facts):
@@ -160,10 +229,10 @@ def test_lint_banned_phrases_in_hashtags_and_style_tags(facts):
 
 def test_lint_flaws_checked_on_both_descriptions(facts):
     probs = lint(facts(flaws=SCUFF), co(poshmark_description="Classic flats, small scuff on the left toe.",
-                                        depop_description="cute red suede flats, super comfy"))
+                                        depop_description="cute red flats, super comfy, chic"))
     assert probs == ["facts list flaws but the depop description doesn't mention any"]
-    probs = lint(facts(flaws=SCUFF), co(poshmark_description="Classic red suede flats, super comfy.",
-                                        depop_description="cute red suede flats, scuffed left toe"))
+    probs = lint(facts(flaws=SCUFF), co(poshmark_description="Classic red bow flats, super comfy.",
+                                        depop_description="cute red flats, scuffed left toe"))
     assert probs == ["facts list flaws but the poshmark description doesn't mention any"]
 
 
@@ -198,7 +267,7 @@ def test_lint_length_floor(facts):
 
 
 def test_lint_hardware_colors_and_brand_color_words(facts):
-    bag = facts(item_type="leather shoulder bag", colors=["Black"])
+    bag = facts(item_type="leather shoulder bag", colors=["Black"], material=ev("leather"))
     hardware = co(poshmark_title="Tory Burch Black Leather Shoulder Bag size 7.5",
                   poshmark_description="Black leather bag with gold-tone hardware. Condition: excellent, light wear.",
                   depop_description="black leather bag, gold hardware, silver zip, light wear on the corners")
@@ -230,7 +299,7 @@ def test_lint_shades_normalise_to_the_palette(facts):
 
 
 def test_lint_authentic_allowed_when_it_is_the_style_name(facts):
-    vans = dict(brand=ev("Vans"), colors=["Black"], size_us=ev("8"))
+    vans = dict(brand=ev("Vans"), colors=["Black"], size_us=ev("8"), material=ev("canvas"))
     sneakers = co(poshmark_title="Vans Authentic Black Canvas Sneakers size 8",
                   poshmark_description="Black canvas sneakers. Condition: excellent, light wear.",
                   depop_description="black canvas sneakers, light wear on the soles")

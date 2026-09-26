@@ -7,12 +7,15 @@ import unicodedata
 
 from thrift_agent.brain import llm
 from thrift_agent.brain.copy import strip_tag_lines
+from thrift_agent.brain.sizes import size_label
 from thrift_agent.schema import CopyOut, Facts, VerifyOut
 
 SYSTEM = """You audit resale listing copy against a fact sheet. A claim is unsupported if the facts
 don't state it (fabric, fit, measurements, era, authenticity, odor/smoke claims, "true to size",
 a condition better than the facts', a missing flaw). Return the copy with unsupported claims removed
 and missing flaws added, changing nothing else. If everything is supported, return it unchanged.
+Material words (leather, suede, cashmere, silk...) are claims: unsupported unless facts.material states them —
+an item_type that says "leather sneakers" is not evidence.
 poshmark_style_tags are shown for the audit only (an unsupported tag goes in `unsupported`); they are not
 part of your output, and the Depop hashtag line is added by code after your audit."""
 
@@ -64,6 +67,16 @@ HARDWARE_COLOR = re.compile(
     r"(?:hardware|buckles?|zippers?|zip|chains?|clasps?|buttons?|studs|logo|pins?|trim|eyelets|grommets|rivets|"
     r"plaques?|accents)\b", re.I)
 BANNED = [r"\bsmoke[- ]?free\b", r"\bpet[- ]?free\b", r"\bauthentic\b", r"\btrue to size\b"]
+# Material words are claims (invariant 1): each one in the copy must be a word of facts.material, unless it is part of
+# the brand or style name ("Canvas" as a style). The two-word materials match as a unit, so "faux leather" in the copy
+# needs "faux leather" on the label — "leather" alone does not cover it. Texture words (woven, quilted, knit) are free.
+MATERIAL_WORDS = re.compile(
+    r"\b((?:faux|vegan)[ -]leather|faux[ -]fur|leather|suede|nubuck|patent|shearling|fur|cashmere|wool|merino|silk|"
+    r"linen|cotton|denim|polyester|nylon|spandex|satin|velvet|straw|canvas|rubber)\b", re.I)
+# The size in the title, in any form the copy rules produce: "size 7.5", "US 7.5", "(US 7.5)", "EU 24 / US Toddler 7.5",
+# "US Little Kid 12", "US Big Kid 4". {n} is the US number without its C/Y suffix.
+SIZE_IN_TITLE = r"(?:\bsize\s*|\bUS\s*(?:Toddler\s*|Little Kid\s*|Big Kid\s*)?){n}(?:\s?[CY]\b)?(?!\w|\.\d)"
+SIZE_SYSTEM = r"\b(?:Toddler|Little Kid|Big Kid|EU)\b"
 KIDS_WORDS = r"\bkids['’]?\b|\bkid['’]s\b|\btoddler|\bgirls['’]?\b|\bgirl['’]s\b|\bboys['’]?\b|\bboy['’]s\b"
 # Condition ladder, worst to best. A phrase claiming a grade above the facts' grade is a problem.
 RANK = ["fair", "good", "excellent", "like_new", "NWOT", "NWT"]
@@ -121,9 +134,14 @@ def lint(facts: Facts, copy: CopyOut) -> list[str]:
     if style and style not in _key(t):                       # buyers search "Birkenstock Arizona", not "sandals"
         problems.append("style name missing from title")
     size = (facts.size_us.value or "").strip()
-    # "size 8" must be there as such: '8' inside '98' or '8.5', or 'M' inside 'Madewell', does not count.
-    if size and not re.search(rf"\bsize\s*{re.escape(size)}(?!\w|\.\d)", t, re.I):
-        problems.append("US size missing from title")
+    if size:
+        # "size 8" must be there as such: '8' inside '98' or '8.5', or 'M' inside 'Madewell', does not count.
+        n = re.sub(r"\s*[CY]$", "", size, flags=re.I) or size
+        if not re.search(SIZE_IN_TITLE.format(n=re.escape(n)), t, re.I):
+            problems.append("US size missing from title")
+        elif size_label(facts) != size and not re.search(SIZE_SYSTEM, t, re.I):
+            # A kids shoe: "size 7.5" alone reads as a women's 7.5. The label from sizes.size_label carries the system.
+            problems.append("kids size without its system (Toddler / Little Kid / Big Kid)")
     rank = RANK.index(facts.condition)
     for grade, pat in CONDITION_CLAIMS.items():
         if RANK.index(grade) > rank and re.search(pat, everything, re.I):
@@ -143,6 +161,11 @@ def lint(facts: Facts, copy: CopyOut) -> list[str]:
         fiber = m.group(1).lower()
         if fiber not in material:
             problems.append(f"unsupported phrase: 100% {fiber}")
+    supported = re.sub(r"[\s-]+", " ", f"{material} {names}".lower())     # the label, the brand and the style name
+    claimed = dict.fromkeys(re.sub(r"[\s-]+", " ", m.group(1).lower()) for m in MATERIAL_WORDS.finditer(everything))
+    for word in claimed:
+        if not re.search(rf"\b{re.escape(word)}\b", supported):
+            problems.append(f"material not in facts: {word}")
     if facts.department != "Kids" and re.search(KIDS_WORDS, everything, re.I):
         problems.append("mentions kids but the item isn't Kids")
     if facts.department == "Women" and re.search(r"\bmen'?s\b", everything, re.I) and "women" not in everything.lower():

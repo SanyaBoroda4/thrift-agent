@@ -1,4 +1,4 @@
-from thrift_agent.brain.gate import evaluate
+from thrift_agent.brain.gate import GateResult, evaluate
 from thrift_agent.schema import Ev, PriceResult
 
 OK_PRICE = PriceResult(target=70, list_price=85, source="brand", by_marketplace={"poshmark": 85})
@@ -24,9 +24,27 @@ def test_nwt_from_note_allowed(facts, gate_cfg, pricing_cfg):
     assert evaluate(f, OK_PRICE, [], 0, gate_cfg, pricing_cfg).decision == "publish"
 
 
-def test_category_default_price_blocked(facts, gate_cfg, pricing_cfg):
-    p = PriceResult(target=45, list_price=55, source="category_default")
-    assert evaluate(facts(), p, [], 0, gate_cfg, pricing_cfg).decision == "needs_info"
+def test_thresholds_follow_the_owner_rule(facts, gate_cfg, pricing_cfg):
+    # The owner's only routine input is the price: a size at exactly 0.70 (an EU→US conversion) and a used condition
+    # at 0.75 (two flaws listed) publish; a brand under 0.70 is a real question.
+    size = facts(size_us=Ev(value="7.5", photos=[3], source="derived", confidence=0.70))
+    assert evaluate(size, OK_PRICE, [], 0, gate_cfg, pricing_cfg).decision == "publish"
+    cond = facts(condition="good", condition_evidence=Ev(value="two scuffs", photos=[4], source="photo", confidence=0.75))
+    assert evaluate(cond, OK_PRICE, [], 0, gate_cfg, pricing_cfg).decision == "publish"
+    brand = facts(brand=Ev(value="Nike", photos=[3], source="photo", confidence=0.69))
+    r = evaluate(brand, OK_PRICE, [], 0, gate_cfg, pricing_cfg)
+    assert r.decision == "needs_info" and r.reasons == ["brand unclear (Nike, 0.69)"]
+
+
+def test_price_never_blocks(facts, gate_cfg, pricing_cfg):
+    # The owner approves the price in the Telegram message, so a price-table miss is not a question for the gate:
+    # a category default, no price basis at all and a price under the floor all publish when the facts are clean.
+    default = PriceResult(target=22, list_price=30, source="category_default")
+    assert evaluate(facts(), default, [], 0, gate_cfg, pricing_cfg).decision == "publish"
+    none = PriceResult(target=None, list_price=None, source="none", basis="no brand or category price")
+    assert evaluate(facts(), none, [], 0, gate_cfg, pricing_cfg).decision == "publish"
+    low = PriceResult(target=10, list_price=10, source="brand", by_marketplace={"poshmark": 10})
+    assert evaluate(facts(), low, [], 0, gate_cfg, pricing_cfg) == GateResult("publish", [])
 
 
 def test_lint_or_verifier_edits_make_draft(facts, gate_cfg, pricing_cfg):

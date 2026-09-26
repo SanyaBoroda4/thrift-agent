@@ -1,4 +1,7 @@
-"""The only reviewer when autopublish is on. Pure function — easy to test, easy to tighten."""
+"""The only reviewer when autopublish is on. Pure function — easy to test, easy to tighten.
+
+The gate asks only what the owner alone can settle; the price is always approved by the owner in the Telegram message.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -15,6 +18,12 @@ class GateResult:
 
 def evaluate(facts: Facts, price: PriceResult, lint: list[str], unsupported: int, cfg: dict,
              pricing_cfg: dict) -> GateResult:
+    """needs_info when a fact only the owner can settle is missing or unsure (brand, size, condition, NWT proof, the
+    category, an open question); draft when the copy needs one look (lint, verifier edits); publish otherwise.
+
+    `price` and `pricing_cfg` are accepted for the caller's sake and not consulted: a brand missing from the price
+    table, a category default or a price under the floor is not a question for the owner — the approval message shows
+    the price (and "no price history") and the owner settles it there."""
     need, soft = [], []
     mc = cfg["min_confidence"]
 
@@ -30,13 +39,6 @@ def evaluate(facts: Facts, price: PriceResult, lint: list[str], unsupported: int
     if facts.category.strip().lower() in ("", "other") or (facts.subcategory or "").strip().lower() == "other":
         need.append("category/subcategory is 'Other' — pick the real Poshmark category")
     need.extend(f"question: {q}" for q in facts.questions)
-
-    if price.list_price is None:
-        need.append("no price basis")
-    elif price.source == "category_default" and not cfg.get("allow_category_default_price"):
-        need.append(f"brand not in price table — category default ${price.list_price}")
-    elif price.list_price < pricing_cfg["floor"]:
-        need.append(f"price ${price.list_price} below floor")
 
     soft.extend(lint)
     if unsupported:
