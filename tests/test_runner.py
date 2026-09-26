@@ -4,11 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from thrift_agent import notify
+from thrift_agent import approve, notify
 from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
 from thrift_agent.post import runner
-from thrift_agent.post.base import AccountBlocked, Outcome
+from thrift_agent.post.base import AccountBlocked, NeedsOwner, Outcome
 from thrift_agent.post.depop import DepopPoster
 from thrift_agent.post.poshmark import PoshmarkPoster
 from thrift_agent.schema import Render
@@ -345,6 +345,67 @@ def test_run_account_blocked_requeues_and_pauses(tmp_path, monkeypatch, harness)
     assert db.post(ids[0], "poshmark")["status"] == "queued" and db.post(ids[1], "poshmark") is None
     assert "not logged in" in s.flag("PAUSE").read_text(encoding="utf-8")
     assert sum("Poster paused" in m for m in said) == 1
+
+
+QUESTION = "Poshmark's brand list has no match for 'Tory Burch'. Which brand should I pick? (reply e.g. 'brand Vince')"
+
+
+def test_run_needs_owner_parks_the_item_and_asks_without_pausing(tmp_path, monkeypatch, harness):
+    """The poster's separate question: item A waits in needs_owner, the owner is asked once, item B still posts."""
+    said, pauses = harness
+    s = _settings(tmp_path, role="prod", autopublish=True, dry_run=False, max_fail=1)
+    db = DB(s.path("db"))
+    a, b = _ready_item(db, seq=1), _ready_item(db, seq=2)
+    poster = StubPoster(NeedsOwner(QUESTION), Outcome("posted", url="https://poshmark.com/listing/b"))
+    asked: list[tuple] = []
+    monkeypatch.setattr(approve, "ask_owner", lambda s_, db_, iid, q: asked.append((iid, q)))
+
+    async def stop_on_second_pause(stop, seconds):
+        pauses.append(seconds)
+        if len(pauses) >= 2:
+            stop.set()
+
+    monkeypatch.setattr(runner, "_pause", stop_on_second_pause)
+    _run(monkeypatch, s, db, poster, once=False)
+
+    assert len(poster.calls) == 2                              # B was not held up by A's question
+    row = db.post(a, "poshmark")
+    assert (row["status"], row["attempts"], row["last_error"]) == ("queued", 1, f"needs owner: {QUESTION}")
+    assert row["posted_at"] is None and db.item(a)["status"] == "needs_owner"
+    assert asked == [(a, QUESTION)]
+    assert db.post(b, "poshmark")["status"] == "posted" and db.item(b)["status"] == "posted"
+    assert not s.flag("PAUSE").exists() and not any("paused" in m.lower() for m in said)   # max_fail=1: not a failure
+    events = db.conn.execute("SELECT kind, detail FROM events WHERE ref=?", (a,)).fetchall()
+    assert [(e["kind"], loads(e["detail"])) for e in events] == [("needs_owner", {"mp": "poshmark", "question": QUESTION})]
+    assert len(pauses) == 2                                    # the usual gap after the question, then after B
+
+
+def test_run_needs_owner_leaves_the_failure_counter_alone(tmp_path, monkeypatch, harness):
+    """Neither a failure nor a success for the circuit breaker: failed, question, failed still trips max_fail=2."""
+    s = _settings(tmp_path, max_fail=2)
+    db = DB(s.path("db"))
+    ids = [_ready_item(db, seq=i) for i in range(1, 4)]
+    poster = StubPoster(Outcome("failed", error="a"), NeedsOwner("which brand?"), Outcome("failed", error="b"))
+    monkeypatch.setattr(approve, "ask_owner", lambda *a: None)
+    _run(monkeypatch, s, db, poster, once=False)
+
+    assert len(poster.calls) == 3
+    assert [db.post(i, "poshmark")["status"] for i in ids] == ["failed", "queued", "failed"]
+    assert [db.item(i)["status"] for i in ids] == ["ready", "needs_owner", "ready"]
+    assert "2 consecutive failures: b" in s.flag("PAUSE").read_text(encoding="utf-8")
+
+
+def test_run_once_returns_after_a_needs_owner_question(tmp_path, monkeypatch, harness):
+    _, pauses = harness
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    ids = [_ready_item(db, seq=i) for i in range(1, 3)]
+    poster = StubPoster(NeedsOwner("which brand?"), Outcome("dryrun"))
+    monkeypatch.setattr(approve, "ask_owner", lambda *a: None)
+    _run(monkeypatch, s, db, poster, once=True)
+
+    assert len(poster.calls) == 1 and pauses == [] and db.item(ids[0])["status"] == "needs_owner"
+    assert db.post(ids[1], "poshmark") is None and not s.flag("PAUSE").exists()
 
 
 def test_run_skips_a_job_another_poster_claimed(tmp_path, monkeypatch, harness):

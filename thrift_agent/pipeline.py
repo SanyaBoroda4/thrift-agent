@@ -13,8 +13,8 @@ from pathlib import Path
 import imagehash
 from PIL import Image
 
-from thrift_agent import notify
-from thrift_agent.brain import copy as copywriter
+from thrift_agent import approve, notify
+from thrift_agent.brain import copy as copywriter, sizes
 from thrift_agent.brain.extract import extract, strip_screenshot_evidence
 from thrift_agent.brain.gate import GateResult, evaluate
 from thrift_agent.brain.price import price
@@ -106,7 +106,7 @@ def process_batch(s: Settings, db: DB, bid: str) -> None:
         unassigned = list(out.unassigned)                 # screenshots the model could not match to an item
         reasons = seg.check(out, len(kept), s["segmentation"]["min_confidence"], kinds=kept_kinds)
 
-    sheet = seg.contact_sheet(kept, groups, work / "contact_sheet.png", kinds=kept_kinds)
+    seg.contact_sheet(kept, groups, work / "contact_sheet.png", kinds=kept_kinds)   # sent by approve.send_batch
     db.set_batch(bid, segmentation={"groups": groups, "summaries": summaries, "photos": [str(p) for p in kept],
                                     "kinds": kept_kinds, "unassigned": unassigned,
                                     "dropped": [str(p) for p in dropped], "note": note},
@@ -114,10 +114,7 @@ def process_batch(s: Settings, db: DB, bid: str) -> None:
 
     if reasons or s["segmentation"]["always_confirm"]:
         db.set_batch(bid, status="needs_confirm")
-        lines = [f"item {k}: {summaries[k - 1]} — photos {g}" for k, g in enumerate(groups, 1)]
-        why = ("\n⚠️ " + "; ".join(reasons)) if reasons else ""
-        notify.photo(sheet, f"Batch {bid}: {len(kept)} photos → {len(groups)} items\n" + "\n".join(lines) + why +
-                     f"\nReply: thrift confirm {bid} ok   (or 12>2, split 7, merge 2 3, drop 7)")
+        approve.send_batch(s, db, bid)                    # contact sheet + summary; the owner replies ok / 12>2 / ...
         return
     split(s, db, bid, groups)
 
@@ -264,7 +261,15 @@ def duplicate_check(s: Settings, db: DB, iid: str, cover: Path, note: str | None
     return str(h), None
 
 
+def owner_priced(pr: PriceResult, amount: int, marketplaces: list[str]) -> PriceResult:
+    """The owner's approved price replaces the suggestion for every marketplace (source 'owner')."""
+    return PriceResult(target=pr.target, list_price=amount, source="owner", basis=f"owner price ${amount}",
+                       by_marketplace={mp: amount for mp in marketplaces}, original_price=pr.original_price)
+
+
 def process_item(s: Settings, db: DB, iid: str) -> None:
+    """extract -> price -> copy -> verify -> lint -> gate -> renders. The item then waits for the owner's price
+    (awaiting_price, ONE Telegram message) unless the owner already priced it and nothing is unresolved."""
     it = db.item(iid)
     d = Path(it["dir"])
     photos = sorted((d / "photos").glob("*.jpg"))
@@ -273,6 +278,9 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
     facts = extract(photos, it["note"], s["models"]["extract"], s["images"]["llm_long_edge"], kinds=kinds)
     facts = strip_screenshot_evidence(facts, retail)     # a screenshot is never evidence for condition, size or flaws
     pr = price(facts, load_yaml("brand_tiers.yaml"), s["pricing"], it["note"])
+    enabled = [mp for mp, m in s["marketplaces"].items() if m.get("enabled")]
+    if it["owner_price"]:
+        pr = owner_priced(pr, int(it["owner_price"]), enabled)   # approved earlier; a reprocessing never asks again
     draft = copywriter.write(facts, s["models"]["copy"], s["copy"])
     audit = verify(facts, draft, s["models"]["verify"])
     final = copywriter.clean(CopyOut(
@@ -297,21 +305,22 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
         "gate": {"decision": gate.decision, "reasons": gate.reasons},
         "unsupported_removed": [u.model_dump() for u in audit.unsupported],
     }, indent=2), encoding="utf-8")
-    status = "needs_info" if gate.decision == "needs_info" else "ready"
+    # Nothing publishes without the owner's price. Open questions (an unreadable brand or size, NWT without a tag,
+    # a possible re-share) ride along in the same message; an item the owner already priced comes back only
+    # while something is still unresolved.
+    unresolved = gate.decision == "needs_info"
+    status = "awaiting_price" if unresolved or not it["owner_price"] else "ready"
     db.set_item(iid, status=status, facts=facts.model_dump(), price=pr.model_dump(),
                 renders={k: v.model_dump() for k, v in renders.items()},
                 gate={"decision": gate.decision, "reasons": gate.reasons}, cover_hash=cover_hash)
-    db.log(iid, "item_processed", {"decision": gate.decision, "reasons": gate.reasons})
+    db.log(iid, "item_processed", {"decision": gate.decision, "reasons": gate.reasons, "status": status})
 
-    first = next(iter(renders.values()), None)                  # no marketplace enabled: still notify
-    title = first.title if first else final.poshmark_title
-    head = f"{title} \u2014 ${pr.list_price}" if pr.list_price else title
-    if status == "needs_info":
-        notify.photo(d / "photos" / "00.jpg",
-                     f"Needs info ({iid}): {head}\n- " + "\n- ".join(gate.reasons) +
-                     f"\nReply: thrift answer {iid} \"size 8, NWT\"")
+    if status == "awaiting_price":
+        approve.send_item(s, db, iid)
     elif gate.decision == "draft":
-        notify.say(f"Queued as draft ({iid}): {head}\n- " + "\n- ".join(gate.reasons))
+        first = next(iter(renders.values()), None)
+        title = first.title if first else final.poshmark_title
+        notify.say(f"Queued as draft ({iid}): {title} \u2014 ${pr.list_price}\n- " + "\n- ".join(gate.reasons))
 
 
 def requeue(s: Settings, db: DB, iid: str, marketplace: str | None = None) -> list[str]:
@@ -398,7 +407,7 @@ def build_renders(s: Settings, iid: str, d: Path, photos: list[Path], facts: Fac
     ordered = [str(cover)] + [str(photos[i]) for i in order[1:]]
 
     common = dict(brand=facts.brand.value, department=facts.department, category=facts.category,
-                  subcategory=facts.subcategory, size=facts.size_us.value, colors=list(facts.colors),
+                  subcategory=facts.subcategory, size=sizes.size_label(facts), colors=list(facts.colors),
                   condition=facts.condition, sku=iid,
                   original_price=_dollars(facts.retail_price.value) or pr.original_price)   # screenshot beats note
     out = {}

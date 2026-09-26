@@ -88,3 +88,85 @@ def test_poster_passes_allow_dev_browser(monkeypatch):
     assert seen == {"once": True, "force_dry": False, "allow_dev_browser": True}
     CliRunner().invoke(cli.app, ["poster"])
     assert seen["allow_dev_browser"] is False
+
+
+# ---------- WO4: price command, worker loop with Telegram, telegram setup/test ----------
+
+class _FakeBot:
+    chat_id = "-100123"
+
+    def __init__(self, updates=None):
+        self.updates, self.sent = updates or [], []
+
+    def get_updates(self, offset, timeout):
+        return self.updates
+
+    def send_message(self, text, buttons=None, reply_to=None):
+        self.sent.append(text)
+        return 42
+
+
+def test_price_command_sets_the_owner_price(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli.pipeline, "set_price", lambda s, db, iid, amount: calls.append((iid, amount)) or "ready")
+    monkeypatch.setattr(cli, "_db", lambda: object())
+    r = CliRunner().invoke(cli.app, ["price", "i_1", "85"])
+    assert r.exit_code == 0 and calls == [("i_1", 85)] and "$85" in r.output and "ready" in r.output
+
+
+def test_worker_iteration_polls_telegram_when_configured(monkeypatch, tmp_path):
+    s = _settings(tmp_path, "dev")
+    db = DB(s.path("db"))
+    seen = []
+    monkeypatch.setattr(cli, "_safe_tick", lambda s, db: seen.append("tick"))
+    monkeypatch.setattr(cli.approve, "poll_once", lambda s, db, bot, timeout: seen.append(("poll", timeout)) or 0)
+    monkeypatch.setattr(cli.approve, "resend_pending", lambda s, db, force=False: seen.append("resend") or [])
+    monkeypatch.setattr(cli.time, "sleep", lambda n: seen.append(("sleep", n)))
+    state = {"last_resend": 0}                                        # long ago: the hourly resend check is due
+    cli._worker_iteration(s, db, _FakeBot(), interval=15, state=state)
+    assert seen == ["tick", ("poll", 15), "resend"] and state["last_resend"] > 0
+    seen.clear()
+    cli._worker_iteration(s, db, _FakeBot(), interval=15, state=state)
+    assert seen == ["tick", ("poll", 15)]                             # not due again yet
+    seen.clear()
+    cli._worker_iteration(s, db, None, interval=7, state=state)      # Telegram off: plain sleep, no polling
+    assert seen == ["tick", ("sleep", 7)]
+
+
+def test_worker_poll_errors_do_not_kill_the_worker(monkeypatch, tmp_path):
+    s = _settings(tmp_path, "dev")
+    db = DB(s.path("db"))
+
+    def boom(s, db, bot, timeout):
+        raise ConnectionError("telegram down")
+    monkeypatch.setattr(cli.approve, "poll_once", boom)
+    monkeypatch.setattr(cli.time, "sleep", lambda n: None)
+    assert cli._safe_poll(s, db, _FakeBot(), 15) == 0
+    assert db.conn.execute("SELECT COUNT(*) FROM events WHERE kind='error'").fetchone()[0] == 1
+
+
+def test_telegram_setup_lists_chat_and_user_ids(monkeypatch):
+    import thrift_agent.telegram as tg
+    updates = [{"update_id": 1, "message": {"chat": {"id": -100123, "title": "Posh closet"},
+                                            "from": {"id": 555, "username": "owner"}, "text": "/start"}},
+               {"update_id": 2, "callback_query": {"id": "c", "from": {"id": 777, "first_name": "Helper"},
+                                                   "message": {"chat": {"id": -100123, "title": "Posh closet"}}}}]
+    monkeypatch.setattr(tg, "Bot", lambda token, chat, users: _FakeBot(updates))
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:abc")
+    r = CliRunner().invoke(cli.app, ["telegram", "setup"])
+    assert r.exit_code == 0, r.output
+    assert "-100123" in r.output and "555" in r.output and "777" in r.output and "TELEGRAM_ALLOWED_USER_IDS" in r.output
+
+
+def test_telegram_setup_needs_a_token():
+    r = CliRunner().invoke(cli.app, ["telegram", "setup"])
+    assert r.exit_code != 0 and "TELEGRAM_BOT_TOKEN" in r.output
+
+
+def test_telegram_test_sends_when_configured(monkeypatch):
+    r = CliRunner().invoke(cli.app, ["telegram", "test"])
+    assert r.exit_code != 0 and "not configured" in r.output          # dev defaults: Telegram off
+    bot = _FakeBot()
+    monkeypatch.setattr(cli.approve, "bot_for", lambda s: bot)
+    r = CliRunner().invoke(cli.app, ["telegram", "test"])
+    assert r.exit_code == 0 and bot.sent and "sent" in r.output

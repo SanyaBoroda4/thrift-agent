@@ -30,6 +30,16 @@ def _changed_fields_stub(monkeypatch):
         monkeypatch.setattr(pipeline.copywriter, "changed_fields", changed, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def owner_messages(monkeypatch):
+    """Owner messages (Telegram, or the dev print) are recorded here instead of sent: ("batch"|"item"|"owner_q", ref)."""
+    sent = []
+    monkeypatch.setattr(pipeline.approve, "send_batch", lambda s, db, bid: sent.append(("batch", bid)))
+    monkeypatch.setattr(pipeline.approve, "send_item", lambda s, db, iid: sent.append(("item", iid)))
+    monkeypatch.setattr(pipeline.approve, "ask_owner", lambda s, db, iid, q: sent.append(("owner_q", iid, q)))
+    return sent
+
+
 def fake_ask(facts_factory, audit: VerifyOut | None = None):
     def ask(model, system, content, out, tool, description, **kw):
         if out is SegOut:
@@ -41,13 +51,13 @@ def fake_ask(facts_factory, audit: VerifyOut | None = None):
         if out.__name__ == "Facts":
             return facts_factory(photo_order=[0, 1, 2])
         if out is CopyOut:
-            return CopyOut(poshmark_title="Tory Burch Red Suede Ballet Flats size 7.5",
-                           poshmark_description="Red suede flats.\nCondition: excellent, light sole wear.",
+            return CopyOut(poshmark_title="Tory Burch Red Ballet Flats size 7.5",
+                           poshmark_description="Red flats.\nCondition: excellent, light sole wear.",
                            poshmark_style_tags=["classic"], depop_description="red tory burch flats",
                            depop_hashtags=["toryburch", "flats", "red", "ballet", "shoes"])
         if out is VerifyOut:
-            return audit or VerifyOut(poshmark_title="Tory Burch Red Suede Ballet Flats size 7.5",
-                                      poshmark_description="Red suede flats.\nCondition: excellent, light sole wear.",
+            return audit or VerifyOut(poshmark_title="Tory Burch Red Ballet Flats size 7.5",
+                                      poshmark_description="Red flats.\nCondition: excellent, light sole wear.",
                                       depop_description="red tory burch flats")
         raise AssertionError(out)
     return ask
@@ -61,7 +71,7 @@ def _settle(share):
         os.utime(f, (old, old))
 
 
-def test_end_to_end(tmp_path, monkeypatch, facts):
+def test_end_to_end(tmp_path, monkeypatch, facts, owner_messages):
     base = settings().data
     data = {**base, "paths": {k: str(tmp_path / k) for k in base["paths"]}}
     data["paths"]["db"] = str(tmp_path / "state.db")
@@ -89,6 +99,7 @@ def test_end_to_end(tmp_path, monkeypatch, facts):
     bid = pipeline.register(s, db, folder)
     pipeline.process_batch(s, db, bid)
     assert db.batch(bid)["status"] == "needs_confirm"        # always_confirm is on by default
+    assert ("batch", bid) in owner_messages                    # the contact sheet went to the owner
 
     pipeline.confirm(s, db, bid, "ok")
     items = db.items("new")
@@ -97,9 +108,19 @@ def test_end_to_end(tmp_path, monkeypatch, facts):
 
     it = db.item(items[0]["id"])
     gate, renders = loads(it["gate"]), loads(it["renders"])
-    assert it["status"] == "ready" and gate["decision"] == "publish", gate
+    assert it["status"] == "awaiting_price" and gate["decision"] == "publish", gate   # nothing lists unpriced
+    assert ("item", it["id"]) in owner_messages                                      # ONE approval message
     posh = renders["poshmark"]
     assert posh["price"] == 95 and posh["sku"] == it["id"] and posh["photos"][0].endswith("cover.jpg")
+    assert pipeline.set_price(s, db, it["id"], 90) == "ready"                          # the owner's word
+    it = db.item(it["id"])
+    assert loads(it["renders"])["poshmark"]["price"] == 90 and loads(it["price"])["source"] == "owner"
+    owner_messages.clear()
+    pipeline.answer(s, db, it["id"], "worn twice")                                    # a note reprocesses it
+    pipeline.process_item(s, db, it["id"])
+    it = db.item(it["id"])
+    assert it["status"] == "ready" and loads(it["price"])["list_price"] == 90         # price kept, no new message
+    assert owner_messages == []
 
 
 def _settings(tmp_path):
@@ -274,8 +295,8 @@ def _new_item(s, db):
 def test_unreported_verifier_rewrite_goes_to_draft(tmp_path, monkeypatch, facts):
     s = _settings(tmp_path)
     db = DB(s.path("db"))
-    rewritten = VerifyOut(poshmark_title="Tory Burch Red Suede Ballet Flats size 7.5",
-                          poshmark_description="Gorgeous buttery-soft red suede flats, run true to size.",
+    rewritten = VerifyOut(poshmark_title="Tory Burch Red Ballet Flats size 7.5",
+                          poshmark_description="Gorgeous buttery-soft red flats, run true to size.",
                           depop_description="red tory burch flats")                   # changed, but unsupported=[]
     monkeypatch.setattr("thrift_agent.brain.llm.ask", fake_ask(facts, audit=rewritten))
     monkeypatch.setattr("thrift_agent.pipeline.load_yaml",
@@ -381,13 +402,13 @@ def _wo2_ask(facts, seen, seg_out, facts_kw):
             seen["extract"] = labels
             return facts(**facts_kw)
         if out is CopyOut:
-            return CopyOut(poshmark_title="Tory Burch Minnie Red Suede Ballet Flats size 7.5",
-                           poshmark_description="Red suede flats with a bow.\nCondition: excellent, light sole wear.",
+            return CopyOut(poshmark_title="Tory Burch Minnie Red Ballet Flats size 7.5",
+                           poshmark_description="Red flats with a bow.\nCondition: excellent, light sole wear.",
                            poshmark_style_tags=[], depop_description="red tory burch minnie flats, light wear",
                            depop_hashtags=["toryburch", "flats", "red", "ballet", "shoes"])
         if out is VerifyOut:
-            return VerifyOut(poshmark_title="Tory Burch Minnie Red Suede Ballet Flats size 7.5",
-                             poshmark_description="Red suede flats with a bow.\nCondition: excellent, light sole wear.",
+            return VerifyOut(poshmark_title="Tory Burch Minnie Red Ballet Flats size 7.5",
+                             poshmark_description="Red flats with a bow.\nCondition: excellent, light sole wear.",
                              depop_description="red tory burch minnie flats, light wear")
         raise AssertionError(out)
     return ask
@@ -431,7 +452,7 @@ def test_retail_screenshots_are_detected_assigned_by_content_and_rendered_last(t
     assert r["original_price"] == 128
     assert r["description"].rstrip().endswith("Retail $128.")
     assert loads(it["facts"])["size_us"]["value"] is None            # a screenshot is not size evidence
-    assert it["status"] == "needs_info" and any("size unclear" in x for x in loads(it["gate"])["reasons"])
+    assert it["status"] == "awaiting_price" and any("size unclear" in x for x in loads(it["gate"])["reasons"])
 
 
 def test_unassigned_screenshot_can_be_dropped_or_placed(tmp_path, monkeypatch, facts):
@@ -474,14 +495,15 @@ def test_reshared_item_is_held_as_a_possible_duplicate(tmp_path, monkeypatch, fa
         iids.append(db.add_item(bid, k, str(d)))
     pipeline.process_item(s, db, iids[0])
     first = db.item(iids[0])
-    assert first["status"] == "ready" and first["cover_hash"]
+    assert first["status"] == "awaiting_price" and first["cover_hash"]
     pipeline.process_item(s, db, iids[1])
     second = db.item(iids[1])
-    assert second["status"] == "needs_info"
+    assert second["status"] == "awaiting_price" and loads(second["gate"])["decision"] == "needs_info"
     assert any(f"looks like item {iids[0]}" in r for r in loads(second["gate"])["reasons"])
+    pipeline.set_price(s, db, iids[1], 60)                               # price first, then the answer
     pipeline.answer(s, db, iids[1], "different item")                    # the seller's word clears the hold
     pipeline.process_item(s, db, iids[1])
-    assert db.item(iids[1])["status"] == "ready"
+    assert db.item(iids[1])["status"] == "ready"                         # priced, nothing unresolved: no new message
 
 
 def test_requeue_only_failed_or_dryrun_rows_without_a_url(tmp_path):
@@ -521,3 +543,70 @@ def test_archive_can_live_next_to_the_inbox(tmp_path):
     bid = db.add_batch(str(inside), 1)
     dest = pipeline.archive_share(s, db, bid, inside)
     assert dest and dest.parent == s.path("inbox").parent / "archive" and not inside.exists()
+
+
+# ---------- WO4: the owner's price, open questions, kids sizes ----------
+
+def test_open_questions_ride_with_the_price_and_come_back_until_resolved(tmp_path, monkeypatch, facts, owner_messages):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    state = {"brand": Ev(value=None, confidence=0.2)}                   # the model can't read the brand
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", fake_ask(lambda **kw: facts(brand=state["brand"], **kw)))
+    monkeypatch.setattr("thrift_agent.pipeline.load_yaml", lambda name: {"brands": {}, "aliases": {}, "category_defaults": {}})
+    d = tmp_path / "item"
+    for i, c in enumerate(["red", "green", "blue"]):
+        _jpg(d / "photos" / f"{i:02d}.jpg", c)
+    iid = db.add_item(db.add_batch("share", 3), 1, str(d))
+
+    pipeline.process_item(s, db, iid)
+    it = db.item(iid)
+    assert it["status"] == "awaiting_price" and any("brand unclear" in r for r in loads(it["gate"])["reasons"])
+    assert loads(it["price"])["list_price"] is None                      # no brand, no default: asked, not blocked
+    assert owner_messages.count(("item", iid)) == 1
+
+    assert pipeline.set_price(s, db, iid, 45) == "ready"                  # the owner replied "brand Vince, 45":
+    pipeline.answer(s, db, iid, "brand Vince")                            # price first, then the note
+    pipeline.process_item(s, db, iid)                                     # still unreadable -> asks again, price kept
+    it = db.item(iid)
+    assert it["status"] == "awaiting_price" and loads(it["price"])["list_price"] == 45
+    assert owner_messages.count(("item", iid)) == 2
+
+    state["brand"] = Ev(value="Vince", photos=[], source="note", confidence=1.0)
+    pipeline.answer(s, db, iid, "yes, Vince")
+    pipeline.process_item(s, db, iid)
+    it = db.item(iid)
+    assert it["status"] == "ready" and loads(it["price"])["source"] == "owner"
+    assert owner_messages.count(("item", iid)) == 2                       # resolved: no third message
+
+
+def test_set_price_rules(tmp_path):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid = db.add_item(db.add_batch("share", 1), 1, str(tmp_path / "item"))
+    db.set_item(iid, status="awaiting_price", price={"list_price": 30, "source": "brand", "by_marketplace": {"poshmark": 30}},
+                renders={"poshmark": {"price": 30}})
+    with pytest.raises(ValueError, match="unknown item"):
+        pipeline.set_price(s, db, "i_nope", 10)
+    with pytest.raises(ValueError, match="positive"):
+        pipeline.set_price(s, db, iid, 0)
+    assert pipeline.set_price(s, db, iid, 44) == "ready"
+    it = db.item(iid)
+    assert it["owner_price"] == 44 and loads(it["renders"])["poshmark"]["price"] == 44
+    assert loads(it["price"]) == {"list_price": 44, "source": "owner", "by_marketplace": {"poshmark": 44},
+                                  "basis": "owner price $44"}
+    db.set_item(iid, status="posted")
+    with pytest.raises(ValueError, match="can't be changed"):
+        pipeline.set_price(s, db, iid, 50)
+
+
+def test_kids_size_carries_its_system_in_the_render(tmp_path, facts):
+    s = _settings(tmp_path)
+    d = tmp_path / "item"
+    photos = [_jpg(d / "photos" / f"{i:02d}.jpg", c) for i, c in enumerate(["red", "green"])]
+    f = facts(department="Kids", category="Shoes", photo_order=[0, 1],
+              size_us=Ev(value="7.5", photos=[1], source="derived", confidence=0.8),
+              size_eu=Ev(value="24", photos=[1], source="photo", confidence=0.9))
+    c = CopyOut(poshmark_title="t", poshmark_description="d", poshmark_style_tags=[], depop_description="d",
+                depop_hashtags=[])
+    pr = PriceResult(target=22, list_price=30, source="category_default", by_marketplace={"poshmark": 30})
+    assert pipeline.build_renders(s, "i_1", d, photos, f, c, pr)["poshmark"].size == "EU 24 / US Toddler 7.5"

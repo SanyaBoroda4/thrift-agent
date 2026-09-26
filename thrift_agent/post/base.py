@@ -28,6 +28,17 @@ class AccountBlocked(PosterError):
     """Logged out, restricted, or a CAPTCHA — stop the whole poster, not just this item."""
 
 
+class NeedsOwner(PosterError):
+    """Stuck on a field only the owner can answer; the item waits in needs_owner, others continue.
+
+    Raised by an adapter's fill() BEFORE anything is submitted (a brand or category the site's lists don't
+    have). The runner parks the item and sends `question` to the owner as a separate Telegram message."""
+
+    def __init__(self, question: str):
+        super().__init__(question)
+        self.question = question
+
+
 class Mismatch(PosterError):
     """The form on screen differs from the approved Render. Carries the diff so it is recorded."""
 
@@ -123,7 +134,8 @@ class Poster(ABC):
             raise PosterError(f"live page at {url} doesn't show the title")
 
     async def post(self, ctx: BrowserContext, r: Render, mode: Mode, dry_run: bool, shots: Path) -> Outcome:
-        """Returns an Outcome for everything that happens once the page exists; only AccountBlocked propagates.
+        """Returns an Outcome for everything that happens once the page exists; only AccountBlocked (stop the
+        poster) and NeedsOwner (park this item, ask the owner) propagate, so the runner can tell them apart.
 
         Nothing after `submit` may raise out of here: an exception in `finally` would REPLACE the returned
         Outcome, and a live listing without a recorded URL is exactly the double-post invariant 4 forbids.
@@ -156,11 +168,11 @@ class Poster(ABC):
                 return Outcome("failed", url=url, screenshot=str(shot),
                                error=f"published but the live check failed ({type(e).__name__}: {e}) — check {url}")
             return Outcome("posted", url=url, screenshot=str(shot))
-        except AccountBlocked:
+        except (AccountBlocked, NeedsOwner):
             try:
                 if page:
                     await page.screenshot(path=str(shot), full_page=True)
-            except Exception:  # noqa: BLE001 — the screenshot is a courtesy; the block itself is what matters
+            except Exception:  # noqa: BLE001 — the screenshot is a courtesy; the block/question itself is what matters
                 pass
             raise
         except Exception as e:  # noqa: BLE001 — record everything, never retry blindly

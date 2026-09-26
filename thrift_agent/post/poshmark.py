@@ -21,8 +21,9 @@ import re
 from pathlib import Path
 
 from playwright.async_api import Page
+from playwright.async_api import TimeoutError as PlaywrightTimeout
 
-from thrift_agent.post.base import AccountBlocked, Mode, Poster, PosterError, human_type, settle
+from thrift_agent.post.base import AccountBlocked, Mode, NeedsOwner, Poster, PosterError, human_type, settle
 from thrift_agent.schema import Render
 
 # Poshmark's stored condition codes (verified on sold listings): nwt, uln (like new), ug (good),
@@ -30,6 +31,23 @@ from thrift_agent.schema import Render
 CONDITION_TO_POSH = {
     "NWT": "nwt", "NWOT": "uln", "like_new": "uln",
     "excellent": "ug", "good": "ug", "fair": "uf?",
+}
+
+# UNVERIFIED (M2): the agent's kids size labels -> the text of Poshmark's size option. Poshmark's kids shoe
+# picker is believed to show "7.5C"-style toddler/little-kid sizes and "4Y"-style big-kid sizes, but the exact
+# option strings MUST be recorded from the live create-listing form on the Mac before fill() uses this table.
+# Not used by fill() yet.
+KIDS_SIZE_OPTIONS = {
+    "US Toddler 4": "4C", "US Toddler 4.5": "4.5C", "US Toddler 5": "5C", "US Toddler 5.5": "5.5C",
+    "US Toddler 6": "6C", "US Toddler 6.5": "6.5C", "US Toddler 7": "7C", "US Toddler 7.5": "7.5C",
+    "US Toddler 8": "8C", "US Toddler 8.5": "8.5C", "US Toddler 9": "9C", "US Toddler 9.5": "9.5C",
+    "US Toddler 10": "10C",
+    "US Little Kid 10.5": "10.5C", "US Little Kid 11": "11C", "US Little Kid 11.5": "11.5C",
+    "US Little Kid 12": "12C", "US Little Kid 12.5": "12.5C", "US Little Kid 13": "13C",
+    "US Little Kid 13.5": "13.5C", "US Little Kid 1": "1Y", "US Little Kid 1.5": "1.5Y", "US Little Kid 2": "2Y",
+    "US Little Kid 2.5": "2.5Y", "US Little Kid 3": "3Y",
+    "US Big Kid 3.5": "3.5Y", "US Big Kid 4": "4Y", "US Big Kid 4.5": "4.5Y", "US Big Kid 5": "5Y",
+    "US Big Kid 5.5": "5.5Y", "US Big Kid 6": "6Y", "US Big Kid 6.5": "6.5Y", "US Big Kid 7": "7Y",
 }
 
 SEL = {  # UNVERIFIED — replace with recorded locators
@@ -118,8 +136,11 @@ class PoshmarkPoster(Poster):
             await human_type(SEL["brand"](page), r.brand)
             await settle(page, 0.8, 1.6)
             opt = SEL["brand_option"](page, r.brand)
-            if await opt.count():
-                await opt.click()
+            if not await opt.count():
+                # Only the owner knows whether Poshmark spells it differently or the item goes under "Other".
+                raise NeedsOwner(f"Poshmark's brand list has no match for '{r.brand}'. Which brand should I pick? "
+                                 "(reply e.g. 'brand Vince')")
+            await opt.click()
             await settle(page)
 
         if r.colors:
@@ -141,7 +162,12 @@ class PoshmarkPoster(Poster):
     async def _pick_category(self, page: Page, r: Render) -> None:
         await SEL["category_open"](page).click()
         for name in [n for n in (r.department, r.category, r.subcategory) if n]:
-            await SEL["category_option"](page, name).click()
+            try:
+                await SEL["category_option"](page, name).click()
+            except PlaywrightTimeout:
+                # The option never appeared: Poshmark's tree doesn't have this name here. Ask, don't guess.
+                raise NeedsOwner(f"Poshmark has no category option '{name}' under {r.department}/{r.category}. "
+                                 "Which category/subcategory should I pick?") from None
             await settle(page, 0.3, 0.8)
 
     async def read_back(self, page: Page) -> dict:

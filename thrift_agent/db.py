@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE TABLE IF NOT EXISTS outbox (
   chat_id TEXT NOT NULL, message_id INTEGER NOT NULL, kind TEXT NOT NULL, ref TEXT NOT NULL,
-  sent_at TEXT NOT NULL, resolved_at TEXT,
+  text TEXT, sent_at TEXT NOT NULL, resolved_at TEXT,
   PRIMARY KEY (chat_id, message_id)
 );
 CREATE TABLE IF NOT EXISTS kv (
@@ -138,9 +138,10 @@ class DB:
                           (key, value))
 
     # outbox: Telegram messages that expect a reply
-    def add_outbox(self, chat_id: str, message_id: int, kind: str, ref: str) -> None:
-        self.conn.execute("INSERT OR REPLACE INTO outbox (chat_id, message_id, kind, ref, sent_at, resolved_at) "
-                          "VALUES (?,?,?,?,?,NULL)", (str(chat_id), int(message_id), kind, ref, now()))
+    def add_outbox(self, chat_id: str, message_id: int, kind: str, ref: str, text: str | None = None) -> None:
+        """`text` keeps what was asked (an owner_q question) so resend_pending can send it again."""
+        self.conn.execute("INSERT OR REPLACE INTO outbox (chat_id, message_id, kind, ref, text, sent_at, resolved_at) "
+                          "VALUES (?,?,?,?,?,?,NULL)", (str(chat_id), int(message_id), kind, ref, text, now()))
 
     def outbox_lookup(self, chat_id: str, message_id: int) -> sqlite3.Row | None:
         return self.conn.execute("SELECT * FROM outbox WHERE chat_id=? AND message_id=?",

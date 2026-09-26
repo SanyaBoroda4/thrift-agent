@@ -72,10 +72,13 @@ def test_failure_log_survives_cp1252_stderr(monkeypatch):
 
 def test_check_raises_when_enabled_without_env(monkeypatch):
     s = Settings({"telegram": {"enabled": True}})
-    with pytest.raises(RuntimeError, match="TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID"):
+    with pytest.raises(RuntimeError, match="TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID / TELEGRAM_ALLOWED_USER_IDS"):
         notify.check(s)
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")      # one of the two is still blind
-    with pytest.raises(RuntimeError):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")      # still blind without the chat id
+    with pytest.raises(RuntimeError, match="TELEGRAM_CHAT_ID"):
+        notify.check(s)
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "chat")       # pings would arrive, but nobody could approve
+    with pytest.raises(RuntimeError, match="TELEGRAM_ALLOWED_USER_IDS"):
         notify.check(s)
 
 
@@ -84,4 +87,5 @@ def test_check_passes_when_disabled_or_fully_configured(monkeypatch):
     notify.check(Settings({}))
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "chat")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "555")
     notify.check(Settings({"telegram": {"enabled": True}}))

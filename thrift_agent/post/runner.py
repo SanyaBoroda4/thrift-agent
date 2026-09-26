@@ -6,10 +6,10 @@ import signal
 from datetime import datetime, timezone
 from pathlib import Path
 
-from thrift_agent import notify
+from thrift_agent import approve, notify
 from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
-from thrift_agent.post.base import AccountBlocked, Poster, open_browser
+from thrift_agent.post.base import AccountBlocked, NeedsOwner, Poster, open_browser
 from thrift_agent.post.depop import DepopPoster
 from thrift_agent.post.poshmark import PoshmarkPoster
 from thrift_agent.scheduler import can_post, next_gap, windows
@@ -123,6 +123,19 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, 
                 db.upsert_post(iid, mp, status="queued", last_error=str(e))
                 _halt(s, str(e), f"⛔ Poster paused: {e}\nFix it in the poster Chrome window, then delete the PAUSE file.")
                 return
+            except NeedsOwner as e:
+                # A field only the owner can answer (a brand or category Poshmark's lists don't have). Nothing was
+                # submitted, so 'queued' cannot double-post. The item leaves 'ready' (next_job takes only 'ready'),
+                # so it waits until the owner's reply reprocesses it; the poster carries on with the others.
+                # Not a failure for the circuit breaker: the form and the account are fine, the item is unusual.
+                db.upsert_post(iid, mp, status="queued", last_error=f"needs owner: {e.question}")
+                db.set_item(iid, status="needs_owner")
+                approve.ask_owner(s, db, iid, e.question)
+                db.log(iid, "needs_owner", {"mp": mp, "question": e.question})
+                if once:
+                    return
+                await _pause(stop, next_gap(s["schedule"]))
+                continue
             except Exception as e:  # noqa: BLE001
                 # Poster.post() turns everything after the page opens into an Outcome, so an exception reaching
                 # here came from before the form was touched — nothing was submitted, and 'queued' cannot

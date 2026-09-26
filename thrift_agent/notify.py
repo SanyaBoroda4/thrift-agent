@@ -39,9 +39,12 @@ def _enabled() -> tuple[bool, str, str]:
 def check(s: Settings) -> None:
     """Fail fast at prod startup. With telegram.enabled and a blank .env every ping silently degrades to a print
     in the launchd log, and the seller never hears that a batch needs an answer."""
-    if s.get("telegram.enabled") and (not os.getenv("TELEGRAM_BOT_TOKEN") or not os.getenv("TELEGRAM_CHAT_ID")):
-        raise RuntimeError("telegram.enabled is true but TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID are not set in .env "
-                           "— the seller would never get a ping")
+    if not s.get("telegram.enabled"):
+        return
+    missing = [k for k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "TELEGRAM_ALLOWED_USER_IDS") if not os.getenv(k)]
+    if missing:
+        raise RuntimeError(f"telegram.enabled is true but {' / '.join(missing)} not set in .env — the seller would "
+                           "never get a ping, or nobody could approve (run `thrift telegram setup` for the ids)")
 
 
 def _send(tok: str, method: str, **kw) -> None:

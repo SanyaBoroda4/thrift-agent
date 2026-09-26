@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 import traceback
 from pathlib import Path
@@ -11,11 +12,14 @@ import typer
 from rich import print
 from rich.table import Table
 
-from thrift_agent import notify, pipeline
+from thrift_agent import approve, notify, pipeline
 from thrift_agent.config import settings
 from thrift_agent.db import DB, loads
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
+telegram_app = typer.Typer(help="Telegram bot helpers: setup (find the ids for .env) and test (send a message).")
+app.add_typer(telegram_app, name="telegram")
+RESEND_CHECK_SECONDS = 3600      # how often the worker looks for batches/items waiting longer than resend_after_hours
 
 
 def _db() -> DB:
@@ -74,17 +78,49 @@ def _tick_unless_worker(s, db) -> None:
         _tick(s, db)
 
 
+def _safe_poll(s, db, bot, timeout: int) -> int:
+    """One Telegram long poll that never kills the worker (network blips, an API hiccup): log and go on."""
+    try:
+        return approve.poll_once(s, db, bot, timeout)
+    except Exception as e:  # noqa: BLE001
+        db.log(None, "error", traceback.format_exc())
+        print(f"[telegram] poll failed: {type(e).__name__}: {e}")
+        time.sleep(min(timeout, 5))
+        return 0
+
+
+def _worker_iteration(s, db, bot, interval: int, state: dict) -> None:
+    """One turn of the worker: process the inbox, then wait — on Telegram's long poll when the bot is configured
+    (replies and button presses arrive at once), otherwise a plain sleep. Every RESEND_CHECK_SECONDS, re-send what
+    the owner has left waiting longer than telegram.resend_after_hours."""
+    _safe_tick(s, db)
+    if bot is None:
+        time.sleep(interval)
+        return
+    _safe_poll(s, db, bot, int(s.get("telegram.poll_timeout", interval)))
+    if time.monotonic() - state.get("last_resend", 0) >= RESEND_CHECK_SECONDS:
+        state["last_resend"] = time.monotonic()
+        try:
+            approve.resend_pending(s, db)
+        except Exception as e:  # noqa: BLE001
+            db.log(None, "error", traceback.format_exc())
+            print(f"[telegram] resend failed: {type(e).__name__}: {e}")
+
+
 @app.command()
 def run(interval: int = 15) -> None:
-    """Watch the inbox and process batches/items forever (the worker service)."""
+    """Watch the inbox, process batches/items and talk to the owner on Telegram, forever (the worker service)."""
     s, db = settings(), _db()
     s.ensure_dirs()
     if s.is_prod:
         notify.check(s)                                   # a silent Telegram is not an option on the Mac
-    print(f"worker watching {s.path('inbox')}")
+    bot = approve.bot_for(s)
+    print(f"worker watching {s.path('inbox')}" + (" — Telegram on" if bot else " — Telegram off (dev: messages print)"))
+    state = {"last_resend": time.monotonic()}
+    if bot:
+        approve.resend_pending(s, db, force=True)        # Telegram keeps updates 24 h: whatever waited over a sleep
     while True:
-        _safe_tick(s, db)
-        time.sleep(interval)
+        _worker_iteration(s, db, bot, interval, state)
 
 
 @app.command()
@@ -116,10 +152,55 @@ def confirm(batch_id: str, cmd: str = typer.Argument("ok")) -> None:
 
 @app.command()
 def answer(item_id: str, note: str) -> None:
-    """Answer a needs-info item, e.g.  thrift answer i_... "size 8, brand Vince" """
+    """Answer a needs-info / needs-owner item, e.g.  thrift answer i_... "size 8, brand Vince" """
     s, db = settings(), _db()
     pipeline.answer(s, db, item_id, note)
     _tick_unless_worker(s, db)
+
+
+@app.command()
+def price(item_id: str, amount: int) -> None:
+    """Approve or set the owner's price for an item (the CLI twin of the Telegram Approve/Change buttons)."""
+    s, db = settings(), _db()
+    status = pipeline.set_price(s, db, item_id, amount)
+    print(f"[green]${amount}[/] set for {item_id} — status {status}")
+
+
+@telegram_app.command("setup")
+def telegram_setup() -> None:
+    """Print the chat ids and user ids seen in recent updates, to fill TELEGRAM_CHAT_ID and
+    TELEGRAM_ALLOWED_USER_IDS in .env. Send the bot a message (or /start in the group) first."""
+    from thrift_agent.telegram import Bot
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not token:
+        raise typer.BadParameter("TELEGRAM_BOT_TOKEN is not set in .env (create the bot with @BotFather first)")
+    updates = Bot(token, os.getenv("TELEGRAM_CHAT_ID", ""), set()).get_updates(offset=None, timeout=0)
+    chats, users = {}, {}
+    for u in updates:
+        msg = u.get("message") or (u.get("callback_query") or {}).get("message") or {}
+        sender = (u.get("message") or {}).get("from") or (u.get("callback_query") or {}).get("from") or {}
+        chat = msg.get("chat") or {}
+        if chat.get("id") is not None:
+            chats[chat["id"]] = chat.get("title") or chat.get("username") or chat.get("first_name") or chat.get("type", "")
+        if sender.get("id") is not None:
+            users[sender["id"]] = sender.get("username") or sender.get("first_name") or ""
+    if not updates:
+        print("no updates seen — send the bot a message (in a group: reply to it or /start), then run this again")
+    for cid, name in chats.items():
+        print(f"chat  {cid}  {name}   → TELEGRAM_CHAT_ID={cid}")
+    for uid, name in users.items():
+        print(f"user  {uid}  {name}   → add to TELEGRAM_ALLOWED_USER_IDS")
+
+
+@telegram_app.command("test")
+def telegram_test() -> None:
+    """Send a test message to TELEGRAM_CHAT_ID with the configured bot."""
+    bot = approve.bot_for(settings())
+    if bot is None:
+        raise typer.BadParameter("Telegram is not configured: telegram.enabled plus TELEGRAM_BOT_TOKEN, "
+                                 "TELEGRAM_CHAT_ID and TELEGRAM_ALLOWED_USER_IDS in .env")
+    mid = bot.send_message("thrift-agent: test message — the bot can reach this chat.")
+    print(f"[green]sent[/] message {mid} to chat {bot.chat_id}")
 
 
 @app.command()
@@ -178,6 +259,10 @@ def status() -> None:
     print(t)
     for b in db.batches("needs_confirm"):
         print(f"[yellow]awaiting confirm[/] {b['id']}  →  thrift confirm {b['id']} ok")
+    for it in db.items("awaiting_price"):
+        print(f"[yellow]awaiting price[/] {it['id']}  →  thrift price {it['id']} <amount>")
+    for it in db.items("needs_owner"):
+        print(f"[yellow]needs owner[/] {it['id']}  →  thrift answer {it['id']} \"<answer>\"")
 
 
 @app.command()
