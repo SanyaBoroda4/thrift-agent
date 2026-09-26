@@ -35,6 +35,7 @@ iCloud Posh/inbox/<ts>/ (+ _done) ─► register batch ─► prep (HEIC→JPEG
 7. **All selectors live in `post/<marketplace>.py:SEL`.** Role/label/placeholder locators, not CSS classes.
 8. **Shipping guard.** `HOLD_UNSHIPPED` flag pauses posting. Marketplaces restrict accounts with late shipments;
    listing faster without shipping discipline makes that worse.
+   - `HOLD_UNSHIPPED` blocks publish only; drafts and dry-runs still run.
 
 ## What's verified vs not
 - Verified against the live site (Sep 2026): order list pagination button `button[data-et-name="pagination_next"]`,
@@ -51,18 +52,33 @@ When `private/NOTES.md` exists, read it before changing prompts, pricing, or gat
 Without `private/`, the code falls back to `config/*.example.yaml` and `data/style_examples/`.
 
 ## Commands
-`thrift init | run | process <dir> | confirm <batch> <cmd> | answer <item> "<note>" | status | show <item>`
-`thrift poster [--once] [--dry-run] | login --site poshmark | harvest | build-style | eval`
+`thrift init | run | process <dir> | confirm <batch> <cmd> | answer <item> "<note>" | requeue <item> [marketplace]`
+`thrift status | show <item> | poster [--once] [--dry-run] [--allow-dev-browser] | login --site poshmark`
+`thrift harvest | build-style | eval`
+`--allow-dev-browser` lets the poster open a browser on the dev machine for selector work; it stays dry-run and
+never logs into or touches the shop.
+
+## Retail screenshots
+The owner shares retailer screenshots (product page with price, style name, colour) together with the item photos.
+- Detected by code: no camera EXIF + phone aspect ratio. Assigned to items by content.
+- Used only for `retail_price`, `style_name`, colour and retailer — never for condition, size or flaws
+  (the screenshot shows a new item, not this one).
+- Always last in the listing, never the cover. Original Price = retail price.
 
 ## Milestones
-- **M0 eval** — 20–30 real sessions in `eval/fixtures/<case>/{photos,expected.yaml}`; `thrift eval`.
+- **M0 eval** — 20–30 real sessions in `eval/fixtures/<case>/{photos,expected.yaml}` (mostly shoes, some with
+  retail screenshots); `thrift eval`. The ~100 harvested sold listings are an extra set for brand/size/category
+  only — not condition, historic labels are unreliable.
   Targets before autopublish: segmentation ≥95%, brand/size ≥95%, condition ≥90%.
-- **M1 pipeline** — done in scaffold; tune prompts against M0.
-- **M2 Poshmark poster** — record SEL, complete `read_back` (category, size, brand, colors), crop dialog,
-  draft path; a week of dry-runs on the Mac.
-- **M3 drafts live**, then **M4 autopublish** per category once eval + dry-runs are clean. Depop adapter.
-- **M5** Gmail→n8n: sale email → mark other marketplace sold; unshipped order → `HOLD_UNSHIPPED` + ping.
-- **M6** sold-comps pricing; tune `private/brand_tiers.yaml` from new sales.
+- **M1 prompt tuning** — tune the segment/extract/copy/verify prompts against M0.
+- **M2 Poshmark poster** — record SEL on the Mac, complete `read_back` (category, size, brand, colors), crop dialog,
+  draft path; a week of dry-runs.
+- **M3 Telegram approval flow** — one message per item, [Approve] [Change], nothing publishes without price
+  approval; `needs_owner` for the poster's own questions.
+- **M4 Airtable + n8n + My Sales sync** — business view, sale email → sold + delist elsewhere, shipping watchdog
+  (`HOLD_UNSHIPPED`), local HTTP API over Tailscale, daily read-only order-status sync.
+- **M5 Depop** adapter.
+- **M6 sold-comps pricing** — tune `private/brand_tiers.yaml` from new sales.
 
 ## Style
 Python 3.11+, pydantic v2, pathlib everywhere (Windows + macOS). Pure functions for anything testable
