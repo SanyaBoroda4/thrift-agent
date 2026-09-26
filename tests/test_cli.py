@@ -122,9 +122,10 @@ def test_worker_iteration_polls_telegram_when_configured(monkeypatch, tmp_path):
     monkeypatch.setattr(cli.approve, "poll_once", lambda s, db, bot, timeout: seen.append(("poll", timeout)) or 0)
     monkeypatch.setattr(cli.approve, "resend_pending", lambda s, db, force=False: seen.append("resend") or [])
     monkeypatch.setattr(cli.time, "sleep", lambda n: seen.append(("sleep", n)))
-    state = {"last_resend": 0}                                        # long ago: the hourly resend check is due
+    due = cli.time.monotonic() - cli.RESEND_CHECK_SECONDS - 1         # over an hour ago: the resend check is due
+    state = {"last_resend": due}                                      # (not 0: a fresh CI runner's clock is small)
     cli._worker_iteration(s, db, _FakeBot(), interval=15, state=state)
-    assert seen == ["tick", ("poll", 15), "resend"] and state["last_resend"] > 0
+    assert seen == ["tick", ("poll", 15), "resend"] and state["last_resend"] > due
     seen.clear()
     cli._worker_iteration(s, db, _FakeBot(), interval=15, state=state)
     assert seen == ["tick", ("poll", 15)]                             # not due again yet
