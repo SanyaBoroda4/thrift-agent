@@ -24,8 +24,11 @@ def evaluate(facts: Facts, price: PriceResult, lint: list[str], unsupported: int
         need.append(f"size unclear ({facts.size_us.value}, {facts.size_us.confidence:.2f})")
     if facts.condition_evidence.confidence < mc["condition"]:
         need.append(f"condition unclear ({facts.condition}, {facts.condition_evidence.confidence:.2f})")
-    if facts.condition == "NWT" and not (facts.condition_evidence.photos or facts.condition_evidence.source == "note"):
+    # Invariant 2: NWT needs the seller's own photo of the attached hang tag, or a seller note saying so.
+    if facts.condition == "NWT" and facts.hang_tag_photo is None and facts.condition_evidence.source != "note":
         need.append("NWT claimed without a hang-tag photo")
+    if facts.category.strip().lower() in ("", "other") or (facts.subcategory or "").strip().lower() == "other":
+        need.append("category/subcategory is 'Other' — pick the real Poshmark category")
     need.extend(f"question: {q}" for q in facts.questions)
 
     if price.list_price is None:

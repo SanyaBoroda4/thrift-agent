@@ -43,22 +43,34 @@ class Flaw(BaseModel):
 class Facts(BaseModel):
     item_type: str = Field(description="Plain noun phrase, e.g. 'suede ankle boots', 'wrap midi dress'")
     department: Literal["Women", "Men", "Kids", "Unisex", "Home"]
-    category: str = Field(description="Poshmark category, e.g. Shoes, Dresses, Tops, Sweaters, "
-                                      "Jackets & Coats, Swim, Skirts, Shorts, Pants & Jumpsuits, Jeans, "
-                                      "Bags, Accessories, Intimates & Sleepwear")
-    subcategory: str | None = Field(None, description="e.g. Ankle Boots & Booties, Flats & Loafers, Maxi")
+    category: str = Field(description="The real Poshmark category, from evidence (labels, retailer page, sizing): "
+                                      "Shoes, Dresses, Tops, Sweaters, Jackets & Coats, Swim, Skirts, Shorts, "
+                                      "Pants & Jumpsuits, Jeans, Bags, Accessories, Intimates & Sleepwear… Never 'Other'")
+    subcategory: str | None = Field(None, description="The real Poshmark subcategory, e.g. Ankle Boots & Booties, "
+                                                      "Flats & Loafers, Maxi. Never 'Other'")
     brand: Ev
-    style_name: Ev = Field(default_factory=Ev, description="Model/style name if printed, e.g. 'Gizeh'")
+    style_name: Ev = Field(default_factory=Ev, description="Model/style name if printed on a label or shown on a "
+                                                           "retail screenshot, e.g. 'Gizeh', 'Arizona'")
     size_printed: Ev = Field(description="Size exactly as printed on the label/insole")
     size_us: Ev = Field(description="US size. For EU shoe sizes use source=derived")
     size_eu: Ev = Field(default_factory=Ev)
     colors: list[Color] = Field(description="1-2 main colors from the palette")
-    color_name: str | None = Field(None, description="Natural color words for copy, e.g. 'chocolate brown'")
+    color_name: str | None = Field(None, description="Natural color words for copy, e.g. 'chocolate brown'; the "
+                                                     "retailer's color name when a retail screenshot shows it")
     material: Ev = Field(default_factory=Ev, description="Only from a care/content label or insole stamp")
+    retail_price: Ev = Field(default_factory=Ev, description="Full retail price, digits only, e.g. '128'. Only from a "
+                                                            "photo marked (retail screenshot) — cite its index, "
+                                                            "source=photo — or from a seller note. Never from memory")
+    retailer: Ev = Field(default_factory=Ev, description="Retailer or brand site a retail screenshot shows, e.g. "
+                                                        "'Nordstrom'; cite the screenshot index, source=photo")
     condition: Condition
     condition_evidence: Ev = Field(description="Photo(s) and the observation that justify the condition grade "
-                                               "(soles, insoles, pilling, tag). For NWT this MUST be the photo "
-                                               "showing the attached hang tag.")
+                                               "(soles, insoles, pilling, tag), from the seller's own photos only — "
+                                               "never a retail screenshot. For NWT include the hang-tag photo "
+                                               "(also given in hang_tag_photo)")
+    hang_tag_photo: int | None = Field(None, description="Index of the seller's OWN photo showing an ATTACHED retail "
+                                                         "hang tag, else null. Required for NWT. A box, a loose tag "
+                                                         "or a retail screenshot does not count")
     flaws: list[Flaw] = Field(default_factory=list)
     features: list[str] = Field(default_factory=list, description="Visible details: lining, hardware, heel height…")
     cover_photo: int = Field(description="Best photo for the cover (full item, clean)")
@@ -73,6 +85,7 @@ class PriceResult(BaseModel):
     source: Literal["brand", "brand_category", "category_default", "note", "none"]
     by_marketplace: dict[str, int] = Field(default_factory=dict)
     basis: str = ""
+    original_price: int | None = None      # retail price from a seller note; a retailer screenshot takes precedence
 
 
 class CopyOut(BaseModel):

@@ -36,8 +36,33 @@ MIN_DESCRIPTION = 20
 FLAW_WORDS = (r"\b(flaws?|wear|worn|scuff(?:s|ed|ing)?|stain(?:s|ed|ing)?|marks?|markings?|pill(?:s|ed|ing)?|"
               r"snag(?:s|ged|ging)?|holes?|tears?|torn|scratch(?:es|ed|ing)?|creas(?:e|es|ed|ing)|"
               r"fad(?:e|es|ed|ing)|discolou?r(?:ed|ation|ing)?|missing)\b")
-COLOR_WORDS = (r"\b(red|pink|orange|yellow|green|olive|blue|navy|purple|gold|silver|black|gray|grey|charcoal|"
-               r"white|cream|ivory|brown|tan|beige|nude)\b")
+# Shades copy uses for the palette colours (schema.Color). Both the copy's colour words and the facts' are normalised
+# through SHADES before comparing, so "navy" on a Blue item or "ivory" on a Cream one is not a mismatch.
+SHADES = {
+    "navy": "blue", "cobalt": "blue", "teal": "blue", "turquoise": "blue",
+    "olive": "green", "khaki": "green", "sage": "green", "mint": "green",
+    "ivory": "cream", "ecru": "cream", "natural": "cream", "off white": "cream", "oatmeal": "cream", "bone": "cream",
+    "charcoal": "gray", "slate": "gray", "graphite": "gray", "grey": "gray",
+    "beige": "tan", "camel": "tan", "taupe": "tan", "sand": "tan", "nude": "tan",
+    "burgundy": "red", "maroon": "red", "wine": "red", "rust": "red",
+    "blush": "pink", "rose": "pink", "coral": "pink",
+    "mustard": "yellow",
+    "lavender": "purple", "lilac": "purple", "plum": "purple",
+    "chocolate": "brown", "cognac": "brown", "espresso": "brown", "tobacco": "brown",
+    "rose gold": "gold",
+    "gunmetal": "silver",
+}
+PALETTE = ("red", "pink", "orange", "yellow", "green", "blue", "purple", "gold", "silver", "black", "gray", "white",
+           "cream", "brown", "tan")
+# Multi-word shades first so "rose gold" / "off-white" match as a unit, not as "rose" + "gold" or "white".
+COLOR_WORDS = (r"\b(rose[ -]gold|off[ -]white|" + "|".join(w for w in SHADES if " " not in w) + "|" +
+               "|".join(PALETTE) + r")\b")
+# A metal colour naming hardware ("gold hardware", "silver-tone buckle") is not the item's colour: the hardware noun
+# must be the next word or the one after.
+HARDWARE_COLOR = re.compile(
+    r"\b(?:rose[ -]gold|gold|silver|gunmetal)(?:[ -]+\w+)?[ -]+"
+    r"(?:hardware|buckles?|zippers?|zip|chains?|clasps?|buttons?|studs|logo|pins?|trim|eyelets|grommets|rivets|"
+    r"plaques?|accents)\b", re.I)
 BANNED = [r"\bsmoke[- ]?free\b", r"\bpet[- ]?free\b", r"\bauthentic\b", r"\btrue to size\b"]
 KIDS_WORDS = r"\bkids['’]?\b|\bkid['’]s\b|\btoddler|\bgirls['’]?\b|\bgirl['’]s\b|\bboys['’]?\b|\bboy['’]s\b"
 # Condition ladder, worst to best. A phrase claiming a grade above the facts' grade is a problem.
@@ -66,6 +91,17 @@ def _brand_needle(brand: str) -> str:
     return key
 
 
+def _shade(word: str) -> str:
+    """A colour word's palette colour: "navy" -> "blue", "Rose-Gold" -> "gold", "Red" -> "red"."""
+    word = re.sub(r"[\s-]+", " ", word.strip().lower())
+    return SHADES.get(word, word)
+
+
+def _colors_in(text: str) -> set[str]:
+    """The palette colours named in a piece of text ("Silver Jeans Co" -> {"silver"})."""
+    return {_shade(w) for w in re.findall(COLOR_WORDS, text.lower())}
+
+
 def lint(facts: Facts, copy: CopyOut) -> list[str]:
     problems: list[str] = []
     t, d, dd = copy.poshmark_title, copy.poshmark_description, copy.depop_description
@@ -81,6 +117,9 @@ def lint(facts: Facts, copy: CopyOut) -> list[str]:
     needle = _brand_needle(facts.brand.value or "")
     if needle and needle not in _key(t):
         problems.append("brand missing from title")
+    style = _key(facts.style_name.value or "")
+    if style and style not in _key(t):                       # buyers search "Birkenstock Arizona", not "sandals"
+        problems.append("style name missing from title")
     size = (facts.size_us.value or "").strip()
     # "size 8" must be there as such: '8' inside '98' or '8.5', or 'M' inside 'Madewell', does not count.
     if size and not re.search(rf"\bsize\s*{re.escape(size)}(?!\w|\.\d)", t, re.I):
@@ -94,9 +133,10 @@ def lint(facts: Facts, copy: CopyOut) -> list[str]:
         problems.append(f"title starts with New but facts are {facts.condition}")
     if re.search(r"\d,5\b", everything):
         problems.append("decimal comma in a size")
+    names = f"{facts.brand.value or ''} {facts.style_name.value or ''}"    # "Vans Authentic" is a style, not a claim
     for pat in BANNED:
         m = re.search(pat, everything, re.I)
-        if m:
+        if m and not re.search(pat, names, re.I):
             problems.append(f"unsupported phrase: {m.group(0).lower()}")
     material = (facts.material.value or "").lower()
     for m in re.finditer(r"100%\s*([a-z]+)", everything, re.I):     # "100% <fiber>" only when the label says so
@@ -107,12 +147,20 @@ def lint(facts: Facts, copy: CopyOut) -> list[str]:
         problems.append("mentions kids but the item isn't Kids")
     if facts.department == "Women" and re.search(r"\bmen'?s\b", everything, re.I) and "women" not in everything.lower():
         problems.append("mentions men's on a Women's item")
-    named = set(re.findall(COLOR_WORDS, everything.lower()))
-    allowed = {c.lower() for c in facts.colors} | set(re.findall(COLOR_WORDS, (facts.color_name or "").lower()))
-    allowed |= {"beige", "tan", "cream", "ivory", "nude"} if allowed & {"tan", "cream", "beige", "brown"} else set()
-    allowed |= {"grey", "gray", "charcoal"} if allowed & {"gray", "grey", "silver"} else set()
-    if named - allowed:
-        problems.append(f"color words not in facts: {sorted(named - allowed)}")
+    # Colours compare on the palette (SHADES): "navy" on a Blue item passes, "olive" on a Red one doesn't. A colour
+    # word that is part of the brand, style, item type, material or a feature is fine ("Silver Jeans Co"), and so is
+    # a metal colour naming hardware ("gold hardware" on a black bag is not a gold bag).
+    allowed = {_shade(c) for c in facts.colors}
+    for source in (facts.color_name, facts.brand.value, facts.item_type, facts.material.value,
+                   facts.style_name.value, *facts.features):
+        allowed |= _colors_in(source or "")
+    if allowed & {"tan", "cream", "brown"}:
+        allowed |= {"tan", "cream"}
+    if allowed & {"gray", "silver"}:
+        allowed.add("gray")
+    named = {w: _shade(w) for w in re.findall(COLOR_WORDS, HARDWARE_COLOR.sub(" ", everything.lower()))}
+    if off := sorted(w for w, base in named.items() if base not in allowed):
+        problems.append(f"color words not in facts: {off}")
     if facts.flaws:
         for marketplace, text in (("poshmark", d), ("depop", dd)):
             if not re.search(FLAW_WORDS, text, re.I):

@@ -1,6 +1,6 @@
 import json
 
-from thrift_agent.brain.copy import changed_fields, clamp_title, clean, facts_view, strip_tag_lines
+from thrift_agent.brain.copy import changed_fields, clamp_title, clean, ensure_retail_line, facts_view, strip_tag_lines
 from thrift_agent.brain.verify import lint, verify
 from thrift_agent.schema import CopyOut, Ev, Flaw, VerifyOut
 
@@ -195,3 +195,62 @@ def test_lint_length_floor(facts):
     assert "poshmark description too short" in lint(facts(), co(poshmark_description="Red flats."))
     assert "depop description too short" in lint(facts(), co(depop_description="red flats\n\n#a #b #c #d #e"))
     assert not any("too short" in p for p in lint(facts(), co()))
+
+
+def test_lint_hardware_colors_and_brand_color_words(facts):
+    bag = facts(item_type="leather shoulder bag", colors=["Black"])
+    hardware = co(poshmark_title="Tory Burch Black Leather Shoulder Bag size 7.5",
+                  poshmark_description="Black leather bag with gold-tone hardware. Condition: excellent, light wear.",
+                  depop_description="black leather bag, gold hardware, silver zip, light wear on the corners")
+    assert not any("color" in p for p in lint(bag, hardware))
+    clutch = co(poshmark_title="Tory Burch Black Leather Bag size 7.5",
+                poshmark_description="Gold clutch with a black strap. Condition: excellent, light wear.",
+                depop_description="black leather bag, light wear on the corners")
+    assert "color words not in facts: ['gold']" in lint(bag, clutch)
+    jeans = facts(brand=ev("Silver Jeans Co"), item_type="bootcut jeans", colors=["Blue"])
+    silver = co(poshmark_title="Silver Jeans Co Bootcut Jeans size 7.5",
+                poshmark_description="Blue bootcut jeans. Condition: excellent, light wear.",
+                depop_description="blue bootcut jeans, light wear at the hems")
+    assert not any("color" in p for p in lint(jeans, silver))
+
+
+def test_lint_shades_normalise_to_the_palette(facts):
+    def color_probs(colors, text):
+        c = co(poshmark_title="Tory Burch Blazer size 7.5", poshmark_description=text,
+               depop_description="cute blazer, light wear on the cuffs")
+        return [p for p in lint(facts(colors=colors), c) if "color" in p]
+    assert color_probs(["Blue"], "Navy blazer, one button. Condition: excellent, light wear.") == []
+    assert color_probs(["Green"], "Olive blazer. Condition: excellent, light wear.") == []
+    assert color_probs(["Red"], "Olive blazer. Condition: excellent, light wear.") == ["color words not in facts: ['olive']"]
+    assert color_probs(["Cream"], "Ivory blazer. Condition: excellent, light wear.") == []
+    assert color_probs(["Gray"], "Charcoal blazer. Condition: excellent, light wear.") == []
+    assert color_probs(["Tan"], "Off-white blazer. Condition: excellent, light wear.") == []      # tan/cream leniency
+    rose_gold = color_probs(["Black"], "Rose gold blazer. Condition: excellent, light wear.")
+    assert rose_gold == ["color words not in facts: ['rose gold']"]                  # matched as a unit, not "gold"
+
+
+def test_lint_authentic_allowed_when_it_is_the_style_name(facts):
+    vans = dict(brand=ev("Vans"), colors=["Black"], size_us=ev("8"))
+    sneakers = co(poshmark_title="Vans Authentic Black Canvas Sneakers size 8",
+                  poshmark_description="Black canvas sneakers. Condition: excellent, light wear.",
+                  depop_description="black canvas sneakers, light wear on the soles")
+    assert not any("authentic" in p for p in lint(facts(style_name=ev("Authentic"), **vans), sneakers))
+    assert "unsupported phrase: authentic" in lint(facts(**vans), sneakers)
+
+
+def test_lint_style_name_must_be_in_title(facts):
+    arizona = facts(brand=ev("Birkenstock"), style_name=ev("Arizona"), item_type="sandals")
+    without = co(poshmark_title="Birkenstock Red Suede Sandals size 7.5")
+    assert "style name missing from title" not in lint(arizona, co(poshmark_title="Birkenstock Arizona Red Sandals size 7.5"))
+    assert "style name missing from title" in lint(arizona, without)
+    assert "style name missing from title" not in lint(facts(), without)            # no style name known
+
+
+def test_ensure_retail_line(facts):
+    priced = facts(retail_price=ev("128"))
+    assert ensure_retail_line("Classic flats.\n\nWorn once.  \n", priced) == "Classic flats.\n\nWorn once.\nRetail $128."
+    assert ensure_retail_line("Classic flats. Retail $128.", priced) == "Classic flats. Retail $128."
+    assert ensure_retail_line("Classic flats. retails for $128", priced) == "Classic flats. retails for $128"
+    assert ensure_retail_line("Classic flats.", facts()) == "Classic flats."
+    assert ensure_retail_line("Classic flats.", facts(retail_price=ev("n/a"))) == "Classic flats."
+    assert ensure_retail_line("Classic flats.", facts(retail_price=ev("$1,299.00"))) == "Classic flats.\nRetail $1299."

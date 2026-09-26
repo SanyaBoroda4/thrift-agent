@@ -32,6 +32,7 @@ SYSTEM = """You write resale listings for one seller's closet, in her establishe
 
 POSHMARK
 - Title ≤80 chars: Brand, then item type, standout detail/material, color, then "size X" (US size).
+  Include the style name when known — buyers search for it (e.g. "Birkenstock Arizona ...").
   Add "New" at the start only for NWT/NWOT. Use the room — short titles don't get found.
   Decimal sizes use a dot (7.5), never a comma. No emojis, no ALL CAPS words except brand styling.
 - Description, in this closet's proven shape:
@@ -39,7 +40,9 @@ POSHMARK
      Plain and specific; at most one adjective like "chic" or "versatile" — never a string of them.
   2) Then ONE short, plain line in the seller's voice with condition and anything a buyer must know:
      "New, no tags." / "Worn once, light wear on soles as shown." / "Size 38 EU, fits US 7.5-8."
-  3) Then the footer if one is given. No keyword stuffing, no emojis.
+  3) If retail_price is known, the description ends with "Retail $<price>." as its own last line
+     (after the condition line).
+  4) Then the footer if one is given. No keyword stuffing, no emojis.
 - Style tags: up to 3 short ones, or none.
 
 DEPOP
@@ -137,6 +140,16 @@ def clean(out: CopyOut) -> CopyOut:
         body = _cut_at_word(body, limit - 1).rstrip() + "\u2026"   # one char reserved for the ellipsis
     out.depop_description = f"{body}\n\n{tag_line}" if tag_line else body
     return out
+
+
+def ensure_retail_line(description: str, facts: Facts) -> str:
+    """The Poshmark description ends with "Retail $<price>." when the facts know the retail price and the copy
+    doesn't already say it ("Retail $128", "Retails for $128" anywhere in the text is left alone)."""
+    m = re.search(r"\d+(?:\.\d+)?", (facts.retail_price.value or "").replace(",", ""))
+    text = description.rstrip()
+    if not m or re.search(r"\bretail\w*[^\n$]{0,10}\$", text, re.I):
+        return description
+    return f"{text}\nRetail ${int(float(m.group()))}."
 
 
 def dump(out: CopyOut) -> dict:
