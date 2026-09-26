@@ -19,3 +19,11 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: ruff check thrift_agent tests --select F,E
       - run: pytest -q
+      # The suite must not depend on the machine: run it again as if on the Mac before .env is filled in
+      # (prod local config, private settings, empty-token .env, secrets exported in the shell).
+      - name: pytest with a prod-like local config present
+        env:
+          TELEGRAM_BOT_TOKEN: ""
+          TELEGRAM_CHAT_ID: "12345"
+          ANTHROPIC_API_KEY: "sk-ant-not-a-real-key"
+        run: python .github/prodlike_config.py && pytest -q

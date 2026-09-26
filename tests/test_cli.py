@@ -66,6 +66,15 @@ def test_requeue_command_reports_marketplaces(monkeypatch):
     assert result.exit_code == 0 and calls == [("i_1", "poshmark")] and "poshmark" in result.output
 
 
+def test_poster_on_prod_without_a_telegram_token_refuses_to_start(monkeypatch, settings_override):
+    """The Mac's real situation before .env is filled in: prod + telegram.enabled, no token. This is the wanted
+    behaviour of `thrift poster` there, and it must be an explicit opt-in here, never the machine's own config."""
+    settings_override(machine_role="prod", telegram={"enabled": True})
+    monkeypatch.setattr(cli, "_db", lambda: pytest.fail("must refuse before touching the DB"))
+    r = CliRunner().invoke(cli.app, ["poster", "--once"])
+    assert r.exit_code != 0 and isinstance(r.exception, RuntimeError) and "TELEGRAM" in str(r.exception)
+
+
 def test_poster_passes_allow_dev_browser(monkeypatch):
     from typer.testing import CliRunner
     import thrift_agent.post.runner as runner

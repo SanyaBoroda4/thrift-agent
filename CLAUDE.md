@@ -83,3 +83,5 @@ The owner shares retailer screenshots (product page with price, style name, colo
 ## Style
 Python 3.11+, pydantic v2, pathlib everywhere (Windows + macOS). Pure functions for anything testable
 (gate, price, scheduler, segmentation checks, corrections). `pytest -q` must pass before deploy.
+Tests never read `config/settings.local.yaml`, `private/` or `.env` (tests/conftest.py isolates them); a test that
+needs prod behaviour or private data opts in with the `settings_override` fixture.

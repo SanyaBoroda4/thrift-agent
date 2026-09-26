@@ -13,6 +13,11 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_DIR = ROOT / "config"
 PRIVATE_DIR = ROOT / "private"      # separate private repo, git-ignored here
+SETTINGS_FILE = CONFIG_DIR / "settings.yaml"
+# Merged over SETTINGS_FILE in this order. The test suite points these (and ENV_FILE, PRIVATE_DIR) at nothing so a
+# test never depends on the machine it runs on (tests/conftest.py).
+OVERRIDE_FILES = (PRIVATE_DIR / "settings.yaml", CONFIG_DIR / "settings.local.yaml")
+ENV_FILE = ROOT / ".env"
 
 
 def _merge(base: dict, over: dict) -> dict:
@@ -75,9 +80,9 @@ class Settings:
 
 @lru_cache(maxsize=1)
 def settings() -> Settings:
-    load_dotenv(ROOT / ".env")
-    data = yaml.safe_load((CONFIG_DIR / "settings.yaml").read_text(encoding="utf-8"))
-    for over in (PRIVATE_DIR / "settings.yaml", CONFIG_DIR / "settings.local.yaml"):
+    load_dotenv(ENV_FILE)
+    data = yaml.safe_load(SETTINGS_FILE.read_text(encoding="utf-8"))
+    for over in OVERRIDE_FILES:
         if over.exists():
             data = _merge(data, yaml.safe_load(over.read_text(encoding="utf-8")) or {})
     return Settings(data)
