@@ -12,6 +12,8 @@ register_heif_opener()
 
 IMG_EXT = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp"}
 EXIF_IFD, DATETIME_ORIGINAL, DATETIME = 0x8769, 36867, 306
+MAKE, MODEL, EXPOSURE_TIME = 271, 272, 33434                   # any of these = a camera took it
+SCREEN_RATIO = (1.7, 2.4)                                      # phone screens: 16:9 up to 20:9+
 
 
 def is_photo(p: Path) -> bool:
@@ -33,6 +35,26 @@ def capture_time(p: Path) -> datetime:
     except Exception:
         pass
     return datetime.fromtimestamp(p.stat().st_mtime)
+
+
+def photo_kind(p: Path) -> str:
+    """"own" (shot by the seller's camera) or "retail" (a phone screenshot of a retailer's product page).
+    Read from the ORIGINAL file: normalize() strips EXIF. Camera EXIF (Make/Model/ExposureTime) wins; without it,
+    a phone-screen aspect ratio marks a screenshot. Anything unreadable is treated as the seller's own photo."""
+    try:
+        with Image.open(p) as im:
+            exif = im.getexif()
+            if MAKE in exif or MODEL in exif or EXPOSURE_TIME in exif.get_ifd(EXIF_IFD):
+                return "own"
+            w, h = im.size
+    except Exception:
+        return "own"
+    ratio = max(w, h) / max(1, min(w, h))
+    return "retail" if SCREEN_RATIO[0] <= ratio <= SCREEN_RATIO[1] else "own"
+
+
+def photo_kinds(paths: list[Path]) -> list[str]:
+    return [photo_kind(p) for p in paths]
 
 
 def list_photos(folder: Path) -> list[tuple[Path, datetime]]:

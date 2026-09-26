@@ -3,8 +3,9 @@ from datetime import datetime, timedelta
 import pytest
 from PIL import Image
 
-from thrift_agent.ingest import prep
-from thrift_agent.ingest.segment import Group, SegOut, apply_correction, check, contact_sheet
+from thrift_agent.brain import llm
+from thrift_agent.ingest import prep, segment
+from thrift_agent.ingest.segment import Group, SegOut, apply_correction, check, contact_sheet, parse_drops
 
 
 def g(photos, conf=0.95, full=None, sizes=()):
@@ -98,3 +99,79 @@ def test_corrections_reject_nonsense():
             apply_correction(groups, bad)
     assert apply_correction(groups, "7>4") == [[0, 1, 2], [3, 4, 5], [6], [7]]   # item N+1 = a new item
     assert groups == [[0, 1, 2], [3, 4, 5], [6, 7]]                              # input never mutated
+
+
+# --- retail screenshots ---------------------------------------------------------------------------------
+
+def kinds_for(n, retail=()):
+    return ["retail" if i in retail else "own" for i in range(n)]
+
+
+def test_check_retail_photo_does_not_break_contiguity():
+    seg = SegOut(groups=[g([0, 1, 5]), g([2, 3, 4])])            # 5 is a screenshot shared last, of item 1
+    assert check(seg, 6, 0.85, kinds=kinds_for(6, retail={5})) == []
+    assert "non-contiguous" in " ".join(check(seg, 6, 0.85))     # without kinds it still is
+    assert check(SegOut(groups=[g([0, 1, 5]), g([2, 3, 4])], screenshots=[5]), 6, 0.85) == []   # model-spotted
+
+
+def test_check_own_photos_still_must_be_contiguous_around_retail():
+    seg = SegOut(groups=[g([0, 3, 5]), g([1, 2, 4])])
+    text = " ".join(check(seg, 6, 0.85, kinds=kinds_for(6, retail={5})))
+    assert "item 1: non-contiguous photos [0, 3]" in text and "item 2: non-contiguous photos [1, 2, 4]" in text
+
+
+def test_check_group_of_only_screenshots():
+    seg = SegOut(groups=[g([0, 1, 2, 3, 4]), g([5], full=[5])])
+    reasons = check(seg, 6, 0.85, kinds=kinds_for(6, retail={5}))
+    assert reasons == ["item 2: only screenshots, no own photo"]
+    seg = SegOut(groups=[g([0, 1, 5], full=[5]), g([2, 3, 4])])  # a screenshot is not a full-item photo
+    assert check(seg, 6, 0.85, kinds=kinds_for(6, retail={5})) == ["item 1: no full-item photo"]
+
+
+def test_check_unassigned_screenshot():
+    seg = SegOut(groups=[g([0, 1, 2]), g([3, 4, 5, 6])], unassigned=[7])
+    reasons = check(seg, 8, 0.85, kinds=kinds_for(8, retail={7}))
+    assert reasons == ["screenshot 7 matches no item — reply '7>2' (into item 2) or 'drop 7'"]   # partition passes
+    seg = SegOut(groups=[g([0, 1, 2]), g([3, 4, 5, 6, 7])], unassigned=[7])
+    assert "duplicated=[7]" in " ".join(check(seg, 8, 0.85, kinds=kinds_for(8, retail={7})))
+
+
+def test_parse_drops():
+    assert parse_drops("drop 7, 3>2, drop 9") == ("3>2", [7, 9])
+    assert parse_drops("ok") == ("ok", [])
+    assert parse_drops("drop 7") == ("ok", [7])
+    assert parse_drops("Drop 7, merge 1 2") == ("merge 1 2", [7])
+    assert parse_drops("5>1, split 3") == ("5>1, split 3", [])
+
+
+def test_segment_labels_retail_screenshots(tmp_path, monkeypatch):
+    t0 = datetime(2026, 9, 21, 14, 0, 0)
+    photos = []
+    for i, c in enumerate(["red", "blue", "green"]):
+        p = tmp_path / f"{i}.jpg"
+        Image.new("RGB", (60, 80), c).save(p)
+        photos.append((p, t0 + timedelta(seconds=10 * i)))
+    captured = {}
+
+    def fake_ask(model, system, content, out, tool, description, **kw):
+        captured.update(system=system, content=content)
+        return SegOut(groups=[])
+
+    monkeypatch.setattr(llm, "ask", fake_ask)
+    segment.segment(photos, "m", 64, kinds=["own", "own", "retail"])
+    labels = [c["text"] for c in captured["content"] if c.get("type") == "text"]
+    assert labels[:3] == ["Photo 0 · t=+0s", "Photo 1 · t=+10s", "Photo 2 · retail screenshot"]
+    assert "unassigned" in captured["system"] and "ONE size" in captured["system"]
+    segment.segment(photos, "m", 64)                                             # no kinds = all own
+    assert [c["text"] for c in captured["content"] if c.get("type") == "text"][2] == "Photo 2 · t=+20s"
+
+
+def test_contact_sheet_with_kinds(tmp_path):
+    photos = []
+    for i, c in enumerate(["red", "blue", "green", "gray"]):
+        p = tmp_path / f"{i}.jpg"
+        Image.new("RGB", (120, 160), c).save(p)
+        photos.append(p)
+    sheet = contact_sheet(photos, [[0, 1, 2]], tmp_path / "sheet.png", tile=200, cols=4,
+                          kinds=["own", "own", "retail", "retail"])                # 2 in item 1, 3 in no item
+    assert sheet.exists() and Image.open(sheet).size == (800, 240)
