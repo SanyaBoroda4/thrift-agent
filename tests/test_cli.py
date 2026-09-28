@@ -200,7 +200,8 @@ def test_telegram_setup_error_names_the_env_file(monkeypatch, tmp_path):
     missing = tmp_path / "nowhere" / ".env"
     monkeypatch.setattr(cli.config, "ENV_FILE", missing)
     r = CliRunner().invoke(cli.app, ["telegram", "setup"])
-    assert r.exit_code != 0 and str(missing) in r.output and "does not exist" in r.output
+    flat = " ".join(r.output.split())                                   # the rich error panel wraps long paths
+    assert r.exit_code != 0 and "nowhere" in flat and "does not exist" in flat
 
 
 def test_exported_variables_win_over_dotenv(monkeypatch, tmp_path):
