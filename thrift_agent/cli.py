@@ -9,16 +9,24 @@ import traceback
 from pathlib import Path
 
 import typer
+from dotenv import load_dotenv
 from rich import print
 from rich.table import Table
 
-from thrift_agent import approve, notify, pipeline
+from thrift_agent import approve, config, notify, pipeline
 from thrift_agent.config import settings
 from thrift_agent.db import DB, loads
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 telegram_app = typer.Typer(help="Telegram bot helpers: setup (find the ids for .env) and test (send a message).")
 app.add_typer(telegram_app, name="telegram")
+
+
+@app.callback()
+def _startup() -> None:
+    """Load .env once, before any command runs. Commands that never call settings() (telegram setup) used to read
+    os.environ cold and report the token missing although .env had it. Exported variables still win (no override)."""
+    load_dotenv(config.ENV_FILE)
 RESEND_CHECK_SECONDS = 3600      # how often the worker looks for batches/items waiting longer than resend_after_hours
 
 
@@ -173,7 +181,9 @@ def telegram_setup() -> None:
     from thrift_agent.telegram import Bot
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
-        raise typer.BadParameter("TELEGRAM_BOT_TOKEN is not set in .env (create the bot with @BotFather first)")
+        raise typer.BadParameter(f"TELEGRAM_BOT_TOKEN is not set (read {config.ENV_FILE}"
+                                 f"{'' if config.ENV_FILE.exists() else ', which does not exist'}); "
+                                 "create the bot with @BotFather and put the token there")
     updates = Bot(token, os.getenv("TELEGRAM_CHAT_ID", ""), set()).get_updates(offset=None, timeout=0)
     chats, users = {}, {}
     for u in updates:
@@ -198,7 +208,7 @@ def telegram_test() -> None:
     bot = approve.bot_for(settings())
     if bot is None:
         raise typer.BadParameter("Telegram is not configured: telegram.enabled plus TELEGRAM_BOT_TOKEN, "
-                                 "TELEGRAM_CHAT_ID and TELEGRAM_ALLOWED_USER_IDS in .env")
+                                 f"TELEGRAM_CHAT_ID and TELEGRAM_ALLOWED_USER_IDS in {config.ENV_FILE}")
     mid = bot.send_message("thrift-agent: test message — the bot can reach this chat.")
     print(f"[green]sent[/] message {mid} to chat {bot.chat_id}")
 

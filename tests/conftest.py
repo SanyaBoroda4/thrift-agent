@@ -34,6 +34,8 @@ def isolated_settings(monkeypatch, tmp_path):
     config.settings.cache_clear()
     yield
     config.settings.cache_clear()
+    for k in SECRETS:                        # a test that loaded its own .env must not leak the secret onward
+        os.environ.pop(k, None)
 
 
 @pytest.fixture

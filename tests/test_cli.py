@@ -1,3 +1,4 @@
+import os
 import pytest
 from typer.testing import CliRunner
 
@@ -171,3 +172,44 @@ def test_telegram_test_sends_when_configured(monkeypatch):
     monkeypatch.setattr(cli.approve, "bot_for", lambda s: bot)
     r = CliRunner().invoke(cli.app, ["telegram", "test"])
     assert r.exit_code == 0 and bot.sent and "sent" in r.output
+
+
+# ---------- WO6: every command sees .env ----------
+
+def test_cli_loads_dotenv_for_commands_that_never_call_settings(monkeypatch, tmp_path):
+    """On the Mac `thrift telegram setup` said the token was missing although .env had it: it read os.environ before
+    anything had loaded .env. The app callback now loads it for every command."""
+    import thrift_agent.telegram as tg
+    env = tmp_path / ".env"
+    env.write_text("TELEGRAM_BOT_TOKEN=123:from-dotenv\nTELEGRAM_CHAT_ID=-100123\n", encoding="utf-8")
+    monkeypatch.setattr(cli.config, "ENV_FILE", env)
+    assert "TELEGRAM_BOT_TOKEN" not in os.environ                       # unset in the process: only .env has it
+    seen = {}
+
+    def fake_bot(token, chat, users):
+        seen.update(token=token, chat=chat)
+        return _FakeBot([{"update_id": 1, "message": {"chat": {"id": -100123, "title": "g"},
+                                                      "from": {"id": 555, "username": "owner"}, "text": "/start"}}])
+    monkeypatch.setattr(tg, "Bot", fake_bot)
+    r = CliRunner().invoke(cli.app, ["telegram", "setup"])
+    assert r.exit_code == 0, r.output
+    assert seen == {"token": "123:from-dotenv", "chat": "-100123"} and "555" in r.output
+
+
+def test_telegram_setup_error_names_the_env_file(monkeypatch, tmp_path):
+    missing = tmp_path / "nowhere" / ".env"
+    monkeypatch.setattr(cli.config, "ENV_FILE", missing)
+    r = CliRunner().invoke(cli.app, ["telegram", "setup"])
+    assert r.exit_code != 0 and str(missing) in r.output and "does not exist" in r.output
+
+
+def test_exported_variables_win_over_dotenv(monkeypatch, tmp_path):
+    import thrift_agent.telegram as tg
+    env = tmp_path / ".env"
+    env.write_text("TELEGRAM_BOT_TOKEN=from-dotenv\n", encoding="utf-8")
+    monkeypatch.setattr(cli.config, "ENV_FILE", env)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "from-shell")
+    seen = {}
+    monkeypatch.setattr(tg, "Bot", lambda token, chat, users: seen.update(token=token) or _FakeBot([]))
+    CliRunner().invoke(cli.app, ["telegram", "setup"])
+    assert seen["token"] == "from-shell"
