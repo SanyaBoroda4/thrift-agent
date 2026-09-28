@@ -8,7 +8,7 @@ import os
 from thrift_agent import config
 from thrift_agent.config import settings
 
-SECRETS = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "ANTHROPIC_API_KEY")
+SECRETS = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "TELEGRAM_ALLOWED_USER_IDS", "ANTHROPIC_API_KEY")
 
 
 def test_settings_come_from_the_shipped_defaults_only():
@@ -20,7 +20,10 @@ def test_settings_come_from_the_shipped_defaults_only():
 
 
 def test_secrets_are_not_visible():
+    """CI runs the suite with all of these exported to dummy values and a dummy .env at the repo root; they must not
+    reach a test (the Mac failed three tests after `set -a; source .env`)."""
     assert not any(k in os.environ for k in SECRETS)
+    assert not [k for k in os.environ if k.startswith("TELEGRAM_")]
 
 
 def test_private_data_falls_back_to_the_examples():

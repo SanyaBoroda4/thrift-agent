@@ -5,13 +5,24 @@ import pytest
 from thrift_agent import config
 from thrift_agent.schema import Ev, Facts
 
-SECRETS = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "ANTHROPIC_API_KEY")
+SECRET_PREFIXES = ("TELEGRAM_", "ANTHROPIC_API_KEY")
+
+
+def secret_names() -> list[str]:
+    """Every environment variable the agent treats as a secret: all TELEGRAM_* plus the Anthropic key."""
+    return [k for k in os.environ if k.startswith(SECRET_PREFIXES)]
+
+
+def scrub_secrets() -> dict[str, str]:
+    """Remove them from os.environ; returns what was removed."""
+    return {k: os.environ.pop(k) for k in secret_names()}
 
 
 @pytest.fixture(scope="session", autouse=True)
 def _scrub_session_env():
-    """The suite never sees the machine's secrets, even when the shell exported them (launchd, a sourced .env)."""
-    saved = {k: os.environ.pop(k) for k in SECRETS if k in os.environ}
+    """The suite never sees the machine's secrets, even when the shell exported them (`set -a; source .env`,
+    launchd). Every TELEGRAM_* variable and ANTHROPIC_API_KEY is removed for the whole session and restored after."""
+    saved = scrub_secrets()
     yield
     os.environ.update(saved)
 
@@ -29,13 +40,11 @@ def isolated_settings(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "ENV_FILE", nowhere)
     monkeypatch.setattr(config, "OVERRIDE_FILES", ())
     monkeypatch.setattr(config, "PRIVATE_DIR", tmp_path / "no-private")   # load_yaml/style_dir fall back to the examples
-    for k in SECRETS:
-        monkeypatch.delenv(k, raising=False)
+    scrub_secrets()                          # again per test: an earlier test may have loaded its own .env
     config.settings.cache_clear()
     yield
     config.settings.cache_clear()
-    for k in SECRETS:                        # a test that loaded its own .env must not leak the secret onward
-        os.environ.pop(k, None)
+    scrub_secrets()                          # ... and this one must not leak either
 
 
 @pytest.fixture

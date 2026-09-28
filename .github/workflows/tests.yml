@@ -27,3 +27,13 @@ jobs:
           TELEGRAM_CHAT_ID: "12345"
           ANTHROPIC_API_KEY: "sk-ant-not-a-real-key"
         run: python .github/prodlike_config.py && pytest -q
+      # The Mac failed three tests after `set -a; source .env`: every TELEGRAM_* variable exported and a real .env
+      # at the repo root. The suite must ignore both.
+      - name: pytest with exported dummy secrets and a dummy .env at the repo root
+        env:
+          TELEGRAM_BOT_TOKEN: "123:dummy-token"
+          TELEGRAM_CHAT_ID: "-1001234567890"
+          TELEGRAM_ALLOWED_USER_IDS: "111,222"
+          TELEGRAM_EXTRA_FUTURE_VAR: "x"
+          ANTHROPIC_API_KEY: "sk-ant-dummy"
+        run: python .github/dummy_env.py && pytest -q
