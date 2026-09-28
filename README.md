@@ -22,10 +22,17 @@ Defaults for the first weeks of live posting, until the eval numbers justify loo
   `facts.material` is backed by a label or stamp; texture words (woven, quilted, ribbed, glitter) are fine. The verifier
   treats material words as claims, and lint flags any material word in the title, description or tags that
   `facts.material` does not support.
-- **Kids sizes carry their system** in the title, the description and the listing's size field: "EU 24 / US Toddler
-  7.5" (C sizes = Toddler / Little Kid, Y = Big Kid), never a bare "US 7.5" for kids. Lint accepts the size token in
-  every form the copy rules produce ("size 7.5", "US 7.5", "(US 7.5)", "EU 24 / US Toddler 7.5"). The Poshmark kids
-  size-option mapping (`KIDS_SIZE_OPTIONS` in `post/poshmark.py`) is unverified until M2.
+- **Titles show the US size only, never EU.** Adults: "size 7.5". Kids shoes: "Toddler size 7.5" / "Little Kid
+  size 12" / "Big Kid size 4" (C sizes = Toddler / Little Kid, Y = Big Kid), never a bare "size 7.5" for kids. The EU
+  size and the full label "EU 24 / US Toddler 7.5" go in the description; the listing's size field keeps the full
+  label for the form. Lint accepts the US-only title forms, never requires EU, and flags any EU or non-US size token
+  in the title. The Poshmark kids size-option mapping (`KIDS_SIZE_OPTIONS` in `post/poshmark.py`) is unverified
+  until M2.
+- **Only five questions ever reach the owner:** brand or size below 0.70, NWT without a hang-tag photo, a category
+  of "Other", a possible re-share, and the poster's `needs_owner`. The model's own questions about optional facts
+  (material, measurements) are dropped: a missing optional fact is left out of the listing. An unsure condition is a
+  `Note:` line, not a question. Anything the owner does from the CLI (`thrift price` / `answer` / `confirm`) is
+  echoed to the Telegram group and settles the pending message there.
 - **Per-department price defaults.** `category_defaults` in `brand_tiers.yaml` are keyed by department (Women / Men /
   Kids / Unisex / Home, each with an `other` fallback). A brand missing from the price table no longer blocks the gate:
   the default becomes the suggestion in the owner's message, marked "no price history for <brand>".

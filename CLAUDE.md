@@ -38,6 +38,11 @@ Item statuses: `new` → `awaiting_price` | `needs_info` → `ready` → `postin
      NWT without `hang_tag_photo` is listed as **like new** unless the owner's reply says "NWT" (the note then
      becomes the evidence); a suspected **re-share stays held** (the price is recorded, the item stays
      `awaiting_price`) until the reply says "different item" (list it) or "same item" (drop it, status `dropped`).
+   - **The only questions.** Brand or size below 0.70, NWT without a hang-tag photo, category "Other", a possible
+     re-share, and the poster's `needs_owner`. The model's own `questions` about optional facts (material,
+     measurements) are dropped — a missing optional fact is left out of the listing; an unsure condition is a
+     "Note:", not a question. CLI actions (`thrift price` / `answer` / `confirm`) are echoed to the Telegram group
+     and settle the pending message.
 3. **The model never clicks publish.** Deterministic code fills, reads back, diffs, then publishes.
    An LLM fallback (Playwright MCP) may *fill* a form when a selector breaks; code still verifies and submits.
 4. **Idempotent posting.** Row → `posting` before the form opens. A `posting` row after a crash is never
@@ -86,9 +91,11 @@ The owner shares retailer screenshots (product page with price, style name, colo
   `facts.material` has label/stamp evidence; texture words (woven, quilted, ribbed, glitter) are fine. The verifier
   treats material words as claims; lint flags any material word in title/description/tags that `facts.material`
   doesn't support.
-- **Kids sizes carry their system** in title, description and the listing's size field: "EU 24 / US Toddler 7.5"
-  (C sizes = Toddler / Little Kid, Y = Big Kid); never a bare "US 7.5" for kids. Lint accepts the size token in every
-  form the copy rules produce ("size 7.5", "US 7.5", "(US 7.5)", "EU 24 / US Toddler 7.5"). The Poshmark kids
+- **Sizes in the title are US only, never EU.** Adults: "size 7.5". Kids shoes: "Toddler size 7.5" /
+  "Little Kid size 12" / "Big Kid size 4" (C sizes = Toddler / Little Kid, Y = Big Kid), never a bare "size 7.5" for
+  kids. The EU size and the full label "EU 24 / US Toddler 7.5" go in the description; `Render.size` keeps the full
+  label for the form. Lint accepts the US-only forms ("size 7.5", "US 7.5", "(US 7.5)", "Toddler size 7.5",
+  "US Toddler 7.5"), never requires EU, and flags any EU or non-US size token in the title. The Poshmark kids
   size-option mapping (`KIDS_SIZE_OPTIONS`) is UNVERIFIED — record it in M2.
 
 ## Telegram (M3)
