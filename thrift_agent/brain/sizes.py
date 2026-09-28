@@ -45,21 +45,40 @@ def _segment(n: float, letter: str | None, eu: float | None) -> str:
     return "Toddler" if n <= 10 else "Little Kid" if n <= 13.5 else "Big Kid"
 
 
-def size_label(facts: Facts) -> str | None:
-    """The size as the copy and the listing form should state it.
-
-    Anything but a kids shoe: size_us as it is. A kids shoe: "EU <eu> / US <segment> <n>" — the EU part only when the
-    label or size_eu gives it, the segment from the C/Y letter (on size_us or the printed label), else from the EU size,
-    else from the US number alone. A kids value that is not a shoe size ("M") is returned as it is."""
+def kids_parts(facts: Facts) -> tuple[str | None, str, str] | None:
+    """(eu, segment, n) for a kids shoe with a parseable US size, else None."""
     us = facts.size_us.value
     if us is None or not kids_shoe(facts):
-        return us
+        return None
     m = _US.match(us.strip())
     if not m:
-        return us
+        return None
     n, letter = _trim(m.group(1)), (m.group(2) or "").upper() or None
     if letter is None and (on_label := _LETTER.search(facts.size_printed.value or "")):
         letter = on_label.group(1).upper()
     eu = _eu(facts)
-    label = f"US {_segment(float(n), letter, float(eu) if eu else None)} {n}"
+    return eu, _segment(float(n), letter, float(eu) if eu else None), n
+
+
+def size_label(facts: Facts) -> str | None:
+    """The full size for the description and the listing form.
+
+    Anything but a kids shoe: size_us as it is. A kids shoe: "EU <eu> / US <segment> <n>" — the EU part only when the
+    label or size_eu gives it, the segment from the C/Y letter (on size_us or the printed label), else from the EU size,
+    else from the US number alone. A kids value that is not a shoe size ("M") is returned as it is."""
+    parts = kids_parts(facts)
+    if parts is None:
+        return facts.size_us.value
+    eu, segment, n = parts
+    label = f"US {segment} {n}"
     return f"EU {eu} / {label}" if eu else label
+
+
+def title_size(facts: Facts) -> str | None:
+    """The size phrase for the TITLE: the US size only, never EU. Adults "size 7.5"; kids shoes "Toddler size 7.5" /
+    "Little Kid size 12" / "Big Kid size 4". The EU size belongs in the description (size_label)."""
+    parts = kids_parts(facts)
+    if parts is None:
+        return f"size {facts.size_us.value}" if facts.size_us.value else None
+    _, segment, n = parts
+    return f"{segment} size {n}"

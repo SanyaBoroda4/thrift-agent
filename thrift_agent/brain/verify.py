@@ -75,8 +75,12 @@ MATERIAL_WORDS = re.compile(
     r"linen|cotton|denim|polyester|nylon|spandex|satin|velvet|straw|canvas|rubber)\b", re.I)
 # The size in the title, in any form the copy rules produce: "size 7.5", "US 7.5", "(US 7.5)", "EU 24 / US Toddler 7.5",
 # "US Little Kid 12", "US Big Kid 4". {n} is the US number without its C/Y suffix.
-SIZE_IN_TITLE = r"(?:\bsize\s*|\bUS\s*(?:Toddler\s*|Little Kid\s*|Big Kid\s*)?){n}(?:\s?[CY]\b)?(?!\w|\.\d)"
-SIZE_SYSTEM = r"\b(?:Toddler|Little Kid|Big Kid|EU)\b"
+# The title shows the US size only, in one of the forms the copy rules produce: "size 7.5", "US 7.5", "(US 7.5)",
+# "Toddler size 7.5", "US Toddler 7.5". Any other size token next to size/US/EU in the title is a problem.
+SIZE_IN_TITLE = (r"(?:\bsize\s*|\bUS\s*(?:Toddler\s*|Little Kid\s*|Big Kid\s*)?|\b(?:Toddler|Little Kid|Big Kid)\s+size\s*)"
+                 r"{n}(?:\s?[CY]\b)?(?!\w|\.\d)")
+SIZE_SYSTEM = r"\b(?:Toddler|Little Kid|Big Kid)\b"
+SIZE_TOKENS = re.compile(r"\b(size|us|eu)\s*(\d{1,2}(?:\.\d)?)\b", re.I)
 KIDS_WORDS = r"\bkids['’]?\b|\bkid['’]s\b|\btoddler|\bgirls['’]?\b|\bgirl['’]s\b|\bboys['’]?\b|\bboy['’]s\b"
 # Condition ladder, worst to best. A phrase claiming a grade above the facts' grade is a problem.
 RANK = ["fair", "good", "excellent", "like_new", "NWOT", "NWT"]
@@ -140,8 +144,11 @@ def lint(facts: Facts, copy: CopyOut) -> list[str]:
         if not re.search(SIZE_IN_TITLE.format(n=re.escape(n)), t, re.I):
             problems.append("US size missing from title")
         elif size_label(facts) != size and not re.search(SIZE_SYSTEM, t, re.I):
-            # A kids shoe: "size 7.5" alone reads as a women's 7.5. The label from sizes.size_label carries the system.
+            # A kids shoe: "size 7.5" alone reads as a women's 7.5. The segment word carries the system.
             problems.append("kids size without its system (Toddler / Little Kid / Big Kid)")
+        foreign = [f"{kw} {num}" for kw, num in SIZE_TOKENS.findall(t) if kw.lower() == "eu" or num != n]
+        if foreign:                                   # "EU 38", "size 24 (US 7.5)": the title is US-only
+            problems.append(f"title must show the US size only (found {', '.join(foreign)})")
     rank = RANK.index(facts.condition)
     for grade, pat in CONDITION_CLAIMS.items():
         if RANK.index(grade) > rank and re.search(pat, everything, re.I):

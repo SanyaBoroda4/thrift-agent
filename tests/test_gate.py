@@ -71,3 +71,19 @@ def test_other_category_needs_info(facts, gate_cfg, pricing_cfg):
         r = evaluate(facts(**kw), OK_PRICE, [], 0, gate_cfg, pricing_cfg)
         assert r.decision == "needs_info" and msg in r.reasons, kw
     assert evaluate(facts(subcategory=None), OK_PRICE, [], 0, gate_cfg, pricing_cfg).decision == "publish"
+
+
+def test_model_questions_about_optional_facts_are_not_asked(facts, gate_cfg, pricing_cfg):
+    """Owner rule: the only questions are brand/size < 0.70, NWT without a tag photo, category Other (plus the
+    pipeline's re-share and the poster's needs_owner). A missing optional fact is simply left out."""
+    f = facts(questions=["Material composition not visible on any label - is there a fabric content tag?",
+                         "What are the measurements?"])
+    r = evaluate(f, OK_PRICE, [], 0, gate_cfg, pricing_cfg)
+    assert r.decision == "publish" and r.reasons == []
+
+
+def test_unsure_condition_is_a_note_not_a_question(facts, gate_cfg, pricing_cfg):
+    f = facts(condition="good", condition_evidence=Ev(value="some wear", photos=[4], source="photo", confidence=0.55))
+    r = evaluate(f, OK_PRICE, [], 0, gate_cfg, pricing_cfg)
+    assert r.decision == "publish" and r.reasons == []
+    assert any("unsure of the condition (0.55)" in n and "listed as good" in n for n in r.notes)

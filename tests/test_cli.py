@@ -109,8 +109,9 @@ class _FakeBot:
 
 def test_price_command_sets_the_owner_price(monkeypatch):
     calls = []
+    from types import SimpleNamespace
     monkeypatch.setattr(cli.pipeline, "set_price", lambda s, db, iid, amount: calls.append((iid, amount)) or "ready")
-    monkeypatch.setattr(cli, "_db", lambda: object())
+    monkeypatch.setattr(cli, "_db", lambda: SimpleNamespace(outbox_resolve=lambda kind, ref: None))
     r = CliRunner().invoke(cli.app, ["price", "i_1", "85"])
     assert r.exit_code == 0 and calls == [("i_1", 85)] and "$85" in r.output and "ready" in r.output
 
@@ -214,3 +215,28 @@ def test_exported_variables_win_over_dotenv(monkeypatch, tmp_path):
     monkeypatch.setattr(tg, "Bot", lambda token, chat, users: seen.update(token=token) or _FakeBot([]))
     CliRunner().invoke(cli.app, ["telegram", "setup"])
     assert seen["token"] == "from-shell"
+
+
+# ---------- WO6: CLI actions are echoed to the group and settle the pending Telegram message ----------
+
+def test_price_answer_confirm_announce_to_the_group(monkeypatch, tmp_path):
+    s = _settings(tmp_path, "dev")
+    db = DB(s.path("db"))
+    monkeypatch.setattr(cli, "settings", lambda: s)
+    monkeypatch.setattr(cli, "_db", lambda: db)
+    said = []
+    monkeypatch.setattr(cli.approve, "announce", lambda s, text: said.append(text) or True)
+    monkeypatch.setattr(cli, "_tick", lambda s, db: None)
+    iid = db.add_item(db.add_batch("share", 1), 1, str(tmp_path / "item"))
+    db.set_item(iid, status="awaiting_price", price={"list_price": 30}, renders={"poshmark": {"price": 30}})
+    db.add_outbox("-100", 11, "item", iid, text="approve?")
+    db.add_outbox("-100", 12, "batch", "b_1", text="confirm?")
+    monkeypatch.setattr(cli.pipeline, "confirm", lambda s, db, bid, cmd: None)
+
+    assert CliRunner().invoke(cli.app, ["price", iid, "85"]).exit_code == 0
+    assert db.item(iid)["status"] == "ready" and db.outbox_lookup("-100", 11)["resolved_at"]
+    assert CliRunner().invoke(cli.app, ["answer", iid, "worn twice"]).exit_code == 0
+    assert CliRunner().invoke(cli.app, ["confirm", "b_1", "ok"]).exit_code == 0
+    assert db.outbox_lookup("-100", 12)["resolved_at"]
+    assert [t.split(":")[0] for t in said] == [iid, iid, "batch b_1"]
+    assert "$85" in said[0] and "worn twice" in said[1] and "(ok)" in said[2]

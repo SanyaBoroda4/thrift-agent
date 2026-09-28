@@ -55,3 +55,16 @@ def test_kids_clothing_and_odd_values_stay_as_they_are(facts):
     assert kids_shoe(kid(facts, size_us=ev("5"))) and not kids_shoe(facts())
     assert not kids_shoe(kid(facts, size_us=ev("5"), category="Tops"))
     assert SEGMENTS == ("Toddler", "Little Kid", "Big Kid")
+
+
+def test_title_size_is_us_only(facts):
+    from thrift_agent.brain.sizes import title_size
+    kid = facts(department="Kids", category="Shoes",
+                size_us=Ev(value="7.5", photos=[1], source="derived", confidence=0.8),
+                size_eu=Ev(value="24", photos=[1], source="photo", confidence=0.9))
+    assert title_size(kid) == "Toddler size 7.5"
+    assert title_size(facts(department="Kids", category="Shoes", size_us=Ev(value="4Y", photos=[1], source="photo",
+                                                                            confidence=0.9))) == "Big Kid size 4"
+    adult = facts(size_eu=Ev(value="38", photos=[3], source="photo", confidence=0.9))
+    assert title_size(adult) == "size 7.5"
+    assert title_size(facts(size_us=Ev(value=None, confidence=0.1))) is None

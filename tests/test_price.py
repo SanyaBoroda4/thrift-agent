@@ -55,8 +55,8 @@ def test_flat_category_defaults_apply_to_every_department(facts, pricing_cfg):
     for dept in ("Women", "Men", "Kids"):
         r = price(facts(brand=NOBODY, department=dept), TIERS, pricing_cfg)
         assert r.source == "category_default" and r.target == 45, dept
-    assert category_default({"Shoes": 45, "other": 10}, "Kids", "Tops") == (10, "other")
-    assert category_default({"shoes": 45}, "Kids", "Shoes") == (45, "Shoes")                 # keys match loosely
+    assert category_default({"Shoes": 45, "other": 10}, "Kids", "Tops") == (10, "flat table 'other'")
+    assert category_default({"shoes": 45}, "Kids", "Shoes") == (45, "flat table 'Shoes'")    # keys match loosely
     assert category_default({"Women": {"Shoes": 40}, "Kids": None}, "Kids", "Shoes") is None   # `Kids:` left empty
     assert category_default(None, "Women", "Shoes") is None
 
@@ -175,3 +175,38 @@ def test_tier_alias_keys_and_values_are_normalised(facts, pricing_cfg):
     f = facts(brand=facts().brand.model_copy(update={"value": "ugg australia"}))
     r = price(f, tiers, pricing_cfg)
     assert r.source == "brand" and r.target == 65
+
+
+def test_category_default_label_names_the_table_actually_used(facts, pricing_cfg):
+    """Seen live: 'category_default Kids 'Shoes': target $45' while Kids Shoes is 22 — the label said Kids, the number
+    came from a flat legacy table. Department table first, then the flat table, then each table's 'other'."""
+    from thrift_agent.brain.price import category_default
+    flat = {"Shoes": 45, "Tops": 20}
+    assert category_default(flat, "Kids", "Shoes") == (45, "flat table 'Shoes'")
+    mixed = {"Shoes": 45, "Kids": {"Shoes": 22, "other": 12}}
+    assert category_default(mixed, "Kids", "Shoes") == (22, "Kids 'Shoes'")
+    assert category_default(mixed, "Kids", "Sweaters") == (12, "Kids 'other'")
+    assert category_default(mixed, "Women", "Shoes") == (45, "flat table 'Shoes'")
+    assert category_default(mixed, "Women", "Hats") is None
+    r = price(facts(department="Kids", category="Shoes"), {"brands": {}, "aliases": {}, "category_defaults": flat}, pricing_cfg)
+    assert r.target == 45 and "flat table 'Shoes'" in r.basis and "Kids 'Shoes'" not in r.basis
+
+
+def test_category_default_from_example_and_private_style_files(facts, pricing_cfg, tmp_path):
+    import yaml
+    from thrift_agent.config import CONFIG_DIR
+    example = yaml.safe_load((CONFIG_DIR / "brand_tiers.example.yaml").read_text(encoding="utf-8"))
+    r = price(facts(department="Kids", category="Shoes"), example, pricing_cfg)
+    assert r.target == 22 and "Kids 'Shoes'" in r.basis
+    private_style = tmp_path / "brand_tiers.yaml"                        # the shape of the owner's private table
+    private_style.write_text(
+        "brands:\n  acme: {target: 50, n: 2}\naliases: {}\ncategory_defaults:\n  Women:\n    Shoes: 45\n    Dresses: 40\n"
+        "  Men:\n    Shoes: 45\n  Unisex:\n    Shoes: 45\n  Kids:\n    Shoes: 22\n    Tops: 10\n    other: 12\n"
+        "  Home:\n    other: 20\n", encoding="utf-8")
+    tiers = yaml.safe_load(private_style.read_text(encoding="utf-8"))
+    r = price(facts(department="Kids", category="Shoes"), tiers, pricing_cfg)
+    assert r.target == 22 and "Kids 'Shoes'" in r.basis
+    r = price(facts(department="Kids", category="Bags"), tiers, pricing_cfg)
+    assert r.target == 12 and "Kids 'other'" in r.basis
+    r = price(facts(department="Women", category="Shoes"), tiers, pricing_cfg)
+    assert r.target == 45 and "Women 'Shoes'" in r.basis

@@ -59,18 +59,22 @@ def note_original_price(note: str | None) -> int | None:
 
 
 def category_default(defaults: dict | None, department: str, category: str) -> tuple[int, str] | None:
-    """The table's fallback target for a brand it doesn't list, and the key it matched: defaults[department][category],
-    then defaults[department]["other"], else None. A flat {category: price} mapping (the old shape) applies to every
-    department. Department and category keys match the model's spelling case-insensitively."""
+    """(target, label) for a brand the table doesn't list, or None.
+
+    Lookup order: the department's own table, then the flat legacy table ({category: price} at the top level), then
+    each table's 'other'. The label names the table that was actually used — "Kids 'Shoes'", "flat table 'Shoes'",
+    "Kids 'other'" — so the basis can never say Kids while quoting a number from somewhere else (seen live: a Kids
+    item priced from a flat Women's-era table but labelled Kids 'Shoes'). Keys match case/whitespace-insensitively."""
     defaults = defaults or {}
-    if any(isinstance(v, dict) for v in defaults.values()):
-        table = next((v for k, v in defaults.items() if _norm_key(k) == _norm_key(department)), None) or {}
-    else:
-        table = defaults
-    by_key = {_norm_key(k): v for k, v in table.items()}
+    dept_tables = {_norm_key(k): {_norm_key(ck): cv for ck, cv in v.items()}
+                   for k, v in defaults.items() if isinstance(v, dict)}
+    flat = {_norm_key(k): v for k, v in defaults.items() if not isinstance(v, dict) and v is not None}
+    dept = dept_tables.get(_norm_key(department), {})
     for key in (category, "other"):
-        if (target := by_key.get(_norm_key(key))) is not None:
-            return target, key
+        if (target := dept.get(_norm_key(key))) is not None:
+            return target, f"{department} {key!r}"
+        if (target := flat.get(_norm_key(key))) is not None:
+            return target, f"flat table {key!r}"
     return None
 
 
@@ -114,7 +118,7 @@ def price(facts: Facts, tiers: dict | None, cfg: dict, note: str | None = None) 
         matched = repr(brand)
     elif default := category_default(defaults, facts.department, facts.category):
         target, source = default[0], "category_default"
-        matched = f"{facts.department} {default[1]!r}"       # "Kids 'Shoes'", "Kids 'other'"
+        matched = default[1]                                  # the table actually used: "Kids 'Shoes'", "flat table 'Shoes'"
     if target is None:
         return PriceResult(target=None, list_price=None, source="none", basis="no brand or category price",
                            original_price=original)

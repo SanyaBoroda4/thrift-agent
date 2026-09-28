@@ -155,6 +155,8 @@ def confirm(batch_id: str, cmd: str = typer.Argument("ok")) -> None:
     s, db = settings(), _db()
     pipeline.confirm(s, db, batch_id, cmd)
     print(f"[green]split[/] {batch_id}")
+    db.outbox_resolve("batch", batch_id)                          # the Telegram copy of this question is answered
+    approve.announce(s, f"batch {batch_id}: confirmed from the CLI ({cmd})")
     _tick_unless_worker(s, db)
 
 
@@ -162,7 +164,10 @@ def confirm(batch_id: str, cmd: str = typer.Argument("ok")) -> None:
 def answer(item_id: str, note: str) -> None:
     """Answer a needs-info / needs-owner item, e.g.  thrift answer i_... "size 8, brand Vince" """
     s, db = settings(), _db()
-    pipeline.answer(s, db, item_id, note)
+    outcome = pipeline.answer(s, db, item_id, note)
+    for kind in ("item", "owner_q"):
+        db.outbox_resolve(kind, item_id)
+    approve.announce(s, f"{item_id}: answered from the CLI: {note!r} -> {outcome}")
     _tick_unless_worker(s, db)
 
 
@@ -172,6 +177,9 @@ def price(item_id: str, amount: int) -> None:
     s, db = settings(), _db()
     status = pipeline.set_price(s, db, item_id, amount)
     print(f"[green]${amount}[/] set for {item_id} — status {status}")
+    if status != "awaiting_price":                                 # a held re-share keeps its message pending
+        db.outbox_resolve("item", item_id)
+    approve.announce(s, f"{item_id}: price ${amount} set from the CLI -> {status}")
 
 
 @telegram_app.command("setup")

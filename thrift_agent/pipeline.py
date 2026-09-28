@@ -315,10 +315,11 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
     renders = build_renders(s, iid, d, photos, facts, final, pr, kinds)
     cover_hash, twin = duplicate_check(s, db, iid, d / "cover.jpg", it["note"])
     if twin:
-        gate = GateResult("needs_info", [twin] + gate.reasons)
+        gate = GateResult("needs_info", [twin] + gate.reasons, gate.notes)
     # `hold` marks a question a price alone must not settle: set_price() keeps a held item waiting until the owner
     # answers it ("different item" lists it, "same item" drops it). `notes` are told to the owner but need no answer.
-    gate_doc = {"decision": gate.decision, "reasons": gate.reasons, "notes": notes, "hold": "reshare" if twin else None}
+    gate_doc = {"decision": gate.decision, "reasons": gate.reasons, "notes": notes + gate.notes,
+                "hold": "reshare" if twin else None}
     (d / "item.json").write_text(json.dumps({
         "facts": facts.model_dump(), "price": pr.model_dump(),
         "renders": {k: v.model_dump() for k, v in renders.items()},

@@ -190,7 +190,8 @@ def test_lint_kids_size_needs_its_system(facts):
     assert msg in lint(kid, co(poshmark_title="Nike Air Max Kids Sneakers size 24 (US 7.5)"))    # "24" is not "EU 24"
     assert msg not in lint(kid, co(poshmark_title="Nike Kids Sneakers EU 24 / US Toddler 7.5"))
     assert msg not in lint(kid, co(poshmark_title="Nike Kids Sneakers US Toddler 7.5"))
-    assert msg not in lint(kid, co(poshmark_title="Nike Kids Sneakers EU 24 US 7.5"))
+    assert msg not in lint(kid, co(poshmark_title="Nike Kids Sneakers Toddler size 7.5"))
+    assert msg in lint(kid, co(poshmark_title="Nike Kids Sneakers EU 24 US 7.5"))                # EU is not the system
     assert msg not in lint(facts(), co(poshmark_title="Tory Burch Flats size 7.5"))               # not Kids
     tee = facts(department="Kids", category="Tops", size_us=ev("5"))
     assert msg not in lint(tee, co(poshmark_title="Nike Kids Tee size 5"))                      # clothing has no groups
@@ -323,3 +324,34 @@ def test_ensure_retail_line(facts):
     assert ensure_retail_line("Classic flats.", facts()) == "Classic flats."
     assert ensure_retail_line("Classic flats.", facts(retail_price=ev("n/a"))) == "Classic flats."
     assert ensure_retail_line("Classic flats.", facts(retail_price=ev("$1,299.00"))) == "Classic flats.\nRetail $1299."
+
+
+def test_title_shows_the_us_size_only(facts):
+    """Owner rule: never an EU size in the title. Kids: 'Toddler size 7.5'; adults: 'size 7.5'. The EU size goes in
+    the description."""
+    kid = facts(department="Kids", category="Shoes", colors=["Pink"],
+                brand=ev("Naturino"), style_name=ev("Glitter Star"),
+                size_us=Ev(value="7.5", photos=[1], source="derived", confidence=0.8),
+                size_eu=Ev(value="24", photos=[1], source="photo", confidence=0.9))
+    desc = "Pink glitter star sneakers. EU 24 / US Toddler 7.5.\nCondition: excellent, light wear."
+    ok = lint(kid, co(poshmark_title="Naturino Glitter Star Pink Sneakers Toddler size 7.5", poshmark_description=desc,
+                      depop_description="pink naturino glitter star sneakers, toddler 7.5, light wear"))
+    assert not [p for p in ok if "size" in p], ok
+    bad = lint(kid, co(poshmark_title="Naturino Glitter Star Pink Sneakers EU 24 / US Toddler 7.5",
+                       poshmark_description=desc, depop_description="pink naturino glitter star sneakers, light wear"))
+    assert any("US size only" in p and "EU 24" in p for p in bad)
+    bad = lint(kid, co(poshmark_title="Naturino Glitter Star Kids Pink Sneakers size 24 (US 7.5)",
+                       poshmark_description=desc, depop_description="pink naturino glitter star sneakers, light wear"))
+    assert any("US size only" in p and "size 24" in p for p in bad)
+
+    adult = facts(size_eu=Ev(value="38", photos=[3], source="photo", confidence=0.9))
+    desc = "Red flats.\nSize 38 EU, fits US 7.5.\nCondition: excellent, light sole wear."
+    ok = lint(adult, co(poshmark_title="Tory Burch Red Ballet Flats size 7.5", poshmark_description=desc,
+                        depop_description="red tory burch flats, eu 38 / us 7.5, light wear"))
+    assert not [p for p in ok if "size" in p], ok
+    bad = lint(adult, co(poshmark_title="Tory Burch Red Ballet Flats EU 38 size 7.5", poshmark_description=desc,
+                         depop_description="red tory burch flats, light wear"))
+    assert any("US size only" in p and "EU 38" in p for p in bad)
+    bad = lint(adult, co(poshmark_title="Tory Burch Red Ballet Flats size 38", poshmark_description=desc,
+                         depop_description="red tory burch flats, light wear"))
+    assert "US size missing from title" in bad and any("found size 38" in p for p in bad)

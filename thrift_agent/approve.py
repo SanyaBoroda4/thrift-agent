@@ -217,6 +217,20 @@ def send_item(s: Settings, db: DB, iid: str) -> None:
     db.add_outbox(bot.chat_id, mid, "item", iid, text=caption)
 
 
+def announce(s: Settings, text: str) -> bool:
+    """A short one-way line to the group when the owner acts from the CLI (thrift price / answer / confirm), so
+    everyone who approves sees what changed. Best effort: True when sent, False without a bot or on an error."""
+    bot = bot_for(s)
+    if bot is None:
+        return False
+    try:
+        bot.send_message(text)
+        return True
+    except Exception as e:  # noqa: BLE001 - never let a courtesy message break the command
+        print(f"[telegram] announce failed: {type(e).__name__}: {e}", file=sys.stderr)
+        return False
+
+
 def ask_owner(s: Settings, db: DB, iid: str, question: str) -> None:
     """The poster's separate question when stuck on a field only the owner can answer (kind owner_q)."""
     text = f"Question about {iid}: {question}\nReply to this message."
