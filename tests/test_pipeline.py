@@ -610,3 +610,67 @@ def test_kids_size_carries_its_system_in_the_render(tmp_path, facts):
                 depop_hashtags=[])
     pr = PriceResult(target=22, list_price=30, source="category_default", by_marketplace={"poshmark": 30})
     assert pipeline.build_renders(s, "i_1", d, photos, f, c, pr)["poshmark"].size == "EU 24 / US Toddler 7.5"
+
+
+# ---------- WO5: a price alone settles neither NWT nor a re-share ----------
+
+def test_nwt_without_tag_lists_like_new_unless_the_owner_says_nwt(tmp_path, monkeypatch, facts, owner_messages):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    nwt = dict(condition="NWT", condition_evidence=Ev(value="tag visible", photos=[2], source="photo", confidence=0.9))
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", fake_ask(lambda **kw: facts(**nwt, **kw)))   # model: NWT, no hang_tag_photo
+    monkeypatch.setattr("thrift_agent.pipeline.load_yaml",
+                        lambda name: {"brands": {"tory burch": {"target": 70}}, "aliases": {}, "category_defaults": {}})
+    d = tmp_path / "item"
+    for i, c in enumerate(["red", "green", "blue"]):
+        _jpg(d / "photos" / f"{i:02d}.jpg", c)
+    iid = db.add_item(db.add_batch("share", 3), 1, str(d))
+
+    pipeline.process_item(s, db, iid)
+    it = db.item(iid)
+    gate = loads(it["gate"])
+    assert loads(it["facts"])["condition"] == "like_new" and loads(it["renders"])["poshmark"]["condition"] == "like_new"
+    assert gate["decision"] == "publish" and any("listed as like new" in n for n in gate["notes"])
+    assert pipeline.set_price(s, db, iid, 90) == "ready"                  # a price alone: like new, ready
+
+    pipeline.answer(s, db, iid, "NWT")                                    # the owner's word is the other proof
+    pipeline.process_item(s, db, iid)
+    it = db.item(iid)
+    assert it["status"] == "ready" and loads(it["facts"])["condition"] == "NWT"
+    assert loads(it["facts"])["condition_evidence"]["source"] == "note" and loads(it["gate"])["notes"] == []
+    assert loads(it["renders"])["poshmark"]["condition"] == "NWT" and loads(it["price"])["list_price"] == 90
+
+
+def test_reshare_hold_needs_an_explicit_answer(tmp_path, monkeypatch, facts, owner_messages):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", fake_ask(facts))
+    monkeypatch.setattr("thrift_agent.pipeline.load_yaml",
+                        lambda name: {"brands": {"tory burch": {"target": 70}}, "aliases": {}, "category_defaults": {}})
+    bid = db.add_batch("share", 3)
+    iids = []
+    for k in (1, 2, 3):                                                    # the same photos shared three times
+        d = tmp_path / f"item_{k}"
+        for i, c in enumerate(["red", "green", "blue"]):
+            _jpg(d / "photos" / f"{i:02d}.jpg", c)
+        iids.append(db.add_item(bid, k, str(d)))
+    pipeline.process_item(s, db, iids[0])
+    pipeline.set_price(s, db, iids[0], 70)
+
+    pipeline.process_item(s, db, iids[1])                                  # held as a possible re-share
+    assert loads(db.item(iids[1])["gate"])["hold"] == "reshare"
+    assert pipeline.set_price(s, db, iids[1], 60) == "awaiting_price"      # the price alone does not release it
+    it = db.item(iids[1])
+    assert it["status"] == "awaiting_price" and it["owner_price"] == 60
+    sent_before = len(owner_messages)
+    assert pipeline.answer(s, db, iids[1], "same item") == "dropped"       # confirmed duplicate: dropped, not reprocessed
+    assert db.item(iids[1])["status"] == "dropped" and len(owner_messages) == sent_before
+    with pytest.raises(ValueError, match="can't reopen"):
+        pipeline.answer(s, db, iids[1], "actually list it")
+
+    pipeline.process_item(s, db, iids[2])                                  # held again (twin of item 1)
+    assert pipeline.set_price(s, db, iids[2], 65) == "awaiting_price"
+    assert pipeline.answer(s, db, iids[2], "different item") == "new"
+    pipeline.process_item(s, db, iids[2])
+    it = db.item(iids[2])
+    assert it["status"] == "ready" and loads(it["gate"])["hold"] is None and loads(it["price"])["list_price"] == 65

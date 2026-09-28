@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS kv (
 # batch: new → needs_confirm → split | failed
 # item:  new → awaiting_price | needs_info → ready → (posting → posted | drafted | failed) → sold
 #        needs_owner: the poster asked the owner a question; the reply reprocesses the item
+#        dropped: the owner confirmed a held re-share is the same garment as an existing item
 # post:  queued → posting → posted | drafted | failed | dryrun   (failed/dryrun with no URL → queued via `thrift requeue`)
 # outbox: every Telegram message the agent sent that expects a reply (kind batch | item | owner_q), so a reply or a
 #        button press can be mapped back to its batch/item; kv holds the getUpdates offset.

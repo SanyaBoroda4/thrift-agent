@@ -29,7 +29,9 @@ ANSWERABLE = ("needs_info", "ready", "failed", "new", "awaiting_price", "needs_o
 REQUEUEABLE = ("failed", "dryrun")                      # post statuses `thrift requeue` may send back to the queue
 PRICEABLE = ("awaiting_price", "needs_info", "ready", "needs_owner")   # item statuses an owner price may be set on
 MANIFEST = "photos.json"                                # per item: which photos are the seller's own vs retail screenshots
-NOT_A_DUPLICATE = re.compile(r"different item|not a duplicate", re.I)   # seller's reply that clears the re-share hold
+NOT_A_DUPLICATE = re.compile(r"different item|not a duplicate", re.I)   # owner's reply that clears the re-share hold
+SAME_ITEM = re.compile(r"\bsame item\b|\bdrop it\b", re.I)               # owner's reply that drops a re-shared item
+NWT_WORD = re.compile(r"\bNWT\b|new with tags", re.I)                     # the owner saying so is the only other NWT proof
 
 # ---------- inbox ----------
 
@@ -256,8 +258,8 @@ def duplicate_check(s: Settings, db: DB, iid: str, cover: Path, note: str | None
             continue
         if h - other <= max_distance:
             title = next(iter((loads(row["renders"]) or {}).values()), {}).get("title", "")
-            return str(h), (f"looks like item {row['id']} ({title}) — same item? "
-                            f"Reply: thrift answer {iid} \"different item\" to list it anyway")
+            return str(h), (f"looks like item {row['id']} ({title}) — same item? Held until you reply "
+                            f"'different item' (list it) or 'same item' (drop it); a price alone does not release it")
     return str(h), None
 
 
@@ -265,6 +267,20 @@ def owner_priced(pr: PriceResult, amount: int, marketplaces: list[str]) -> Price
     """The owner's approved price replaces the suggestion for every marketplace (source 'owner')."""
     return PriceResult(target=pr.target, list_price=amount, source="owner", basis=f"owner price ${amount}",
                        by_marketplace={mp: amount for mp in marketplaces}, original_price=pr.original_price)
+
+
+def settle_nwt(facts: Facts, note: str | None) -> tuple[Facts, list[str]]:
+    """NWT is never confirmed by a price alone. Proof is the owner's own photo of the attached hang tag, or the
+    owner saying "NWT" in a note (then the note is the evidence). Without either, the item is listed as like new
+    and the owner is told how to say otherwise. Returns (facts, notes for the approval message)."""
+    if facts.condition != "NWT" or facts.hang_tag_photo is not None:
+        return facts, []
+    if note and NWT_WORD.search(note):
+        ev = facts.condition_evidence.model_copy(update={"source": "note", "confidence": 1.0,
+                                                        "value": facts.condition_evidence.value or "owner: NWT"})
+        return facts.model_copy(update={"condition_evidence": ev}), []
+    return (facts.model_copy(update={"condition": "like_new"}),
+            ["model saw NWT but no attached hang tag: listed as like new; reply 'NWT' if the tag is attached"])
 
 
 def process_item(s: Settings, db: DB, iid: str) -> None:
@@ -277,6 +293,7 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
     retail = {i for i, k in enumerate(kinds) if k == "retail"}
     facts = extract(photos, it["note"], s["models"]["extract"], s["images"]["llm_long_edge"], kinds=kinds)
     facts = strip_screenshot_evidence(facts, retail)     # a screenshot is never evidence for condition, size or flaws
+    facts, notes = settle_nwt(facts, it["note"])         # NWT needs a tag photo or the owner's word; else like new
     pr = price(facts, load_yaml("brand_tiers.yaml"), s["pricing"], it["note"])
     enabled = [mp for mp, m in s["marketplaces"].items() if m.get("enabled")]
     if it["owner_price"]:
@@ -299,20 +316,22 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
     cover_hash, twin = duplicate_check(s, db, iid, d / "cover.jpg", it["note"])
     if twin:
         gate = GateResult("needs_info", [twin] + gate.reasons)
+    # `hold` marks a question a price alone must not settle: set_price() keeps a held item waiting until the owner
+    # answers it ("different item" lists it, "same item" drops it). `notes` are told to the owner but need no answer.
+    gate_doc = {"decision": gate.decision, "reasons": gate.reasons, "notes": notes, "hold": "reshare" if twin else None}
     (d / "item.json").write_text(json.dumps({
         "facts": facts.model_dump(), "price": pr.model_dump(),
         "renders": {k: v.model_dump() for k, v in renders.items()},
-        "gate": {"decision": gate.decision, "reasons": gate.reasons},
+        "gate": gate_doc,
         "unsupported_removed": [u.model_dump() for u in audit.unsupported],
     }, indent=2), encoding="utf-8")
-    # Nothing publishes without the owner's price. Open questions (an unreadable brand or size, NWT without a tag,
-    # a possible re-share) ride along in the same message; an item the owner already priced comes back only
-    # while something is still unresolved.
+    # Nothing publishes without the owner's price. Open questions (an unreadable brand or size, a possible
+    # re-share) ride along in the same message; an item the owner already priced comes back only while something
+    # is still unresolved.
     unresolved = gate.decision == "needs_info"
     status = "awaiting_price" if unresolved or not it["owner_price"] else "ready"
     db.set_item(iid, status=status, facts=facts.model_dump(), price=pr.model_dump(),
-                renders={k: v.model_dump() for k, v in renders.items()},
-                gate={"decision": gate.decision, "reasons": gate.reasons}, cover_hash=cover_hash)
+                renders={k: v.model_dump() for k, v in renders.items()}, gate=gate_doc, cover_hash=cover_hash)
     db.log(iid, "item_processed", {"decision": gate.decision, "reasons": gate.reasons, "status": status})
 
     if status == "awaiting_price":
@@ -368,15 +387,17 @@ def set_price(s: Settings, db: DB, iid: str, amount: int) -> str:
     pr = loads(it["price"]) or {}
     pr.update(list_price=amount, source="owner", basis=f"owner price ${amount}",
               by_marketplace={mp: amount for mp in renders} or pr.get("by_marketplace", {}))
-    status = "ready" if it["status"] == "awaiting_price" else it["status"]
+    held = (loads(it["gate"]) or {}).get("hold")           # a re-share question: the price alone does not release it
+    status = "ready" if it["status"] == "awaiting_price" and not held else it["status"]
     with db.tx():
         db.set_item(iid, owner_price=amount, price=pr, renders=renders, status=status)
         db.log(iid, "price_set", {"amount": amount, "status": status})
     return status
 
 
-def answer(s: Settings, db: DB, iid: str, note: str) -> None:
-    """Seller note for one item: merge it in and send the item through the pipeline again."""
+def answer(s: Settings, db: DB, iid: str, note: str) -> str:
+    """Seller note for one item: merge it in and send the item through the pipeline again. Returns the new status:
+    'new' (reprocessing), or 'dropped' when the owner confirms a held re-share is the same item."""
     it = db.item(iid)
     if it is None:
         raise ValueError(f"unknown item {iid}")
@@ -385,12 +406,18 @@ def answer(s: Settings, db: DB, iid: str, note: str) -> None:
     if it["status"] not in ANSWERABLE:
         raise ValueError(f"item {iid} is {it['status']} — a note can't reopen it")
     merged = f"{it['note']}; {note}" if it["note"] else note
+    if (loads(it["gate"]) or {}).get("hold") == "reshare" and SAME_ITEM.search(note) and not NOT_A_DUPLICATE.search(note):
+        with db.tx():
+            db.set_item(iid, note=merged, status="dropped")     # the same garment is already listed: never list it twice
+            db.log(iid, "dropped", {"note": note})
+        return "dropped"
     with db.tx():
         # Forget earlier dry-runs / queue entries, or next_job would skip the corrected listing (dryrun + dry).
         # posting/posted/drafted/failed rows stay: those are history the poster must never repeat blindly.
         db.conn.execute("DELETE FROM posts WHERE item_id=? AND status IN ('dryrun','queued')", (iid,))
         db.set_item(iid, note=merged, status="new")
         db.log(iid, "answered", {"note": note})
+    return "new"
 
 
 def build_renders(s: Settings, iid: str, d: Path, photos: list[Path], facts: Facts, c: CopyOut,

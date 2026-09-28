@@ -23,6 +23,7 @@ OFFSET_KEY = "telegram_offset"                       # kv: the last getUpdates u
 WAITING_ITEM = ("awaiting_price", "needs_info")      # item statuses whose price message is still worth re-sending
 BATCH_HINT = "Reply to this message: ok | 12>2 | split 7 | merge 2 3 | drop 7"
 ITEM_HINT = "Reply with a number (the price) or an answer like 'size 8, 45'"
+HELD_HINT = " (still held as a possible re-share: reply 'different item' to list it or 'same item' to drop it)"
 
 _NUM = r"\d+(?:\.\d+)?"
 # A number that is money, whichever way the owner says it: "$85", "$ 85", "85 usd", "85 dollars", "price 85", "list: 85".
@@ -164,6 +165,7 @@ def item_caption(iid: str, it) -> tuple[str, int | None]:
     cond = facts.get("condition") or "condition unknown"
     n_flaws = len(facts.get("flaws") or [])
     lines.append(f"Condition: {cond}, " + ("no flaws" if n_flaws == 0 else f"{n_flaws} flaw{'s' if n_flaws != 1 else ''}"))
+    lines += [f"Note: {n}" for n in gate.get("notes") or []]      # told, not asked (e.g. NWT listed as like new)
 
     price = pr.get("list_price")
     price = int(price) if isinstance(price, (int, float)) and price > 0 else None
@@ -269,7 +271,8 @@ def _handle_callback(s: Settings, db: DB, bot: Bot, cq: dict) -> str:
             return f"approve {iid}: rejected: {e}"
         db.outbox_resolve("item", iid)
         bot.answer_callback(cid, f"Approved ${amount}")
-        bot.send_message(f"{iid}: approved at ${amount} -> {status}", reply_to=src_mid)
+        bot.send_message(f"{iid}: approved at ${amount} -> {status}" + (HELD_HINT if status == "awaiting_price" else ""),
+                         reply_to=src_mid)
         return f"approved {iid} at ${amount} ({status})"
     if parts[0] == "change" and len(parts) == 2:
         iid = parts[1]
@@ -304,13 +307,13 @@ def _reply_item(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int | N
     if price is not None:
         try:
             status = pipeline.set_price(s, db, iid, price)
-            recorded.append(f"price ${price} -> {status}")
+            recorded.append(f"price ${price} -> {status}" + (HELD_HINT if status == "awaiting_price" else ""))
         except ValueError as e:
             errors.append(str(e))
     if note is not None:
         try:
-            pipeline.answer(s, db, iid, note)
-            recorded.append(f"note {note!r} - reprocessing")
+            outcome = pipeline.answer(s, db, iid, note)
+            recorded.append(f"note {note!r} - " + ("dropped (same item)" if outcome == "dropped" else "reprocessing"))
         except ValueError as e:
             errors.append(str(e))
     if recorded:

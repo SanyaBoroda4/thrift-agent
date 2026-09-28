@@ -463,3 +463,24 @@ def test_resend_pending_without_bot_does_nothing(tmp_path):
     _age(db, 11, hours=9)
     assert resend_pending(s, db, force=True) == []
     assert _outbox(db, bid)[0]["resolved_at"] is None
+
+
+def test_held_reshare_reply_says_so_and_same_item_drops(env, tmp_path, facts, monkeypatch):
+    """WO5: a price on a held item is recorded but the hold stays; 'same item' drops it (wording comes from pipeline)."""
+    s, db, bot = env
+    iid = _item(db, tmp_path, facts, gate={"decision": "needs_info", "reasons": ["looks like item i_x"], "hold": "reshare"})
+    send_item(s, db, iid)
+    out = handle_update(s, db, bot, _reply("45", reply_to=11))
+    assert "still held" in bot.texts()[-1] and "awaiting_price" in out
+    it = db.item(iid)
+    assert it["status"] == "awaiting_price" and it["owner_price"] == 45
+    out = handle_update(s, db, bot, _reply("same item", reply_to=11))
+    assert "dropped" in out and "dropped" in bot.texts()[-1] and db.item(iid)["status"] == "dropped"
+
+
+def test_item_caption_shows_notes(env, tmp_path, facts):
+    s, db, bot = env
+    iid = _item(db, tmp_path, facts, gate={"decision": "publish", "reasons": [],
+                                          "notes": ["model saw NWT but no attached hang tag: listed as like new"]})
+    send_item(s, db, iid)
+    assert "Note: model saw NWT but no attached hang tag" in bot.texts()[-1]
