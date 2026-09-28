@@ -133,10 +133,13 @@ messages or presses its buttons.
   **[Approve $P]** and **[Change]**. Replying to the message with a number (`85`, `$85`, `85.00`, `85 dollars`) sets
   the price; [Change] asks "reply with the price". The approved price is stored with source `owner` and the item
   becomes `ready`. Nothing publishes without price approval.
-- **Questions folded in.** If brand or size is truly unreadable (below 0.70), NWT lacks a hang-tag photo, or the item
-  looks like a re-share, the question is part of the *same* message. The reply may carry both answers and the price
-  (`size 8, 45`): the price is stored, the note reprocesses the item, and it comes back for approval only if something
-  is still unresolved — the owner's price is kept.
+- **Questions folded in.** If brand or size is truly unreadable (below 0.70) or the item looks like a re-share, the
+  question is part of the *same* message. The reply may carry both answers and the price (`size 8, 45`): the price is
+  stored, the note reprocesses the item, and it comes back for approval only if something is still unresolved — the
+  owner's price is kept. A price alone accepts the model's best reading of brand and size.
+- **Two answers must be explicit.** *NWT without a hang-tag photo* is listed as **like new** and the message says so
+  in a `Note:` line; reply `NWT` (with or without the price) if the tag really is attached. *A suspected re-share*
+  stays held even after a price: reply `different item` to list it or `same item` to drop it.
 - **`needs_owner`.** The poster may send a *separate* question when it is stuck on a field only the owner can answer
   (a brand missing from Poshmark's list, an ambiguous category). The item waits in `needs_owner` while the others
   continue; the reply is attached to the item and it is reprocessed. No other questions go to the owner.

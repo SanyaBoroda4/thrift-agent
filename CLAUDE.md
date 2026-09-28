@@ -34,6 +34,10 @@ Item statuses: `new` → `awaiting_price` | `needs_info` → `ready` → `postin
      seller note, never confidence. A price-table miss no longer blocks the gate: the per-department
      `category_defaults` (Women/Men/Kids/Unisex/Home, each with `other`) become the suggestion in the owner's
      message, marked "no price history for <brand>".
+   - **Explicit answers.** A price alone settles brand/size (the model's best reading stands) but never these two:
+     NWT without `hang_tag_photo` is listed as **like new** unless the owner's reply says "NWT" (the note then
+     becomes the evidence); a suspected **re-share stays held** (the price is recorded, the item stays
+     `awaiting_price`) until the reply says "different item" (list it) or "same item" (drop it, status `dropped`).
 3. **The model never clicks publish.** Deterministic code fills, reads back, diffs, then publishes.
    An LLM fallback (Playwright MCP) may *fill* a form when a selector breaks; code still verifies and submits.
 4. **Idempotent posting.** Row → `posting` before the form opens. A `posting` row after a crash is never
@@ -97,8 +101,10 @@ The owner shares retailer screenshots (product page with price, style name, colo
 - Item: ONE message in `awaiting_price` — cover, title, size (with system), condition + flaw count, suggested price +
   basis, "Retail $X" if known, "no price history for <brand>" for a category default; [Approve $P] [Change]. A reply
   with a number (`85`, `$85`, `85.00`, `85 dollars`) sets the price (source `owner`) → `ready`. Unreadable brand/size
-  (< 0.70), NWT without hang-tag photo, or a suspected re-share is folded into the same message; a reply like
-  `size 8, 45` stores the price and reprocesses with the note; it comes back only if still unresolved (price kept).
+  (< 0.70) or a suspected re-share is folded into the same message; a reply like `size 8, 45` stores the price and
+  reprocesses with the note; it comes back only if still unresolved (price kept). Two questions are never settled
+  by a price alone: NWT without a hang-tag photo is listed as like new (a "Note:" line says so) unless the reply
+  says `NWT`; a re-share hold needs `different item` (list it) or `same item` (drop it).
 - `needs_owner`: the poster's separate question (brand missing from Poshmark's list, ambiguous category); other items
   continue; the reply is attached and the item reprocessed.
 - Re-send: on worker start and about hourly, anything waiting longer than `telegram.resend_after_hours` (default 6)
