@@ -299,3 +299,58 @@ def test_compare_normalises():
     assert compare({}, {"original_price": None}) == {}
     assert compare({"original_price": "120"}, {"original_price": None}) == {"original_price": (None, "120")}
     assert compare({"photos": 15}, {"photos": 16}) == {"photos": (16, 15)}
+
+
+# ---------------------------------------------------------------- WO12: a dry-run leaves no draft behind
+
+class Counting(Leaving):
+    """A site that shows its draft count; `counts` is what drafts() reads each time (an Exception is raised)."""
+    counts_drafts = True
+
+    def __init__(self, seen, counts, **kw):
+        super().__init__(seen, **kw)
+        self.counts = list(counts)
+
+    async def drafts(self, page):
+        value = self.counts.pop(0)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+
+LEFT = "a draft was left behind (Drafts 0 → 1)"
+
+
+def test_a_dry_run_that_left_a_draft_says_so(tmp_path):
+    p = Counting(GOOD, [0, 1])
+    out = run(p, dry_run=True, shots=tmp_path)
+    assert out.status == "dryrun" and out.draft_left == LEFT and out.note == LEFT and p.counts == []
+    p = Counting(GOOD, [3, 3])
+    out = run(p, dry_run=True, shots=tmp_path)
+    assert out.draft_left is None and out.note is None
+
+
+def test_an_unreadable_draft_count_is_a_note_not_a_warning(tmp_path):
+    out = run(Counting(GOOD, [None]), dry_run=True, shots=tmp_path)            # no reopening without a "before"
+    assert out.draft_left is None and out.note == ("could not read the Drafts count before the dry-run, so no "
+                                                   "left-behind check")
+    out = run(Counting(GOOD, [0, RuntimeError("gone")]), dry_run=True, shots=tmp_path)
+    assert out.draft_left is None and out.note == "could not read the Drafts count after the dry-run"
+
+
+def test_the_drafts_are_counted_after_failed_and_parked_dry_runs_but_never_live(tmp_path):
+    from thrift_agent.post.base import NeedsOwner
+
+    out = run(Counting({"title": "Tory Burch Red Flats size 7.5", "price": "80"}, [0, 1]), dry_run=True, shots=tmp_path)
+    assert out.status == "failed" and out.draft_left == LEFT
+
+    class Stuck(Counting):
+        async def fill(self, page, r):
+            raise NeedsOwner("which brand?")
+
+    with pytest.raises(NeedsOwner) as info:
+        run(Stuck(GOOD, [0, 1]), dry_run=True, shots=tmp_path)
+    assert info.value.draft_left == LEFT
+
+    p = Counting(GOOD, [0, 1])
+    assert run(p, shots=tmp_path).status == "posted" and p.counts == [0, 1]     # a live post: never counted

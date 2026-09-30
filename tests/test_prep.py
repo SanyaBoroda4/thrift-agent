@@ -64,3 +64,48 @@ def test_photo_kinds(tmp_path):
              save(tmp_path / "2.jpg", SCREEN, camera_exif())]
     assert prep.photo_kinds(paths) == ["retail", "own", "own"]
     assert prep.photo_kinds([]) == []
+
+
+# ---------- WO12: the 3:4 cover ----------
+
+def _photo(p: Path, size: tuple[int, int], bg="white", item="red") -> Path:
+    """A photo: `bg` background with an `item` block in the middle half."""
+    img = Image.new("RGB", size, bg)
+    w, h = size
+    img.paste(Image.new("RGB", (w // 2, h // 2), item), (w // 4, h // 4))
+    img.save(p)
+    return p
+
+
+def test_the_cover_is_3_by_4_portrait_padded_never_cropped(tmp_path):
+    phone = prep.portrait_cover(_photo(tmp_path / "a.jpg", (300, 400)), tmp_path / "c1.jpg")    # 3:4 already
+    with Image.open(phone) as im:
+        assert im.size == (1200, 1600)
+        assert im.getpixel((600, 800))[0] > 200 and im.getpixel((5, 5)) == (255, 255, 255)   # just resized
+    wide = prep.portrait_cover(_photo(tmp_path / "b.jpg", (400, 300), bg="navy"), tmp_path / "c2.jpg", 300, 400)
+    with Image.open(wide) as im:
+        assert im.size == (300, 400)
+        top, left = im.getpixel((150, 10)), im.getpixel((2, 200))
+        assert top[2] > 100 and top[0] < 40                     # padded above and below in the photo's own navy
+        assert left[2] > 100 and left[0] < 40                   # ... and nothing of its width was cut
+    tall = prep.portrait_cover(_photo(tmp_path / "d.jpg", (200, 400), bg="green"), tmp_path / "c3.jpg", 300, 400)
+    with Image.open(tall) as im:
+        assert im.size == (300, 400) and im.getpixel((5, 200))[1] > 100          # padded left and right in green
+
+
+def test_cover_size_setting():
+    assert prep.cover_dims([1200, 1600]) == (1200, 1600)
+    assert prep.cover_dims(1600) == (1200, 1600)                 # an old single number: the long edge of a 3:4
+
+
+def test_cover_hash_matches_the_square_covers_of_older_items(tmp_path):
+    """Items listed before the 3:4 cover stored phash(square cover.jpg): the new hash is taken the same way."""
+    import imagehash
+
+    src = _photo(tmp_path / "a.jpg", (300, 400))
+    old = prep.square_cover(src, tmp_path / "old_cover.jpg", 1600)
+    with Image.open(old) as im:
+        stored = imagehash.phash(im)
+    assert stored - imagehash.hex_to_hash(prep.cover_hash(src)) == 0       # bit for bit (8 = the duplicate limit)
+    with Image.open(prep.portrait_cover(src, tmp_path / "new_cover.jpg")) as im:
+        assert im.size == (1200, 1600)                          # what Poshmark gets is 3:4 all the same

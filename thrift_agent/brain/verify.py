@@ -5,7 +5,7 @@ import json
 import re
 import unicodedata
 
-from thrift_agent.brain import llm
+from thrift_agent.brain import llm, taxonomy
 from thrift_agent.brain.copy import strip_tag_lines
 from thrift_agent.brain.sizes import kids_parts, size_label
 from thrift_agent.schema import CopyOut, Facts, VerifyOut
@@ -119,6 +119,27 @@ def _colors_in(text: str) -> set[str]:
     return {_shade(w) for w in re.findall(COLOR_WORDS, text.lower())}
 
 
+def unsupported_materials(text: str, facts: Facts) -> list[str]:
+    """The material words in `text` that facts.material (a label or stamp) does not state — the brand or style name
+    counts too ("Canvas" as a style). Two-word materials match as a unit: "faux leather" needs "faux leather"."""
+    names = f"{facts.brand.value or ''} {facts.style_name.value or ''}"
+    supported = re.sub(r"[\s-]+", " ", f"{facts.material.value or ''} {names}".lower())
+    claimed = dict.fromkeys(re.sub(r"[\s-]+", " ", m.group(1).lower()) for m in MATERIAL_WORDS.finditer(text))
+    return [word for word in claimed if not re.search(rf"\b{re.escape(word)}\b", supported)]
+
+
+def fit_style_tags(tags: list[str], facts: Facts) -> list[str]:
+    """At most 3 of Poshmark's curated style tags, spelled as Poshmark does; a material tag ("Leather", "Suede",
+    "Wool", ...) only when the facts back the material, like any material word in the copy. Anything else is dropped:
+    tags are optional, and the poster could not enter them anyway."""
+    out: list[str] = []
+    for tag in tags:
+        name = taxonomy.style_tag(tag)
+        if name and name not in out and not unsupported_materials(name, facts):
+            out.append(name)
+    return out[:3]
+
+
 def lint(facts: Facts, copy: CopyOut) -> list[str]:
     problems: list[str] = []
     t, d, dd = copy.poshmark_title, copy.poshmark_description, copy.depop_description
@@ -174,11 +195,8 @@ def lint(facts: Facts, copy: CopyOut) -> list[str]:
         fiber = m.group(1).lower()
         if fiber not in material:
             problems.append(f"unsupported phrase: 100% {fiber}")
-    supported = re.sub(r"[\s-]+", " ", f"{material} {names}".lower())     # the label, the brand and the style name
-    claimed = dict.fromkeys(re.sub(r"[\s-]+", " ", m.group(1).lower()) for m in MATERIAL_WORDS.finditer(everything))
-    for word in claimed:
-        if not re.search(rf"\b{re.escape(word)}\b", supported):
-            problems.append(f"material not in facts: {word}")
+    for word in unsupported_materials(everything, facts):     # the label, the brand and the style name back it
+        problems.append(f"material not in facts: {word}")
     if facts.department != "Kids" and re.search(KIDS_WORDS, everything, re.I):
         problems.append("mentions kids but the item isn't Kids")
     if facts.department == "Women" and re.search(r"\bmen'?s\b", everything, re.I) and "women" not in everything.lower():

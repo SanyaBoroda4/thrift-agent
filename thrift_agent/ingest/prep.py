@@ -1,6 +1,7 @@
-"""Photo normalization: HEIC→JPEG, EXIF rotation, resize, near-duplicate drop, square cover."""
+"""Photo normalization: HEIC→JPEG, EXIF rotation, resize, near-duplicate drop, the 3:4 cover."""
 from __future__ import annotations
 
+import io
 from datetime import datetime
 from pathlib import Path
 
@@ -89,19 +90,75 @@ def drop_near_duplicates(paths: list[Path], times: list[datetime], max_distance:
     return kept, dropped
 
 
+def _edge_color(im: Image.Image, rows: bool) -> tuple[int, ...]:
+    """Median colour of the photo's top and bottom rows (`rows`) or of its left and right columns."""
+    w, h = im.size
+    if rows:
+        strip = Image.new("RGB", (w, 4))
+        strip.paste(im.crop((0, 0, w, 2)), (0, 0))
+        strip.paste(im.crop((0, h - 2, w, h)), (0, 2))
+    else:
+        strip = Image.new("RGB", (4, h))
+        strip.paste(im.crop((0, 0, 2, h)), (0, 0))
+        strip.paste(im.crop((w - 2, 0, w, h)), (2, 0))
+    return tuple(int(c) for c in ImageStat.Stat(strip).median)
+
+
+def _square(im: Image.Image) -> Image.Image:
+    """Padded (never cropped) to 1:1 with the colour of the top and bottom rows."""
+    im = im.convert("RGB")
+    w, h = im.size
+    side = max(w, h)
+    canvas = Image.new("RGB", (side, side), _edge_color(im, rows=True))
+    canvas.paste(im, ((side - w) // 2, (side - h) // 2))
+    return canvas
+
+
+def _save_jpeg(im: Image.Image, dst: Path) -> Path:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    im.save(dst, "JPEG", quality=92, optimize=True)
+    return dst
+
+
 def square_cover(src: Path, dst: Path, size: int) -> Path:
     """Pad (never crop) to 1:1 using the photo's own border color, so shoes and hems aren't cut."""
     with Image.open(src) as im:
+        return _save_jpeg(_square(im).resize((size, size), Image.Resampling.LANCZOS), dst)
+
+
+def portrait_cover(src: Path, dst: Path, width: int = 1200, height: int = 1600) -> Path:
+    """The listing cover: padded (never cropped) to width:height — 3:4 portrait, the frame of Poshmark's cover dialog,
+    so its default crop takes the whole picture — with the colour of the edges that grow (top and bottom for a photo
+    wider than 3:4, left and right for a taller one). A 3:4 phone photo is only resized."""
+    with Image.open(src) as im:
         im = im.convert("RGB")
         w, h = im.size
-        border = Image.new("RGB", (w, 4))
-        border.paste(im.crop((0, 0, w, 2)), (0, 0))
-        border.paste(im.crop((0, h - 2, w, h)), (0, 2))
-        bg = tuple(int(c) for c in ImageStat.Stat(border).median)
-        side = max(w, h)
-        canvas = Image.new("RGB", (side, side), bg)
-        canvas.paste(im, ((side - w) // 2, (side - h) // 2))
-        canvas = canvas.resize((size, size), Image.Resampling.LANCZOS)
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        canvas.save(dst, "JPEG", quality=92, optimize=True)
-    return dst
+        if w * height > h * width:                     # wider than width:height: taller canvas
+            size, rows = (w, round(w * height / width)), True
+        else:                                          # taller (or exact): wider canvas
+            size, rows = (round(h * width / height), h), False
+        canvas = Image.new("RGB", size, _edge_color(im, rows))
+        canvas.paste(im, ((size[0] - w) // 2, (size[1] - h) // 2))
+        return _save_jpeg(canvas.resize((width, height), Image.Resampling.LANCZOS), dst)
+
+
+def cover_dims(value) -> tuple[int, int]:
+    """images.cover_size: [width, height] (3:4 portrait); a single number is the long edge of a 3:4 cover."""
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        return int(value[0]), int(value[1])
+    return round(int(value) * 3 / 4), int(value)
+
+
+SQUARE_COVER_SIZE = 1600      # what cover.jpg was before the 3:4 cover: the duplicate check's hashes are of that
+
+
+def cover_hash(src: Path) -> str:
+    """phash of the square cover.jpg this photo would have made before the 3:4 cover (padded to 1:1, 1600 px, JPEG
+    q92, all in memory): items listed since compare with the hashes stored for older items bit for bit."""
+    with Image.open(src) as im:
+        square = _square(im).resize((SQUARE_COVER_SIZE, SQUARE_COVER_SIZE), Image.Resampling.LANCZOS)
+    buf = io.BytesIO()
+    square.save(buf, "JPEG", quality=92, optimize=True)
+    buf.seek(0)
+    with Image.open(buf) as im:
+        return str(imagehash.phash(im))

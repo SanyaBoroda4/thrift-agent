@@ -491,3 +491,30 @@ def test_pause_helper_wakes_on_stop():
         stop.clear()
         await runner._pause(stop, 0.01)                        # times out quietly
     asyncio.run(go())
+
+
+def test_run_warns_when_a_dry_run_left_a_draft(tmp_path, monkeypatch, harness):
+    said, _ = harness
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid = _ready_item(db)
+    left = "a draft was left behind (Drafts 0 → 1)"
+    poster = StubPoster(Outcome("dryrun", note=left, draft_left=left))
+    _run(monkeypatch, s, db, poster, once=True)
+    warning = [m for m in said if m.startswith("⚠️ poshmark: a draft was left behind")]
+    assert warning == [f"⚠️ poshmark: {left} by the dry-run of {iid}. Delete it in the closet's Drafts; the "
+                       "leave step (Cancel → Discard Changes) needs a look."]
+    detail = loads(db.conn.execute("SELECT detail FROM events WHERE kind='post_dryrun'").fetchone()[0])
+    assert detail["draft_left"] == left
+
+
+def test_run_warns_about_a_left_draft_after_a_question_too(tmp_path, monkeypatch, harness):
+    said, _ = harness
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    _ready_item(db)
+    question = NeedsOwner("which brand?")
+    question.draft_left = "a draft was left behind (Drafts 2 → 3)"
+    monkeypatch.setattr(approve, "ask_owner", lambda *a: None)
+    _run(monkeypatch, s, db, StubPoster(question), once=True)
+    assert any("a draft was left behind (Drafts 2 → 3) by the dry-run of" in m for m in said)

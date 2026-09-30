@@ -165,6 +165,7 @@ SEL = {
     "save_draft": lambda p: p.locator('button[data-et-name="save_draft"]:visible'),
     "discard": lambda p: p.locator('button[data-et-name="discard"]:visible'),
     "restricted_banner": lambda p: p.get_by_text(re.compile("account is restricted", re.I)),   # verified Sep 2026
+    "drafts_count": lambda p: p.locator('[data-et-name="draftsSection"] .listing-editor__promotion__count'),
     "dropdown_root": lambda anchor: anchor.locator(_DROPDOWN),
     # The cover dialog Poshmark opens after the upload (the Mac snapshot, 2026-09-30).
     "cover_dialog": lambda p: p.locator(_COVER),
@@ -259,6 +260,7 @@ async def _type(loc: Locator, text: str) -> None:
 class PoshmarkPoster(Poster):
     name = "poshmark"
     base_url = "https://poshmark.com"
+    counts_drafts = True                 # the create page shows "Drafts N": Poster.post checks each dry-run left none
 
     def __init__(self, username: str):
         self.username = username
@@ -279,6 +281,16 @@ class PoshmarkPoster(Poster):
             raise AccountBlocked("CAPTCHA shown — solve it by hand in the poster window")
         if await SEL["restricted_banner"](page).count():
             raise AccountBlocked("Poshmark account is restricted (unshipped/cancelled orders)")
+
+    async def drafts(self, page: Page) -> int | None:
+        """The count in the create page's Drafts panel ("Drafts 0"), or None when it can't be read."""
+        count = SEL["drafts_count"](page).first
+        try:
+            await count.wait_for(state="attached", timeout=MENU_TIMEOUT_MS)
+            text = (await count.text_content() or "").strip()
+        except PlaywrightTimeout:
+            return None
+        return int(text) if text.isdigit() else None
 
     # ---------------------------------------------------------------- fill
 

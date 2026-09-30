@@ -112,6 +112,8 @@ def test_end_to_end(tmp_path, monkeypatch, facts, owner_messages):
     assert ("item", it["id"]) in owner_messages                                      # ONE approval message
     posh = renders["poshmark"]
     assert posh["price"] == 95 and posh["sku"] == it["id"] and posh["photos"][0].endswith("cover.jpg")
+    with Image.open(posh["photos"][0]) as cover:
+        assert cover.size == (1200, 1600)                       # 3:4 portrait: Poshmark's cover crop leaves it as is
     assert pipeline.set_price(s, db, it["id"], 90) == "ready"                          # the owner's word
     it = db.item(it["id"])
     assert loads(it["renders"])["poshmark"]["price"] == 90 and loads(it["price"])["source"] == "owner"
@@ -751,3 +753,24 @@ def test_a_category_poshmark_does_not_have_is_asked_in_the_approval_message(tmp_
                                  "'category Tops'"
     # Like brand/size, a price alone lets the model's reading stand; the poster asks if the form lacks the name.
     assert pipeline.set_price(s, db, iid, 60) == "ready"
+
+
+def test_the_listing_keeps_only_poshmarks_curated_style_tags(tmp_path, monkeypatch, facts, owner_messages):
+    """WO12: the copy model's tags are put on Poshmark's list before lint; a material tag needs a label."""
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    base = fake_ask(facts)
+
+    def ask(model, system, content, out, tool, description, **kw):
+        result = base(model, system, content, out, tool, description, **kw)
+        if out is CopyOut:
+            result.poshmark_style_tags = ["casual", "boho", "Leather"]
+        return result
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", ask)
+    monkeypatch.setattr("thrift_agent.pipeline.load_yaml",
+                        lambda name: {"brands": {"tory burch": {"target": 70}}, "aliases": {}, "category_defaults": {}})
+    iid = _one_item(tmp_path, db)
+    pipeline.process_item(s, db, iid)
+    it = db.item(iid)
+    assert loads(it["renders"])["poshmark"]["tags"] == ["Casual"]            # boho: not Poshmark's; Leather: no label
+    assert not any("material" in r for r in loads(it["gate"])["reasons"])   # dropped, so never a lint problem

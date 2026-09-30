@@ -79,6 +79,16 @@ def fit(facts: Facts) -> tuple[Facts, list[str], list[str]]:
     return facts.model_copy(update={"category": category, "subcategory": sub}), notes, []
 
 
+def style_tags() -> list[str]:
+    """Poshmark's curated style tags, as its form lists them."""
+    return list(load().get("style_tags") or [])
+
+
+def style_tag(name: str) -> str | None:
+    """Poshmark's spelling of a curated style tag ("leopard print" -> "Leopard Print", "y2k" -> "Y2K"), else None."""
+    return _find(name, style_tags()) if name and name.strip() else None
+
+
 def prompt_text() -> str:
     """The lists for the extraction prompt, so the model picks Poshmark's own names."""
     lines = ["Poshmark's category names (use them exactly; a subcategory from its list when one is given):"]

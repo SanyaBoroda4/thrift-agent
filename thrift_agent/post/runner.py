@@ -79,6 +79,13 @@ def _install_stop(stop: asyncio.Event) -> None:
             pass
 
 
+def _warn_draft(mp: str, iid: str, left: str | None) -> None:
+    """A dry-run must leave no draft: say so at once, apart from the dry-run's own message."""
+    if left:
+        notify.say(f"\u26a0\ufe0f {mp}: {left} by the dry-run of {iid}. Delete it in the closet's Drafts; the "
+                   "leave step (Cancel \u2192 Discard Changes) needs a look.")
+
+
 def _halt(s: Settings, reason: str, text: str) -> None:
     """Invariant 5 — stop, don't guess: PAUSE makes can_post() refuse until the seller deletes the file."""
     s.flag("PAUSE").write_text(f"{datetime.now():%F %T} {reason}\n", encoding="utf-8")
@@ -143,6 +150,7 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, 
                 db.set_item(iid, status="needs_owner")
                 approve.ask_owner(s, db, iid, e.question)
                 db.log(iid, "needs_owner", {"mp": mp, "question": e.question})
+                _warn_draft(mp, iid, e.draft_left)
                 if once:
                     return
                 await _pause(stop, next_gap(s["schedule"]))
@@ -162,7 +170,8 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, 
             db.upsert_post(iid, mp, status=out.status, url=out.url, last_error=out.error,
                            posted_at=stamp if out.status in ("posted", "drafted", "dryrun") else None)
             db.log(iid, f"post_{out.status}", {"mp": mp, "url": out.url, "error": out.error, "shot": out.screenshot,
-                                               "note": out.note})
+                                               "note": out.note, "draft_left": out.draft_left})
+            _warn_draft(mp, iid, out.draft_left)
             note = f"\n{out.note}" if out.note else ""
             if out.status == "failed":
                 notify.photo(Path(out.screenshot or ""), f"❌ {mp} failed ({iid}): {render.title}\n{out.error}{note}")

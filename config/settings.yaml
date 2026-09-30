@@ -23,7 +23,7 @@ images:
   work_long_edge: 2048
   llm_long_edge: 1568
   thumb_long_edge: 384
-  cover_size: 1600
+  cover_size: [1200, 1600] # width, height: 3:4 portrait, the frame of Poshmark's cover crop (padded, never cropped)
   dedupe_hamming: 4        # consecutive photos closer than this are treated as duplicates
 
 inbox:

@@ -81,3 +81,12 @@ def test_fit_returns_a_copy(facts):
     f = facts(department="Kids", category="Tops")
     out, _, _ = taxonomy.fit(f)
     assert f.category == "Tops" and out.category == "Shirts & Tops" and isinstance(out, Facts)
+
+
+def test_poshmarks_curated_style_tags():
+    tags = taxonomy.style_tags()
+    assert len(tags) == len(set(tags)) == 130 and tags[:3] == ["70s", "80s", "90s"] and tags[-1] == "Y2K"
+    for said, poshmark in (("leopard print", "Leopard Print"), ("y2k", "Y2K"), ("two tone", "Two-Tone"),
+                           ("Stripe", "Stripes"), ("CASUAL", "Casual"), ("cruelty free", "Cruelty-Free")):
+        assert taxonomy.style_tag(said) == poshmark, said
+    assert taxonomy.style_tag("boho") is None and taxonomy.style_tag("Classic") is None and taxonomy.style_tag(" ") is None

@@ -427,6 +427,22 @@ def test_a_read_back_mismatch_fails_and_still_discards(chrome, posh, photos, tmp
     assert site.visited("/feed?discarded=1") and not site.visited("/listing/")
 
 
+def test_each_dry_run_counts_the_drafts_before_and_after(chrome, posh, photos, tmp_path):
+    """WO12: the create page is reopened after the dry-run; its Drafts count must not have grown."""
+    out, site = post(chrome, posh, render(photos), tmp_path / "shots")
+    assert out.status == "dryrun" and out.draft_left is None and out.note is None, out
+    assert len(site.visited("/create-listing")) == 2                     # the form, then the recount
+
+    out, site = post(chrome, posh, render(photos), tmp_path / "shots", leaveDraft=True)
+    assert out.status == "dryrun" and out.draft_left == "a draft was left behind (Drafts 0 → 1)"
+    assert out.note == "a draft was left behind (Drafts 0 → 1)"
+
+
+def test_a_failed_dry_run_is_counted_too(chrome, posh, photos, tmp_path):
+    out, _ = post(chrome, posh, render(photos), tmp_path / "shots", priceBug=True, leaveDraft=True)
+    assert out.status == "failed" and out.draft_left == "a draft was left behind (Drafts 0 → 1)"
+
+
 def test_no_leave_dialog_is_reported_not_hidden(chrome, posh, photos, tmp_path, monkeypatch):
     monkeypatch.setattr(poshmark, "LEAVE_TIMEOUT_MS", 400)
     out, site = post(chrome, posh, render(photos), tmp_path / "shots", noLeaveDialog=True)

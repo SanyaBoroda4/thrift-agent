@@ -39,7 +39,8 @@
   with an Edit button and "List This Item".
 
   window.__FIXTURE (set by the test) switches variants: lastDept, smartSell, noCoverDialog, slowCover, coverNoApply,
-  coverSecondSelected, strangeDialog, priceBug, noLeaveDialog, categoryLinks, conditionLabel.
+  coverSecondSelected, strangeDialog, priceBug, noLeaveDialog, categoryLinks, conditionLabel, leaveDraft.
+  The Drafts count lives in localStorage, so a reopened create page shows what the last one left.
   window.__events records what the page registered.
 -->
 <style>
@@ -71,7 +72,7 @@
 <header class="header header--nav-v2-desktop"><a href="/" data-et-name="feed">Poshmark</a></header>
 
 <div data-et-name="draftsSection" class="card card--large">
-  <h1><div>Drafts</div><div class="listing-editor__promotion__count">0</div></h1>
+  <h1><div>Drafts</div><div class="listing-editor__promotion__count" id="drafts-count">0</div></h1>
 </div>
 
 <main id="form" class="card card--large">
@@ -362,6 +363,9 @@
   const touch = () => { dirty = true; };
   document.querySelectorAll('input, textarea').forEach(i => i.addEventListener('input', touch));
   const halves = (lo, hi) => { const out = []; for (let n = lo; n <= hi; n += 0.5) out.push(String(n)); return out; };
+  const drafts = () => Number(localStorage.getItem('drafts') || 0);
+  const saveDraft = () => localStorage.setItem('drafts', String(drafts() + 1));
+  $('#drafts-count').textContent = String(drafts());
 
   // ---- photos: the cover dialog (recorded), then the tiles (UNVERIFIED guess: one <img> per photo) ----
   let urls = [];
@@ -660,8 +664,14 @@
     if (cfg.noLeaveDialog || !dirty) { location.href = '/feed'; return; }
     show($('#leave-modal'));
   });
-  $('#leave-discard').addEventListener('click', () => { events.push('discard'); location.href = '/feed?discarded=1'; });
-  $('#leave-save').addEventListener('click', () => { events.push('save_draft'); show($('#leave-modal'), false); show($('#saved-modal')); });
+  $('#leave-discard').addEventListener('click', () => {
+    events.push('discard');
+    if (cfg.leaveDraft) saveDraft();                                   // a Discard that saved a draft after all
+    location.href = '/feed?discarded=1';
+  });
+  $('#leave-save').addEventListener('click', () => {
+    events.push('save_draft'); saveDraft(); show($('#leave-modal'), false); show($('#saved-modal'));
+  });
   $('#saved-ok').addEventListener('click', () => { location.href = '/closet/me?draft=1'; });
 })();
 </script>

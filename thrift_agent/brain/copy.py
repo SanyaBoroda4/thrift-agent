@@ -6,7 +6,7 @@ import re
 
 import yaml
 
-from thrift_agent.brain import llm
+from thrift_agent.brain import llm, taxonomy
 from thrift_agent.brain.sizes import size_label, title_size
 from thrift_agent.config import style_dir
 from thrift_agent.schema import CONDITION_LABEL, CopyOut, Ev, Facts, VerifyOut
@@ -50,7 +50,8 @@ POSHMARK
   3) If retail_price is known, the description ends with "Retail $<price>." as its own last line
      (after the condition line).
   4) Then the footer if one is given. No keyword stuffing, no emojis.
-- Style tags: up to 3 short ones, or none.
+- Style tags: up to 3 from POSHMARK STYLE TAGS below, spelled as listed, or none. A material tag (Leather, Suede,
+  Wool, Silk, Cashmere, Linen, Nylon, Satin, Denim, Faux Fur) only when `material` states that material.
 
 DEPOP
 - Casual, first-person-seller voice, lowercase is fine. Same facts, fewer words.
@@ -91,6 +92,7 @@ def write(facts: Facts, model: str, cfg: dict) -> CopyOut:
         "STYLE EXAMPLES\n" + style_examples() +
         "\n\nFACTS\n" + json.dumps(view, indent=1) +
         f"\n\nPOSHMARK FOOTER: {cfg['poshmark_footer']}\nDEPOP FOOTER: {cfg['depop_footer']}"
+        "\n\nPOSHMARK STYLE TAGS (the only ones Poshmark offers): " + ", ".join(taxonomy.style_tags())
     )]
     out = llm.ask(model, SYSTEM, content, CopyOut, "write_listing", "Write both listings", max_tokens=2500)
     return clean(out)

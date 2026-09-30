@@ -31,6 +31,10 @@ Defaults for the first weeks of live posting, until the eval numbers justify loo
   the kids shoe size is picked on the **Girls** or **Boys** tab with Poshmark's own label (`KIDS_SIZE_OPTIONS` in
   `post/poshmark.py`, verified): "7.5 (Toddler Girl)" for 7.5-12, "13 (Little Girl)" for 12.5-13.5 and 1-3,
   "4 (Big Girl)" for 3.5-7 — the same groups as the title. The Baby tab (0-7) labels are still unverified.
+- **Style tags and the cover are Poshmark's.** Style tags come only from the 130 curated tags Poshmark's form offers
+  (a material tag such as Leather only when a label backs it); anything else is left out. The cover is 3:4 portrait,
+  1200x1600, padded with the photo's own edge colour and never cropped, which is the frame of Poshmark's cover crop,
+  so its default crop keeps the whole picture.
 - **Kids gender.** The model reads `kids_gender` (girls / boys / unisex) from the item itself; it only picks the size
   tab and is never a question. A unisex (or unread) kids item goes under Girls, and the approval message says so in a
   `Note:` line (reply `boys` to change it). The copy never states the gender.
@@ -146,7 +150,9 @@ the module docstring.
   recording fails the item with a screenshot instead.
 - **Dry-run stages** (`poster.dry_run_stage`, or `--stage` for one run). `form`: fill, read back, keep the evidence,
   then leave through the form's **Cancel** and the "Save Draft" dialog's **Discard Changes**, so no draft is left
-  behind. `review`: also press
+  behind. Every dry-run also counts Poshmark's Drafts before the form and again on a freshly opened create page
+  after it: a higher count means a draft was left behind, which is a Telegram warning and a note on the dry-run.
+  `review`: also press
   **Next**, screenshot the page after it and record its buttons and labels to `failed/shots/<item>-review.json`, back
   out, Discard. No dry-run ever presses the final publish button.
 - **Evidence** for every dry-run and failure in `failed/shots/`: `<item>-poshmark-<time>.png` (full page), `.html`

@@ -21,7 +21,8 @@ iCloud Posh/inbox/<ts>/ (+ _done) ─► register batch ─► prep (HEIC→JPEG
   ─► awaiting_price ─► Telegram: ONE message [Approve $P] [Change] (open questions folded in) ─► ready
   ─► poster: fill form → read back → diff → dry-run | draft | publish → verify live page → record URL
      (dry-run stage form | review: never the publish button; the form is left through Poshmark's Discard;
-      after the upload Poshmark's cover dialog is applied with its default crop, any other dialog fails the item)
+      after the upload Poshmark's cover dialog is applied with its default crop, any other dialog fails the item;
+      each dry-run compares Poshmark's Drafts count before and after — more drafts → Telegram warning + Outcome note)
      (stuck on an owner-only field → separate question, item waits in `needs_owner`, the others continue)
 ```
 Item statuses: `new` → `awaiting_price` | `needs_info` → `ready` → `posting` → `posted` | `drafted` | `failed`;
@@ -128,6 +129,14 @@ The owner shares retailer screenshots (product page with price, style name, colo
   `facts.material` has label/stamp evidence; texture words (woven, quilted, ribbed, glitter) are fine. The verifier
   treats material words as claims; lint flags any material word in title/description/tags that `facts.material`
   doesn't support.
+- **Style tags are Poshmark's own.** Only the 130 curated tags its form offers (`data/poshmark_taxonomy.yaml:
+  style_tags`, recorded 2026-09-30), spelled Poshmark's way, at most 3. The copy prompt lists them; `fit_style_tags`
+  drops anything else before lint, including a material tag (Leather, Suede, Wool, …) that `facts.material` doesn't
+  back — tags are optional, so an unusable one is left out, never a question or a draft.
+- **The cover is 3:4 portrait** (`images.cover_size: [1200, 1600]`), padded with the photo's own edge colour, never
+  cropped: the frame of Poshmark's cover dialog, so its default crop takes the whole picture. The re-share check keeps
+  hashing the square cover the photo would have made (`prep.cover_hash`), so it compares with older items bit for
+  bit.
 - **Sizes in the title are US only, never EU.** Adults: "size 7.5". Kids shoes: "Toddler size 7.5" /
   "Little Kid size 13" / "Big Kid size 4", never a bare "size 7.5" for kids. The groups are Poshmark's (owner decision,
   WO10): **Toddler up to 12C** (0–7C included — the form's Baby tab, but "Toddler" is what buyers search), **Little Kid
@@ -176,6 +185,8 @@ The owner shares retailer screenshots (product page with price, style name, colo
   `kids_gender` → the Girls/Boys size tab; a static-HTML fixture test of the form (`tests/test_poshmark_form.py`).
   Done (WO11, from the first Mac dry-run's snapshot): the cover dialog is recorded and applied; condition picked by
   code; curated tags, the SKU behind "show details", Cancel → "Save Draft" dialog → "Discard Changes" recorded.
+  Done (WO12): 3:4 cover; style tags only from the 130 curated; the Drafts count checked after every dry-run
+  (the create page reopened in a fresh tab; `[data-et-name=draftsSection]`).
   Left: record the UNVERIFIED items from the next Mac dry-runs (see "What's verified vs not"), then take them out of
   `UNVERIFIED` to enable drafts and publishing; a week of dry-runs.
 - **M3 Telegram approval flow — done (v1):** long polling in the worker, one approval message per item

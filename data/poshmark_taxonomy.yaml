@@ -193,3 +193,21 @@ aliases:
       Athletic Shoes: Sneakers
       Running Shoes: Sneakers
       Mary Janes: Dress Shoes
+
+# Poshmark's curated style tags, exactly as the form lists them (the DOM snapshot of the first Mac dry-run,
+# 2026-09-30: ul.listing-editor__suggestions-list [data-et-on-name=style_tag]). The copy may only use these;
+# a material tag (Leather, Suede, Wool, ...) only with material evidence, like any material word.
+style_tags: [
+  "70s", "80s", "90s", Activewear, Animal Print, Athleisure, Avant Garde, Baggy, Balletcore, Beach, Beaded,
+  Bikercore, Blokecore, Bodycon, Bohemian, Bow, Bridal, Bridesmaid, Business Casual, Cable Knit, Cashmere, Casual,
+  Chunky, Collegiate, Colorblock, Colorful, Contemporary, Coord Sets, Coquette Girl, Corduroy, Cottagecore, Cozy,
+  Crochet, Cropped, "Cruelty-Free", Cut Out, Denim, Distressed, DIY, Drop Waist, Eclectic Grandpa, Embroidered,
+  Fall, Faux Fur, Feminine, Festival, Festive, Flannel, Flare, Floral, Formal, Fringe, Gingham, Girlhoodcore,
+  Gorpcore, Goth, Grunge, Hand Knit, Handmade, Herringbone, Houndstooth, Indie Sleeze, Knit, Lace, Leather,
+  Leopard Print, Lightweight, Linen, Luxury, Maximalism, Mesh, Metallic, Minimalist, Monochrome, Monogram, Moto,
+  Neon, Neutral, Nylon, Office, Oversized, Paisley, Party, Pastel, Patchwork, Peplum, Plaid, Platform, Pleated,
+  Polka Dot, Preppy, Punk, Quiet Luxury, Quilted, Relaxed Fit, Resortwear, Retro, Rosette, Ruffle, Satin, Sequins,
+  Sheer, Sherpa, Silk, Sporty, Strapless, Streetwear, Stripes, Suede, Tailored, Tennis Prep, Travel, Tropical,
+  Tweed, "Two-Tone", Unisex, Upcycled, Utility, Vacation, Vegan, Velour, Vintage, Waterproof, Wedding, Western,
+  Whimsigoth, Winter, Wool, Woven, Y2K
+]

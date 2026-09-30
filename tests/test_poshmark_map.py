@@ -102,7 +102,7 @@ def test_every_unverified_name_is_a_selector_and_the_verified_ones_are_the_forms
             "condition_option", "brand", "brand_options", "color_open", "color_tiles", "style_tag", "tag_options",
             "listing_price", "original_price", "price_dialog", "dialog_listing_price", "dialog_original_price",
             "dialog_smart_sell", "dialog_done", "sku", "details_toggle", "next", "save_draft", "discard",
-            "dropdown_root"} <= verified
+            "dropdown_root", "drafts_count"} <= verified
     # WO11, from the Mac snapshot: the cover dialog after the upload and Poshmark's modal hook.
     assert {"cover_dialog", "cover_title", "cover_thumbs", "cover_selected", "cover_crop", "cover_apply",
             "any_dialog"} <= verified

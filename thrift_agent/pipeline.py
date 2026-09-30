@@ -11,14 +11,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import imagehash
-from PIL import Image
 
 from thrift_agent import approve, notify
 from thrift_agent.brain import copy as copywriter, sizes, taxonomy
 from thrift_agent.brain.extract import extract, strip_screenshot_evidence
 from thrift_agent.brain.gate import GateResult, evaluate
 from thrift_agent.brain.price import price
-from thrift_agent.brain.verify import lint, verify
+from thrift_agent.brain.verify import fit_style_tags, lint, verify
 from thrift_agent.config import Settings, load_yaml
 from thrift_agent.db import DB, loads
 from thrift_agent.ingest import prep, segment as seg
@@ -241,12 +240,12 @@ def _dollars(value: str | None) -> int | None:
     return int(round(float(m.group()))) if m else None
 
 
-def duplicate_check(s: Settings, db: DB, iid: str, cover: Path, note: str | None) -> tuple[str, str | None]:
-    """phash of the cover, plus a needs-info reason when an item from the lookback window has a near-identical
-    cover (the same photos shared twice = the same garment listed twice). The seller clears it by answering
-    "different item"."""
-    with Image.open(cover) as im:
-        h = imagehash.phash(im)
+def duplicate_check(s: Settings, db: DB, iid: str, cover_src: Path, note: str | None) -> tuple[str, str | None]:
+    """phash of the cover photo (prep.cover_hash: padded to a square, as the covers were before they became 3:4, so
+    older items compare like with like), plus a needs-info reason when an item from the lookback window has a
+    near-identical cover (the same photos shared twice = the same garment listed twice). The seller clears it by
+    answering "different item"."""
+    h = imagehash.hex_to_hash(prep.cover_hash(cover_src))
     if note and NOT_A_DUPLICATE.search(note):
         return str(h), None
     cfg = s.get("duplicates") or {}
@@ -316,6 +315,7 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
         poshmark_style_tags=draft.poshmark_style_tags, depop_description=audit.depop_description,
         depop_hashtags=draft.depop_hashtags))
     final.poshmark_description = copywriter.ensure_retail_line(final.poshmark_description, facts)
+    final.poshmark_style_tags = fit_style_tags(final.poshmark_style_tags, facts)   # Poshmark's curated tags only
     problems = lint(facts, final)
     if not audit.unsupported:
         # The gate only sees the verifier's self-reported count. A verifier that rewrites the text but reports
@@ -327,7 +327,8 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
         gate = GateResult("needs_info", fit_questions + gate.reasons, gate.notes)
 
     renders = build_renders(s, iid, d, photos, facts, final, pr, kinds)
-    cover_hash, twin = duplicate_check(s, db, iid, d / "cover.jpg", it["note"])
+    cover_src = photos[photo_order(facts, len(photos), kinds)[0]]
+    cover_hash, twin = duplicate_check(s, db, iid, cover_src, it["note"])
     if twin:
         gate = GateResult("needs_info", [twin] + gate.reasons, gate.notes)
     # `hold` marks a question a price alone must not settle: set_price() keeps a held item waiting until the owner
@@ -445,17 +446,23 @@ def answer(s: Settings, db: DB, iid: str, note: str) -> str:
     return "new"
 
 
-def build_renders(s: Settings, iid: str, d: Path, photos: list[Path], facts: Facts, c: CopyOut,
-                  pr: PriceResult, kinds: list[str] | None = None) -> dict[str, Render]:
-    n = len(photos)
+def photo_order(facts: Facts, n: int, kinds: list[str] | None = None) -> list[int]:
+    """The listing's photo order: the cover first, then the model's order, every photo once; retail screenshots last
+    and never the cover."""
     kinds = kinds or ["own"] * n
     order = [i for i in facts.photo_order if 0 <= i < n]
     if 0 <= facts.cover_photo < n:
         order = [facts.cover_photo] + order
     order = list(dict.fromkeys(order + list(range(n))))         # cover first, then the model's order, no repeats
     own = [i for i in order if kinds[i] != "retail"]
-    order = (own + [i for i in order if kinds[i] == "retail"]) if own else order   # screenshots last, never the cover
-    cover = prep.square_cover(photos[order[0]], d / "cover.jpg", s["images"]["cover_size"])
+    return (own + [i for i in order if kinds[i] == "retail"]) if own else order   # screenshots last, never the cover
+
+
+def build_renders(s: Settings, iid: str, d: Path, photos: list[Path], facts: Facts, c: CopyOut,
+                  pr: PriceResult, kinds: list[str] | None = None) -> dict[str, Render]:
+    order = photo_order(facts, len(photos), kinds)
+    width, height = prep.cover_dims(s["images"]["cover_size"])
+    cover = prep.portrait_cover(photos[order[0]], d / "cover.jpg", width, height)   # 3:4: Poshmark's cover frame
     ordered = [str(cover)] + [str(photos[i]) for i in order[1:]]
 
     common = dict(brand=facts.brand.value, department=facts.department, category=facts.category,

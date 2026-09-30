@@ -42,6 +42,7 @@ class NeedsOwner(PosterError):
         super().__init__(question)
         self.question = question
         self.screenshot: str | None = None
+        self.draft_left: str | None = None     # set by a dry-run's drafts check (Poster.post)
 
 
 class Mismatch(PosterError):
@@ -60,6 +61,7 @@ class Outcome:
     diff: dict = field(default_factory=dict)
     error: str | None = None
     note: str | None = None      # remarks for the owner: a tag left out, the review page recorded, Discard unconfirmed
+    draft_left: str | None = None  # "a draft was left behind (Drafts 0 → 1)": a dry-run that should have left none
 
 
 async def open_browser(profile_dir: Path, timezone_id: str) -> tuple[object, BrowserContext]:
@@ -166,6 +168,7 @@ class Poster(ABC):
     name: str
     create_url: str
     notes: list[str]            # remarks the adapter collects while filling one item (reset by post())
+    counts_drafts = False       # the adapter reads the site's draft count on the create page (drafts())
 
     @abstractmethod
     async def check_account(self, page: Page) -> None: ...
@@ -191,6 +194,42 @@ class Poster(ABC):
         """Leave the filled form without saving anything (no draft left behind). Returns a remark, or None when
         the site confirmed it."""
         return None
+
+    async def drafts(self, page: Page) -> int | None:
+        """How many drafts the site holds, read on the create page (counts_drafts adapters); None when unreadable."""
+        return None
+
+    async def _drafts_now(self, page: Page) -> int | None:
+        try:
+            return await self.drafts(page)
+        except Exception:  # noqa: BLE001 — unreadable is a note, never a failure
+            return None
+
+    async def _left_behind(self, ctx: BrowserContext, before: int | None) -> tuple[str | None, str | None]:
+        """(draft_left, note) after a dry-run: the create page reopened in a fresh tab, its draft count compared with
+        the count before the run. A higher count means the leave step saved a draft instead of dropping it."""
+        if before is None:
+            return None, "could not read the Drafts count before the dry-run, so no left-behind check"
+        page = None
+        try:
+            page = await ctx.new_page()
+            await page.goto(self.create_url)
+            await page.wait_for_load_state("domcontentloaded")
+            after = await self._drafts_now(page)
+        except Exception as e:  # noqa: BLE001
+            return None, f"could not reopen the create page to count the drafts ({type(e).__name__})"
+        finally:
+            if page:
+                try:
+                    await page.close()
+                except Exception:  # noqa: BLE001
+                    pass
+        if after is None:
+            return None, "could not read the Drafts count after the dry-run"
+        if after > before:
+            left = f"a draft was left behind (Drafts {before} \u2192 {after})"
+            return left, left
+        return None, None
 
     async def _discard_quietly(self, page: Page | None) -> str | None:
         if page is None:
@@ -224,6 +263,8 @@ class Poster(ABC):
         shot = shots / f"{r.sku}-{self.name}-{stamp}.png"
         page: Page | None = None
         opened = submitted = kept = False
+        count_drafts = dry_run and self.counts_drafts      # a dry-run must leave no draft: counted before and after
+        drafts_before: int | None = None
         self.notes = []
         try:
             shots.mkdir(parents=True, exist_ok=True)
@@ -231,6 +272,8 @@ class Poster(ABC):
             await self.check_account(page)
             await page.goto(self.create_url)
             await page.wait_for_load_state("domcontentloaded")
+            if count_drafts:
+                drafts_before = await self._drafts_now(page)
             opened = True
             await self.fill(page, r)
             seen = await self.read_back(page)
@@ -246,7 +289,8 @@ class Poster(ABC):
                     self.notes.append(await self.review(page, r, shots))
                 opened = False                      # leaving now; a failure below must not discard twice
                 self.notes.append(await self._discard_quietly(page))
-                return Outcome("dryrun", screenshot=str(shot), note=_joined(self.notes))
+                left, note = await self._left_behind(ctx, drafts_before) if count_drafts else (None, None)
+                return Outcome("dryrun", screenshot=str(shot), note=_joined(self.notes + [note]), draft_left=left)
             submitted = True
             url = await self.submit(page, mode)
             if mode != "publish":
@@ -267,13 +311,20 @@ class Poster(ABC):
             e.screenshot = str(shot)
             if opened and not submitted:
                 await self._discard_quietly(page)
+                if count_drafts:
+                    e.draft_left, _ = await self._left_behind(ctx, drafts_before)
             raise
         except Exception as e:  # noqa: BLE001 — record everything, never retry blindly
             if not kept:
                 await keep_evidence(page, shot)
-            left = await self._discard_quietly(page) if opened and not submitted else None
+            left, draft_left, draft_note = None, None, None
+            if opened and not submitted:
+                left = await self._discard_quietly(page)
+                if count_drafts:
+                    draft_left, draft_note = await self._left_behind(ctx, drafts_before)
             return Outcome("failed", screenshot=str(shot), error=f"{type(e).__name__}: {e}",
-                           diff=getattr(e, "diff", {}), note=_joined(self.notes + [left]))
+                           diff=getattr(e, "diff", {}), note=_joined(self.notes + [left, draft_note]),
+                           draft_left=draft_left)
         finally:
             if page:
                 try:

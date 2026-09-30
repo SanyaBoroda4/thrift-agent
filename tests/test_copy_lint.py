@@ -374,3 +374,30 @@ def test_title_shows_the_us_size_only(facts):
     bad = lint(adult, co(poshmark_title="Tory Burch Red Ballet Flats size 38", poshmark_description=desc,
                          depop_description="red tory burch flats, light wear"))
     assert "US size missing from title" in bad and any("found size 38" in p for p in bad)
+
+
+def test_style_tags_are_poshmarks_curated_ones_and_materials_need_evidence(facts):
+    """WO12: only the 130 tags Poshmark offers, spelled its way, at most 3; a material tag only with evidence."""
+    from thrift_agent.brain.verify import fit_style_tags
+
+    tags = ["casual", "Leather", "boho", "Y2K", "Casual", "vintage", "Floral"]
+    assert fit_style_tags(tags, facts()) == ["Casual", "Y2K", "Vintage"]           # Leather: no label says so
+    on_label = facts(material=ev("leather upper, rubber sole"))
+    assert fit_style_tags(tags, on_label) == ["Casual", "Leather", "Y2K"]
+    assert fit_style_tags(["Faux Fur", "Sherpa"], facts(material=ev("100% polyester fur"))) == ["Sherpa"]
+    assert fit_style_tags(["Faux Fur"], facts(material=ev("faux fur"))) == ["Faux Fur"]
+    assert fit_style_tags(["Denim"], facts(brand=ev("Silver Jeans Co"))) == []            # "denim" is a material
+    assert fit_style_tags([], facts()) == []
+
+
+def test_the_copy_prompt_offers_only_poshmarks_style_tags(facts, monkeypatch):
+    from thrift_agent.brain import copy as copywriter
+    seen = {}
+
+    def ask(model, system, content, out, tool, description, **kw):
+        seen.update(system=system, text=content[0]["text"])
+        return CopyOut(poshmark_title="t", poshmark_description="d", depop_description="d", depop_hashtags=[])
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", ask)
+    copywriter.write(facts(), "model", {"poshmark_footer": "", "depop_footer": ""})
+    assert "POSHMARK STYLE TAGS below" in seen["system"]
+    assert "POSHMARK STYLE TAGS (the only ones Poshmark offers): 70s, 80s, 90s, Activewear," in seen["text"]
