@@ -197,8 +197,9 @@ POLL_MS = 250
 ROOT_TEXT_MAX = 300              # a dropdown "root" showing more text than this holds more than one field
 
 # [id, visible text, "title|aria-label|data-et-name"] of each element in a list.
-_ITEMS_JS = """els => els.map(e => [e.id || '', (e.innerText || e.textContent || '').trim(),
-    ['title', 'aria-label', 'data-et-name'].map(a => e.getAttribute(a) || '').join('|')])"""
+_ITEM_JS = """e => [e.id || '', (e.innerText || e.textContent || '').trim(),
+    ['title', 'aria-label', 'data-et-name'].map(a => e.getAttribute(a) || '').join('|')]"""
+_ITEMS_JS = f"els => els.map({_ITEM_JS})"
 # The page after Next, for the review stage: what is on it, not what to click.
 _RECORD_JS = """() => {
   const shown = e => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
@@ -556,9 +557,15 @@ class PoshmarkPoster(Poster):
             options = list(dict.fromkeys(text.strip().splitlines()[0] for _, text, _ in rows if text.strip()))
             for i, (el_id, text, attrs) in enumerate(rows):
                 if _is(want, el_id, text, attrs, loose):
-                    handle = await items.nth(i).element_handle(timeout=MENU_TIMEOUT_MS)
-                    if handle is not None:
+                    # The list may re-render between reading it and taking the element (a type-ahead filtering as
+                    # you type): take it only if it is still there and still the option, else read the list again.
+                    try:
+                        handle = await items.nth(i).element_handle(timeout=POLL_MS * 2)
+                    except PlaywrightTimeout:
+                        handle = None
+                    if handle is not None and _is(want, *await handle.evaluate(_ITEM_JS), loose):
                         return handle, options
+                    break
             if waited >= timeout_ms:
                 return None, options
             await page.wait_for_timeout(POLL_MS)

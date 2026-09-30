@@ -141,3 +141,49 @@ def test_the_title_and_the_form_name_the_same_group(facts, size_us, tab, button,
     choice = size_choice(render(department="Kids", size=sizes.size_label(f), kids_gender=f.kids_gender))
     assert (choice.tab, choice.button) == (tab, button)
     assert sizes.title_size(f) == f"{title_group} size {size_us[:-1]}"
+
+
+class _Row:
+    """An element as _pick sees it: [id, text, attrs]."""
+    def __init__(self, row):
+        self.row = row
+
+    async def evaluate(self, js):
+        return self.row
+
+
+class _List:
+    """A type-ahead list that re-renders after the first read: `after` is what nth(i) finds by then."""
+    def __init__(self, first, second, after):
+        self.first, self.second, self.after, self.reads = first, second, after, 0
+
+    async def evaluate_all(self, js):
+        self.reads += 1
+        return self.first if self.reads == 1 else self.second
+
+    def nth(self, i):
+        lst = self
+
+        class One:
+            async def element_handle(self, timeout):
+                from playwright.async_api import TimeoutError as PlaywrightTimeout
+                if lst.reads == 1:
+                    if lst.after is None:
+                        raise PlaywrightTimeout("the list re-rendered: no such element any more")
+                    return _Row(lst.after)
+                return _Row(lst.second[i])
+        return One()
+
+
+class _Page:
+    async def wait_for_timeout(self, ms):
+        pass
+
+
+@pytest.mark.parametrize("after", [None, ["", "Casual", "Casual"]])    # gone, or another option at that index
+def test_pick_reads_a_list_again_when_it_changed_under_it(after):
+    """Seen on CI: the tag list filtered itself between reading it and taking "Denim" (index 2)."""
+    full = [["", "70s", "70s"], ["", "Casual", "Casual"], ["", "Denim", "Denim"]]
+    lst = _List(full, [["", "Denim", "Denim"]], after)
+    handle, options = asyncio.run(PoshmarkPoster("closet")._pick(_Page(), lst, "Denim"))
+    assert handle.row == ["", "Denim", "Denim"] and lst.reads == 2 and options == ["Denim"]
