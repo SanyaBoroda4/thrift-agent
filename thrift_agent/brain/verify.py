@@ -7,7 +7,7 @@ import unicodedata
 
 from thrift_agent.brain import llm
 from thrift_agent.brain.copy import strip_tag_lines
-from thrift_agent.brain.sizes import size_label
+from thrift_agent.brain.sizes import kids_parts, size_label
 from thrift_agent.schema import CopyOut, Facts, VerifyOut
 
 SYSTEM = """You audit resale listing copy against a fact sheet. A claim is unsupported if the facts
@@ -73,13 +73,13 @@ BANNED = [r"\bsmoke[- ]?free\b", r"\bpet[- ]?free\b", r"\bauthentic\b", r"\btrue
 MATERIAL_WORDS = re.compile(
     r"\b((?:faux|vegan)[ -]leather|faux[ -]fur|leather|suede|nubuck|patent|shearling|fur|cashmere|wool|merino|silk|"
     r"linen|cotton|denim|polyester|nylon|spandex|satin|velvet|straw|canvas|rubber)\b", re.I)
-# The size in the title, in any form the copy rules produce: "size 7.5", "US 7.5", "(US 7.5)", "EU 24 / US Toddler 7.5",
-# "US Little Kid 12", "US Big Kid 4". {n} is the US number without its C/Y suffix.
 # The title shows the US size only, in one of the forms the copy rules produce: "size 7.5", "US 7.5", "(US 7.5)",
-# "Toddler size 7.5", "US Toddler 7.5". Any other size token next to size/US/EU in the title is a problem.
+# "Toddler size 7.5", "US Toddler 7.5", "US Little Kid 13". Any other size token next to size/US/EU in the title is a
+# problem. {n} is the US number without its C/Y suffix.
 SIZE_IN_TITLE = (r"(?:\bsize\s*|\bUS\s*(?:Toddler\s*|Little Kid\s*|Big Kid\s*)?|\b(?:Toddler|Little Kid|Big Kid)\s+size\s*)"
                  r"{n}(?:\s?[CY]\b)?(?!\w|\.\d)")
 SIZE_SYSTEM = r"\b(?:Toddler|Little Kid|Big Kid)\b"
+SIZE_GROUPS = re.compile(r"\b(Toddler|Little Kid|Big Kid)\b", re.I)
 SIZE_TOKENS = re.compile(r"\b(size|us|eu)\s*(\d{1,2}(?:\.\d)?)\b", re.I)
 KIDS_WORDS = r"\bkids['’]?\b|\bkid['’]s\b|\btoddler|\bgirls['’]?\b|\bgirl['’]s\b|\bboys['’]?\b|\bboy['’]s\b"
 # Condition ladder, worst to best. A phrase claiming a grade above the facts' grade is a problem.
@@ -146,6 +146,12 @@ def lint(facts: Facts, copy: CopyOut) -> list[str]:
         elif size_label(facts) != size and not re.search(SIZE_SYSTEM, t, re.I):
             # A kids shoe: "size 7.5" alone reads as a women's 7.5. The segment word carries the system.
             problems.append("kids size without its system (Toddler / Little Kid / Big Kid)")
+        elif (parts := kids_parts(facts)) is not None:
+            # The groups are Poshmark's (sizes.py): a model that knows Nike's chart writes "Little Kid" for 11C, which
+            # Poshmark, the form and this closet call Toddler.
+            said = sorted({g.title() for g in SIZE_GROUPS.findall(t)} - {parts[1]})
+            if said:
+                problems.append(f"kids size group in the title is {' / '.join(said)}, Poshmark's is {parts[1]}")
         foreign = [f"{kw} {num}" for kw, num in SIZE_TOKENS.findall(t) if kw.lower() == "eu" or num != n]
         if foreign:                                   # "EU 38", "size 24 (US 7.5)": the title is US-only
             problems.append(f"title must show the US size only (found {', '.join(foreign)})")

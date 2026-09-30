@@ -58,9 +58,10 @@ def _kids_shoe_options() -> dict[str, tuple[str, str]]:
 
     Poshmark, Kids > Shoes (verified 2026-09-29), on the Girls and Boys tabs: Toddler 7.5-12, Little 12.5-13.5 and 1-3,
     Big 3.5-7, each button reading e.g. "7.5 (Toddler Girl)" / "7.5 (Toddler Boy)"; the Baby tab holds 0-7 (labels
-    UNVERIFIED). Ours (brain/sizes.py): "Toddler" is a C size (up to 10, or any read from an EU size up to 27); "Little
-    Kid" a C size above 10, or a Y size read from an EU size of 28-33; "Big Kid" a Y size. The form takes Poshmark's
-    grouping, whatever the title says."""
+    UNVERIFIED). Our labels (brain/sizes.py) use the same groups since WO10, except that 0-7C stays "Toddler" (what
+    buyers search). The table also takes the labels of Renders made before WO10, when "Little Kid" was any C size above
+    10 and "Big Kid" any Y size: a "Toddler" label is always a C size, "Little Kid" a C size from 10 up and a Y size
+    below it, "Big Kid" a Y size."""
     out: dict[str, tuple[str, str]] = {}
     for half in range(0, 28):                           # C sizes 0 .. 13.5
         n = _num(half / 2)

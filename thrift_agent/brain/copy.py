@@ -38,9 +38,10 @@ POSHMARK
   Add "New" at the start only for NWT/NWOT. Use the room — short titles don't get found.
   Decimal sizes use a dot (7.5), never a comma. No emojis, no ALL CAPS words except brand styling.
 - Sizes in the TITLE are US only, never EU: adults end with title_size ("size 7.5"); kids shoes use title_size
-  verbatim ("Toddler size 7.5" / "Little Kid size 12" / "Big Kid size 4"), never a bare "size 7.5" and never
-  "EU 24" in the title. The EU size and the full label size_label ("EU 24 / US Toddler 7.5") go in the
-  description's fit line only.
+  verbatim ("Toddler size 7.5" / "Little Kid size 13" / "Big Kid size 4"), never a bare "size 7.5" and never
+  "EU 24" in the title. The kids groups are Poshmark's (Toddler up to 12C, Little Kid 12.5-13.5C and 1-3Y, Big Kid
+  3.5Y and up), not a brand's size chart: never another group word anywhere in the title. The EU size and the full
+  label size_label ("EU 24 / US Toddler 7.5") go in the description's fit line only.
 - Description, in this closet's proven shape:
   1) 2–4 short sentences describing what the photos show (type, color, material if known, details).
      Plain and specific; at most one adjective like "chic" or "versatile" — never a string of them.

@@ -174,10 +174,10 @@ def test_lint_size_accepts_every_form_the_copy_rules_produce(facts):
     for t in ("Nike Sneakers US 7.5", "Nike Sneakers (US 7.5)", "Nike Sneakers EU 24 / US Toddler 7.5",
               "Nike Sneakers, size 7.5", "Nike Sneakers Size 7.5"):
         assert msg not in lint(facts(**kids), co(poshmark_title=t)), t
-    assert msg not in lint(facts(**kids, size_us=ev("12C")), co(poshmark_title="Nike Kids Sneakers US Little Kid 12"))
+    assert msg not in lint(facts(**kids, size_us=ev("13C")), co(poshmark_title="Nike Kids Sneakers US Little Kid 13"))
     assert msg not in lint(facts(**kids, size_us=ev("4Y")), co(poshmark_title="Nike Kids Sneakers US Big Kid 4"))
     assert msg not in lint(facts(**kids, size_us=ev("4Y")), co(poshmark_title="Nike Kids Sneakers size 4Y"))
-    assert msg in lint(facts(**kids, size_us=ev("12C")), co(poshmark_title="Nike Kids Sneakers US Little Kid 1"))
+    assert msg in lint(facts(**kids, size_us=ev("13C")), co(poshmark_title="Nike Kids Sneakers US Little Kid 1"))
     assert msg in lint(facts(**kids), co(poshmark_title="Nike Kids Sneakers US 7.55"))
     assert msg in lint(facts(**kids), co(poshmark_title="Nike Kids Sneakers US 17.5"))
 
@@ -196,6 +196,25 @@ def test_lint_kids_size_needs_its_system(facts):
     tee = facts(department="Kids", category="Tops", size_us=ev("5"))
     assert msg not in lint(tee, co(poshmark_title="Nike Kids Tee size 5"))                      # clothing has no groups
     assert not any("size" in p for p in lint(kid, co(poshmark_title="Nike Kids Sneakers 7.5")) if "system" in p)
+
+
+def test_lint_kids_size_group_is_poshmarks(facts):
+    """Decision (WO10): the title's group is Poshmark's. Nike's chart calls 11C "Little Kid"; Poshmark says Toddler."""
+    def kid(size):
+        return facts(department="Kids", size_us=ev(size), size_printed=ev(size), size_eu=Ev())
+
+    assert "kids size group in the title is Little Kid, Poshmark's is Toddler" in lint(
+        kid("11C"), co(poshmark_title="Nike Kids Sneakers Little Kid size 11"))
+    assert "kids size group in the title is Big Kid, Poshmark's is Little Kid" in lint(
+        kid("2Y"), co(poshmark_title="Nike Kids Sneakers US Big Kid 2"))
+    assert "kids size group in the title is Little Kid / Toddler, Poshmark's is Big Kid" in lint(
+        kid("4Y"), co(poshmark_title="Nike Toddler Little Kid Sneakers Big Kid size 4"))
+    for size, title in (("11C", "Nike Kids Sneakers Toddler size 11"), ("5C", "Nike Kids Sneakers Toddler size 5"),
+                        ("13C", "Nike Kids Sneakers Little Kid size 13"), ("2Y", "Nike Kids Sneakers US Little Kid 2"),
+                        ("4Y", "Nike Kids Sneakers big kid size 4")):
+        assert not any("group" in p for p in lint(kid(size), co(poshmark_title=title))), title
+    tee = facts(department="Kids", category="Tops", size_us=ev("5"))
+    assert not any("group" in p for p in lint(tee, co(poshmark_title="Nike Kids Toddler Tee size 5")))   # no groups
 
 
 def test_facts_view_carries_the_size_label(facts):

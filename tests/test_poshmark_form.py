@@ -214,8 +214,8 @@ def test_the_form_as_filled_matches_every_condition_label(chrome, posh, photos):
     ("unisex", "EU 24 / US Toddler 7.5", "Girls", "7.5 (Toddler Girl)"),
     (None, "EU 31 / US Little Kid 13", "Girls", "13 (Little Girl)"),
     ("boys", "US Big Kid 4", "Boys", "4 (Big Boy)"),
-    ("girls", "US Big Kid 2", "Girls", "2 (Little Girl)"),         # Poshmark calls 1-3 Y "Little"
-    ("boys", "EU 29 / US Little Kid 11.5", "Boys", "11.5 (Toddler Boy)"),   # ... and C sizes up to 12 "Toddler"
+    ("girls", "US Big Kid 2", "Girls", "2 (Little Girl)"),         # labels a Render got before WO10: Poshmark
+    ("boys", "EU 29 / US Little Kid 11.5", "Boys", "11.5 (Toddler Boy)"),   # calls 1-3Y Little, C up to 12 Toddler
 ])
 def test_kids_shoes_go_on_the_gender_tab_with_poshmarks_own_label(chrome, posh, photos, gender, size, tab, button):
     r = render(photos, department="Kids", category="Shoes", subcategory="Sneakers", size=size, kids_gender=gender,

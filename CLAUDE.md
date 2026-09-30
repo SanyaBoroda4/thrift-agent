@@ -112,15 +112,18 @@ The owner shares retailer screenshots (product page with price, style name, colo
   treats material words as claims; lint flags any material word in title/description/tags that `facts.material`
   doesn't support.
 - **Sizes in the title are US only, never EU.** Adults: "size 7.5". Kids shoes: "Toddler size 7.5" /
-  "Little Kid size 12" / "Big Kid size 4" (C sizes = Toddler / Little Kid, Y = Big Kid), never a bare "size 7.5" for
-  kids. The EU size and the full label "EU 24 / US Toddler 7.5" go in the description; `Render.size` keeps the full
+  "Little Kid size 13" / "Big Kid size 4", never a bare "size 7.5" for kids. The groups are Poshmark's (owner decision,
+  WO10): **Toddler up to 12C** (0–7C included — the form's Baby tab, but "Toddler" is what buyers search), **Little Kid
+  12.5–13.5C and 1–3Y**, **Big Kid 3.5–7Y** (`brain/sizes.py`), for the title, the description label and `Render.size`
+  alike. The EU size and the full label "EU 24 / US Toddler 7.5" go in the description; `Render.size` keeps the full
   label for the form. Lint accepts the US-only forms ("size 7.5", "US 7.5", "(US 7.5)", "Toddler size 7.5",
-  "US Toddler 7.5"), never requires EU, and flags any EU or non-US size token in the title.
+  "US Toddler 7.5"), never requires EU, flags any EU or non-US size token in the title, and flags a kids group word
+  that isn't Poshmark's for that size (a brand chart's "Little Kid" on 11C).
 - **On Poshmark's form** a kids shoe goes on the Girls or Boys tab (`facts.kids_gender`, the model's best reading, never
   a question; unisex or unread → Girls with a "Note:" in the approval message) as Poshmark's own label
   (`KIDS_SIZE_OPTIONS`, verified): Toddler 7.5–12, Little 12.5–13.5 and 1–3, Big 3.5–7, e.g. "7.5 (Toddler Girl)";
-  0–7 C sits on the Baby tab (labels UNVERIFIED). Poshmark's group can differ from the title's (11C: title "Little Kid
-  size 11", form "11 (Toddler Girl)"). The copy never states kids_gender.
+  0–7 C sits on the Baby tab (labels UNVERIFIED). The title names the same group, except 0–7C ("Toddler size 5",
+  form Baby tab). The copy never states kids_gender.
 
 ## Telegram (M3)
 - The agent owns the bot: long polling (`getUpdates`) inside the worker (`thrift run`), one consumer, offset persisted

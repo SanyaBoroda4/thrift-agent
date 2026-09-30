@@ -108,3 +108,23 @@ def test_the_module_docstring_lists_every_unverified_selector():
     doc = poshmark.__doc__
     missing = [name for name in UNVERIFIED if not re.search(rf"\b{name}\b", doc)]
     assert missing == []
+
+
+@pytest.mark.parametrize("size_us,tab,button,title_group", [
+    ("5C", "Baby", "5", "Toddler"), ("7C", "Baby", "7", "Toddler"),        # the title still says Toddler (WO10)
+    ("7.5C", "Girls", "7.5 (Toddler Girl)", "Toddler"), ("11C", "Girls", "11 (Toddler Girl)", "Toddler"),
+    ("12C", "Girls", "12 (Toddler Girl)", "Toddler"),
+    ("12.5C", "Girls", "12.5 (Little Girl)", "Little Kid"), ("13.5C", "Girls", "13.5 (Little Girl)", "Little Kid"),
+    ("1Y", "Girls", "1 (Little Girl)", "Little Kid"), ("3Y", "Girls", "3 (Little Girl)", "Little Kid"),
+    ("3.5Y", "Girls", "3.5 (Big Girl)", "Big Kid"), ("7Y", "Girls", "7 (Big Girl)", "Big Kid"),
+])
+def test_the_title_and_the_form_name_the_same_group(facts, size_us, tab, button, title_group):
+    """sizes.py (title, description, Render.size) and the form mapping agree for every kids shoe size."""
+    from thrift_agent.brain import sizes
+    from thrift_agent.schema import Ev
+
+    ev = Ev(value=size_us, photos=[1], source="photo", confidence=0.9)
+    f = facts(department="Kids", category="Shoes", size_us=ev, size_printed=ev, size_eu=Ev(), kids_gender="unisex")
+    choice = size_choice(render(department="Kids", size=sizes.size_label(f), kids_gender=f.kids_gender))
+    assert (choice.tab, choice.button) == (tab, button)
+    assert sizes.title_size(f) == f"{title_group} size {size_us[:-1]}"

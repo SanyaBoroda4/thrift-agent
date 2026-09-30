@@ -23,12 +23,14 @@ Defaults for the first weeks of live posting, until the eval numbers justify loo
   treats material words as claims, and lint flags any material word in the title, description or tags that
   `facts.material` does not support.
 - **Titles show the US size only, never EU.** Adults: "size 7.5". Kids shoes: "Toddler size 7.5" / "Little Kid
-  size 12" / "Big Kid size 4" (C sizes = Toddler / Little Kid, Y = Big Kid), never a bare "size 7.5" for kids. The EU
-  size and the full label "EU 24 / US Toddler 7.5" go in the description; the listing's size field keeps the full
-  label for the form. Lint accepts the US-only title forms, never requires EU, and flags any EU or non-US size token
-  in the title. On Poshmark's form the kids shoe size is picked on the **Girls** or **Boys** tab with Poshmark's own
-  label (`KIDS_SIZE_OPTIONS` in `post/poshmark.py`, verified): "7.5 (Toddler Girl)" for 7.5-12, "13 (Little Girl)"
-  for 12.5-13.5 and 1-3, "4 (Big Girl)" for 3.5-7. The Baby tab (0-7) labels are still unverified.
+  size 13" / "Big Kid size 4", never a bare "size 7.5" for kids. The groups are Poshmark's: Toddler up to 12C (0-7C
+  included, since that's what buyers search), Little Kid 12.5-13.5C and 1-3Y, Big Kid 3.5-7Y. The EU size and the
+  full label "EU 24 / US Toddler 7.5" go in the description; the listing's size field keeps the full label for the
+  form. Lint accepts the US-only title forms, never requires EU, and flags any EU or non-US size token in the title,
+  and a kids group word that isn't Poshmark's for the size (a brand chart's "Little Kid" on 11C). On Poshmark's form
+  the kids shoe size is picked on the **Girls** or **Boys** tab with Poshmark's own label (`KIDS_SIZE_OPTIONS` in
+  `post/poshmark.py`, verified): "7.5 (Toddler Girl)" for 7.5-12, "13 (Little Girl)" for 12.5-13.5 and 1-3,
+  "4 (Big Girl)" for 3.5-7 — the same groups as the title. The Baby tab (0-7) labels are still unverified.
 - **Kids gender.** The model reads `kids_gender` (girls / boys / unisex) from the item itself; it only picks the size
   tab and is never a question. A unisex (or unread) kids item goes under Girls, and the approval message says so in a
   `Note:` line (reply `boys` to change it). The copy never states the gender.
