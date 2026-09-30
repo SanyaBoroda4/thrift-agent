@@ -120,21 +120,31 @@ verified on the live site on 2026-09-29 (logged in, nothing saved): photo input,
 menu (department links, category items, the subcategory menu whose `<a>` must be clicked, not its `<li>`), the size
 menu (tabs, `size-<label>` buttons, Done), condition labels, brand suggestions, colour tiles, style-tag input, the
 Listing Price dialog (listing and original price, Smart Sell, Shipping Discount, Done), SKU, Next / Save Draft /
-Discard. Every locator lives in `SEL`; the ones not verified yet are listed in `UNVERIFIED` and in the module
-docstring.
+Discard. The first Mac dry-run's page snapshot (2026-09-30) added the cover dialog after the upload, Poshmark's
+dropdown component, the condition items' codes, the curated style tags, the SKU behind "show details" and the Cancel
+link's "Save Draft" dialog. Every locator lives in `SEL`; the ones not verified yet are listed in `UNVERIFIED` and in
+the module docstring.
 
 - **Fill order:** photos, title, description, category, subcategory, size, condition, brand, colours, style tags,
   price dialog, SKU. Then every field is read back (including the text each closed dropdown shows) and diffed
   against the approved listing before anything else happens.
-- **Poshmark's labels.** Condition: NWT = "New With Tags (NWT)", NWOT and like new = "Like New", excellent and good =
-  "Good", fair = "Fair". Brand: the exact (case-insensitive) suggestion, else the owner is asked. Colours: the
-  15-colour palette's tiles. Style tags: only Poshmark's curated suggestions (a tag it doesn't offer is left out and
-  the owner is told). Smart Sell must be off (checked, never switched); Shipping Discount stays "No Discount".
+- **The cover dialog.** After the upload Poshmark opens "Select a Covershot." (every photo listed, the first one — our
+  cover — preselected, a 3:4 crop frame with a zoom slider). The poster checks that it is the recorded dialog, keeps
+  Poshmark's default crop (never touches the frame, the slider or rotate), presses **Apply**, waits for it to close
+  and for every photo to show. A dialog that differs from the recording, or any other dialog, fails the item with a
+  screenshot and the page.
+- **Poshmark's labels.** Condition, picked by Poshmark's code: NWT = "New With Tags (NWT)" (`nwt`), NWOT and like new
+  = "Like New" (`uln`), excellent and good = "Good" (`ug`), fair = "Fair" (`uf`). Brand: the exact
+  (case-insensitive) suggestion, else the owner is asked. Colours: the 15-colour palette's tiles. Style tags: only
+  Poshmark's 130 curated tags (a tag it doesn't offer is left out and the owner is told). Smart Sell must be off
+  (checked, never switched); Shipping Discount is left at its default, "Optional" (no discount). The SKU is in the
+  collapsed Additional Details: the poster opens "show details" first.
 - **Owner questions (`needs_owner`)** only where the form is fine but lacks our value: a brand, category, subcategory
-  or size Poshmark doesn't offer, a department it doesn't have (Unisex), or a dialog after the upload (crop/cover)
-  that isn't recorded yet. A form that looks different from the recording fails the item with a screenshot instead.
+  or size Poshmark doesn't offer, or a department it doesn't have (Unisex). A form that looks different from the
+  recording fails the item with a screenshot instead.
 - **Dry-run stages** (`poster.dry_run_stage`, or `--stage` for one run). `form`: fill, read back, keep the evidence,
-  then leave through Poshmark's leave dialog with **Discard**, so no draft is left behind. `review`: also press
+  then leave through the form's **Cancel** and the "Save Draft" dialog's **Discard Changes**, so no draft is left
+  behind. `review`: also press
   **Next**, screenshot the page after it and record its buttons and labels to `failed/shots/<item>-review.json`, back
   out, Discard. No dry-run ever presses the final publish button.
 - **Evidence** for every dry-run and failure in `failed/shots/`: `<item>-poshmark-<time>.png` (full page), `.html`

@@ -6,23 +6,40 @@
 <!--
   A static stand-in for https://poshmark.com/create-listing, for tests/test_poshmark_form.py.
 
-  Reproduces what was verified on the live form on 2026-09-29: input#img-file-input; data-vv-name title/description/
-  style-tag-input/listingPrice/originalPrice/sku/costPriceAmount/otherInfo; the "Select Category" dropdown with
-  department links a.dropdown__link[data-et-name=women|men|kids|home|pets|electronics], a[data-et-name=all] going
-  back, categories as li.dropdown__menu__item, then the "Select Subcategory (optional)" menu whose options are
-  a.dropdown__link[data-et-name=sub_category] inside li (a click on the li does NOT register), "None" included; the
-  size dropdown [data-test=size] with tabs a.navigation--horizontal__link and buttons
-  button.multi-size-selector__button[id=size-<label>] incl. the kids labels "7.5 (Toddler Girl)", Done =
-  button[data-et-name=apply]; "Select Condition" with li.dropdown__menu__item labels; the brand input with
-  ul.listing-editor__suggestions-list > li > a.dropdown__link; "Select up to 2 colors" with
-  li.listing-editor__tile--color tiles (click the inner a) and Done; the .listing-price-suggestion-modal with its
-  inputs, a Smart Sell checkbox, Shipping Discount and Done; Next / Save Draft / Discard by data-et-name.
+  Reproduces the live form as recorded: the inspection of 2026-09-29 (WO9) and the DOM snapshot of the first Mac
+  dry-run, 2026-09-30 (WO11). Class names, data-test / data-et-name / data-vv-name hooks and texts are copied from the
+  recording:
+  - photos: div#imagePlaceholder[data-et-name=listingEditorImageSection] with input#img-file-input; after the upload
+    Poshmark's "Select a Covershot." dialog (div.image-edit-modal > [data-test=modal-container]): one
+    .image-edit-modal__thumb per photo (the first with svg.icon-green-checkmark), a croppie crop frame with a zoom
+    slider and rotate buttons, "Replace Photo", Cancel [data-et-name=cancel] / Apply [data-et-name=apply];
+  - dropdowns are Poshmark's component: [data-test=dropdown].dropdown > [data-test=dropdown-container] >
+    .dropdown__selector + its menu. Category: departments li > a.dropdown__link.dropdown__menu__item[data-et-name=...]
+    with "All Categories" (data-et-name=all) on top; categories li.dropdown__menu__item (the inspection); subcategories
+    li > a.dropdown__link[data-et-name=sub_category] (a click on the li is lost), "None" included;
+  - size: [data-test=size] is the selector; tabs a.navigation--horizontal__link; buttons
+    button.multi-size-selector__button[id=size-<label>] incl. "7.5 (Toddler Girl)"; Done button[data-et-name=apply];
+  - condition: li.dropdown__menu__item > div.dropdown__link[data-et-name=listing_condition][data-et-prop-content=nwt|
+    uln|ug|uf] showing the label over a description line;
+  - brand input (placeholder "Enter the Brand/Designer") with suggestions; colours: li.listing-editor__tile--color >
+    div > a (swatch) + span (name), Done button[data-et-name=apply][data-et-on-name=color_tile];
+  - style tags: input[data-vv-name=style-tag-input] with the curated list ul.listing-editor__suggestions-list >
+    li.dropdown__menu__item > div.dropdown__link > div[data-et-name=<tag>][data-et-on-name=style_tag] (a subset of
+    Poshmark's 130 tags);
+  - price: the form's originalPrice input sits hidden in .listing-editor__original-price--hidden; listingPrice opens
+    [data-test=modal-container].listing-price-suggestion-modal with the two #listing-price-modal-... inputs, the Smart
+    Sell toggle (input[type=checkbox][data-test=toggle-input]), Shipping Discount showing "Optional", Done;
+  - SKU in the collapsed Additional Details: a.listing-editor-toggle-link "show details";
+  - the form's Cancel a[data-et-name=discard] next to Next; the "Save Draft" dialog ("Do you want to save this listing
+    as a draft?") with "Discard Changes" [data-et-name=discard] and "Save Draft" [data-et-name=save_draft], then
+    "Saved" / Ok; the Drafts panel [data-et-name=draftsSection]; hidden modals elsewhere on the page.
 
-  GUESSES for what is still UNVERIFIED (keep in step with post/poshmark.py): thumbnails as <img src="blob:...">, the
-  crop dialog, the breadcrumb text of a closed dropdown, curated tag suggestions, the header logo opening the leave
-  dialog, the page after Next with an Edit button and "List This Item".
+  GUESSES for what is still UNVERIFIED (keep in step with post/poshmark.py): the photo tiles after Apply, the text a
+  closed dropdown shows, the brand suggestions' markup, that Cancel opens the "Save Draft" dialog, the page after Next
+  with an Edit button and "List This Item".
 
-  window.__FIXTURE (set by the test) switches variants: lastDept, smartSell, crop, priceBug, noLeaveDialog.
+  window.__FIXTURE (set by the test) switches variants: lastDept, smartSell, noCoverDialog, slowCover, coverNoApply,
+  coverSecondSelected, strangeDialog, priceBug, noLeaveDialog, categoryLinks, conditionLabel.
   window.__events records what the page registered.
 -->
 <style>
@@ -33,96 +50,267 @@
   .dropdown__selector { border: 1px solid #999; padding: 6px; cursor: pointer; min-height: 18px; }
   .dropdown__menu { border: 1px solid #ccc; padding: 4px; margin: 0; background: #fff; }
   .dropdown__menu__item { list-style: none; padding: 4px; width: 400px; }
+  li { list-style: none; }
   .navigation--horizontal__link { margin-right: 10px; }
   .multi-size-selector__button { margin: 2px; }
   .multi-size-selector__button.selected, .listing-editor__tile--color.selected { outline: 2px solid #000; }
-  .listing-editor__tile--color { display: inline-block; list-style: none; margin: 2px; }
+  .listing-editor__tile--color { display: inline-block; margin: 2px; }
+  .color__circle--large { display: inline-block; width: 20px; height: 20px; border-radius: 10px; }
   .listing-editor__suggestions-list { border: 1px solid #ccc; padding: 2px; margin: 0; }
-  .listing-editor__suggestions-list li { list-style: none; }
-  .thumbs img { width: 48px; height: 48px; margin: 2px; }
+  .listing-editor__original-price--hidden { display: none; }
+  .image-edit-modal__thumb { display: inline-block; margin: 2px; }
+  .image-edit-modal__thumb img, .listing-editor__image-tile img { width: 48px; height: 48px; }
+  .listing-editor__image-tile { display: inline-block; margin: 2px; }
   .tag-chip { border: 1px solid #666; padding: 1px 4px; margin: 2px; }
+  .toggle__switch__input { opacity: 0; position: absolute; }
   .modal { position: fixed; top: 30px; left: 30px; right: 30px; background: #fff; border: 2px solid #333;
            padding: 12px; z-index: 10; }
 </style>
 </head>
 <body>
-<header><a href="/" class="header__logo">Poshmark</a></header>
+<header class="header header--nav-v2-desktop"><a href="/" data-et-name="feed">Poshmark</a></header>
 
-<main id="form" class="listing-editor">
-  <h1>Listing Details</h1>
-  <section><div>PHOTOS</div>
-    <input type="file" id="img-file-input" name="img-file-input" accept="image/*" multiple class="hidden">
-    <div class="thumbs" id="thumbs"></div>
+<div data-et-name="draftsSection" class="card card--large">
+  <h1><div>Drafts</div><div class="listing-editor__promotion__count">0</div></h1>
+</div>
+
+<main id="form" class="card card--large">
+  <h1>Create Listing</h1>
+
+  <section class="listing-editor__section">
+    <div class="listing-editor__section__title">Photos &amp; Video</div>
+    <div id="imagePlaceholder" data-et-name="listingEditorImageSection">
+      <div id="upload-box">
+        <label class="d--b">
+          <div class="listing-editor__box-content">
+            <input id="img-file-input" name="img-file-input" aria-label="img-file-input" type="file" multiple
+                   class="listing-editor__input-img-files hidden">
+            <div data-et-name="add_photo_video" class="btn">ADD PHOTOS &amp; VIDEO</div>
+            <div class="tc--lg">or drag them in</div>
+          </div>
+        </label>
+      </div>
+      <div id="tiles"></div>
+      <div class="image-edit-modal">
+        <div data-test="modal" class="modal-backdrop hidden" id="cover-backdrop"></div>
+        <div data-test="modal-container" class="modal simple-modal modal--large hidden" id="cover-modal">
+          <div data-test="modal-body" class="modal__body listing-editor__image-modal">
+            <div><div class="d--fl fw--w jc--c">
+              <div class="col-l8">
+                <div class="tc--g" id="cover-title">Select a Covershot.</div>
+                <div id="cover-thumbs"></div>
+              </div>
+              <div class="col-l16"><div>
+                <div class="croppie-container">
+                  <img id="img-ref" alt="" class="cr-original-image" aria-hidden="true" style="opacity: 0;">
+                  <div class="cr-boundary" style="width: 270px; height: 360px;">
+                    <canvas class="cr-image"></canvas>
+                    <div class="cr-viewport cr-vp-rectangle" style="width: 225px; height: 300px;"></div>
+                    <div class="cr-overlay"></div>
+                  </div>
+                  <div class="cr-tools-container">
+                    <div class="cr-slider-wrap">
+                      <div class="zoomout">&minus;</div>
+                      <input class="cr-slider" type="range" aria-label="zoom" min="0.1" max="1.5" step="0.0001"
+                             value="0.1875" id="cover-zoom">
+                      <div class="zoomin">+</div>
+                    </div>
+                    <div class="cr-rotate-controls">
+                      <div class="cr-rotate-r"><i data-et-name="rotate" data-et-element-type="button" id="cover-rotate">&#8635;</i></div>
+                    </div>
+                  </div>
+                </div>
+                <div class="ta--c"><div class="tc--lg"><span><label class="d--ib">
+                  <input type="file" name="replaceImage" class="image-edit-modal__input-file hidden">
+                  <span data-et-name="replace_photo" class="image-edit-modal__replace-photo">Replace Photo</span>
+                </label></span></div></div>
+              </div></div>
+            </div></div>
+          </div>
+          <div data-test="modal-footer" class="modal__footer modal__footer--borderless">
+            <div class="form__actions">
+              <button data-et-on-name="edit_covershot" data-et-name="cancel" class="btn btn--tertiary" id="cover-cancel">Cancel</button>
+              <button data-et-on-name="select_first_photo" data-et-name="apply" class="btn btn--primary" id="cover-apply">Apply</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   </section>
-  <section><div>TITLE *</div>
+
+  <section class="listing-editor__section"><div>Title</div>
     <input data-vv-name="title" placeholder="What are you selling? (required)" maxlength="80">
   </section>
-  <section><div>DESCRIPTION *</div>
+  <section class="listing-editor__section"><div>Description</div>
     <textarea data-vv-name="description" placeholder="Describe it! (required)"></textarea>
   </section>
-  <section><div>CATEGORY *</div>
-    <div class="dropdown" id="category-dropdown">
-      <div class="dropdown__selector" id="category-selector"><span>Select Category</span></div>
-      <ul class="dropdown__menu hidden" id="category-menu"></ul>
+
+  <section class="listing-editor__section"><div>Category *</div>
+    <div class="listing-editor__category-container">
+      <div aria-haspopup="true" data-test="dropdown" class="dropdown d--b" id="category-dropdown">
+        <div data-test="dropdown-container">
+          <div class="dropdown__selector dropdown__selector--select-tag" id="category-selector"><span class="tc--lg">Select Category</span></div>
+        </div>
+        <div><div class="width--100 dropdown__menu hidden" id="category-menu"><ul id="category-list"></ul></div></div>
+      </div>
     </div>
-    <div class="dropdown hidden" id="subcategory-dropdown">
-      <div class="dropdown__selector" id="subcategory-selector"><span>Select Subcategory (optional)</span></div>
-      <ul class="dropdown__menu hidden" id="subcategory-menu"></ul>
+    <div class="listing-editor__subcategory-container">
+      <div aria-haspopup="true" data-test="dropdown" class="dropdown form__text--select d--b" id="subcategory-dropdown">
+        <div data-test="dropdown-container">
+          <div class="dropdown__selector dropdown__selector--select-tag" id="subcategory-selector"><p class="tc--lg">Select Subcategory (optional)</p></div>
+        </div>
+        <div><ul class="dropdown__menu hidden" id="subcategory-menu"></ul></div>
+      </div>
     </div>
   </section>
-  <section><div>QUANTITY</div>
+
+  <section class="listing-editor__section"><div>Quantity</div>
     <button type="button" data-et-name="one">Single Item</button>
     <button type="button" data-et-name="multi">Multi Item</button>
   </section>
-  <section><div>SIZE *</div>
-    <div class="dropdown" id="size-dropdown">
-      <div class="dropdown__selector" data-test="size"><span>Select Size</span></div>
-      <div class="dropdown__menu hidden" id="size-menu">
-        <nav id="size-tabs"></nav>
-        <div id="size-system" class="hidden">
-          <select><option>US Sizing</option><option>AU Sizing</option><option>EU Sizing</option><option>UK Sizing</option></select>
-        </div>
+
+  <section class="listing-editor__section"><div>Size</div>
+    <div aria-haspopup="true" data-test="dropdown" class="dropdown listing-editor__input--half" id="size-dropdown">
+      <div data-test="dropdown-container">
+        <div data-test="size" class="dropdown__selector dropdown__selector--select-tag"><span class="tc--lg">Select Size</span></div>
+      </div>
+      <div><div class="dropdown__menu dropdown__menu--dark hidden" id="size-menu">
+        <nav data-test="horizontal-nav" class="navigation--horizontal">
+          <ul data-test="horizontal-list" class="naviation--horizontal__list" id="size-tabs"></ul>
+          <div class="navigation--horizontal__tab"><div class="listing-editor__size-system hidden" id="size-system">
+            <div aria-haspopup="true" data-test="dropdown" class="dropdown"><div data-test="dropdown-container">
+              <div class="dropdown__selector"><span>US Sizing</span></div></div></div>
+          </div></div>
+        </nav>
         <div id="size-buttons"></div>
         <button type="button" data-et-name="apply" id="size-apply">Done</button>
+      </div></div>
+    </div>
+  </section>
+
+  <section class="listing-editor__section"><div>Condition</div>
+    <div class="listing-editor__condition-container"><div>
+      <div aria-haspopup="true" data-test="dropdown" class="dropdown listing-editor__input--half" id="condition-dropdown">
+        <div data-test="dropdown-container">
+          <div class="dropdown__selector dropdown__selector--select-tag" id="condition-selector"><div class="ellipses tc--lg">Select Condition</div></div>
+        </div>
+        <div><ul data-test="dropdown_menu_list" class="dropdown__menu listing-editor__dropdown--large hidden" id="condition-menu"></ul></div>
       </div>
+    </div></div>
+  </section>
+
+  <section class="listing-editor__section"><div>Brand</div>
+    <div aria-haspopup="true" data-test="dropdown" class="dropdown d--ib form__text--select d--b" id="brand-dropdown">
+      <div data-test="dropdown-container">
+        <div class="dropdown__selector d--b"><input placeholder="Enter the Brand/Designer" type="text" aria-label="input" id="brand-input"></div>
+      </div>
+      <div><ul class="dropdown__menu listing-editor__suggestions-list hidden" id="brand-list"></ul></div>
     </div>
   </section>
-  <section><div>CONDITION *</div>
-    <div class="dropdown" id="condition-dropdown">
-      <div class="dropdown__selector" id="condition-selector"><span>Select Condition</span></div>
-      <ul class="dropdown__menu hidden" id="condition-menu"></ul>
-    </div>
-  </section>
-  <section><div>BRAND</div>
-    <input placeholder="Enter the Brand/Designer" id="brand-input">
-    <ul class="listing-editor__suggestions-list hidden" id="brand-list"></ul>
-  </section>
-  <section><div>COLOR</div>
-    <div class="dropdown" id="color-dropdown">
-      <div class="dropdown__selector" id="color-selector"><span>Select up to 2 colors</span></div>
-      <div class="dropdown__menu hidden" id="color-menu">
+
+  <section class="listing-editor__section"><div>Color</div><p>Optional</p><p>Select up to 2 colors.</p>
+    <div aria-haspopup="true" data-test="dropdown" class="dropdown" id="color-dropdown">
+      <div data-test="dropdown-container">
+        <div class="dropdown__selector dropdown__selector--select-tag" id="color-selector"><div data-et-name="color"><span class="tc--lg">Select up to 2 colors</span></div></div>
+      </div>
+      <div><div class="p--3 dropdown__menu dropdown__menu--dark hidden" id="color-menu">
         <ul id="color-tiles"></ul>
-        <button type="button" data-et-name="apply" id="color-apply">Done</button>
-      </div>
+        <div class="form__actions br--none">
+          <button data-et-name="apply" data-et-on-name="color_tile" class="btn btn--primary" id="color-apply">Done</button>
+        </div>
+      </div></div>
     </div>
   </section>
-  <section><div>STYLE TAGS</div>
-    <div id="tag-chips"></div>
-    <input data-vv-name="style-tag-input" placeholder="Add up to 3 tags" id="tag-input">
-    <ul class="listing-editor__suggestions-list hidden" id="tag-list"></ul>
+
+  <section class="listing-editor__section"><div>Style Tags</div>
+    <div aria-haspopup="true" data-test="dropdown" class="dropdown" id="tag-dropdown">
+      <div data-test="dropdown-container">
+        <div class="dropdown__selector type-ahead__input">
+          <div data-et-name="style_tag" data-et-element-type="button" data-et-on-name="create_listing" class="listing-editor__tags__container">
+            <span id="tag-chips"></span>
+            <input placeholder="Add up to 3 tags" data-vv-name="style-tag-input" type="text" aria-label="input" id="tag-input">
+          </div>
+        </div>
+      </div>
+      <div><ul data-test="dropdown_menu_list" class="dropdown__menu type-ahead__list listing-editor__suggestions-list hidden" id="tag-list"></ul></div>
+    </div>
   </section>
-  <section><div>PRICE</div>
-    <label>Original Price <input data-vv-name="originalPrice" readonly></label>
-    <label>Listing Price <input data-vv-name="listingPrice" readonly placeholder="Required"></label>
-  </section>
-  <section><div>ADDITIONAL DETAILS (Private)</div>
-    <input data-vv-name="sku" placeholder="SKU">
-    <input data-vv-name="costPriceAmount" placeholder="Cost Price">
-    <textarea data-vv-name="otherInfo" placeholder="Other Info"></textarea>
-  </section>
-  <section><div>AVAILABILITY</div><span>For Sale</span></section>
-  <button type="button" data-et-name="save_draft" id="form-save-draft">Save Draft</button>
-  <button type="button" data-et-name="next" id="next">Next</button>
+
+  <section class="listing-editor__section"><div data-et-name="listingEditorPricingSection">
+    <div>Price</div>
+    <div class="listing-editor__original-price--hidden">
+      <div class="listing-editor__field-description__text">Original Price</div>
+      <input placeholder="*Required" type="text" data-vv-name="originalPrice" aria-label="form__text">
+    </div>
+    <div class="listing-editor__price-text-container"><span>Listing Price</span>
+      <span class="listing-editor__field-description__smart-sell-status">Smart Sell OFF</span></div>
+    <input placeholder="*Required" type="text" data-vv-name="listingPrice" aria-label="form__text" readonly>
+    <div>
+      <div data-test="modal" class="modal-backdrop hidden"></div>
+      <div data-test="modal-container" class="modal simple-modal listing-price-suggestion-modal hidden" id="price-modal">
+        <div class="modal__header modal__header--borderless">
+          <h5 data-test="modal-title" class="modal__title"><p class="listing-price-suggestion-modal__title">Listing Price</p></h5>
+          <button type="button" data-test="modal-close-btn" class="btn btn--close modal__close-btn">x</button>
+        </div>
+        <div data-test="modal-body" class="modal__body listing-price-suggestion-modal__body">
+          <input id="listing-price-modal-listing-price-input" aria-label="Listing Price" placeholder="Required" type="text">
+          <span class="listing-price-suggestion-modal__earnings-suffix">Earnings: $--</span>
+          <section class="listing-price-suggestion-modal__smart-sell-section">
+            <h4 class="listing-price-suggestion-modal__smart-sell-title">Smart Sell</h4>
+            <div data-test="toggle"><label data-test="toggle-switch" class="toggle__switch">
+              <input type="checkbox" data-test="toggle-input" class="toggle__switch__input" id="smart-sell">
+              <div data-test="toggle-switch-slider" class="toggle__switch__slider">&#9679;</div>
+            </label></div>
+            <div class="listing-price-suggestion-modal__smart-sell-description">Automate offers for faster selling</div>
+          </section>
+          <div class="listing-price-suggestion-modal__original-price-section">
+            <div id="listing-price-modal-original-price-label">Original Price</div>
+            <input id="listing-price-modal-original-price-input" aria-labelledby="listing-price-modal-original-price-label"
+                   type="text" placeholder="Optional">
+          </div>
+          <section class="listing-price-suggestion-modal__shipping-discount-section">
+            <h5 class="seller-shipping-discount__title">Shipping Discount</h5>
+            <div aria-haspopup="true" data-test="dropdown" class="dropdown">
+              <div data-test="dropdown-container"><div class="dropdown__selector"><span class="tc--lg">Optional</span></div></div>
+              <div><ul data-test="dropdown_menu_list" class="dropdown__menu hidden">
+                <li class="dropdown__menu__item"><a data-et-name="shipping_discount_item" class="dropdown__menu__item dropdown__link">No Discount</a></li>
+                <li class="dropdown__menu__item"><a data-et-name="shipping_discount_item" class="dropdown__menu__item dropdown__link">$4.99</a></li>
+                <li class="dropdown__menu__item"><a data-et-name="shipping_discount_item" class="dropdown__menu__item dropdown__link">Free</a></li>
+              </ul></div>
+            </div>
+          </section>
+        </div>
+        <div data-test="modal-footer" class="modal__footer modal__footer--borderless">
+          <button class="btn btn--primary" id="price-done">Done</button>
+        </div>
+      </div>
+      <div class="smart-sell-modal" style="display: none;">
+        <div data-test="modal-container" class="modal simple-modal modal--top"><span>Auto-Send Offers with Smart Sell</span></div>
+      </div>
+    </div>
+  </div></section>
+
+  <section class="listing-editor__section"><div>Availability *</div><span>For Sale</span></section>
+
+  <div class="listing-editor__toggle">
+    <div class="d--fl jc--sb">
+      <div><div class="tr--uppercase">Additional Details</div><h4 class="listing-editor__optional">(PRIVATE)</h4></div>
+      <div class="d--fl ai--c"><a class="listing-editor-toggle-link" id="details-toggle">show details</a></div>
+    </div>
+    <div class="listing-editor-toggle__body hidden" id="details-body">
+      <div class="h4">Listing SKU</div>
+      <input placeholder="optional" aria-label="sku" data-vv-name="sku">
+      <div class="h4">Cost Price</div>
+      <input placeholder="optional" type="number" aria-label="costPriceAmount" data-vv-name="costPriceAmount">
+      <div class="h4">Other Info</div>
+      <textarea placeholder="optional" data-vv-name="otherInfo" aria-label="textarea"></textarea>
+    </div>
+  </div>
+
+  <div class="form__actions">
+    <a data-et-name="discard" data-et-element-type="button" class="td--ul" href="#" id="form-cancel">Cancel</a>
+    <button data-et-name="next" class="btn btn--primary" id="next">Next</button>
+  </div>
 </main>
 
 <div id="review" class="hidden">
@@ -131,26 +319,28 @@
   <button type="button" id="list-it" data-et-name="list_item">List This Item</button>
 </div>
 
-<div class="modal listing-price-suggestion-modal hidden" id="price-modal" role="dialog">
-  <h3>Listing Price</h3>
-  <label>Listing Price <input id="listing-price-modal-listing-price-input"></label>
-  <label>Original Price <input id="listing-price-modal-original-price-input" placeholder="Optional"></label>
-  <label><input type="checkbox" id="smart-sell"> Smart Sell</label>
-  <div>Shipping Discount
-    <select id="shipping-discount"><option>No Discount</option><option>Discounted Shipping</option><option>Free Shipping</option></select>
+<div>
+  <div data-test="modal" class="modal-backdrop hidden"></div>
+  <div data-test="modal-container" class="modal simple-modal hidden" id="leave-modal">
+    <div class="modal__header modal__header--borderless">
+      <h5 data-test="modal-title" class="modal__title">Save Draft</h5>
+      <button type="button" data-test="modal-close-btn" class="btn btn--close">x</button>
+    </div>
+    <div data-test="modal-body" class="modal__body"><p class="ta--c">Do you want to save this listing as a draft?</p></div>
+    <div data-test="modal-footer" class="modal__footer modal__footer--borderless"><div class="form__actions">
+      <button data-et-name="discard" data-et-on-name="listing_cancel_popup" class="btn btn--tertiary" id="leave-discard">Discard Changes</button>
+      <button data-et-name="save_draft" data-et-on-name="listing_cancel_popup" class="btn btn--primary" id="leave-save">Save Draft</button>
+    </div></div>
   </div>
-  <button type="button" id="price-done">Done</button>
-</div>
-
-<div class="modal hidden" id="leave-modal" role="dialog">
-  <p>Save this listing as a draft?</p>
-  <button type="button" data-et-name="save_draft" id="leave-save">Save Draft</button>
-  <button type="button" data-et-name="discard" id="leave-discard">Discard</button>
-</div>
-
-<div class="modal hidden" id="crop-modal" role="dialog">
-  <h3>Crop Cover Photo</h3>
-  <button type="button">Apply</button>
+  <div data-test="modal-container" class="modal simple-modal modal--top modal--small hidden" id="saved-modal">
+    <h5 data-test="modal-title" class="modal__title">Saved</h5>
+    <div data-test="modal-body" class="modal__body"><p>To access drafts, click on 'Sell on Poshmark'.</p></div>
+    <div data-test="modal-footer" class="modal__footer"><button class="btn btn--primary" id="saved-ok">Ok</button></div>
+  </div>
+  <div data-test="modal-container" class="modal simple-modal hidden" id="error-modal">
+    <h5 data-test="modal-title" class="modal__title">Photo upload failed</h5>
+    <div data-test="modal-footer" class="modal__footer"><button class="btn btn--primary">OK</button></div>
+  </div>
 </div>
 
 <script>
@@ -173,12 +363,44 @@
   document.querySelectorAll('input, textarea').forEach(i => i.addEventListener('input', touch));
   const halves = (lo, hi) => { const out = []; for (let n = lo; n <= hi; n += 0.5) out.push(String(n)); return out; };
 
-  // ---- photos (UNVERIFIED guess: blob: thumbnails; a crop dialog when cfg.crop) ----
+  // ---- photos: the cover dialog (recorded), then the tiles (UNVERIFIED guess: one <img> per photo) ----
+  let urls = [];
+  const renderTiles = () => {
+    $('#tiles').innerHTML = '';
+    for (const u of urls) {
+      const tile = make('div', {class: 'listing-editor__image-tile'});
+      tile.appendChild(make('img', {src: u, alt: ''}));
+      $('#tiles').appendChild(tile);
+    }
+  };
+  const addThumb = (u, i) => {
+    const thumb = make('div', {class: 'image-edit-modal__thumb'});
+    const selected = cfg.coverSecondSelected ? i === 1 : i === 0;
+    if (selected) thumb.appendChild(document.createElementNS('http://www.w3.org/2000/svg', 'svg'))
+      .setAttribute('class', 'icon-green-checkmark');
+    else thumb.appendChild(make('i', {class: 'gray-cover'}));
+    thumb.appendChild(make('img', {src: u, alt: 'thumb'}));
+    $('#cover-thumbs').appendChild(thumb);
+  };
   $('#img-file-input').addEventListener('change', ev => {
-    for (const f of ev.target.files) $('#thumbs').appendChild(make('img', {src: URL.createObjectURL(f), alt: ''}));
+    urls = [...ev.target.files].map(f => URL.createObjectURL(f));
     touch();
-    if (cfg.crop) show($('#crop-modal'));
+    if (cfg.strangeDialog) { show($('#error-modal')); return; }
+    if (cfg.noCoverDialog) { renderTiles(); return; }
+    if (cfg.coverNoApply) $('#cover-apply').textContent = 'Save';
+    $('#cover-thumbs').innerHTML = '';
+    show($('#cover-backdrop')); show($('#cover-modal'));
+    if (cfg.slowCover) urls.forEach((u, i) => setTimeout(() => addThumb(u, i), 60 * (i + 1)));
+    else urls.forEach(addThumb);
   });
+  $('#cover-apply').addEventListener('click', () => {
+    events.push('cover-apply');
+    show($('#cover-modal'), false); show($('#cover-backdrop'), false);
+    later(renderTiles);
+  });
+  $('#cover-cancel').addEventListener('click', () => { events.push('cover-cancel'); show($('#cover-modal'), false); });
+  $('#cover-zoom').addEventListener('input', () => events.push('cover-zoom'));
+  $('#cover-rotate').addEventListener('click', () => events.push('cover-rotate'));
 
   // ---- category ----
   const TREE = {
@@ -199,41 +421,44 @@
     electronics: {name: 'Electronics', cats: {'Cameras': [], 'Other': []}},
   };
   let dept = cfg.lastDept || null, cat = null;
-  const catMenu = $('#category-menu');
-  function renderDepartments() {
-    catMenu.innerHTML = '';
-    for (const [et, d] of Object.entries(TREE)) {
-      const li = make('li', {class: 'dropdown__menu__item'});
-      const a = make('a', {class: 'dropdown__link', 'data-et-name': et, href: '#'}, d.name);
-      a.addEventListener('click', ev => { ev.preventDefault(); dept = et; later(renderCategories); });
-      li.appendChild(a);
-      catMenu.appendChild(li);
-    }
+  const catList = $('#category-list');
+  const link = (et, text, onClick) => {
+    const li = make('li');
+    const a = make('a', {class: 'dropdown__link dropdown__menu__item', 'data-et-name': et, href: '#'});
+    a.appendChild(make('div')).appendChild(make('p', {}, text));
+    a.addEventListener('click', ev => { ev.preventDefault(); onClick(); });
+    li.appendChild(a);
+    return li;
+  };
+  function renderDepartments() {                                      // the snapshot: All Categories on top
+    catList.innerHTML = '';
+    catList.appendChild(link('all', 'All Categories', () => {}));
+    for (const [et, d] of Object.entries(TREE))
+      catList.appendChild(link(et, d.name, () => { dept = et; later(renderCategories); }));
   }
   function renderCategories() {
-    catMenu.innerHTML = '';
-    const all = make('a', {class: 'dropdown__link', 'data-et-name': 'all', href: '#'}, 'All Categories');
-    all.addEventListener('click', ev => { ev.preventDefault(); dept = null; renderDepartments(); });
-    catMenu.appendChild(all);
+    catList.innerHTML = '';
+    catList.appendChild(link('all', 'All Categories', () => { dept = null; renderDepartments(); }));
     for (const name of Object.keys(TREE[dept].cats)) {
-      const li = make('li', {class: 'dropdown__menu__item'}, name);
+      if (cfg.categoryLinks) { catList.appendChild(link(name.toLowerCase(), name, () => pickCategory(name))); continue; }
+      const li = make('li', {class: 'dropdown__menu__item'}, name);          // the inspection's shape
       li.addEventListener('click', () => pickCategory(name));
-      catMenu.appendChild(li);
+      catList.appendChild(li);
     }
   }
   $('#category-selector').addEventListener('click', () => {
-    const opening = !isOpen(catMenu);
+    const menu = $('#category-menu');
+    const opening = !isOpen(menu);
     if (opening) { if (dept) renderCategories(); else renderDepartments(); }
-    show(catMenu, opening);
+    show(menu, opening);
   });
   function pickCategory(name) {
     cat = name;
     touch();
-    show(catMenu, false);
+    show($('#category-menu'), false);
     label($('#category-selector'), `${TREE[dept].name} / ${name}`);     // UNVERIFIED guess of the breadcrumb
     events.push(`category:${TREE[dept].name}/${name}`);
     const subMenu = $('#subcategory-menu');
-    show($('#subcategory-dropdown'));
     label($('#subcategory-selector'), 'Select Subcategory (optional)');
     subMenu.innerHTML = '';
     for (const sub of ['None', ...TREE[dept].cats[name]]) {
@@ -286,9 +511,11 @@
     const tabs = $('#size-tabs');
     tabs.innerHTML = '';
     for (const tab of Object.keys(menu.tabs)) {
+      const li = make('li');
       const a = make('a', {class: 'navigation--horizontal__link', href: '#'}, tab);
       a.addEventListener('click', ev => { ev.preventDefault(); events.push(`size-tab:${tab}`); later(() => renderSizeTab(menu, tab)); });
-      tabs.appendChild(a);
+      li.appendChild(a);
+      tabs.appendChild(li);
     }
     show($('#size-system'), !!menu.system);
     renderSizeTab(menu, Object.keys(menu.tabs)[0]);
@@ -299,66 +526,69 @@
     if (chosenSize) { label($('[data-test="size"]'), chosenSize); events.push(`size:${chosenSize}`); touch(); }
   });
 
-  // ---- condition ----
-  $('#condition-selector').addEventListener('click', () => {
-    const menu = $('#condition-menu');
-    menu.innerHTML = '';
-    for (const c of ['New With Tags (NWT)', 'Like New', 'Good', 'Fair']) {
-      const li = make('li', {class: 'dropdown__menu__item'}, c);
-      li.addEventListener('click', () => {
-        show(menu, false);
-        label($('#condition-selector'), c);
-        events.push(`condition:${c}`);
-        touch();
-      });
-      menu.appendChild(li);
-    }
-    show(menu, !isOpen(menu));
-  });
+  // ---- condition (the snapshot: code on the item, label over a description) ----
+  const CONDITIONS = [['nwt', 'New With Tags (NWT)', 'Brand new with original tags or packaging'],
+                      ['uln', 'Like New', 'New without tags or like new'],
+                      ['ug', 'Good', 'Gently used with minimal signs of wear, to note in description or photos'],
+                      ['uf', 'Fair', 'Clearly used with visible wear, to note in description or photos']];
+  for (const [code, name, desc] of CONDITIONS) {
+    const li = make('li', {class: 'dropdown__menu__item'});
+    const item = make('div', {'data-et-name': 'listing_condition', 'data-et-element-type': 'list_item',
+                              'data-et-prop-content': code, class: 'dropdown__link p--v--3'});
+    const shown = (cfg.conditionLabel || {})[code] || name;
+    item.appendChild(make('div', {class: 'fw--med'}, shown));
+    item.appendChild(make('div', {class: 'tc--lg mt--1 ws--normal'}, desc));
+    item.addEventListener('click', () => {
+      show($('#condition-menu'), false);
+      label($('#condition-selector'), shown);
+      events.push(`condition:${shown}`);
+      touch();
+    });
+    li.appendChild(item);
+    $('#condition-menu').appendChild(li);
+  }
+  $('#condition-selector').addEventListener('click', () => show($('#condition-menu'), !isOpen($('#condition-menu'))));
 
-  // ---- brand ----
+  // ---- brand (suggestions' markup: WO9's a.dropdown__link) ----
   const BRANDS = ['Tory Burch', 'Tory Sport', 'Birkenstock', 'UGG', 'Nike', 'Vince', 'Vince Camuto', "Levi's",
                   'Madewell', 'J. Crew'];
-  function suggest(input, list, pool, onPick) {
-    input.addEventListener('input', () => later(() => {
-      const q = input.value.trim().toLowerCase();
-      const hits = q ? pool.filter(x => x.toLowerCase().includes(q)).slice(0, 8) : [];
-      list.innerHTML = '';
-      for (const h of hits) {
-        const li = make('li');
-        const a = make('a', {class: 'dropdown__link', href: '#'}, h);
-        a.addEventListener('click', ev => { ev.preventDefault(); show(list, false); onPick(h); });
-        li.appendChild(a);
-        list.appendChild(li);
-      }
-      show(list, hits.length > 0);
-    }));
-  }
-  suggest($('#brand-input'), $('#brand-list'), BRANDS, b => { $('#brand-input').value = b; events.push(`brand:${b}`); });
+  $('#brand-input').addEventListener('input', () => later(() => {
+    const list = $('#brand-list');
+    const q = $('#brand-input').value.trim().toLowerCase();
+    const hits = q ? BRANDS.filter(b => b.toLowerCase().includes(q)).slice(0, 8) : [];
+    list.innerHTML = '';
+    for (const b of hits) {
+      const li = make('li');
+      const a = make('a', {class: 'dropdown__link', href: '#'}, b);
+      a.addEventListener('click', ev => {
+        ev.preventDefault(); show(list, false); $('#brand-input').value = b; events.push(`brand:${b}`);
+      });
+      li.appendChild(a);
+      list.appendChild(li);
+    }
+    show(list, hits.length > 0);
+  }));
 
-  // ---- colors ----
+  // ---- colours ----
   const COLORS = ['Red', 'Pink', 'Orange', 'Yellow', 'Green', 'Blue', 'Purple', 'Gold', 'Silver', 'Black', 'Gray',
                   'White', 'Cream', 'Brown', 'Tan'];
   const chosenColors = [];
-  $('#color-selector').addEventListener('click', () => {
-    const tiles = $('#color-tiles');
-    tiles.innerHTML = '';
-    for (const c of COLORS) {
-      const li = make('li', {class: 'listing-editor__tile--color'});
-      const a = make('a', {href: '#'});
-      a.appendChild(make('span', {class: 'swatch'}));
-      a.appendChild(make('span', {}, c));
-      a.addEventListener('click', ev => {                               // on the <a> only
-        ev.preventDefault();
-        const i = chosenColors.indexOf(c);
-        if (i >= 0) chosenColors.splice(i, 1); else if (chosenColors.length < 2) chosenColors.push(c);
-        li.classList.toggle('selected', chosenColors.includes(c));
-      });
-      li.appendChild(a);
-      tiles.appendChild(li);
-    }
-    show($('#color-menu'), !isOpen($('#color-menu')));
-  });
+  for (const c of COLORS) {
+    const li = make('li', {class: 'listing-editor__tile--color d--if'});
+    const box = make('div', {class: 'd--if'});
+    const a = make('a', {class: 'd--fl color__circle--large', style: 'background-color: #888;'});
+    a.addEventListener('click', ev => {                                 // on the swatch <a>
+      ev.preventDefault();
+      const i = chosenColors.indexOf(c);
+      if (i >= 0) chosenColors.splice(i, 1); else if (chosenColors.length < 2) chosenColors.push(c);
+      li.classList.toggle('selected', chosenColors.includes(c));
+    });
+    box.appendChild(a);
+    box.appendChild(make('span', {}, c));
+    li.appendChild(box);
+    $('#color-tiles').appendChild(li);
+  }
+  $('#color-selector').addEventListener('click', () => show($('#color-menu'), !isOpen($('#color-menu'))));
   $('#color-apply').addEventListener('click', () => {
     show($('#color-menu'), false);
     label($('#color-selector'), chosenColors.length ? chosenColors.join(', ') : 'Select up to 2 colors');
@@ -366,12 +596,32 @@
     touch();
   });
 
-  // ---- style tags (UNVERIFIED guess: curated suggestions like the brand's; Enter adds a free tag) ----
-  const CURATED = ['Casual', 'Classic', 'Floral', 'Denim', 'Boho', 'Vintage', 'Minimalist', 'Preppy', 'Sporty'];
+  // ---- style tags (the snapshot's curated list, filtered as you type; Enter would add a free tag) ----
+  const CURATED = ['70s', 'Bohemian', 'Casual', 'Denim', 'Floral', 'Minimalist', 'Preppy', 'Sporty', 'Vintage',
+                   'Western', 'Y2K'];
   const tagInput = $('#tag-input');
   const addTag = t => { $('#tag-chips').appendChild(make('span', {class: 'tag-chip'}, t)); tagInput.value = ''; };
-  suggest(tagInput, $('#tag-list'), CURATED, t => { addTag(t); events.push(`tag:${t}`); });
+  const renderTags = () => {
+    const list = $('#tag-list');
+    const q = tagInput.value.trim().toLowerCase();
+    list.innerHTML = '';
+    const hits = CURATED.filter(t => t.toLowerCase().includes(q));
+    for (const t of hits) {
+      const li = make('li', {class: 'dropdown__menu__item'});
+      const row = make('div', {class: 'd--fl jc--sb dropdown__link'});
+      const item = make('div', {'data-et-name': t, 'data-et-element-type': 'button', 'data-et-on-screen_type': 'drop_down',
+                                'data-et-on-name': 'style_tag', class: 'width--100'}, t);
+      item.addEventListener('click', () => { show(list, false); addTag(t); events.push(`tag:${t}`); });
+      row.appendChild(item);
+      li.appendChild(row);
+      list.appendChild(li);
+    }
+    show(list, hits.length > 0);
+  };
+  tagInput.addEventListener('focus', renderTags);
+  tagInput.addEventListener('input', () => later(renderTags));
   tagInput.addEventListener('keydown', ev => {
+    if (ev.key === 'Escape') show($('#tag-list'), false);
     if (ev.key === 'Enter' && tagInput.value.trim()) { events.push(`free-tag:${tagInput.value.trim()}`); addTag(tagInput.value.trim()); }
   });
 
@@ -390,20 +640,29 @@
     touch();
   });
 
+  // ---- Additional Details ----
+  $('#details-toggle').addEventListener('click', ev => {
+    ev.preventDefault();
+    const opening = !isOpen($('#details-body'));
+    show($('#details-body'), opening);
+    $('#details-toggle').textContent = opening ? 'hide details' : 'show details';
+    events.push(opening ? 'show-details' : 'hide-details');
+  });
+
   // ---- Next, the page after it, publishing (UNVERIFIED guess) ----
   $('#next').addEventListener('click', () => { events.push('next'); show($('#form'), false); show($('#review')); });
   $('#review-edit').addEventListener('click', () => { events.push('back'); show($('#review'), false); show($('#form')); });
   $('#list-it').addEventListener('click', () => { events.push('publish'); location.href = '/listing/published-123'; });
-  $('#form-save-draft').addEventListener('click', () => { events.push('save_draft'); location.href = '/closet/me?draft=1'; });
 
-  // ---- leaving (UNVERIFIED guess: an in-app link opens the leave dialog when the form has input) ----
-  document.querySelector('header a').addEventListener('click', ev => {
-    if (cfg.noLeaveDialog || !dirty) return;
+  // ---- leaving: the form's Cancel -> "Save Draft" dialog (the opening is UNVERIFIED) ----
+  $('#form-cancel').addEventListener('click', ev => {
     ev.preventDefault();
+    if (cfg.noLeaveDialog || !dirty) { location.href = '/feed'; return; }
     show($('#leave-modal'));
   });
   $('#leave-discard').addEventListener('click', () => { events.push('discard'); location.href = '/feed?discarded=1'; });
-  $('#leave-save').addEventListener('click', () => { events.push('save_draft'); location.href = '/closet/me?draft=1'; });
+  $('#leave-save').addEventListener('click', () => { events.push('save_draft'); show($('#leave-modal'), false); show($('#saved-modal')); });
+  $('#saved-ok').addEventListener('click', () => { location.href = '/closet/me?draft=1'; });
 })();
 </script>
 </body>

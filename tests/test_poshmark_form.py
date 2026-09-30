@@ -1,9 +1,12 @@
 """PoshmarkPoster against a static copy of the create-listing form (tests/fixtures/poshmark_create_listing.html).
 
-The fixture reproduces the structures verified on the live form on 2026-09-29 (department links, category <li>,
-subcategory <a> inside an <li> that ignores a click of its own, size tabs and buttons with the kids ids, condition
-items, brand suggestions, colour tiles, the Listing Price dialog with Smart Sell) plus the current guesses for what is
-still UNVERIFIED (thumbnails, closed-dropdown text, curated tags, the leave dialog's trigger, the page after Next).
+The fixture reproduces the form as recorded: the inspection of 2026-09-29 and the DOM snapshot of the first Mac
+dry-run, 2026-09-30 (the "Select a Covershot." dialog, Poshmark's dropdown component, department links, category
+<li>, subcategory <a> inside an <li> that ignores a click of its own, size tabs and buttons with the kids ids,
+condition items with their codes and descriptions, colour tiles, the curated style tags, the Listing Price dialog with
+Smart Sell, the SKU behind "show details", Cancel and its "Save Draft" dialog), plus the current guesses for what is
+still UNVERIFIED (the photo tiles after Apply, closed-dropdown text, that Cancel opens the dialog, the page after
+Next).
 
 Real headless Chrome and real Playwright clicks. No network: every request of the test browser is answered from the
 fixture or aborted, and the site lives at https://fixture.invalid, a name that can never resolve.
@@ -130,7 +133,7 @@ def photos(tmp_path):
 def render(photos, **kw) -> Render:
     base = dict(marketplace="poshmark", title="Tory Burch Minnie Red Ballet Flats size 7.5",
                 description="Red ballet flats with the gold logo.\nWorn twice, light wear on the soles.\nRetail $228.",
-                tags=["Classic"], brand="Tory Burch", department="Women", category="Shoes",
+                tags=["Casual"], brand="Tory Burch", department="Women", category="Shoes",
                 subcategory="Flats & Loafers", size="7.5", colors=["Red"], condition="excellent", price=85,
                 original_price=228, photos=photos, sku=SKU)
     base.update(kw)
@@ -193,11 +196,14 @@ def test_women_shoes_fill_reads_back_exactly_what_was_planned(chrome, posh, phot
     r = render(photos)
     seen, events = fill_and_read(chrome, posh, r)
     assert compare(seen, posh.expected(r)) == {}, seen
-    assert events == ["category:Women/Shoes", "subcategory:Flats & Loafers", "size-tab:Standard", "size:7.5",
-                      "condition:Good", "brand:Tory Burch", "color:Red", "tag:Classic", "price-done"]
+    assert events == ["cover-apply", "category:Women/Shoes", "subcategory:Flats & Loafers", "size-tab:Standard",
+                      "size:7.5", "condition:Good", "brand:Tory Burch", "color:Red", "tag:Casual", "price-done",
+                      "show-details"]                              # the SKU sits behind "show details"
+    assert seen["cover_dialog"] == {"photos": 3, "crop": "Poshmark's default"}
     assert seen["photos"] == 3 and seen["price"] == "$85" and seen["original_price"] == "$228"
     assert seen["category"] == "Women / Shoes" and seen["subcategory"] == "Flats & Loafers" and seen["size"] == "7.5"
-    assert seen["smart_sell"] == "off" and "No Discount" in seen["price_dialog"] and seen["sku"] == SKU
+    assert seen["smart_sell"] == "off" and seen["sku"] == SKU
+    assert "Shipping Discount Optional" in seen["price_dialog"]           # the recorded default: nothing chosen
     assert posh.notes == []
 
 
@@ -313,9 +319,75 @@ def test_smart_sell_switched_on_stops_the_item(chrome, posh, photos):
     assert "Smart Sell is on" in str(err) and price == ""                   # Done was never pressed
 
 
-def test_a_dialog_after_the_upload_is_the_owners_question_until_recorded(chrome, posh, photos):
-    err, _ = fill_expecting(chrome, posh, render(photos), NeedsOwner, steps=["_photos"], crop=True)
-    assert err.question.startswith("Poshmark opened a dialog after the photo upload (a crop/cover step?)")
+def test_a_condition_item_that_reads_differently_stops_the_item(chrome, posh, photos):
+    err, _ = fill_expecting(chrome, posh, render(photos, condition="like_new"), PosterError, steps=["_condition"],
+                            conditionLabel={"uln": "Excellent"})
+    assert "condition uln reads 'Excellent', expected 'Like New'" in str(err)
+
+
+def test_categories_shaped_like_the_department_links_work_too(chrome, posh, photos):
+    """The snapshot shows the class dropdown__menu__item on the departments' <a>; the inspection saw it on the
+    categories' <li>. Either shape is picked."""
+    r = render(photos)
+    seen, events = fill_and_read(chrome, posh, r, steps=["_category"], categoryLinks=True)
+    assert events == ["category:Women/Shoes", "subcategory:Flats & Loafers"]
+    assert diff_on(seen, r, posh, "category", "subcategory") == {}
+
+
+# ---------------------------------------------------------------- the cover dialog after the upload (WO11)
+
+def test_the_cover_dialog_is_applied_with_poshmarks_default_crop(chrome, posh, photos):
+    """Recorded on the Mac: "Select a Covershot.", one tile per photo, the first preselected, a crop frame with a zoom
+    slider and rotate buttons, Cancel / Apply. Apply, crop untouched, the dialog closes, every tile shows."""
+    async def scenario(ctx, site):
+        page = await open_form(ctx, posh)
+        await posh._photos(page, render(photos))
+        return (await page.evaluate("window.__events"), await page.locator("#cover-modal").is_visible(),
+                await posh.read_back(page))
+    events, dialog_open, seen = drive(chrome, scenario)
+    assert events == ["cover-apply"]                     # never the zoom slider, rotate, Cancel or Replace Photo
+    assert not dialog_open and seen["photos"] == 3
+    assert seen["cover_dialog"] == {"photos": 3, "crop": "Poshmark's default"}
+
+
+def test_a_cover_dialog_that_lists_the_photos_slowly_is_waited_for(chrome, posh, photos):
+    async def scenario(ctx, site):
+        page = await open_form(ctx, posh)
+        await posh._photos(page, render(photos))
+        return await page.evaluate("window.__events"), await posh.read_back(page)
+    events, seen = drive(chrome, scenario, slowCover=True)
+    assert events == ["cover-apply"] and seen["cover_dialog"]["photos"] == 3 and seen["photos"] == 3
+
+
+def test_no_cover_dialog_is_fine(chrome, posh, photos):
+    async def scenario(ctx, site):
+        page = await open_form(ctx, posh)
+        await posh._photos(page, render(photos))
+        return await posh.read_back(page)
+    seen = drive(chrome, scenario, noCoverDialog=True)
+    assert seen["photos"] == 3 and seen["cover_dialog"] is None
+
+
+@pytest.mark.parametrize("variant,why", [
+    (dict(coverNoApply=True), "Poshmark's cover dialog differs from the recorded one: the confirm button reads 'Save'"),
+    (dict(coverSecondSelected=True), "Poshmark's cover dialog did not preselect the first photo (the cover)"),
+    (dict(strangeDialog=True), "a dialog that isn't recorded opened after the photo upload: 'Photo upload failed OK'"),
+])
+def test_a_dialog_unlike_the_recorded_one_fails_the_item(chrome, posh, photos, variant, why):
+    err, _ = fill_expecting(chrome, posh, render(photos), PosterError, steps=["_photos"], **variant)
+    assert not isinstance(err, NeedsOwner) and str(err) == why
+
+
+def test_an_unrecorded_dialog_fails_the_dry_run_with_the_evidence(chrome, posh, photos, tmp_path):
+    shots = tmp_path / "shots"
+
+    async def scenario(ctx, site):
+        return await posh.post(ctx, render(photos), "draft", True, shots), site
+    out, site = drive(chrome, scenario, strangeDialog=True)
+    assert out.status == "failed" and "a dialog that isn't recorded opened after the photo upload" in out.error
+    shot = Path(out.screenshot)
+    assert shot.exists() and "Photo upload failed" in shot.with_suffix(".html").read_text(encoding="utf-8")
+    assert not site.visited("/listing/") and not site.visited("draft=1")
 
 
 # ---------------------------------------------------------------- Poster.post(): dry-run stages end to end
@@ -344,7 +416,7 @@ def test_dry_run_review_stage_records_the_page_after_next_and_never_publishes(ch
     assert out.status == "dryrun" and out.note == f"review page recorded in {SKU}-review.json", out
     record = json.loads((shots / f"{SKU}-review.json").read_text(encoding="utf-8"))
     assert {"Edit", "List This Item"} <= {b["text"] for b in record["buttons"]}
-    assert record["headings"] == ["Review your listing"]
+    assert "Review your listing" in record["headings"]
     assert list(shots.glob(f"{SKU}-poshmark-*-review.png"))
     assert not site.visited("/listing/") and site.visited("/feed?discarded=1")       # backed out, then Discard
 

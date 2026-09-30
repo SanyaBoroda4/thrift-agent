@@ -20,7 +20,8 @@ iCloud Posh/inbox/<ts>/ (+ _done) ─► register batch ─► prep (HEIC→JPEG
   ─► verify (LLM strip unsupported claims) + lint (deterministic) ─► gate: publish | draft | needs_info
   ─► awaiting_price ─► Telegram: ONE message [Approve $P] [Change] (open questions folded in) ─► ready
   ─► poster: fill form → read back → diff → dry-run | draft | publish → verify live page → record URL
-     (dry-run stage form | review: never the publish button; the form is left through Poshmark's Discard)
+     (dry-run stage form | review: never the publish button; the form is left through Poshmark's Discard;
+      after the upload Poshmark's cover dialog is applied with its default crop, any other dialog fails the item)
      (stuck on an owner-only field → separate question, item waits in `needs_owner`, the others continue)
 ```
 Item statuses: `new` → `awaiting_price` | `needs_info` → `ready` → `posting` → `posted` | `drafted` | `failed`;
@@ -74,12 +75,27 @@ Item statuses: `new` → `awaiting_price` | `needs_info` → `ready` → `postin
   Girls/Boys tabs, `KIDS_SIZE_OPTIONS`); the condition labels (`CONDITION_TO_POSH`); brand suggestions; colour tiles;
   the Listing Price dialog (inputs, Smart Sell checkbox, Done); Next / Save Draft / Discard by `data-et-name`; the Women
   and Kids category lists with their Shoes subcategories (`data/poshmark_taxonomy.yaml`).
-- **UNVERIFIED:** photo thumbnails; the crop/cover dialog; the text a closed dropdown shows (category breadcrumb,
-  condition, colours) and the size chip format; curated style-tag suggestions (free-typed tags are never entered);
-  what opens the leave dialog; the page after Next and its final publish button; where Save Draft lands; the CAPTCHA
-  wording; the Baby-tab size labels, kids clothing and Plus size tabs; the Men/Home category lists; all of Depop.
-  Record them from the dry-run evidence in `failed/shots/` (`.png`/`.html`/`.json` per run, `<item>-review.json`) or
-  with `playwright codegen --channel chrome https://poshmark.com/create-listing` on the Mac.
+- Verified from the DOM snapshot of the first Mac dry-run (2026-09-30, WO11): the **"Select a Covershot." dialog**
+  Poshmark opens after the upload (`div.image-edit-modal > [data-test=modal-container]`: one `.image-edit-modal__thumb`
+  per photo, the first preselected with `svg.icon-green-checkmark`; a croppie crop frame, 3:4 portrait (viewport
+  225×300), zoom slider, rotate buttons, "Replace Photo"; Cancel `[data-et-name=cancel]` / Apply `[data-et-name=apply]`)
+  — the poster keeps Poshmark's default crop and presses Apply; any other dialog after the upload fails the item with
+  the evidence. Also: Poshmark's dropdown component (`[data-test=dropdown].dropdown`, `dropdown_root`); the department
+  links as `li > a.dropdown__link.dropdown__menu__item` with "All Categories" on top; condition items carrying
+  Poshmark's code (`[data-et-name=listing_condition][data-et-prop-content=nwt|uln|ug|uf]`) with a description line
+  under the label; the 130 curated style tags (`[data-et-on-name=style_tag]`); the SKU inside the collapsed Additional
+  Details (`a.listing-editor-toggle-link` "show details"); the form's `originalPrice` input hidden
+  (`.listing-editor__original-price--hidden`); the price dialog's Smart Sell toggle (`[data-test=toggle-input]`) and
+  Shipping Discount showing "Optional" (nothing chosen); the form's Cancel `a[data-et-name=discard]` and the "Save
+  Draft" dialog ("Do you want to save this listing as a draft?": "Discard Changes" `[data-et-name=discard]` / "Save
+  Draft" `[data-et-name=save_draft]`, then "Saved" / Ok); the Drafts panel `[data-et-name=draftsSection]` with its
+  count.
+- **UNVERIFIED:** the form's photo tiles once the cover dialog is applied; the text a closed dropdown shows once a
+  choice is made (category breadcrumb, condition, colours) and the size chip format; the brand suggestions' markup;
+  that the form's Cancel opens the "Save Draft" dialog; the page after Next and its final publish button; where Save
+  Draft lands; the CAPTCHA wording; the Baby-tab size labels, kids clothing and Plus size tabs; the Men/Home category
+  lists; all of Depop. Record them from the dry-run evidence in `failed/shots/` (`.png`/`.html`/`.json` per run,
+  `<item>-review.json`) or with `playwright codegen --channel chrome https://poshmark.com/create-listing` on the Mac.
 
 ## Seller data (private)
 Seller-specific data — brand price tiers, real listing examples, sales findings, account notes, the closet username —
@@ -157,7 +173,9 @@ The owner shares retailer screenshots (product page with price, style name, colo
   → SKU; `read_back` of every field incl. the dropdowns' text; dry-run stages `form` | `review` leaving through
   Discard; curated style tags only; Smart Sell asserted off; `data/poshmark_taxonomy.yaml` + `taxonomy.fit()`;
   `kids_gender` → the Girls/Boys size tab; a static-HTML fixture test of the form (`tests/test_poshmark_form.py`).
-  Left: record the UNVERIFIED items from the first Mac dry-runs (see "What's verified vs not"), then take them out of
+  Done (WO11, from the first Mac dry-run's snapshot): the cover dialog is recorded and applied; condition picked by
+  code; curated tags, the SKU behind "show details", Cancel → "Save Draft" dialog → "Discard Changes" recorded.
+  Left: record the UNVERIFIED items from the next Mac dry-runs (see "What's verified vs not"), then take them out of
   `UNVERIFIED` to enable drafts and publishing; a week of dry-runs.
 - **M3 Telegram approval flow — done (v1):** long polling in the worker, one approval message per item
   ([Approve $P] [Change], questions folded in), `needs_owner` for the poster's own questions, re-send of pending

@@ -1,24 +1,25 @@
 """Poshmark create-listing adapter.
 
-Verified against the live form on 2026-09-29 (web, logged in, nothing saved): every SEL entry that is not in
-UNVERIFIED. The form has few ARIA roles or labels, so the verified locators are its own hooks: data-vv-name (form
-fields), data-et-name (tracked links and buttons), data-test, ids, placeholders and visible texts, plus, where the
-inspection found nothing else, the BEM classes of its menus (dropdown__link, dropdown__menu__item, ...).
+Verified against the live form on 2026-09-29 (web, logged in, nothing saved) and against the DOM snapshot of the
+first Mac dry-run on 2026-09-30 (the cover dialog, the dropdown component, the condition items, the curated style
+tags, the collapsed SKU, the Cancel link and its "Save Draft" dialog): every SEL entry that is not in UNVERIFIED. The
+form has few ARIA roles or labels, so the verified locators are its own hooks: data-vv-name (form fields), data-et-name
+(tracked links and buttons), data-test, ids, placeholders and visible texts, plus, where nothing else exists, the BEM
+classes of its menus (dropdown__link, dropdown__menu__item, ...).
 
 Clicks are real Playwright clicks on the element Poshmark listens on. In the inspection a JS element.click() on a
 subcategory <li> did NOT register, while clicking its inner <a> did, so a menu item is clicked through its inner <a>
 when it has one (_click). Nothing here calls element.click() or dispatch_event().
 
-Fill order: photos, title, description, category, subcategory, size, condition, brand, colors, style tags, the
-Listing Price dialog, SKU. read_back() reads every field back, including the text each closed dropdown shows, and
-Poster.post() diffs it against expected() before anything else happens.
+Fill order: photos (then Poshmark's "Select a Covershot." dialog: its default crop, Apply), title, description,
+category, subcategory, size, condition, brand, colors, style tags, the Listing Price dialog, SKU (behind "show
+details"). read_back() reads every field back, including the text each closed dropdown shows, and Poster.post() diffs
+it against expected() before anything else happens. Any other dialog after the upload fails the item with the evidence.
 
-UNVERIFIED (record on the Mac from the dry-run evidence in failed/shots, see reports/2026-09-29_09_*.md):
-  photo_thumbs, crop_dialog     what the upload shows: thumbnails; a crop/cover dialog (NeedsOwner until recorded)
-  dropdown_root                 where a closed dropdown shows its choice (category breadcrumb, condition, colors)
-  tag_options                   the curated style-tag suggestions (a tag Poshmark doesn't offer is left out; free-typed
-                                tags are never entered)
-  leave                         what opens the leave dialog whose Discard button (verified) drops the form
+UNVERIFIED (record on the Mac from the dry-run evidence in failed/shots, see reports/2026-09-30_11_*.md):
+  photo_thumbs                  the form's photo tiles once the cover dialog is applied (not in the 2026-09-30
+                                snapshot; the dialog's own tiles are verified: cover_thumbs)
+  leave                         that the form's Cancel link opens the "Save Draft" dialog (both are in the snapshot)
   review_back, list_item,       the page after Next and its way back, the final publish button, the address after
   listing_url, draft_saved      publishing, where Save Draft lands
   captcha                       the wording of Poshmark's bot check
@@ -45,6 +46,11 @@ from thrift_agent.schema import Render
 CONDITION_TO_POSH = {
     "NWT": "New With Tags (NWT)", "NWOT": "Like New", "like_new": "Like New",
     "excellent": "Good", "good": "Good", "fair": "Fair",
+}
+# Each condition item carries Poshmark's code (data-et-prop-content, the codes sold listings store) and shows its
+# label over a one-line description, so it is clicked by the code and checked by the label.
+CONDITION_CODES = {
+    "NWT": "nwt", "NWOT": "uln", "like_new": "uln", "excellent": "ug", "good": "ug", "fair": "uf",
 }
 DEPARTMENTS = ("women", "men", "kids", "home", "pets", "electronics")    # a.dropdown__link[data-et-name=...]
 
@@ -116,7 +122,8 @@ def size_choice(r: Render) -> SizeChoice | None:
 
 _DONE = re.compile(r"^\s*done\s*$", re.I)
 _BACK = re.compile(r"^\s*(back|edit|cancel)\s*$", re.I)
-_DROPDOWN = "xpath=ancestor-or-self::*[contains(concat(' ', normalize-space(@class), ' '), ' dropdown ')][1]"
+_DROPDOWN = 'xpath=ancestor-or-self::*[@data-test="dropdown"][1]'     # Poshmark's dropdown component
+_COVER = '.image-edit-modal [data-test="modal-container"]:visible'  # the "Select a Covershot." dialog, when open
 
 SEL = {
     # ---- verified on the live form, 2026-09-29 ----
@@ -126,20 +133,24 @@ SEL = {
     "category_open": lambda p: p.get_by_text("Select Category", exact=True).locator("visible=true"),
     "department": lambda p, et: p.locator(f'a.dropdown__link[data-et-name="{et}"]:visible'),
     "department_all": lambda p: p.locator('a[data-et-name="all"]:visible'),
-    "category_items": lambda p: p.locator("li.dropdown__menu__item:visible"),
+    # The class sits on the <li> (the inspection) or on its <a> (the departments in the snapshot): either is fine.
+    "category_items": lambda p: p.locator('.dropdown__menu__item:visible:not([data-et-name="all"])'),
     "subcategory_items": lambda p: p.locator('a.dropdown__link[data-et-name="sub_category"]:visible'),
     "size_open": lambda p: p.locator('[data-test="size"]'),
     "size_tabs": lambda p: p.locator("a.navigation--horizontal__link:visible"),
     "size_buttons": lambda p: p.locator("button.multi-size-selector__button:visible"),
     "size_done": lambda p: p.locator('button[data-et-name="apply"]:visible'),
     "condition_open": lambda p: p.get_by_text("Select Condition", exact=True).locator("visible=true"),
-    "condition_items": lambda p: p.locator("li.dropdown__menu__item:visible"),
+    "condition_option": lambda p, code: p.locator(
+        f'[data-et-name="listing_condition"][data-et-prop-content="{code}"]:visible'),
     "brand": lambda p: p.get_by_placeholder("Enter the Brand/Designer"),
-    "brand_options": lambda p: p.locator("ul.listing-editor__suggestions-list > li > a.dropdown__link:visible"),
+    "brand_options": lambda p: p.locator("ul.listing-editor__suggestions-list > li > .dropdown__link:visible"),
     "color_open": lambda p: p.get_by_text("Select up to 2 colors", exact=True).locator("visible=true"),
     "color_tiles": lambda p: p.locator("li.listing-editor__tile--color:visible"),
     "color_done": lambda p: p.locator('button[data-et-name="apply"]:visible').or_(p.get_by_role("button", name=_DONE)),
     "style_tag": lambda p: p.locator('input[data-vv-name="style-tag-input"]'),
+    "tag_options": lambda p: p.locator(
+        'ul.listing-editor__suggestions-list [data-et-on-name="style_tag"][data-et-element-type="button"]:visible'),
     "listing_price": lambda p: p.locator('input[data-vv-name="listingPrice"]'),
     "original_price": lambda p: p.locator('input[data-vv-name="originalPrice"]'),
     "price_dialog": lambda p: p.locator(".listing-price-suggestion-modal:visible"),
@@ -148,25 +159,31 @@ SEL = {
     "dialog_smart_sell": lambda d: d.locator("input[type=checkbox]"),
     "dialog_done": lambda d: d.get_by_role("button", name=_DONE),
     "sku": lambda p: p.locator('input[data-vv-name="sku"]'),
+    "details_toggle": lambda p: p.locator("a.listing-editor-toggle-link").filter(
+        has_text=re.compile(r"^\s*show details\s*$", re.I)),
     "next": lambda p: p.locator('button[data-et-name="next"]'),
     "save_draft": lambda p: p.locator('button[data-et-name="save_draft"]:visible'),
     "discard": lambda p: p.locator('button[data-et-name="discard"]:visible'),
     "restricted_banner": lambda p: p.get_by_text(re.compile("account is restricted", re.I)),   # verified Sep 2026
-    # ---- UNVERIFIED: see the module docstring ----
-    "photo_thumbs": lambda p: p.locator('img[src^="blob:"]:visible, img[src^="data:image/"]:visible'),
-    "crop_dialog": lambda p: p.locator('[role="dialog"]:visible, .modal:visible'),
     "dropdown_root": lambda anchor: anchor.locator(_DROPDOWN),
-    "tag_options": lambda p: p.locator("ul.listing-editor__suggestions-list > li > a.dropdown__link:visible"),
-    "leave": lambda p: p.locator('header a[href="/"], header a[href="/feed"], '
-                                 'header a[href="https://poshmark.com/"]').first,
+    # The cover dialog Poshmark opens after the upload (the Mac snapshot, 2026-09-30).
+    "cover_dialog": lambda p: p.locator(_COVER),
+    "cover_title": lambda d: d.get_by_text(re.compile(r"^\s*Select a Covershot\.?\s*$", re.I)),
+    "cover_thumbs": lambda d: d.locator(".image-edit-modal__thumb"),
+    "cover_selected": lambda thumb: thumb.locator("svg.icon-green-checkmark"),
+    "cover_crop": lambda d: d.locator(".croppie-container"),
+    "cover_apply": lambda d: d.locator('[data-test="modal-footer"] button[data-et-name="apply"]'),
+    "any_dialog": lambda p: p.locator('[data-test="modal-container"]:visible, [role="dialog"]:visible'),
+    # ---- UNVERIFIED: see the module docstring ----
+    "photo_thumbs": lambda p: p.locator('#imagePlaceholder img:visible, img[src^="blob:"]:visible'),
+    "leave": lambda p: p.locator('a[data-et-name="discard"]:visible'),          # the form's Cancel link
     "review_back": lambda p: p.get_by_role("button", name=_BACK).or_(p.get_by_role("link", name=_BACK)),
     "list_item": lambda p: p.get_by_role("button", name=re.compile(r"^\s*list( this item)?\s*$", re.I)),
     "listing_url": re.compile(r"/listing/"),       # a value, not a locator: the address bar once the item is live
     "draft_saved": re.compile(r"/closet/|/listing/"),
     "captcha": lambda p: p.get_by_text(re.compile("captcha|verify you are human", re.I)),
 }
-UNVERIFIED = frozenset({"photo_thumbs", "crop_dialog", "dropdown_root", "tag_options", "leave", "review_back",
-                        "list_item", "listing_url", "draft_saved", "captcha"})
+UNVERIFIED = frozenset({"photo_thumbs", "leave", "review_back", "list_item", "listing_url", "draft_saved", "captcha"})
 PUBLISH_NEEDS = frozenset({"list_item", "listing_url"})      # submit() goes live only once these are recorded
 DRAFT_NEEDS = frozenset({"draft_saved"})
 
@@ -210,10 +227,12 @@ def _key(s: str) -> str:
 
 
 def _is(want: str, el_id: str, text: str, attrs: str, loose: bool = False) -> bool:
-    """Is this list element the option `want`? Its visible text (case, spacing and curly quotes ignored), its id
-    "size-<want>", or its title / aria-label / data-et-name; `loose` also takes "<want> (...)"."""
+    """Is this list element the option `want`? Its visible text or that text's first line (an item may show a
+    description under its label), case, spacing and curly quotes ignored; its id "size-<want>"; or its title /
+    aria-label / data-et-name. `loose` also takes "<want> (...)"."""
     w = _key(want)
-    if _key(text) == w or el_id == f"size-{want}" or any(_key(a) == w for a in attrs.split("|") if a):
+    first = text.strip().splitlines()[0] if text.strip() else ""
+    if w in (_key(text), _key(first)) or el_id == f"size-{want}" or any(_key(a) == w for a in attrs.split("|") if a):
         return True
     return loose and re.fullmatch(rf"{re.escape(w)}(?:\s*\(.*\))?", _key(text)) is not None
 
@@ -276,19 +295,23 @@ class PoshmarkPoster(Poster):
         await self._colors(page, r)
         await self._tags(page, r)
         await self._price(page, r)
-        await SEL["sku"](page).fill(r.sku)             # cost price and "other info" stay empty
+        await self._sku(page, r)
         await settle(page)
 
     async def _photos(self, page: Page, r: Render) -> None:
-        """Upload, then wait until every thumbnail shows. A shortfall is noted and left to the diff (read_back counts
-        the thumbnails), so a dry-run still fills and records the rest of the form."""
+        """Upload, apply Poshmark's cover dialog, then wait until every thumbnail shows. A thumbnail shortfall is
+        noted and left to the diff (read_back counts them), so a dry-run still fills and records the rest of the
+        form; a dialog that isn't the recorded cover dialog fails the item."""
         thumbs = SEL["photo_thumbs"](page)
         baseline = await thumbs.count()
         self._state["thumb_baseline"] = baseline
         await SEL["photo_input"](page).set_input_files(r.photos)
         want, waited = baseline + len(r.photos), 0
-        while (have := await thumbs.count()) < want:
-            await self._no_unknown_dialog(page)
+        while True:
+            if await self._dialog_after_upload(page, len(r.photos)):
+                continue                               # the cover dialog was applied: now the tiles
+            if (have := await thumbs.count()) >= want:
+                break
             if waited >= THUMB_TIMEOUT_MS:
                 self.notes.append(f"only {have - baseline}/{len(r.photos)} photo thumbnails after "
                                   f"{THUMB_TIMEOUT_MS // 1000}s")
@@ -296,15 +319,56 @@ class PoshmarkPoster(Poster):
             await page.wait_for_timeout(THUMB_POLL_MS)
             waited += THUMB_POLL_MS
         await settle(page, 1, 2)
-        await self._no_unknown_dialog(page)
+        await self._dialog_after_upload(page, len(r.photos))    # one that came late
 
-    async def _no_unknown_dialog(self, page: Page) -> None:
-        """A dialog after the upload is the crop/cover step nobody has recorded yet: stop and ask (Poster.post keeps the
-        screenshot and the page) rather than guess which of its buttons keeps the photo."""
-        if await SEL["crop_dialog"](page).count():
-            raise NeedsOwner("Poshmark opened a dialog after the photo upload (a crop/cover step?) that the poster "
-                             "doesn't know yet. Nothing was saved; its screenshot is in failed/shots. The item waits "
-                             "until the dialog is recorded - reply 'retry' after that.")
+    async def _dialog_after_upload(self, page: Page, n_photos: int) -> bool:
+        """True when Poshmark's cover dialog was open and has been applied. Any other dialog fails the item
+        (Poster.post keeps the screenshot and the page): stop, don't guess which of its buttons keeps the photos."""
+        dialog = SEL["cover_dialog"](page)
+        if await dialog.count():
+            if "cover_dialog" in self._state:
+                raise PosterError("Poshmark's cover dialog opened again after Apply")
+            await self._apply_cover(page, dialog, n_photos)
+            return True
+        other = SEL["any_dialog"](page)
+        if await other.count():
+            text = re.sub(r"\s+", " ", await other.first.inner_text()).strip()
+            raise PosterError(f"a dialog that isn't recorded opened after the photo upload: '{text[:120]}'")
+        return False
+
+    async def _apply_cover(self, page: Page, dialog: Locator, n_photos: int) -> None:
+        """The recorded "Select a Covershot." dialog: every uploaded photo listed, the first (our cover) preselected,
+        a crop frame with a zoom slider and rotate buttons, Cancel / Apply. Poshmark's default crop is kept: the frame,
+        the slider and the rotate buttons are never touched; Apply, then the dialog must close. A dialog that differs
+        from the recording fails the item."""
+        differs = []
+        if not await SEL["cover_title"](dialog).count():
+            differs.append("no 'Select a Covershot.' title")
+        if await SEL["cover_crop"](dialog).count() != 1:
+            differs.append("no crop frame")
+        apply = SEL["cover_apply"](dialog)
+        if await apply.count() != 1:
+            differs.append("no Apply button")
+        elif _key(await apply.inner_text()) != "apply":
+            differs.append(f"the confirm button reads '{(await apply.inner_text()).strip()}'")
+        if differs:
+            raise PosterError("Poshmark's cover dialog differs from the recorded one: " + "; ".join(differs))
+        thumbs, waited = SEL["cover_thumbs"](dialog), 0
+        while (have := await thumbs.count()) < n_photos:      # it may list the photos as they are read
+            if waited >= THUMB_TIMEOUT_MS:
+                raise PosterError(f"Poshmark's cover dialog lists {have} of {n_photos} photos")
+            await page.wait_for_timeout(THUMB_POLL_MS)
+            waited += THUMB_POLL_MS
+        if not await SEL["cover_selected"](thumbs.first).count():
+            raise PosterError("Poshmark's cover dialog did not preselect the first photo (the cover)")
+        self._state["cover_dialog"] = {"photos": have, "crop": "Poshmark's default"}
+        await settle(page, 0.5, 1.2)
+        await apply.click()
+        try:
+            await dialog.wait_for(state="hidden", timeout=MENU_TIMEOUT_MS)
+        except PlaywrightTimeout:
+            raise PosterError("Poshmark's cover dialog did not close after Apply") from None
+        await settle(page, 0.5, 1.2)
 
     async def _category(self, page: Page, r: Render) -> None:
         et = r.department.strip().lower()
@@ -377,13 +441,20 @@ class PoshmarkPoster(Poster):
         await settle(page, 0.3, 0.8)
 
     async def _condition(self, page: Page, r: Render) -> None:
-        label = CONDITION_TO_POSH[r.condition]
+        """Clicked by Poshmark's code, then checked by the label the item shows over its description."""
+        label, code = CONDITION_TO_POSH[r.condition], CONDITION_CODES[r.condition]
         trigger = SEL["condition_open"](page)
         await self._remember("condition", trigger)
         await trigger.click()
-        picked, options = await self._choose(page, SEL["condition_items"](page), label)
-        if not picked:                                 # the labels are verified: a missing one means the form changed
-            raise PosterError(f"the condition menu has no '{label}'{_offer(options)}")
+        option = SEL["condition_option"](page, code).first
+        try:
+            await option.wait_for(state="visible", timeout=MENU_TIMEOUT_MS)
+        except PlaywrightTimeout:                      # the codes are verified: a missing one means the form changed
+            raise PosterError(f"the condition menu has no '{label}' ({code})") from None
+        shown = (await option.inner_text()).strip().splitlines()
+        if not shown or _key(shown[0]) != _key(label):
+            raise PosterError(f"condition {code} reads '{shown[0] if shown else ''}', expected '{label}'")
+        await option.click()
         await settle(page, 0.3, 0.8)
 
     async def _brand(self, page: Page, r: Render) -> None:
@@ -426,6 +497,8 @@ class PoshmarkPoster(Poster):
                 skipped.append(tag)
                 continue
             await settle(page, 0.2, 0.6)
+        if await SEL["tag_options"](page).count():     # a list left open (after a skipped tag) would cover the price
+            await box.press("Escape")
         if skipped:
             self.notes.append(f"style tags Poshmark doesn't offer, left out: {', '.join(skipped)}")
 
@@ -452,6 +525,18 @@ class PoshmarkPoster(Poster):
         await dialog.wait_for(state="hidden", timeout=MENU_TIMEOUT_MS)
         await settle(page)
 
+    async def _sku(self, page: Page, r: Render) -> None:
+        """The SKU sits in the collapsed Additional Details: "show details" first. Cost price and other info stay
+        empty."""
+        box = SEL["sku"](page)
+        if not await box.is_visible():
+            await SEL["details_toggle"](page).first.click()
+            try:
+                await box.wait_for(state="visible", timeout=MENU_TIMEOUT_MS)
+            except PlaywrightTimeout:
+                raise PosterError("the SKU field did not show after 'show details'") from None
+        await box.fill(r.sku)
+
     # ---------------------------------------------------------------- helpers
 
     async def _wait(self, loc: Locator, what: str) -> None:
@@ -468,7 +553,7 @@ class PoshmarkPoster(Poster):
         waited = 0
         while True:
             rows = await items.evaluate_all(_ITEMS_JS)
-            options = [text for _, text, _ in rows if text]
+            options = list(dict.fromkeys(text.strip().splitlines()[0] for _, text, _ in rows if text.strip()))
             for i, (el_id, text, attrs) in enumerate(rows):
                 if _is(want, el_id, text, attrs, loose):
                     handle = await items.nth(i).element_handle(timeout=MENU_TIMEOUT_MS)
@@ -539,6 +624,7 @@ class PoshmarkPoster(Poster):
             "colors": await self._root_text("colors"),
             "smart_sell": self._state.get("smart_sell"),         # asserted off while the dialog was open
             "price_dialog": self._state.get("price_dialog"),     # recorded only, not diffed
+            "cover_dialog": self._state.get("cover_dialog"),     # recorded only: None when Poshmark showed none
         }
 
     def expected(self, r: Render) -> dict:
@@ -560,12 +646,14 @@ class PoshmarkPoster(Poster):
     # ---------------------------------------------------------------- leave, review, submit
 
     async def discard(self, page: Page) -> str | None:
-        """Leave through Poshmark's leave dialog and press its Discard (verified), so no draft is left behind. What
-        opens the dialog is UNVERIFIED (SEL["leave"]): anything short of a Discard click is reported."""
+        """Leave through the form's Cancel link and its "Save Draft" dialog ("Do you want to save this listing as a
+        draft?"), pressing "Discard Changes", so no draft is left behind. Both are in the 2026-09-30 snapshot; that the
+        link opens the dialog is UNVERIFIED (SEL["leave"]): anything short of a Discard click is reported."""
         try:
-            await SEL["leave"](page).click(timeout=LEAVE_TIMEOUT_MS)
             button = SEL["discard"](page).first
-            await button.wait_for(state="visible", timeout=LEAVE_TIMEOUT_MS)
+            if not await button.is_visible():          # the review stage may have opened the dialog already
+                await SEL["leave"](page).first.click(timeout=LEAVE_TIMEOUT_MS)
+                await button.wait_for(state="visible", timeout=LEAVE_TIMEOUT_MS)
             await button.click()
             await page.wait_for_load_state("domcontentloaded")
         except Exception as e:  # noqa: BLE001

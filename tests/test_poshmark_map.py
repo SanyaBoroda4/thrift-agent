@@ -99,9 +99,22 @@ def test_every_unverified_name_is_a_selector_and_the_verified_ones_are_the_forms
     verified = set(SEL) - UNVERIFIED
     assert {"photo_input", "title", "description", "category_open", "department", "category_items",
             "subcategory_items", "size_open", "size_tabs", "size_buttons", "size_done", "condition_open",
-            "condition_items", "brand", "brand_options", "color_open", "color_tiles", "style_tag", "listing_price",
-            "original_price", "price_dialog", "dialog_listing_price", "dialog_original_price", "dialog_smart_sell",
-            "dialog_done", "sku", "next", "save_draft", "discard"} <= verified
+            "condition_option", "brand", "brand_options", "color_open", "color_tiles", "style_tag", "tag_options",
+            "listing_price", "original_price", "price_dialog", "dialog_listing_price", "dialog_original_price",
+            "dialog_smart_sell", "dialog_done", "sku", "details_toggle", "next", "save_draft", "discard",
+            "dropdown_root"} <= verified
+    # WO11, from the Mac snapshot: the cover dialog after the upload and Poshmark's modal hook.
+    assert {"cover_dialog", "cover_title", "cover_thumbs", "cover_selected", "cover_crop", "cover_apply",
+            "any_dialog"} <= verified
+    assert "crop_dialog" not in SEL and {"photo_thumbs", "leave"} <= UNVERIFIED
+
+
+def test_condition_codes_are_poshmarks():
+    from thrift_agent.post.poshmark import CONDITION_CODES
+
+    assert CONDITION_CODES == {"NWT": "nwt", "NWOT": "uln", "like_new": "uln", "excellent": "ug", "good": "ug",
+                               "fair": "uf"}
+    assert set(CONDITION_CODES) == set(CONDITION_TO_POSH)
 
 
 def test_the_module_docstring_lists_every_unverified_selector():
