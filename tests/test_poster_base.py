@@ -22,6 +22,9 @@ class FakePage:
     async def screenshot(self, path, full_page=False):
         Path(path).write_bytes(b"png")
 
+    async def content(self):
+        return "<html>form</html>"
+
     async def close(self):
         pass
 
@@ -157,96 +160,131 @@ def test_other_fill_errors_are_still_a_failed_outcome(tmp_path):
     assert out.status == "failed" and "selector broke" in out.error and p.submitted is None
 
 
-# ---------------------------------------------------------------- PoshmarkPoster: where it asks the owner
+# ---------------------------------------------------------------- dry-run stages, leaving the form, evidence
 
-class FakeLoc:
-    """A Playwright Locator with just what fill() calls; `n` is what count() reports."""
+class Leaving(StubPoster):
+    """Records the order of review() / discard() / submit() calls."""
 
-    def __init__(self, n=1, click_error=None):
-        self.n, self.click_error, self.clicks, self.value = n, click_error, 0, None
+    def __init__(self, seen, review_error=None, discard_note=None):
+        super().__init__(seen)
+        self.calls, self.review_error, self.discard_note = [], review_error, discard_note
 
-    async def count(self):
-        return self.n
+    async def review(self, page, r, shots):
+        self.calls.append("review")
+        if self.review_error:
+            raise self.review_error
+        return "review page recorded in i_1-review.json"
 
-    async def click(self):
-        if self.click_error:
-            raise self.click_error
-        self.clicks += 1
+    async def discard(self, page):
+        self.calls.append("discard")
+        return self.discard_note
 
-    async def fill(self, value):
-        self.value = value
-
-    async def set_input_files(self, files):
-        pass
-
-
-class FormPage(FakePage):
-    class keyboard:
-        @staticmethod
-        async def press(key):
-            pass
-
-    async def wait_for_timeout(self, ms):
-        pass
+    async def submit(self, page, mode):
+        self.calls.append("submit")
+        return await super().submit(page, mode)
 
 
-def _posh(monkeypatch, **overrides):
-    """PoshmarkPoster over fake locators: every SEL entry finds one element unless overridden. The real SEL
-    values are untouched (they are UNVERIFIED and recorded on the Mac); only the module binding is swapped."""
-    from thrift_agent.post import poshmark
-
-    locs = {k: overrides.get(k, FakeLoc()) for k in poshmark.SEL if k != "listing_url"}
-    fake_sel = {k: (lambda *a, _l=loc: _l) for k, loc in locs.items()}
-    monkeypatch.setattr(poshmark, "SEL", {**fake_sel, "listing_url": poshmark.SEL["listing_url"]})
-
-    async def instant(*a, **k):
-        pass
-
-    monkeypatch.setattr(poshmark, "settle", instant)
-    monkeypatch.setattr(poshmark, "human_type", instant)
-    return poshmark.PoshmarkPoster("closet"), locs
+GOOD = {"title": "Tory Burch Red Flats size 7.5", "price": "85"}
 
 
-def test_poshmark_fill_picks_a_matching_brand(monkeypatch):
-    p, locs = _posh(monkeypatch)
-    asyncio.run(p.fill(FormPage(), RENDER))
-    assert locs["brand_option"].clicks == 1 and locs["listing_price"].value == "85" and locs["sku"].value == "i_1"
+def test_form_stage_dry_run_leaves_through_discard(tmp_path):
+    p = Leaving(GOOD)
+    out = run(p, dry_run=True, shots=tmp_path)
+    assert out.status == "dryrun" and p.calls == ["discard"] and out.note is None
 
 
-def test_poshmark_asks_the_owner_when_the_brand_list_has_no_match(monkeypatch):
+def test_review_stage_records_then_discards_and_never_submits(tmp_path):
+    p = Leaving(GOOD, discard_note="left the form without Poshmark's Discard dialog (TimeoutError)")
+    out = asyncio.run(p.post(FakeCtx(), RENDER, "publish", True, tmp_path, stage="review"))
+    assert out.status == "dryrun" and p.calls == ["review", "discard"] and p.submitted is None
+    assert out.note == ("review page recorded in i_1-review.json; "
+                        "left the form without Poshmark's Discard dialog (TimeoutError)")
+
+
+def test_a_failed_review_is_a_failed_dry_run_and_still_discards(tmp_path):
+    p = Leaving(GOOD, review_error=RuntimeError("no Next button"))
+    out = asyncio.run(p.post(FakeCtx(), RENDER, "draft", True, tmp_path, stage="review"))
+    assert out.status == "failed" and "no Next button" in out.error and p.calls == ["review", "discard"]
+
+
+def test_mismatch_and_errors_discard_the_form(tmp_path):
+    p = Leaving({"title": "Tory Burch Red Flats size 7.5", "price": "80"})
+    out = run(p, dry_run=True, shots=tmp_path)
+    assert out.status == "failed" and out.diff == {"price": (85, "80")} and p.calls == ["discard"]
+
+    class Broken(Leaving):
+        async def fill(self, page, r):
+            raise RuntimeError("selector broke")
+
+    p = Broken(GOOD, discard_note="could not leave")
+    out = run(p, shots=tmp_path)
+    assert out.status == "failed" and p.calls == ["discard"] and out.note == "could not leave"
+
+
+def test_needs_owner_discards_and_carries_the_screenshot(tmp_path):
     from thrift_agent.post.base import NeedsOwner
 
-    p, locs = _posh(monkeypatch, brand_option=FakeLoc(n=0))
-    with pytest.raises(NeedsOwner, match=r"no match for 'Tory Burch'\. Which brand should I pick\?") as info:
-        asyncio.run(p.fill(FormPage(), RENDER))
-    assert "reply e.g. 'brand Vince'" in info.value.question
-    assert locs["brand_option"].clicks == 0 and locs["listing_price"].value is None    # stopped at the brand
+    class Stuck(Leaving):
+        async def fill(self, page, r):
+            raise NeedsOwner("which brand?")
+
+    p = Stuck(GOOD)
+    with pytest.raises(NeedsOwner) as info:
+        run(p, shots=tmp_path)
+    assert p.calls == ["discard"] and Path(info.value.screenshot).exists()
 
 
-def test_poshmark_asks_the_owner_when_a_category_option_never_appears(monkeypatch):
-    from playwright.async_api import TimeoutError as PlaywrightTimeout
+def test_a_blocked_account_or_a_started_submit_is_never_discarded(tmp_path):
+    from thrift_agent.post.base import AccountBlocked
 
-    from thrift_agent.post.base import NeedsOwner
+    class Blocked(Leaving):
+        async def check_account(self, page):
+            raise AccountBlocked("CAPTCHA shown")
 
-    timeout = PlaywrightTimeout("Locator.click: Timeout 30000ms exceeded.")
-    p, locs = _posh(monkeypatch, category_option=FakeLoc(click_error=timeout))
-    with pytest.raises(NeedsOwner, match=r"no category option 'Women' under Women/Shoes\.") as info:
-        asyncio.run(p.fill(FormPage(), RENDER))
-    assert "Which category/subcategory should I pick?" in info.value.question
-    assert locs["size_open"].clicks == 0                       # nothing after the category was touched
+    p = Blocked(GOOD)
+    with pytest.raises(AccountBlocked):
+        run(p, shots=tmp_path)
+    assert p.calls == []                                   # stop, don't touch a blocked account
 
-    p, _ = _posh(monkeypatch, category_option=FakeLoc(click_error=RuntimeError("detached")))
-    with pytest.raises(RuntimeError):                          # only a timeout is a question; the rest stays an error
-        asyncio.run(p.fill(FormPage(), RENDER))
+    class SubmitBreaks(Leaving):
+        async def submit(self, page, mode):
+            self.calls.append("submit")
+            raise TimeoutError("no listing URL after List This Item")
+
+    p = SubmitBreaks(GOOD)
+    out = run(p, shots=tmp_path)
+    assert out.status == "failed" and p.calls == ["submit"]  # it may be live: only the closet can tell
+
+    p = Leaving(GOOD)
+    assert run(p, shots=tmp_path).status == "posted" and p.calls == ["submit"]
 
 
-def test_kids_size_options_is_a_lookup_for_m2():
-    from thrift_agent.post.poshmark import KIDS_SIZE_OPTIONS
+def test_evidence_keeps_the_dom_and_what_was_read_back(tmp_path):
+    import json
 
-    assert KIDS_SIZE_OPTIONS["US Toddler 7.5"] == "7.5C"
-    assert KIDS_SIZE_OPTIONS["US Little Kid 12"] == "12C"
-    assert KIDS_SIZE_OPTIONS["US Big Kid 4"] == "4Y"
-    assert all(isinstance(k, str) and isinstance(v, str) and v for k, v in KIDS_SIZE_OPTIONS.items())
+    out = run(Leaving({"title": "Tory Burch Red Flats size 7.5", "price": "80"}), dry_run=True, shots=tmp_path)
+    shot = Path(out.screenshot)
+    assert shot.exists() and shot.with_suffix(".html").read_text(encoding="utf-8") == "<html>form</html>"
+    record = json.loads(shot.with_suffix(".json").read_text(encoding="utf-8"))
+    assert record["item"] == "i_1" and record["seen"]["price"] == "80" and record["diff"] == {"price": [85, "80"]}
+
+
+def test_contains_matches_whole_words_and_phrases():
+    from thrift_agent.post.base import Contains
+
+    assert compare({"category": "Women / Shoes"}, {"category": Contains("Women", "Shoes")}) == {}
+    assert compare({"category": "WOMEN > SHOES"}, {"category": Contains("Women", "Shoes")}) == {}
+    assert compare({"category": "Women / Shoes"}, {"category": Contains("Men", "Shoes")}) != {}     # not in "Women"
+    assert compare({"size": "8.5"}, {"size": Contains("8")}) != {}
+    assert compare({"size": "17.5"}, {"size": Contains("7.5")}) != {}
+    assert compare({"size": "US 7.5"}, {"size": Contains("7.5")}) == {}
+    assert compare({"size": "7.5 (Toddler Girl)"}, {"size": Contains("7.5 (Toddler Girl)")}) == {}
+    assert compare({"sub": "Ankle Boots & Booties"}, {"sub": Contains("Ankle Boots & Booties")}) == {}
+    assert compare({"colors": "Red, Pink"}, {"colors": Contains("Pink", "Red")}) == {}
+    assert compare({"colors": "Red"}, {"colors": Contains("Pink", "Red")}) != {}
+    for blank in (None, "", "   "):
+        assert compare({"category": blank}, {"category": Contains("Women")}) != {}
+    assert repr(Contains("Women", "Shoes")) == "contains 'Women' + 'Shoes'"
 
 
 def test_compare_normalises():

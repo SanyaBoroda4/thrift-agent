@@ -235,13 +235,21 @@ def poster(once: bool = False, dry_run: bool = False,
            allow_dev_browser: bool = typer.Option(False, "--allow-dev-browser",
                                                   help="Open Chrome against the live site on a dev machine "
                                                        "(still a dry-run). The dev machine never touches the shop "
-                                                       "otherwise.")) -> None:
+                                                       "otherwise."),
+           stage: str = typer.Option(None, "--stage",
+                                     help="Dry-run stage for this run: 'form' (fill, read back, Discard) or 'review' "
+                                          "(also press Next and record the page after it). Default: "
+                                          "poster.dry_run_stage. Never publishes.")) -> None:
     """Run the Chrome poster (the poster service on the Mac)."""
-    from thrift_agent.post.runner import run as run_poster
+    from thrift_agent.post.runner import dry_run_stage, run as run_poster
     s = settings()
+    try:
+        stage = dry_run_stage(s, stage)
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from None
     if s.is_prod:
         notify.check(s)
-    asyncio.run(run_poster(s, _db(), once=once, force_dry=dry_run, allow_dev_browser=allow_dev_browser))
+    asyncio.run(run_poster(s, _db(), once=once, force_dry=dry_run, allow_dev_browser=allow_dev_browser, stage=stage))
 
 
 @app.command()

@@ -19,6 +19,7 @@ from pathlib import Path
 
 import yaml
 
+from thrift_agent.brain import taxonomy
 from thrift_agent.brain.extract import extract
 from thrift_agent.config import Settings
 from thrift_agent.ingest import prep, segment as seg
@@ -49,6 +50,7 @@ def run_case(s: Settings, case: Path) -> dict:
     # Extraction is scored on the TRUE groups so one segmentation miss doesn't hide extraction quality.
     for k, item in enumerate(exp["items"]):
         facts = extract([kept[i] for i in item["photos"]], None, s["models"]["extract"], s["images"]["llm_long_edge"])
+        facts = taxonomy.fit(facts)[0]                  # scored on Poshmark's names, as the pipeline lists it
         got = {"brand": facts.brand.value, "size_us": facts.size_us.value,
                "category": facts.category, "condition": facts.condition}
         result["fields"][k] = {f: {"want": item.get(f), "got": got[f], "ok": _eq(item.get(f), got[f])}

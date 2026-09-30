@@ -13,7 +13,8 @@ from thrift_agent.schema import CONDITION_LABEL, CopyOut, Ev, Facts, VerifyOut
 
 TITLE_MAX, DEPOP_MAX = 80, 1000
 TEXT_FIELDS = ("poshmark_title", "poshmark_description", "depop_description")
-VIEW_EXCLUDE = {"cover_photo", "photo_order", "questions"}
+# kids_gender is the model's best guess for Poshmark's size tab, not evidence: the copy never states it.
+VIEW_EXCLUDE = {"cover_photo", "photo_order", "questions", "kids_gender"}
 KEEP_EMPTY = {"flaws"}          # an empty flaws list tells the writer there is nothing to disclose
 TAG_LINE = re.compile(r"(?m)^[ \t]*(#\w+[ \t]*)+\r?$")   # a line that is nothing but hashtags
 TRAILING_TAGS = re.compile(r"(\s*#\w+)+\s*$")           # hashtags tacked onto the end of the last sentence

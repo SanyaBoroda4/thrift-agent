@@ -5,6 +5,7 @@ and only publishes when what's on screen matches the approved Render exactly.
 """
 from __future__ import annotations
 
+import json
 import random
 import re
 from abc import ABC, abstractmethod
@@ -18,6 +19,8 @@ from playwright.async_api import BrowserContext, Locator, Page, async_playwright
 from thrift_agent.schema import Render
 
 Mode = Literal["publish", "draft"]
+Stage = Literal["form", "review"]
+STAGES = ("form", "review")     # dry-run stages: fill + read back + discard | also press Next, record, back out
 
 
 class PosterError(Exception):
@@ -32,11 +35,13 @@ class NeedsOwner(PosterError):
     """Stuck on a field only the owner can answer; the item waits in needs_owner, others continue.
 
     Raised by an adapter's fill() BEFORE anything is submitted (a brand or category the site's lists don't
-    have). The runner parks the item and sends `question` to the owner as a separate Telegram message."""
+    have). The runner parks the item and sends `question` to the owner as a separate Telegram message.
+    `screenshot` is set by Poster.post() to the page as it was when the question came up."""
 
     def __init__(self, question: str):
         super().__init__(question)
         self.question = question
+        self.screenshot: str | None = None
 
 
 class Mismatch(PosterError):
@@ -54,6 +59,7 @@ class Outcome:
     screenshot: str | None = None
     diff: dict = field(default_factory=dict)
     error: str | None = None
+    note: str | None = None      # remarks for the owner: a tag left out, the review page recorded, Discard unconfirmed
 
 
 async def open_browser(profile_dir: Path, timezone_id: str) -> tuple[object, BrowserContext]:
@@ -91,12 +97,36 @@ def _money(v) -> float | None:
         return float("nan")
 
 
+class Contains:
+    """The expected value of a field that is read back as display text (a dropdown's breadcrumb, a size chip): every
+    part must appear in it as a whole word or phrase, case and spacing ignored. "Men" is not in "Women", "8" is not in
+    "8.5", "7.5" is not in "17.5"; blank text never matches."""
+
+    def __init__(self, *parts: str):
+        self.parts = tuple(p for p in parts if p)
+
+    def matches(self, seen) -> bool:
+        text = _norm(seen)
+        return bool(text) and all(re.search(rf"(?<![\w.]){re.escape(_norm(p))}(?!\w|\.\d)", text) for p in self.parts)
+
+    def __eq__(self, other) -> bool:
+        return isinstance(other, Contains) and self.parts == other.parts
+
+    def __hash__(self) -> int:
+        return hash(self.parts)
+
+    def __repr__(self) -> str:
+        return "contains " + " + ".join(repr(p) for p in self.parts)
+
+
 def compare(seen: dict, expected: dict) -> dict:
     """{field: (expected, seen)} for every field that differs."""
     diff = {}
     for k, want in expected.items():
         got = seen.get(k)
-        if k in ("price", "original_price"):
+        if isinstance(want, Contains):
+            ok = want.matches(got)
+        elif k in ("price", "original_price"):
             ok = _money(got) == _money(want)
         elif isinstance(want, list):
             ok = sorted(map(_norm, want)) == sorted(map(_norm, got or []))
@@ -107,9 +137,35 @@ def compare(seen: dict, expected: dict) -> dict:
     return diff
 
 
+async def keep_evidence(page: Page | None, shot: Path, record: dict | None = None) -> None:
+    """The page as it is, next to each other in failed/shots: <shot>.png (full page), <shot>.html (the DOM, so a
+    selector can be recorded from the file instead of another run) and, when given, <shot>.json (what was read back,
+    what was expected, the diff). Best effort: evidence never replaces the outcome it documents."""
+    if page is None:
+        return
+    try:
+        await page.screenshot(path=str(shot), full_page=True)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        shot.with_suffix(".html").write_text(await page.content(), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+    if record is not None:
+        try:
+            shot.with_suffix(".json").write_text(json.dumps(record, indent=1, default=repr), encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _joined(notes: list[str | None]) -> str | None:
+    return "; ".join(n for n in notes if n) or None
+
+
 class Poster(ABC):
     name: str
     create_url: str
+    notes: list[str]            # remarks the adapter collects while filling one item (reset by post())
 
     @abstractmethod
     async def check_account(self, page: Page) -> None: ...
@@ -126,6 +182,24 @@ class Poster(ABC):
     @abstractmethod
     async def submit(self, page: Page, mode: Mode) -> str | None: ...
 
+    async def review(self, page: Page, r: Render, shots: Path) -> str | None:
+        """Dry-run stage "review": go past the form (Next), record the page there, come back. Never the final
+        publish button. Returns a remark for the owner."""
+        raise PosterError(f"{self.name}: the dry-run review stage is not implemented")
+
+    async def discard(self, page: Page) -> str | None:
+        """Leave the filled form without saving anything (no draft left behind). Returns a remark, or None when
+        the site confirmed it."""
+        return None
+
+    async def _discard_quietly(self, page: Page | None) -> str | None:
+        if page is None:
+            return None
+        try:
+            return await self.discard(page)
+        except Exception as e:  # noqa: BLE001 — leaving is a courtesy; it never replaces the item's outcome
+            return f"could not discard the form ({type(e).__name__}: {e})"
+
     async def verify_live(self, page: Page, url: str, r: Render) -> None:
         await page.goto(url)
         await page.wait_for_load_state("domcontentloaded")
@@ -133,9 +207,15 @@ class Poster(ABC):
         if _norm(r.title)[:40] not in body:
             raise PosterError(f"live page at {url} doesn't show the title")
 
-    async def post(self, ctx: BrowserContext, r: Render, mode: Mode, dry_run: bool, shots: Path) -> Outcome:
+    async def post(self, ctx: BrowserContext, r: Render, mode: Mode, dry_run: bool, shots: Path,
+                   stage: Stage = "form") -> Outcome:
         """Returns an Outcome for everything that happens once the page exists; only AccountBlocked (stop the
         poster) and NeedsOwner (park this item, ask the owner) propagate, so the runner can tell them apart.
+
+        A dry-run fills, reads back, diffs and keeps the evidence; stage "review" also presses Next and records the
+        page after it; then the form is left through the site's discard path, so no draft is left behind. The final
+        publish button is never pressed in a dry-run. A form that fails or waits for the owner is discarded too —
+        but never once submit() has started: from then on the listing may be live, and only the closet can tell.
 
         Nothing after `submit` may raise out of here: an exception in `finally` would REPLACE the returned
         Outcome, and a live listing without a recorded URL is exactly the double-post invariant 4 forbids.
@@ -143,20 +223,31 @@ class Poster(ABC):
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         shot = shots / f"{r.sku}-{self.name}-{stamp}.png"
         page: Page | None = None
+        opened = submitted = kept = False
+        self.notes = []
         try:
             shots.mkdir(parents=True, exist_ok=True)
             page = await ctx.new_page()
             await self.check_account(page)
             await page.goto(self.create_url)
             await page.wait_for_load_state("domcontentloaded")
+            opened = True
             await self.fill(page, r)
             seen = await self.read_back(page)
-            diff = compare(seen, self.expected(r))
-            await page.screenshot(path=str(shot), full_page=True)
+            want = self.expected(r)
+            diff = compare(seen, want)
+            await keep_evidence(page, shot, {"item": r.sku, "seen": seen, "expected": want, "diff": diff,
+                                             "notes": self.notes})
+            kept = True
             if diff:
                 raise Mismatch(diff)
             if dry_run:
-                return Outcome("dryrun", screenshot=str(shot))
+                if stage == "review":
+                    self.notes.append(await self.review(page, r, shots))
+                opened = False                      # leaving now; a failure below must not discard twice
+                self.notes.append(await self._discard_quietly(page))
+                return Outcome("dryrun", screenshot=str(shot), note=_joined(self.notes))
+            submitted = True
             url = await self.submit(page, mode)
             if mode != "publish":
                 return Outcome("drafted", url=url, screenshot=str(shot))
@@ -168,21 +259,21 @@ class Poster(ABC):
                 return Outcome("failed", url=url, screenshot=str(shot),
                                error=f"published but the live check failed ({type(e).__name__}: {e}) — check {url}")
             return Outcome("posted", url=url, screenshot=str(shot))
-        except (AccountBlocked, NeedsOwner):
-            try:
-                if page:
-                    await page.screenshot(path=str(shot), full_page=True)
-            except Exception:  # noqa: BLE001 — the screenshot is a courtesy; the block/question itself is what matters
-                pass
+        except AccountBlocked:
+            await keep_evidence(page, shot)     # and nothing else: stop, don't touch a blocked account
+            raise
+        except NeedsOwner as e:
+            await keep_evidence(page, shot)
+            e.screenshot = str(shot)
+            if opened and not submitted:
+                await self._discard_quietly(page)
             raise
         except Exception as e:  # noqa: BLE001 — record everything, never retry blindly
-            try:
-                if page:
-                    await page.screenshot(path=str(shot), full_page=True)
-            except Exception:  # noqa: BLE001
-                pass
+            if not kept:
+                await keep_evidence(page, shot)
+            left = await self._discard_quietly(page) if opened and not submitted else None
             return Outcome("failed", screenshot=str(shot), error=f"{type(e).__name__}: {e}",
-                           diff=getattr(e, "diff", {}))
+                           diff=getattr(e, "diff", {}), note=_joined(self.notes + [left]))
         finally:
             if page:
                 try:

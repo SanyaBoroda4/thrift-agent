@@ -9,7 +9,7 @@ from pathlib import Path
 from thrift_agent import approve, notify
 from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
-from thrift_agent.post.base import AccountBlocked, NeedsOwner, Poster, open_browser
+from thrift_agent.post.base import STAGES, AccountBlocked, NeedsOwner, Poster, open_browser
 from thrift_agent.post.depop import DepopPoster
 from thrift_agent.post.poshmark import PoshmarkPoster
 from thrift_agent.scheduler import can_post, next_gap, windows
@@ -85,16 +85,27 @@ def _halt(s: Settings, reason: str, text: str) -> None:
     notify.say(text)
 
 
-async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, allow_dev_browser: bool = False) -> None:
+def dry_run_stage(s: Settings, override: str | None = None) -> str:
+    """poster.dry_run_stage (or the CLI's --stage): "form" fills, reads back and discards; "review" also presses Next
+    and records the page after it. Neither ever presses the final publish button."""
+    stage = str(override or s.get("poster.dry_run_stage", "form") or "form").strip().lower()
+    if stage not in STAGES:
+        raise ValueError(f"poster.dry_run_stage must be one of {', '.join(STAGES)}, not {stage!r}")
+    return stage
+
+
+async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, allow_dev_browser: bool = False,
+              stage: str | None = None) -> None:
     dry = force_dry or not s.is_prod or s.get("poster.dry_run", True)
     if not s.is_prod and not allow_dev_browser:
         raise RuntimeError(DEV_BROWSER_MSG)
+    stage = dry_run_stage(s, stage)
     max_fail = int(s.get("poster.max_consecutive_failures", 3))
     ps = posters(s)
     stop = asyncio.Event()
     _install_stop(stop)
     pw, ctx = await open_browser(s.path("chrome_profile"), s["schedule"]["timezone"])
-    notify.say(f"Poster started ({'DRY-RUN' if dry else 'LIVE'}) — {', '.join(ps)}")
+    notify.say(f"Poster started ({f'DRY-RUN, {stage} stage' if dry else 'LIVE'}) — {', '.join(ps)}")
     failures = 0
     try:
         while True:
@@ -118,7 +129,7 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, 
             if not db.claim_post(iid, mp, mode):    # another poster process took it, or its status moved under us
                 continue
             try:
-                out = await ps[mp].post(ctx, render, mode, dry, s.path("failed") / "shots")
+                out = await ps[mp].post(ctx, render, mode, dry, s.path("failed") / "shots", stage=stage)
             except AccountBlocked as e:
                 db.upsert_post(iid, mp, status="queued", last_error=str(e))
                 _halt(s, str(e), f"⛔ Poster paused: {e}\nFix it in the poster Chrome window, then delete the PAUSE file.")
@@ -150,11 +161,13 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, 
             stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
             db.upsert_post(iid, mp, status=out.status, url=out.url, last_error=out.error,
                            posted_at=stamp if out.status in ("posted", "drafted", "dryrun") else None)
-            db.log(iid, f"post_{out.status}", {"mp": mp, "url": out.url, "error": out.error, "shot": out.screenshot})
+            db.log(iid, f"post_{out.status}", {"mp": mp, "url": out.url, "error": out.error, "shot": out.screenshot,
+                                               "note": out.note})
+            note = f"\n{out.note}" if out.note else ""
             if out.status == "failed":
-                notify.photo(Path(out.screenshot or ""), f"❌ {mp} failed ({iid}): {render.title}\n{out.error}")
+                notify.photo(Path(out.screenshot or ""), f"❌ {mp} failed ({iid}): {render.title}\n{out.error}{note}")
             elif out.status == "dryrun":
-                notify.photo(Path(out.screenshot or ""), f"🧪 dry-run {mp}: {render.title} — ${render.price}")
+                notify.photo(Path(out.screenshot or ""), f"🧪 dry-run {mp} ({stage}): {render.title} — ${render.price}{note}")
             else:
                 notify.say(f"✅ {out.status} on {mp}: {render.title} — ${render.price}\n{out.url or ''}")
 

@@ -142,10 +142,11 @@ class StubPoster:
     name = "poshmark"
 
     def __init__(self, *results):
-        self.results, self.calls = list(results), []
+        self.results, self.calls, self.stages = list(results), [], []
 
-    async def post(self, ctx, r, mode, dry_run, shots):
+    async def post(self, ctx, r, mode, dry_run, shots, stage="form"):
         self.calls.append((r.sku, mode, dry_run))
+        self.stages.append(stage)
         res = self.results.pop(0) if len(self.results) > 1 else self.results[0]
         if isinstance(res, Exception):
             raise res
@@ -441,6 +442,41 @@ def test_run_stop_finishes_the_current_item_then_exits(tmp_path, monkeypatch, ha
     _run(monkeypatch, s, db, poster, once=False)
     assert len(poster.calls) == 1
     assert db.post(ids[0], "poshmark")["status"] == "dryrun" and db.post(ids[1], "poshmark") is None
+
+
+def test_run_passes_the_dry_run_stage_and_reports_the_note(tmp_path, monkeypatch, harness):
+    said, _ = harness
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid = _ready_item(db)
+    note = "review page recorded in i_1-review.json; style tags Poshmark doesn't offer, left out: sparkly"
+    poster = StubPoster(Outcome("dryrun", note=note))
+    _run(monkeypatch, s, db, poster, once=True, stage="review")
+    assert poster.stages == ["review"]
+    assert any(m.startswith("🧪 dry-run poshmark (review): ") and m.endswith(note) for m in said)
+    detail = loads(db.conn.execute("SELECT detail FROM events WHERE ref=? AND kind='post_dryrun'", (iid,)).fetchone()[0])
+    assert detail["note"] == note
+
+    s.data["poster"]["dry_run_stage"] = "review"                 # the config's stage when the CLI gives none
+    assert runner.dry_run_stage(s) == "review" and runner.dry_run_stage(s, "FORM") == "form"
+
+
+def test_run_refuses_an_unknown_stage_before_opening_the_browser(tmp_path, monkeypatch, harness):
+    s = _settings(tmp_path)
+    s.data["poster"]["dry_run_stage"] = "publish"
+    db = DB(s.path("db"))
+    _ready_item(db)
+    poster = StubPoster(Outcome("dryrun"))
+    opened = []
+
+    async def spying_open_browser(profile_dir, timezone_id):
+        opened.append(profile_dir)
+        return FakePW(), FakeCtx()
+
+    monkeypatch.setattr(runner, "open_browser", spying_open_browser)
+    with pytest.raises(ValueError, match="dry_run_stage must be one of form, review"):
+        _run(monkeypatch, s, db, poster, once=True)
+    assert opened == [] and poster.calls == []
 
 
 def test_pause_helper_wakes_on_stop():

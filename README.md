@@ -26,10 +26,19 @@ Defaults for the first weeks of live posting, until the eval numbers justify loo
   size 12" / "Big Kid size 4" (C sizes = Toddler / Little Kid, Y = Big Kid), never a bare "size 7.5" for kids. The EU
   size and the full label "EU 24 / US Toddler 7.5" go in the description; the listing's size field keeps the full
   label for the form. Lint accepts the US-only title forms, never requires EU, and flags any EU or non-US size token
-  in the title. The Poshmark kids size-option mapping (`KIDS_SIZE_OPTIONS` in `post/poshmark.py`) is unverified
-  until M2.
+  in the title. On Poshmark's form the kids shoe size is picked on the **Girls** or **Boys** tab with Poshmark's own
+  label (`KIDS_SIZE_OPTIONS` in `post/poshmark.py`, verified): "7.5 (Toddler Girl)" for 7.5-12, "13 (Little Girl)"
+  for 12.5-13.5 and 1-3, "4 (Big Girl)" for 3.5-7. The Baby tab (0-7) labels are still unverified.
+- **Kids gender.** The model reads `kids_gender` (girls / boys / unisex) from the item itself; it only picks the size
+  tab and is never a question. A unisex (or unread) kids item goes under Girls, and the approval message says so in a
+  `Note:` line (reply `boys` to change it). The copy never states the gender.
+- **Poshmark's own category names.** Right after extraction the department, category and subcategory are put onto the
+  names the create-listing form offers (`data/poshmark_taxonomy.yaml`; Kids "Tops" becomes "Shirts & Tops",
+  "Booties" becomes "Ankle Boots & Booties"). A subcategory Poshmark doesn't have is left out with a `Note:`; a
+  department or category it doesn't have is asked like "Other".
 - **Only five questions ever reach the owner:** brand or size below 0.70, NWT without a hang-tag photo, a category
-  of "Other", a possible re-share, and the poster's `needs_owner`. The model's own questions about optional facts
+  of "Other" (or a department/category not on Poshmark's list), a possible re-share, and the poster's
+  `needs_owner`. The model's own questions about optional facts
   (material, measurements) are dropped: a missing optional fact is left out of the listing. An unsure condition is a
   `Note:` line, not a question. Anything the owner does from the CLI (`thrift price` / `answer` / `confirm`) is
   echoed to the Telegram group and settles the pending message there.
@@ -65,8 +74,8 @@ No Homebrew. Shell is bash.
 git clone git@github.com:SanyaBoroda4/thrift-agent.git ~/thrift-agent && cd ~/thrift-agent
 bash deploy/mac_setup.sh
 ```
-Then: `.env`, `config/settings.local.yaml` (`machine_role: prod`), `thrift login --site poshmark`, record selectors,
-and start the two launchd services (worker + poster) for the dry-run week:
+Then: `.env`, `config/settings.local.yaml` (`machine_role: prod`), `thrift login --site poshmark`, the first manual
+dry-runs (see "Poshmark poster (M2)"), and start the two launchd services (worker + poster) for the dry-run week:
 ```bash
 bash deploy/services.sh start      # also: stop | restart | status
 ```
@@ -77,7 +86,8 @@ to the previous commit).
 ## Commands
 ```
 thrift init | run | process <dir> | confirm <batch> <cmd> | answer <item> "<note>" | price <item> <amount>
-thrift requeue <item> [marketplace] | status | show <item> | poster [--once] [--dry-run] [--allow-dev-browser]
+thrift requeue <item> [marketplace] | status | show <item>
+thrift poster [--once] [--dry-run] [--stage form|review] [--allow-dev-browser]
 thrift login --site poshmark | telegram setup|test | harvest | build-style | eval
 ```
 - **`thrift price <item> <amount>`** approves an item's price from the command line — the same effect as replying
@@ -92,6 +102,8 @@ thrift login --site poshmark | telegram setup|test | harvest | build-style | eva
 - **`thrift poster --allow-dev-browser`** lets the poster open a browser on the Windows dev machine to work on
   selectors. It stays a dry-run: the dev machine never logs into or touches the shop, and without the flag the dev
   poster does not launch a browser at all.
+- **`thrift poster --stage form|review`** picks the dry-run stage for this run (default `poster.dry_run_stage`,
+  `form`). See "Poshmark poster (M2)".
 - **`HOLD_UNSHIPPED`** is a flag file in `paths.control` (set by the shipping watchdog or by hand). It blocks
   *publish* only: drafts and dry-runs keep running, so the queue is ready the moment the late order ships. `PAUSE`
   in the same folder stops the poster entirely.
@@ -99,6 +111,36 @@ thrift login --site poshmark | telegram setup|test | harvest | build-style | eva
   detects it (no camera EXIF, phone aspect ratio), assigns it to the item by content, and uses it only for the
   retail price, style name, colour and retailer — never for condition, size or flaws. Own photos first: the
   screenshot always goes last in the listing and is never the cover.
+
+## Poshmark poster (M2)
+`post/poshmark.py` fills https://poshmark.com/create-listing in the poster's own Chrome. The form's structure was
+verified on the live site on 2026-09-29 (logged in, nothing saved): photo input, title, description, the category
+menu (department links, category items, the subcategory menu whose `<a>` must be clicked, not its `<li>`), the size
+menu (tabs, `size-<label>` buttons, Done), condition labels, brand suggestions, colour tiles, style-tag input, the
+Listing Price dialog (listing and original price, Smart Sell, Shipping Discount, Done), SKU, Next / Save Draft /
+Discard. Every locator lives in `SEL`; the ones not verified yet are listed in `UNVERIFIED` and in the module
+docstring.
+
+- **Fill order:** photos, title, description, category, subcategory, size, condition, brand, colours, style tags,
+  price dialog, SKU. Then every field is read back (including the text each closed dropdown shows) and diffed
+  against the approved listing before anything else happens.
+- **Poshmark's labels.** Condition: NWT = "New With Tags (NWT)", NWOT and like new = "Like New", excellent and good =
+  "Good", fair = "Fair". Brand: the exact (case-insensitive) suggestion, else the owner is asked. Colours: the
+  15-colour palette's tiles. Style tags: only Poshmark's curated suggestions (a tag it doesn't offer is left out and
+  the owner is told). Smart Sell must be off (checked, never switched); Shipping Discount stays "No Discount".
+- **Owner questions (`needs_owner`)** only where the form is fine but lacks our value: a brand, category, subcategory
+  or size Poshmark doesn't offer, a department it doesn't have (Unisex), or a dialog after the upload (crop/cover)
+  that isn't recorded yet. A form that looks different from the recording fails the item with a screenshot instead.
+- **Dry-run stages** (`poster.dry_run_stage`, or `--stage` for one run). `form`: fill, read back, keep the evidence,
+  then leave through Poshmark's leave dialog with **Discard**, so no draft is left behind. `review`: also press
+  **Next**, screenshot the page after it and record its buttons and labels to `failed/shots/<item>-review.json`, back
+  out, Discard. No dry-run ever presses the final publish button.
+- **Evidence** for every dry-run and failure in `failed/shots/`: `<item>-poshmark-<time>.png` (full page), `.html`
+  (the DOM, to record selectors from) and `.json` (what was read back, what was expected, the diff). The HTML can
+  contain account details: keep it on the Mac, never in the public repo.
+- **No publishing yet.** Publishing and saving drafts refuse to run ("not recorded yet") until the page after Next,
+  its publish button and where Save Draft lands are recorded; until then only dry-runs run, whatever
+  `poster.dry_run` says.
 
 ## iPhone Shortcut — "New item"
 Same Apple ID as the Mac, iCloud Drive on, folders `iCloud Drive/Posh/inbox`. Finished shares are moved to
@@ -140,15 +182,15 @@ messages or presses its buttons.
   **[Approve $P]** and **[Change]**. Replying to the message with a number (`85`, `$85`, `85.00`, `85 dollars`) sets
   the price; [Change] asks "reply with the price". The approved price is stored with source `owner` and the item
   becomes `ready`. Nothing publishes without price approval.
-- **Questions folded in.** If brand or size is truly unreadable (below 0.70) or the item looks like a re-share, the
-  question is part of the *same* message. The reply may carry both answers and the price (`size 8, 45`): the price is
+- **Questions folded in.** If brand or size is truly unreadable (below 0.70), the category is not one Poshmark has,
+  or the item looks like a re-share, the question is part of the *same* message. The reply may carry both answers and the price (`size 8, 45`): the price is
   stored, the note reprocesses the item, and it comes back for approval only if something is still unresolved — the
   owner's price is kept. A price alone accepts the model's best reading of brand and size.
 - **Two answers must be explicit.** *NWT without a hang-tag photo* is listed as **like new** and the message says so
   in a `Note:` line; reply `NWT` (with or without the price) if the tag really is attached. *A suspected re-share*
   stays held even after a price: reply `different item` to list it or `same item` to drop it.
 - **`needs_owner`.** The poster may send a *separate* question when it is stuck on a field only the owner can answer
-  (a brand missing from Poshmark's list, an ambiguous category). The item waits in `needs_owner` while the others
+  (a brand, category or size missing from Poshmark's lists). The item waits in `needs_owner` while the others
   continue; the reply is attached to the item and it is reprocessed. No other questions go to the owner.
 - **Re-send after sleep.** On worker start and about every hour, anything still waiting longer than
   `telegram.resend_after_hours` is sent again — Telegram keeps updates for only 24 h and the Mac may have been asleep.
@@ -179,6 +221,7 @@ Where the project is going, and the design decisions already made for each step.
   condition, because historic condition labels are unreliable.
 - **A laptop that is closed most of the day.** Everything queues and catches up when the Mac opens; listing
   hours are set to cover when it is usually open.
-- **Milestones:** M0 eval → M1 prompt tuning → M2 Poshmark poster (record selectors on the Mac) → M3 Telegram
+- **Milestones:** M0 eval → M1 prompt tuning → M2 Poshmark poster (form structure verified 2026-09-29; the first
+  Mac dry-runs record the rest, then drafts and publishing) → M3 Telegram
   approval flow (implemented: long polling, one message per item) → M4 Airtable + n8n + My Sales sync → M5 Depop
   → M6 sold-comps pricing.

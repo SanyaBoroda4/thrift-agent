@@ -674,3 +674,55 @@ def test_reshare_hold_needs_an_explicit_answer(tmp_path, monkeypatch, facts, own
     pipeline.process_item(s, db, iids[2])
     it = db.item(iids[2])
     assert it["status"] == "ready" and loads(it["gate"])["hold"] is None and loads(it["price"])["list_price"] == 65
+
+
+# ---------- WO9: Poshmark's category names, kids size tab ----------
+
+def _one_item(tmp_path, db, n=3):
+    d = tmp_path / "item"
+    for i, c in enumerate(["red", "green", "blue"][:n]):
+        _jpg(d / "photos" / f"{i:02d}.jpg", c)
+    return db.add_item(db.add_batch("share", n), 1, str(d))
+
+
+def test_kids_items_get_poshmarks_category_and_the_girls_tab_note(tmp_path, monkeypatch, facts, owner_messages):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    kid = dict(department="Kids", category="Tops", subcategory=None, kids_gender="unisex",
+               size_us=Ev(value="4T", photos=[1], source="photo", confidence=0.9))
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", fake_ask(lambda **kw: facts(**kid, **kw)))
+    monkeypatch.setattr("thrift_agent.pipeline.load_yaml", lambda name: {"brands": {}, "aliases": {}, "category_defaults": {}})
+    iid = _one_item(tmp_path, db)
+    pipeline.process_item(s, db, iid)
+    it = db.item(iid)
+    posh = loads(it["renders"])["poshmark"]
+    assert loads(it["facts"])["category"] == "Shirts & Tops" and posh["category"] == "Shirts & Tops"
+    assert posh["kids_gender"] == "unisex" and posh["size"] == "4T"
+    assert loads(it["gate"])["notes"] == ["listed under Girls on Poshmark (read as unisex); reply 'boys' to list it "
+                                          "under Boys"]
+
+
+def test_kids_gender_note_only_for_a_kids_size_poshmark_files_under_girls(facts):
+    assert pipeline.kids_gender_notes(facts(department="Kids", kids_gender="girls")) == []
+    assert pipeline.kids_gender_notes(facts(department="Kids", kids_gender="boys")) == []
+    assert len(pipeline.kids_gender_notes(facts(department="Kids", kids_gender=None))) == 1
+    assert pipeline.kids_gender_notes(facts(department="Women", kids_gender=None)) == []
+    assert pipeline.kids_gender_notes(facts(department="Kids", kids_gender="unisex", size_us=Ev(value=None))) == []
+
+
+def test_a_category_poshmark_does_not_have_is_asked_in_the_approval_message(tmp_path, monkeypatch, facts,
+                                                                            owner_messages):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", fake_ask(lambda **kw: facts(category="Gadgets", **kw)))
+    monkeypatch.setattr("thrift_agent.pipeline.load_yaml",
+                        lambda name: {"brands": {"tory burch": {"target": 70}}, "aliases": {}, "category_defaults": {}})
+    iid = _one_item(tmp_path, db)
+    pipeline.process_item(s, db, iid)
+    it = db.item(iid)
+    gate = loads(it["gate"])
+    assert it["status"] == "awaiting_price" and gate["decision"] == "needs_info" and owner_messages == [("item", iid)]
+    assert gate["reasons"][0] == "category 'Gadgets' is not one of Poshmark's Women categories — reply e.g. " \
+                                 "'category Tops'"
+    # Like brand/size, a price alone lets the model's reading stand; the poster asks if the form lacks the name.
+    assert pipeline.set_price(s, db, iid, 60) == "ready"

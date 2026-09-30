@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from thrift_agent.brain import llm
+from thrift_agent.brain import llm, taxonomy
 from thrift_agent.schema import Facts
 
 SYSTEM = """You read resale photos and report FACTS with evidence. You never write marketing copy.
@@ -20,7 +20,9 @@ Rules:
 - A label that prints several size systems (US 7.5 / EU 38 / UK 5) is ONE size — report size_printed
   as printed and derive size_us; it is not a conflict.
 - department and category come from evidence (labels, the retailer page, sizing), never from a default.
-  Use the real Poshmark category and subcategory — never 'Other'.
+  Use the real Poshmark category and subcategory, spelled as in the lists below — never 'Other'.
+- Kids items: kids_gender = girls | boys | unisex, your best reading of the item itself (style, colour, the box
+  or label, a retailer page). It only picks Poshmark's Girls or Boys size list; never a question. Adults: null.
 - Condition:
   NWT only if an attached retail hang tag is visible in one of the seller's own photos — put that
   index in hang_tag_photo (and in condition_evidence). A box, a loose tag or a retailer screenshot
@@ -49,7 +51,8 @@ def extract(photos: list[Path], note: str | None, model: str, long_edge: int, ki
         content.append(llm.text(f"Photo {i} (retail screenshot)" if retail else f"Photo {i}"))
         content.append(llm.image(p, long_edge))
     content.append(llm.text(f"Seller note: {note}" if note else "No seller note."))
-    return llm.ask(model, SYSTEM, content, Facts, "report_facts", "Report the item facts", max_tokens=4000)
+    system = f"{SYSTEM}\n\n{taxonomy.prompt_text()}"
+    return llm.ask(model, system, content, Facts, "report_facts", "Report the item facts", max_tokens=4000)
 
 
 SELLER_PHOTO_ONLY = ("condition_evidence", "size_printed", "size_us", "size_eu")   # Evs a screenshot can't prove

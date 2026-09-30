@@ -14,7 +14,7 @@ import imagehash
 from PIL import Image
 
 from thrift_agent import approve, notify
-from thrift_agent.brain import copy as copywriter, sizes
+from thrift_agent.brain import copy as copywriter, sizes, taxonomy
 from thrift_agent.brain.extract import extract, strip_screenshot_evidence
 from thrift_agent.brain.gate import GateResult, evaluate
 from thrift_agent.brain.price import price
@@ -283,6 +283,14 @@ def settle_nwt(facts: Facts, note: str | None) -> tuple[Facts, list[str]]:
             ["model saw NWT but no attached hang tag: listed as like new; reply 'NWT' if the tag is attached"])
 
 
+def kids_gender_notes(facts: Facts) -> list[str]:
+    """Poshmark files a kids size under Girls or Boys. A kids item the model read as unisex (or couldn't read) goes
+    under Girls, and the approval message says so; never a question."""
+    if facts.department != "Kids" or not facts.size_us.value or facts.kids_gender in ("girls", "boys"):
+        return []
+    return ["listed under Girls on Poshmark (read as unisex); reply 'boys' to list it under Boys"]
+
+
 def process_item(s: Settings, db: DB, iid: str) -> None:
     """extract -> price -> copy -> verify -> lint -> gate -> renders. The item then waits for the owner's price
     (awaiting_price, ONE Telegram message) unless the owner already priced it and nothing is unresolved."""
@@ -294,6 +302,8 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
     facts = extract(photos, it["note"], s["models"]["extract"], s["images"]["llm_long_edge"], kinds=kinds)
     facts = strip_screenshot_evidence(facts, retail)     # a screenshot is never evidence for condition, size or flaws
     facts, notes = settle_nwt(facts, it["note"])         # NWT needs a tag photo or the owner's word; else like new
+    facts, fit_notes, fit_questions = taxonomy.fit(facts)   # Poshmark's own category names (Kids Tops -> Shirts & Tops)
+    notes += fit_notes + kids_gender_notes(facts)
     pr = price(facts, load_yaml("brand_tiers.yaml"), s["pricing"], it["note"])
     enabled = [mp for mp, m in s["marketplaces"].items() if m.get("enabled")]
     if it["owner_price"]:
@@ -311,6 +321,9 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
         # nothing would otherwise publish an LLM-rewritten listing that nobody reviewed.
         problems += [f"verifier rewrote {f} without reporting a claim" for f in copywriter.changed_fields(draft, audit)]
     gate = evaluate(facts, pr, problems, len(audit.unsupported), s["gate"], s["pricing"])
+
+    if fit_questions:                                    # a department/category Poshmark doesn't have: like "Other"
+        gate = GateResult("needs_info", fit_questions + gate.reasons, gate.notes)
 
     renders = build_renders(s, iid, d, photos, facts, final, pr, kinds)
     cover_hash, twin = duplicate_check(s, db, iid, d / "cover.jpg", it["note"])
@@ -436,6 +449,7 @@ def build_renders(s: Settings, iid: str, d: Path, photos: list[Path], facts: Fac
 
     common = dict(brand=facts.brand.value, department=facts.department, category=facts.category,
                   subcategory=facts.subcategory, size=sizes.size_label(facts), colors=list(facts.colors),
+                  kids_gender=facts.kids_gender if facts.department == "Kids" else None,
                   condition=facts.condition, sku=iid,
                   original_price=_dollars(facts.retail_price.value) or pr.original_price)   # screenshot beats note
     out = {}

@@ -81,14 +81,30 @@ def test_poster_passes_allow_dev_browser(monkeypatch):
     import thrift_agent.post.runner as runner
     seen = {}
 
-    async def fake_run(s, db, once=False, force_dry=False, allow_dev_browser=False):
-        seen.update(once=once, force_dry=force_dry, allow_dev_browser=allow_dev_browser)
+    async def fake_run(s, db, once=False, force_dry=False, allow_dev_browser=False, stage=None):
+        seen.update(once=once, force_dry=force_dry, allow_dev_browser=allow_dev_browser, stage=stage)
     monkeypatch.setattr(runner, "run", fake_run)
     monkeypatch.setattr(cli, "_db", lambda: object())
     assert CliRunner().invoke(cli.app, ["poster", "--once", "--allow-dev-browser"]).exit_code == 0
-    assert seen == {"once": True, "force_dry": False, "allow_dev_browser": True}
+    assert seen == {"once": True, "force_dry": False, "allow_dev_browser": True, "stage": "form"}
     CliRunner().invoke(cli.app, ["poster"])
     assert seen["allow_dev_browser"] is False
+
+
+def test_poster_stage_option_overrides_the_config_and_is_checked(monkeypatch):
+    from typer.testing import CliRunner
+    import thrift_agent.post.runner as runner
+    seen = {}
+
+    async def fake_run(s, db, **kw):
+        seen.update(kw)
+    monkeypatch.setattr(runner, "run", fake_run)
+    monkeypatch.setattr(cli, "_db", lambda: object())
+    assert CliRunner().invoke(cli.app, ["poster", "--once", "--dry-run", "--stage", "Review"]).exit_code == 0
+    assert seen["stage"] == "review"
+    seen.clear()
+    r = CliRunner().invoke(cli.app, ["poster", "--once", "--stage", "publish"])
+    assert r.exit_code != 0 and seen == {}                          # refused before the browser is ever opened
 
 
 # ---------- WO4: price command, worker loop with Telegram, telegram setup/test ----------

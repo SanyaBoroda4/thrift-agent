@@ -1,0 +1,195 @@
+# Poshmark's create-listing category tree: the names the form offers, spelled as the form shows them.
+#
+# verified: true  = the category list was read off the live form (https://poshmark.com/create-listing, 2026-09-29).
+# verified: false = UNVERIFIED placeholder (Men, Home): record it on the Mac. The poster asks the owner (needs_owner)
+#                   when the form doesn't offer a name.
+# A category's value is its subcategory list, or ~ when the list is not recorded yet.
+#
+# thrift_agent/brain/taxonomy.py puts the model's department/category/subcategory onto these names right after
+# extraction; the extraction prompt shows the same lists.
+
+departments:
+  Women:
+    verified: true
+    categories:
+      Accessories: ~
+      Bags: ~
+      Dresses: ~
+      Intimates & Sleepwear: ~
+      Jackets & Coats: ~
+      Jeans: ~
+      Jewelry: ~
+      Makeup: ~
+      Pants & Jumpsuits: ~
+      Shoes:                          # verified 2026-09-29
+        - Ankle Boots & Booties
+        - Athletic Shoes
+        - Combat & Moto Boots
+        - Espadrilles
+        - Flats & Loafers
+        - Heeled Boots
+        - Heels
+        - Lace Up Boots
+        - Moccasins
+        - Mules & Clogs
+        - Over the Knee Boots
+        - Platforms
+        - Sandals
+        - Slippers
+        - Sneakers
+        - Wedges
+        - Winter & Rain Boots
+      Shorts: ~
+      Skirts: ~
+      Sweaters: ~
+      Swim: ~
+      Tops: ~
+      Skincare: ~
+      Hair: ~
+      Bath & Body: ~
+      Global & Traditional Wear: ~
+      Other: ~
+
+  Kids:
+    verified: true
+    categories:
+      Accessories: ~
+      Bottoms: ~
+      Dresses: ~
+      Jackets & Coats: ~
+      Matching Sets: ~
+      One Pieces: ~
+      Pajamas: ~
+      Shirts & Tops: ~
+      Shoes:                          # verified 2026-09-29
+        - Baby & Walker
+        - Boots
+        - Dress Shoes
+        - Moccasins
+        - Rain & Snow Boots
+        - Sandals & Flip Flops
+        - Slippers
+        - Sneakers
+        - Water Shoes
+      Swim: ~
+      Costumes: ~
+      Bath, Skin & Hair: ~
+      Toys: ~
+      Other: ~
+
+  Men:
+    verified: false                   # UNVERIFIED placeholder
+    categories:
+      Accessories: ~
+      Bags: ~
+      Jackets & Coats: ~
+      Jeans: ~
+      Pants: ~
+      Shirts: ~
+      Shoes: ~
+      Shorts: ~
+      Suits & Blazers: ~
+      Sweaters: ~
+      Swim: ~
+      Underwear & Socks: ~
+      Grooming: ~
+      Global & Traditional Wear: ~
+      Other: ~
+
+  Home:
+    verified: false                   # UNVERIFIED placeholder
+    categories:
+      Accents: ~
+      Art: ~
+      Bath: ~
+      Bedding: ~
+      Dining: ~
+      Holiday: ~
+      Kitchen: ~
+      Office: ~
+      Party Supplies: ~
+      Storage & Organization: ~
+      Wall Decor: ~
+      Other: ~
+
+# The model's word -> Poshmark's name. Only unambiguous renames; anything else is left for the owner.
+# Matching ignores case, punctuation, "and" vs "&" and a plural s/es ("Dress" finds "Dresses").
+aliases:
+  categories:
+    Women:
+      Coats: Jackets & Coats
+      Jackets: Jackets & Coats
+      Pants: Pants & Jumpsuits
+      Jumpsuits: Pants & Jumpsuits
+      Rompers: Pants & Jumpsuits
+      Swimwear: Swim
+      Swimsuits: Swim
+      Intimates: Intimates & Sleepwear
+      Sleepwear: Intimates & Sleepwear
+      Lingerie: Intimates & Sleepwear
+      Handbags: Bags
+      Purses: Bags
+      Blouses: Tops
+      Shirts: Tops
+      T-Shirts: Tops
+      Sweatshirts: Tops
+      Sweatshirts & Hoodies: Tops
+      Hoodies: Tops
+      Outerwear: Jackets & Coats
+    Kids:
+      Tops: Shirts & Tops
+      Shirts: Shirts & Tops
+      T-Shirts: Shirts & Tops
+      Tees: Shirts & Tops
+      Blouses: Shirts & Tops
+      Sweaters: Shirts & Tops
+      Sweatshirts: Shirts & Tops
+      Hoodies: Shirts & Tops
+      Pants: Bottoms
+      Jeans: Bottoms
+      Shorts: Bottoms
+      Skirts: Bottoms
+      Leggings: Bottoms
+      Joggers: Bottoms
+      Sweatpants: Bottoms
+      Coats: Jackets & Coats
+      Jackets: Jackets & Coats
+      Outerwear: Jackets & Coats
+      Sleepwear: Pajamas
+      Swimwear: Swim
+      Rompers: One Pieces
+      Bodysuits: One Pieces
+      Onesies: One Pieces
+      Sets: Matching Sets
+  subcategories:
+    Women/Shoes:
+      Booties: Ankle Boots & Booties
+      Ankle Boots: Ankle Boots & Booties
+      Chelsea Boots: Ankle Boots & Booties
+      Flats: Flats & Loafers
+      Ballet Flats: Flats & Loafers
+      Loafers: Flats & Loafers
+      Mules: Mules & Clogs
+      Clogs: Mules & Clogs
+      Slides: Sandals
+      Flip Flops: Sandals
+      Pumps: Heels
+      Rain Boots: Winter & Rain Boots
+      Snow Boots: Winter & Rain Boots
+      Winter Boots: Winter & Rain Boots
+      Combat Boots: Combat & Moto Boots
+      Moto Boots: Combat & Moto Boots
+      Running Shoes: Athletic Shoes
+      Trainers: Athletic Shoes
+    Kids/Shoes:
+      Rain Boots: Rain & Snow Boots
+      Snow Boots: Rain & Snow Boots
+      Winter Boots: Rain & Snow Boots
+      Sandals: Sandals & Flip Flops
+      Flip Flops: Sandals & Flip Flops
+      Baby Shoes: Baby & Walker
+      Walkers: Baby & Walker
+      Crib Shoes: Baby & Walker
+      Athletic Shoes: Sneakers
+      Running Shoes: Sneakers
+      Mary Janes: Dress Shoes

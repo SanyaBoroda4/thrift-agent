@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Poshmark create-listing (test fixture)</title>
+<!--
+  A static stand-in for https://poshmark.com/create-listing, for tests/test_poshmark_form.py.
+
+  Reproduces what was verified on the live form on 2026-09-29: input#img-file-input; data-vv-name title/description/
+  style-tag-input/listingPrice/originalPrice/sku/costPriceAmount/otherInfo; the "Select Category" dropdown with
+  department links a.dropdown__link[data-et-name=women|men|kids|home|pets|electronics], a[data-et-name=all] going
+  back, categories as li.dropdown__menu__item, then the "Select Subcategory (optional)" menu whose options are
+  a.dropdown__link[data-et-name=sub_category] inside li (a click on the li does NOT register), "None" included; the
+  size dropdown [data-test=size] with tabs a.navigation--horizontal__link and buttons
+  button.multi-size-selector__button[id=size-<label>] incl. the kids labels "7.5 (Toddler Girl)", Done =
+  button[data-et-name=apply]; "Select Condition" with li.dropdown__menu__item labels; the brand input with
+  ul.listing-editor__suggestions-list > li > a.dropdown__link; "Select up to 2 colors" with
+  li.listing-editor__tile--color tiles (click the inner a) and Done; the .listing-price-suggestion-modal with its
+  inputs, a Smart Sell checkbox, Shipping Discount and Done; Next / Save Draft / Discard by data-et-name.
+
+  GUESSES for what is still UNVERIFIED (keep in step with post/poshmark.py): thumbnails as <img src="blob:...">, the
+  crop dialog, the breadcrumb text of a closed dropdown, curated tag suggestions, the header logo opening the leave
+  dialog, the page after Next with an Edit button and "List This Item".
+
+  window.__FIXTURE (set by the test) switches variants: lastDept, smartSell, crop, priceBug, noLeaveDialog.
+  window.__events records what the page registered.
+-->
+<style>
+  body { font-family: sans-serif; margin: 12px; }
+  .hidden { display: none !important; }
+  section { margin: 8px 0; }
+  .dropdown { margin: 4px 0; }
+  .dropdown__selector { border: 1px solid #999; padding: 6px; cursor: pointer; min-height: 18px; }
+  .dropdown__menu { border: 1px solid #ccc; padding: 4px; margin: 0; background: #fff; }
+  .dropdown__menu__item { list-style: none; padding: 4px; width: 400px; }
+  .navigation--horizontal__link { margin-right: 10px; }
+  .multi-size-selector__button { margin: 2px; }
+  .multi-size-selector__button.selected, .listing-editor__tile--color.selected { outline: 2px solid #000; }
+  .listing-editor__tile--color { display: inline-block; list-style: none; margin: 2px; }
+  .listing-editor__suggestions-list { border: 1px solid #ccc; padding: 2px; margin: 0; }
+  .listing-editor__suggestions-list li { list-style: none; }
+  .thumbs img { width: 48px; height: 48px; margin: 2px; }
+  .tag-chip { border: 1px solid #666; padding: 1px 4px; margin: 2px; }
+  .modal { position: fixed; top: 30px; left: 30px; right: 30px; background: #fff; border: 2px solid #333;
+           padding: 12px; z-index: 10; }
+</style>
+</head>
+<body>
+<header><a href="/" class="header__logo">Poshmark</a></header>
+
+<main id="form" class="listing-editor">
+  <h1>Listing Details</h1>
+  <section><div>PHOTOS</div>
+    <input type="file" id="img-file-input" name="img-file-input" accept="image/*" multiple class="hidden">
+    <div class="thumbs" id="thumbs"></div>
+  </section>
+  <section><div>TITLE *</div>
+    <input data-vv-name="title" placeholder="What are you selling? (required)" maxlength="80">
+  </section>
+  <section><div>DESCRIPTION *</div>
+    <textarea data-vv-name="description" placeholder="Describe it! (required)"></textarea>
+  </section>
+  <section><div>CATEGORY *</div>
+    <div class="dropdown" id="category-dropdown">
+      <div class="dropdown__selector" id="category-selector"><span>Select Category</span></div>
+      <ul class="dropdown__menu hidden" id="category-menu"></ul>
+    </div>
+    <div class="dropdown hidden" id="subcategory-dropdown">
+      <div class="dropdown__selector" id="subcategory-selector"><span>Select Subcategory (optional)</span></div>
+      <ul class="dropdown__menu hidden" id="subcategory-menu"></ul>
+    </div>
+  </section>
+  <section><div>QUANTITY</div>
+    <button type="button" data-et-name="one">Single Item</button>
+    <button type="button" data-et-name="multi">Multi Item</button>
+  </section>
+  <section><div>SIZE *</div>
+    <div class="dropdown" id="size-dropdown">
+      <div class="dropdown__selector" data-test="size"><span>Select Size</span></div>
+      <div class="dropdown__menu hidden" id="size-menu">
+        <nav id="size-tabs"></nav>
+        <div id="size-system" class="hidden">
+          <select><option>US Sizing</option><option>AU Sizing</option><option>EU Sizing</option><option>UK Sizing</option></select>
+        </div>
+        <div id="size-buttons"></div>
+        <button type="button" data-et-name="apply" id="size-apply">Done</button>
+      </div>
+    </div>
+  </section>
+  <section><div>CONDITION *</div>
+    <div class="dropdown" id="condition-dropdown">
+      <div class="dropdown__selector" id="condition-selector"><span>Select Condition</span></div>
+      <ul class="dropdown__menu hidden" id="condition-menu"></ul>
+    </div>
+  </section>
+  <section><div>BRAND</div>
+    <input placeholder="Enter the Brand/Designer" id="brand-input">
+    <ul class="listing-editor__suggestions-list hidden" id="brand-list"></ul>
+  </section>
+  <section><div>COLOR</div>
+    <div class="dropdown" id="color-dropdown">
+      <div class="dropdown__selector" id="color-selector"><span>Select up to 2 colors</span></div>
+      <div class="dropdown__menu hidden" id="color-menu">
+        <ul id="color-tiles"></ul>
+        <button type="button" data-et-name="apply" id="color-apply">Done</button>
+      </div>
+    </div>
+  </section>
+  <section><div>STYLE TAGS</div>
+    <div id="tag-chips"></div>
+    <input data-vv-name="style-tag-input" placeholder="Add up to 3 tags" id="tag-input">
+    <ul class="listing-editor__suggestions-list hidden" id="tag-list"></ul>
+  </section>
+  <section><div>PRICE</div>
+    <label>Original Price <input data-vv-name="originalPrice" readonly></label>
+    <label>Listing Price <input data-vv-name="listingPrice" readonly placeholder="Required"></label>
+  </section>
+  <section><div>ADDITIONAL DETAILS (Private)</div>
+    <input data-vv-name="sku" placeholder="SKU">
+    <input data-vv-name="costPriceAmount" placeholder="Cost Price">
+    <textarea data-vv-name="otherInfo" placeholder="Other Info"></textarea>
+  </section>
+  <section><div>AVAILABILITY</div><span>For Sale</span></section>
+  <button type="button" data-et-name="save_draft" id="form-save-draft">Save Draft</button>
+  <button type="button" data-et-name="next" id="next">Next</button>
+</main>
+
+<div id="review" class="hidden">
+  <h2>Review your listing</h2>
+  <button type="button" id="review-edit">Edit</button>
+  <button type="button" id="list-it" data-et-name="list_item">List This Item</button>
+</div>
+
+<div class="modal listing-price-suggestion-modal hidden" id="price-modal" role="dialog">
+  <h3>Listing Price</h3>
+  <label>Listing Price <input id="listing-price-modal-listing-price-input"></label>
+  <label>Original Price <input id="listing-price-modal-original-price-input" placeholder="Optional"></label>
+  <label><input type="checkbox" id="smart-sell"> Smart Sell</label>
+  <div>Shipping Discount
+    <select id="shipping-discount"><option>No Discount</option><option>Discounted Shipping</option><option>Free Shipping</option></select>
+  </div>
+  <button type="button" id="price-done">Done</button>
+</div>
+
+<div class="modal hidden" id="leave-modal" role="dialog">
+  <p>Save this listing as a draft?</p>
+  <button type="button" data-et-name="save_draft" id="leave-save">Save Draft</button>
+  <button type="button" data-et-name="discard" id="leave-discard">Discard</button>
+</div>
+
+<div class="modal hidden" id="crop-modal" role="dialog">
+  <h3>Crop Cover Photo</h3>
+  <button type="button">Apply</button>
+</div>
+
+<script>
+(() => {
+  const cfg = window.__FIXTURE || {};
+  const events = window.__events = [];
+  const $ = sel => document.querySelector(sel);
+  const make = (tag, attrs = {}, text) => {
+    const e = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+    if (text !== undefined) e.textContent = text;
+    return e;
+  };
+  const show = (e, on = true) => e.classList.toggle('hidden', !on);
+  const isOpen = e => !e.classList.contains('hidden');
+  const label = (e, text) => { e.innerHTML = ''; e.appendChild(make('span', {}, text)); };
+  const later = fn => setTimeout(fn, 30);                    // Vue re-renders a moment after the click
+  let dirty = false;
+  const touch = () => { dirty = true; };
+  document.querySelectorAll('input, textarea').forEach(i => i.addEventListener('input', touch));
+  const halves = (lo, hi) => { const out = []; for (let n = lo; n <= hi; n += 0.5) out.push(String(n)); return out; };
+
+  // ---- photos (UNVERIFIED guess: blob: thumbnails; a crop dialog when cfg.crop) ----
+  $('#img-file-input').addEventListener('change', ev => {
+    for (const f of ev.target.files) $('#thumbs').appendChild(make('img', {src: URL.createObjectURL(f), alt: ''}));
+    touch();
+    if (cfg.crop) show($('#crop-modal'));
+  });
+
+  // ---- category ----
+  const TREE = {
+    women: {name: 'Women', cats: {
+      'Accessories': [], 'Bags': [], 'Dresses': ['Maxi', 'Midi', 'Mini'], 'Jeans': [], 'Shorts': [],
+      'Shoes': ['Ankle Boots & Booties', 'Athletic Shoes', 'Combat & Moto Boots', 'Espadrilles', 'Flats & Loafers',
+                'Heeled Boots', 'Heels', 'Lace Up Boots', 'Moccasins', 'Mules & Clogs', 'Over the Knee Boots',
+                'Platforms', 'Sandals', 'Slippers', 'Sneakers', 'Wedges', 'Winter & Rain Boots'],
+      'Sweaters': [], 'Tops': ['Blouses', 'Tank Tops'], 'Other': []}},
+    men: {name: 'Men', cats: {'Shirts': [], 'Shoes': ['Sneakers'], 'Other': []}},
+    kids: {name: 'Kids', cats: {
+      'Bottoms': [], 'Dresses': [], 'Shirts & Tops': [],
+      'Shoes': ['Baby & Walker', 'Boots', 'Dress Shoes', 'Moccasins', 'Rain & Snow Boots', 'Sandals & Flip Flops',
+                'Slippers', 'Sneakers', 'Water Shoes'],
+      'Other': []}},
+    home: {name: 'Home', cats: {'Bedding': [], 'Other': []}},
+    pets: {name: 'Pets', cats: {'Dog': [], 'Other': []}},
+    electronics: {name: 'Electronics', cats: {'Cameras': [], 'Other': []}},
+  };
+  let dept = cfg.lastDept || null, cat = null;
+  const catMenu = $('#category-menu');
+  function renderDepartments() {
+    catMenu.innerHTML = '';
+    for (const [et, d] of Object.entries(TREE)) {
+      const li = make('li', {class: 'dropdown__menu__item'});
+      const a = make('a', {class: 'dropdown__link', 'data-et-name': et, href: '#'}, d.name);
+      a.addEventListener('click', ev => { ev.preventDefault(); dept = et; later(renderCategories); });
+      li.appendChild(a);
+      catMenu.appendChild(li);
+    }
+  }
+  function renderCategories() {
+    catMenu.innerHTML = '';
+    const all = make('a', {class: 'dropdown__link', 'data-et-name': 'all', href: '#'}, 'All Categories');
+    all.addEventListener('click', ev => { ev.preventDefault(); dept = null; renderDepartments(); });
+    catMenu.appendChild(all);
+    for (const name of Object.keys(TREE[dept].cats)) {
+      const li = make('li', {class: 'dropdown__menu__item'}, name);
+      li.addEventListener('click', () => pickCategory(name));
+      catMenu.appendChild(li);
+    }
+  }
+  $('#category-selector').addEventListener('click', () => {
+    const opening = !isOpen(catMenu);
+    if (opening) { if (dept) renderCategories(); else renderDepartments(); }
+    show(catMenu, opening);
+  });
+  function pickCategory(name) {
+    cat = name;
+    touch();
+    show(catMenu, false);
+    label($('#category-selector'), `${TREE[dept].name} / ${name}`);     // UNVERIFIED guess of the breadcrumb
+    events.push(`category:${TREE[dept].name}/${name}`);
+    const subMenu = $('#subcategory-menu');
+    show($('#subcategory-dropdown'));
+    label($('#subcategory-selector'), 'Select Subcategory (optional)');
+    subMenu.innerHTML = '';
+    for (const sub of ['None', ...TREE[dept].cats[name]]) {
+      const li = make('li', {class: 'dropdown__menu__item'});
+      const a = make('a', {class: 'dropdown__link', 'data-et-name': 'sub_category', href: '#'}, sub);
+      a.addEventListener('click', ev => {                           // on the <a> only: a click on the <li> is lost
+        ev.preventDefault();
+        show(subMenu, false);
+        label($('#subcategory-selector'), sub);
+        events.push(`subcategory:${sub}`);
+      });
+      li.appendChild(a);
+      subMenu.appendChild(li);
+    }
+    later(() => show(subMenu));                                       // it opens by itself
+  }
+  $('#subcategory-selector').addEventListener('click', () => show($('#subcategory-menu'), !isOpen($('#subcategory-menu'))));
+
+  // ---- size ----
+  const kids = g => [
+    ...halves(7.5, 12).map(n => `${n} (Toddler ${g})`), ...halves(12.5, 13.5).map(n => `${n} (Little ${g})`),
+    ...halves(1, 3).map(n => `${n} (Little ${g})`), ...halves(3.5, 7).map(n => `${n} (Big ${g})`)];
+  function sizeMenu() {
+    if (dept === 'kids' && cat === 'Shoes')
+      return {tabs: {Baby: halves(0, 7), Girls: kids('Girl'), Boys: kids('Boy'), Custom: []}};
+    if (dept === 'women' && cat === 'Shoes') return {system: true, tabs: {Standard: halves(5, 12), Custom: []}};
+    return {tabs: {
+      Standard: ['00', '0', '2', '4', '6', '8', '10', '12', '14', 'XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL'],
+      Plus: ['0X', '1X', '2X', '3X'], Petite: ['XXSP', 'XSP', 'SP', 'MP'], Juniors: ['XS', 'S', 'M'],
+      Maternity: ['S', 'M', 'L'], Custom: []}};
+  }
+  let chosenSize = null;
+  function renderSizeTab(menu, tab) {
+    const box = $('#size-buttons');
+    box.innerHTML = '';
+    for (const s of menu.tabs[tab]) {
+      const b = make('button', {type: 'button', id: `size-${s}`, class: 'multi-size-selector__button'}, s);
+      b.addEventListener('click', () => {
+        box.querySelectorAll('button').forEach(x => x.classList.remove('selected'));
+        b.classList.add('selected');
+        chosenSize = s;
+      });
+      box.appendChild(b);
+    }
+  }
+  $('[data-test="size"]').addEventListener('click', () => {
+    const menuEl = $('#size-menu');
+    if (isOpen(menuEl)) { show(menuEl, false); return; }
+    const menu = sizeMenu();
+    const tabs = $('#size-tabs');
+    tabs.innerHTML = '';
+    for (const tab of Object.keys(menu.tabs)) {
+      const a = make('a', {class: 'navigation--horizontal__link', href: '#'}, tab);
+      a.addEventListener('click', ev => { ev.preventDefault(); events.push(`size-tab:${tab}`); later(() => renderSizeTab(menu, tab)); });
+      tabs.appendChild(a);
+    }
+    show($('#size-system'), !!menu.system);
+    renderSizeTab(menu, Object.keys(menu.tabs)[0]);
+    show(menuEl);
+  });
+  $('#size-apply').addEventListener('click', () => {
+    show($('#size-menu'), false);
+    if (chosenSize) { label($('[data-test="size"]'), chosenSize); events.push(`size:${chosenSize}`); touch(); }
+  });
+
+  // ---- condition ----
+  $('#condition-selector').addEventListener('click', () => {
+    const menu = $('#condition-menu');
+    menu.innerHTML = '';
+    for (const c of ['New With Tags (NWT)', 'Like New', 'Good', 'Fair']) {
+      const li = make('li', {class: 'dropdown__menu__item'}, c);
+      li.addEventListener('click', () => {
+        show(menu, false);
+        label($('#condition-selector'), c);
+        events.push(`condition:${c}`);
+        touch();
+      });
+      menu.appendChild(li);
+    }
+    show(menu, !isOpen(menu));
+  });
+
+  // ---- brand ----
+  const BRANDS = ['Tory Burch', 'Tory Sport', 'Birkenstock', 'UGG', 'Nike', 'Vince', 'Vince Camuto', "Levi's",
+                  'Madewell', 'J. Crew'];
+  function suggest(input, list, pool, onPick) {
+    input.addEventListener('input', () => later(() => {
+      const q = input.value.trim().toLowerCase();
+      const hits = q ? pool.filter(x => x.toLowerCase().includes(q)).slice(0, 8) : [];
+      list.innerHTML = '';
+      for (const h of hits) {
+        const li = make('li');
+        const a = make('a', {class: 'dropdown__link', href: '#'}, h);
+        a.addEventListener('click', ev => { ev.preventDefault(); show(list, false); onPick(h); });
+        li.appendChild(a);
+        list.appendChild(li);
+      }
+      show(list, hits.length > 0);
+    }));
+  }
+  suggest($('#brand-input'), $('#brand-list'), BRANDS, b => { $('#brand-input').value = b; events.push(`brand:${b}`); });
+
+  // ---- colors ----
+  const COLORS = ['Red', 'Pink', 'Orange', 'Yellow', 'Green', 'Blue', 'Purple', 'Gold', 'Silver', 'Black', 'Gray',
+                  'White', 'Cream', 'Brown', 'Tan'];
+  const chosenColors = [];
+  $('#color-selector').addEventListener('click', () => {
+    const tiles = $('#color-tiles');
+    tiles.innerHTML = '';
+    for (const c of COLORS) {
+      const li = make('li', {class: 'listing-editor__tile--color'});
+      const a = make('a', {href: '#'});
+      a.appendChild(make('span', {class: 'swatch'}));
+      a.appendChild(make('span', {}, c));
+      a.addEventListener('click', ev => {                               // on the <a> only
+        ev.preventDefault();
+        const i = chosenColors.indexOf(c);
+        if (i >= 0) chosenColors.splice(i, 1); else if (chosenColors.length < 2) chosenColors.push(c);
+        li.classList.toggle('selected', chosenColors.includes(c));
+      });
+      li.appendChild(a);
+      tiles.appendChild(li);
+    }
+    show($('#color-menu'), !isOpen($('#color-menu')));
+  });
+  $('#color-apply').addEventListener('click', () => {
+    show($('#color-menu'), false);
+    label($('#color-selector'), chosenColors.length ? chosenColors.join(', ') : 'Select up to 2 colors');
+    for (const c of chosenColors) events.push(`color:${c}`);
+    touch();
+  });
+
+  // ---- style tags (UNVERIFIED guess: curated suggestions like the brand's; Enter adds a free tag) ----
+  const CURATED = ['Casual', 'Classic', 'Floral', 'Denim', 'Boho', 'Vintage', 'Minimalist', 'Preppy', 'Sporty'];
+  const tagInput = $('#tag-input');
+  const addTag = t => { $('#tag-chips').appendChild(make('span', {class: 'tag-chip'}, t)); tagInput.value = ''; };
+  suggest(tagInput, $('#tag-list'), CURATED, t => { addTag(t); events.push(`tag:${t}`); });
+  tagInput.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter' && tagInput.value.trim()) { events.push(`free-tag:${tagInput.value.trim()}`); addTag(tagInput.value.trim()); }
+  });
+
+  // ---- price dialog ----
+  $('[data-vv-name="listingPrice"]').addEventListener('click', () => {
+    $('#smart-sell').checked = !!cfg.smartSell;
+    show($('#price-modal'));
+  });
+  $('#price-done').addEventListener('click', () => {
+    const lp = $('#listing-price-modal-listing-price-input').value.trim();
+    const op = $('#listing-price-modal-original-price-input').value.trim();
+    if (!cfg.priceBug) $('[data-vv-name="listingPrice"]').value = lp ? `$${lp}` : '';
+    $('[data-vv-name="originalPrice"]').value = op ? `$${op}` : '';
+    show($('#price-modal'), false);
+    events.push('price-done');
+    touch();
+  });
+
+  // ---- Next, the page after it, publishing (UNVERIFIED guess) ----
+  $('#next').addEventListener('click', () => { events.push('next'); show($('#form'), false); show($('#review')); });
+  $('#review-edit').addEventListener('click', () => { events.push('back'); show($('#review'), false); show($('#form')); });
+  $('#list-it').addEventListener('click', () => { events.push('publish'); location.href = '/listing/published-123'; });
+  $('#form-save-draft').addEventListener('click', () => { events.push('save_draft'); location.href = '/closet/me?draft=1'; });
+
+  // ---- leaving (UNVERIFIED guess: an in-app link opens the leave dialog when the form has input) ----
+  document.querySelector('header a').addEventListener('click', ev => {
+    if (cfg.noLeaveDialog || !dirty) return;
+    ev.preventDefault();
+    show($('#leave-modal'));
+  });
+  $('#leave-discard').addEventListener('click', () => { events.push('discard'); location.href = '/feed?discarded=1'; });
+  $('#leave-save').addEventListener('click', () => { events.push('save_draft'); location.href = '/closet/me?draft=1'; });
+})();
+</script>
+</body>
+</html>

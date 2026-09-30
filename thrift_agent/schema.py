@@ -9,6 +9,7 @@ Condition = Literal["NWT", "NWOT", "like_new", "excellent", "good", "fair"]
 Color = Literal["Red", "Pink", "Orange", "Yellow", "Green", "Blue", "Purple", "Gold", "Silver",
                 "Black", "Gray", "White", "Cream", "Brown", "Tan"]
 Source = Literal["photo", "note", "derived", "none"]
+KidsGender = Literal["girls", "boys", "unisex"]
 
 CONDITION_LABEL = {
     "NWT": "New with tags", "NWOT": "New without tags", "like_new": "Like new",
@@ -43,6 +44,10 @@ class Flaw(BaseModel):
 class Facts(BaseModel):
     item_type: str = Field(description="Plain noun phrase, e.g. 'suede ankle boots', 'wrap midi dress'")
     department: Literal["Women", "Men", "Kids", "Unisex", "Home"]
+    kids_gender: KidsGender | None = Field(None, description="Kids items only: girls | boys | unisex, your best reading "
+                                                             "of the item itself (style, colour, the box or label, a "
+                                                             "retail screenshot). It picks Poshmark's Girls or Boys "
+                                                             "size list; never a question. null for adults")
     category: str = Field(description="The real Poshmark category, from evidence (labels, retailer page, sizing): "
                                       "Shoes, Dresses, Tops, Sweaters, Jackets & Coats, Swim, Skirts, Shorts, "
                                       "Pants & Jumpsuits, Jeans, Bags, Accessories, Intimates & Sleepwear… Never 'Other'")
@@ -111,6 +116,7 @@ class Render(BaseModel):
     category: str
     subcategory: str | None
     size: str | None
+    kids_gender: KidsGender | None = None   # Kids: picks Poshmark's Girls/Boys size tab (unisex -> Girls)
     colors: list[str]
     condition: Condition
     price: int
