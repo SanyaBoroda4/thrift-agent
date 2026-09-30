@@ -197,13 +197,26 @@ def test_cli_loads_dotenv_for_commands_that_never_call_settings(monkeypatch, tmp
     assert seen == {"token": "123:from-dotenv", "chat": "-100123"} and "555" in r.output
 
 
-def test_telegram_setup_error_names_the_env_file(monkeypatch, tmp_path):
-    missing = tmp_path / "nowhere" / ".env"
+@pytest.mark.parametrize("pad", [0, 150, 197])     # 197 folded "nowhere" inside the 80-col rich panel (the Mac case)
+def test_telegram_setup_error_names_the_env_file(monkeypatch, tmp_path, pad):
+    """Assert on the exception, not the rich panel: it wraps long paths (macOS temp dirs) mid-word, borders and all."""
+    import typer
+    missing = tmp_path / ("p" * pad) / "nowhere" / ".env"
     monkeypatch.setattr(cli.config, "ENV_FILE", missing)
+    r = CliRunner().invoke(cli.app, ["telegram", "setup"], standalone_mode=False)
+    assert isinstance(r.exception, typer.BadParameter)
+    msg = r.exception.message
+    assert str(missing) in msg and "which does not exist" in msg
+    assert str(cli.config.ROOT / ".env") not in msg                                # never the real .env path
+
+
+def test_telegram_setup_error_panel_shows_the_whole_path(monkeypatch, tmp_path):
+    import typer.rich_utils
+    missing = tmp_path / ("p" * 197) / "nowhere" / ".env"
+    monkeypatch.setattr(cli.config, "ENV_FILE", missing)
+    monkeypatch.setattr(typer.rich_utils, "MAX_WIDTH", 1000)                     # wide enough that nothing wraps
     r = CliRunner().invoke(cli.app, ["telegram", "setup"])
-    squeezed = "".join(r.output.split())      # the rich error panel folds long paths mid-word (macOS temp dirs are long)
-    assert r.exit_code != 0 and "nowhere" in squeezed and "doesnotexist" in squeezed
-    assert str(cli.config.ROOT / ".env").replace(" ", "") not in squeezed          # never the real .env path
+    assert r.exit_code != 0 and str(missing) in r.output and "which does not exist" in r.output
 
 
 def test_exported_variables_win_over_dotenv(monkeypatch, tmp_path):
