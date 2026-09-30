@@ -108,8 +108,9 @@ Without `private/`, the code falls back to `config/*.example.yaml` and `data/sty
 `thrift requeue <item> [marketplace] | status | show <item> | poster [--once] [--dry-run] [--stage form|review]
 [--allow-dev-browser]`
 `thrift login --site poshmark | telegram setup|test | harvest | build-style | eval`
-`confirm`, `answer` and `price` are the CLI twins of the Telegram replies; `telegram setup` prints the chat/user ids
-seen in recent updates, `telegram test` sends a test message.
+`thrift requeue` also takes back an item the poster parked in `needs_owner` as it is (no reprocessing, the question
+closed) — the retry after a poster fix. `confirm`, `answer` and `price` are the CLI twins of the Telegram replies;
+`telegram setup` prints the chat/user ids seen in recent updates, `telegram test` sends a test message.
 `--allow-dev-browser` lets the poster open a browser on the dev machine for selector work; it stays dry-run and
 never logs into or touches the shop. `--stage` overrides `poster.dry_run_stage` for one run: `form` (fill, read back,
 evidence, Discard) or `review` (also Next, record the page after it to `failed/shots/<item>-review.json`, back out,

@@ -223,8 +223,9 @@ def telegram_test() -> None:
 
 @app.command()
 def requeue(item_id: str, marketplace: str = typer.Argument(None)) -> None:
-    """Queue a failed or dry-run post again (only rows with NO listing URL: anything that reached the site is
-    reconciled by hand, never re-posted). e.g.  thrift requeue i_...  |  thrift requeue i_... poshmark"""
+    """Queue a failed or dry-run post again, or an item the poster parked with a question, as it is (only rows with
+    NO listing URL: anything that reached the site is reconciled by hand, never re-posted).
+    e.g.  thrift requeue i_...  |  thrift requeue i_... poshmark"""
     s, db = settings(), _db()
     done = pipeline.requeue(s, db, item_id, marketplace)
     print(f"[green]queued[/] {item_id}: {', '.join(done)}")
@@ -288,7 +289,8 @@ def status() -> None:
     for it in db.items("awaiting_price"):
         print(f"[yellow]awaiting price[/] {it['id']}  →  thrift price {it['id']} <amount>")
     for it in db.items("needs_owner"):
-        print(f"[yellow]needs owner[/] {it['id']}  →  thrift answer {it['id']} \"<answer>\"")
+        print(f"[yellow]needs owner[/] {it['id']}  →  thrift answer {it['id']} \"<answer>\"  (or thrift requeue "
+              f"{it['id']} to retry as it is)")
 
 
 @app.command()

@@ -523,7 +523,7 @@ def test_requeue_only_failed_or_dryrun_rows_without_a_url(tmp_path):
     with pytest.raises(ValueError, match="listing URL"):                  # it reached the site: reconcile by hand
         pipeline.requeue(s, db, iid)
     db.upsert_post(iid, "poshmark", status="posted", url=None)
-    with pytest.raises(ValueError, match="only failed/dryrun"):
+    with pytest.raises(ValueError, match="only failed/dryrun rows"):
         pipeline.requeue(s, db, iid)
     db.upsert_post(iid, "poshmark", status="failed")
     db.set_item(iid, status="needs_info")
@@ -531,6 +531,31 @@ def test_requeue_only_failed_or_dryrun_rows_without_a_url(tmp_path):
         pipeline.requeue(s, db, iid)
     with pytest.raises(ValueError, match="unknown item"):
         pipeline.requeue(s, db, "i_nope")
+
+
+def test_requeue_takes_back_an_item_the_poster_parked_with_a_question(tmp_path):
+    """WO11: the first Mac dry-run parked its item in needs_owner on the (then unrecorded) cover dialog. Once the
+    poster handles it, `thrift requeue` retries the item as it is — no reprocessing — and closes the question."""
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid = db.add_item(db.add_batch("share", 1), 1, str(tmp_path / "item"))
+    db.set_item(iid, status="needs_owner")
+    db.upsert_post(iid, "poshmark", status="queued", last_error="needs owner: Poshmark opened a dialog ...")
+    db.add_outbox("-100", 7, "owner_q", iid, text="Poshmark opened a dialog ...")
+    assert pipeline.requeue(s, db, iid) == ["poshmark"]
+    row, it = db.post(iid, "poshmark"), db.item(iid)
+    assert (row["status"], row["last_error"], it["status"]) == ("queued", None, "ready")
+    assert db.outbox_pending() == []                                       # the question is never re-sent
+    assert loads(db.conn.execute("SELECT detail FROM events WHERE kind='requeued'").fetchone()[0])["from"] == \
+        "needs_owner"
+
+    db.set_item(iid, status="needs_owner")                               # queued but not by the poster's question
+    with pytest.raises(ValueError, match="only failed/dryrun rows"):
+        pipeline.requeue(s, db, iid)
+    db.set_item(iid, status="ready")                                     # a plain queued row: nothing to requeue
+    db.upsert_post(iid, "poshmark", status="queued", last_error="needs owner: which brand?")
+    with pytest.raises(ValueError, match="only failed/dryrun rows"):
+        pipeline.requeue(s, db, iid)
 
 
 def test_archive_can_live_next_to_the_inbox(tmp_path):

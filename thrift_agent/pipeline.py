@@ -27,6 +27,7 @@ from thrift_agent.schema import CopyOut, Facts, PriceResult, Render
 MAX_SEGMENT_PHOTOS = 90        # the Messages API takes at most 100 image blocks per request; keep headroom
 ANSWERABLE = ("needs_info", "ready", "failed", "new", "awaiting_price", "needs_owner")   # a note resets these to 'new'
 REQUEUEABLE = ("failed", "dryrun")                      # post statuses `thrift requeue` may send back to the queue
+PARKED = "needs owner: "                                # last_error of a row the poster parked with a question
 PRICEABLE = ("awaiting_price", "needs_info", "ready", "needs_owner")   # item statuses an owner price may be set on
 MANIFEST = "photos.json"                                # per item: which photos are the seller's own vs retail screenshots
 NOT_A_DUPLICATE = re.compile(r"different item|not a duplicate", re.I)   # owner's reply that clears the re-share hold
@@ -359,27 +360,37 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
 def requeue(s: Settings, db: DB, iid: str, marketplace: str | None = None) -> list[str]:
     """Send failed / dry-run post rows back to the queue. Only rows with NO listing URL: a row that reached the
     site (a URL, or 'posting'/'posted'/'drafted') is reconciled against the closet by hand, never re-posted
-    (invariant 4). Returns the marketplaces requeued; raises ValueError with the reason otherwise."""
+    (invariant 4). Returns the marketplaces requeued; raises ValueError with the reason otherwise.
+
+    An item the poster parked in needs_owner (its question came before anything was submitted, so the row is
+    'queued' with a "needs owner:" error) goes back to 'ready' as it is — no reprocessing — and its pending
+    Telegram question is closed: the way to retry after the poster's code changed. `thrift answer` is the way to
+    retry with an answer."""
     it = db.item(iid)
     if it is None:
         raise ValueError(f"unknown item {iid}")
+    parked = it["status"] == "needs_owner"
     rows = [r for r in db.posts_for(iid) if marketplace is None or r["marketplace"] == marketplace]
     if not rows:
         raise ValueError(f"item {iid} has no {marketplace or ''} post rows — nothing to requeue".replace("  ", " "))
     for r in rows:
-        if r["status"] not in REQUEUEABLE:
-            raise ValueError(f"{r['marketplace']}: status is {r['status']} — only failed/dryrun rows can be requeued")
+        waiting = parked and r["status"] == "queued" and (r["last_error"] or "").startswith(PARKED)
+        if r["status"] not in REQUEUEABLE and not waiting:
+            raise ValueError(f"{r['marketplace']}: status is {r['status']} — only failed/dryrun rows (or a poster "
+                             "question) can be requeued")
         if r["url"]:
             raise ValueError(f"{r['marketplace']}: has a listing URL ({r['url']}) — it reached the site; "
                              "check the closet and fix it by hand")
-    if it["status"] not in ("ready", "drafted"):
+    if it["status"] not in ("ready", "drafted", "needs_owner"):
         raise ValueError(f"item {iid} is {it['status']}, not ready — fix the item first (thrift answer)")
     with db.tx():
         for r in rows:
             db.upsert_post(iid, r["marketplace"], status="queued", last_error=None)
         if it["status"] != "ready":
             db.set_item(iid, status="ready")
-        db.log(iid, "requeued", {"marketplaces": [r["marketplace"] for r in rows]})
+        if parked:
+            db.outbox_resolve("owner_q", iid)            # the question is moot: never re-sent after a sleep
+        db.log(iid, "requeued", {"marketplaces": [r["marketplace"] for r in rows], "from": it["status"]})
     return [r["marketplace"] for r in rows]
 
 

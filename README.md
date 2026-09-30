@@ -99,8 +99,10 @@ thrift login --site poshmark | telegram setup|test | harvest | build-style | eva
   the owner can fill `TELEGRAM_CHAT_ID` and `TELEGRAM_ALLOWED_USER_IDS`; `test` sends a test message. See
   "Telegram approval (M3)".
 - **`thrift requeue <item> [marketplace]`** puts an item back in the posting queue — after a failed attempt, a fix,
-  or an owner answer — for one marketplace or all of them. Posting stays idempotent: an item that already has a
-  live URL on a marketplace is never posted there again.
+  or an owner answer — for one marketplace or all of them. It also takes back an item the poster parked with a
+  question (`needs_owner`) as it is, without reprocessing, and closes that question — the way to retry once the poster
+  itself was fixed. Posting stays idempotent: an item that already has a live URL on a marketplace is never posted
+  there again.
 - **`thrift poster --allow-dev-browser`** lets the poster open a browser on the Windows dev machine to work on
   selectors. It stays a dry-run: the dev machine never logs into or touches the shop, and without the flag the dev
   poster does not launch a browser at all.
