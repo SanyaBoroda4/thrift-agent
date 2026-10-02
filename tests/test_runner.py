@@ -518,3 +518,126 @@ def test_run_warns_about_a_left_draft_after_a_question_too(tmp_path, monkeypatch
     monkeypatch.setattr(approve, "ask_owner", lambda *a: None)
     _run(monkeypatch, s, db, StubPoster(question), once=True)
     assert any("a draft was left behind (Drafts 2 → 3) by the dry-run of" in m for m in said)
+
+
+# ---------------------------------------------------------------- WO15: the supervised first publish
+
+def _approved(db: DB, price: int = 85) -> str:
+    iid = _ready_item(db)
+    db.set_item(iid, owner_price=price)
+    return iid
+
+
+def _first(monkeypatch, s, db, poster, iid, confirm="confirm"):
+    monkeypatch.setattr(runner, "posters", lambda s_: {"poshmark": poster})
+    return asyncio.run(runner.publish_first(s, db, iid, confirm=confirm))
+
+
+def test_publish_first_runs_on_the_mac_only(tmp_path, monkeypatch, harness):
+    s = _settings(tmp_path, role="dev")
+    db = DB(s.path("db"))
+    iid = _approved(db)
+    poster = StubPoster(Outcome("posted", url="https://poshmark.com/listing/x"))
+    with pytest.raises(RuntimeError, match="runs on the Mac only"):
+        _first(monkeypatch, s, db, poster, iid)
+    assert poster.calls == [] and db.post(iid, "poshmark") is None
+
+
+@pytest.mark.parametrize("setup,why", [
+    (lambda db, iid: db.set_item(iid, owner_price=None), "no owner-approved price"),
+    (lambda db, iid: db.set_item(iid, owner_price=80), "no owner-approved price"),            # 85 on the listing
+    (lambda db, iid: db.set_item(iid, status="awaiting_price"), "is awaiting_price, not ready"),
+    (lambda db, iid: db.upsert_post(iid, "poshmark", status="posting"), "it reached the site"),
+    (lambda db, iid: db.upsert_post(iid, "poshmark", status="failed", url="https://poshmark.com/listing/x"),
+     "it reached the site"),
+    (lambda db, iid: db.upsert_post(iid, "poshmark", status="failed",
+                                    last_error=runner.UNCONFIRMED + "no address"), "may have gone live"),
+    (lambda db, iid: db.upsert_post(iid, "poshmark", status="failed", last_error="Mismatch"),
+     r"thrift requeue i_\w+` first"),
+])
+def test_publish_first_refuses_what_it_must_not_publish(tmp_path, monkeypatch, harness, setup, why):
+    s = _settings(tmp_path, role="prod", dry_run=True)
+    db = DB(s.path("db"))
+    iid = _approved(db)
+    setup(db, iid)
+    poster = StubPoster(Outcome("posted", url="https://poshmark.com/listing/x"))
+    with pytest.raises(ValueError, match=why):
+        _first(monkeypatch, s, db, poster, iid)
+    assert poster.calls == []
+
+
+def test_publish_first_respects_the_shipping_hold_and_the_hours(tmp_path, monkeypatch, harness):
+    s = _settings(tmp_path, role="prod")
+    db = DB(s.path("db"))
+    iid = _approved(db)
+    poster = StubPoster(Outcome("posted", url="https://poshmark.com/listing/x"))
+    s.flag("HOLD_UNSHIPPED").touch()
+    with pytest.raises(ValueError, match="publish held"):
+        _first(monkeypatch, s, db, poster, iid)
+    s.flag("HOLD_UNSHIPPED").unlink()
+    monkeypatch.setattr(runner, "can_post", lambda s_, hour, day: (False, "outside posting hours"))
+    with pytest.raises(ValueError, match="not now: outside posting hours"):
+        _first(monkeypatch, s, db, poster, iid)
+    assert poster.calls == [] and db.post(iid, "poshmark") is None
+
+
+def test_publish_first_publishes_once_and_records_the_listing(tmp_path, monkeypatch, harness):
+    said, _ = harness
+    s = _settings(tmp_path, role="prod", dry_run=True)                # poster.dry_run is ignored for this call
+    db = DB(s.path("db"))
+    iid = _approved(db)
+    poster = StubPoster(Outcome("posted", url="https://poshmark.com/listing/naturino-6ad", clicked=True))
+    out = _first(monkeypatch, s, db, poster, iid, confirm="the LIST prompt")
+    assert out.status == "posted" and poster.calls == [("i_1", "publish", False)]
+    assert poster.confirm == "the LIST prompt"
+    row = db.post(iid, "poshmark")
+    assert (row["status"], row["mode"], row["url"]) == ("posted", "publish", "https://poshmark.com/listing/naturino-6ad")
+    assert db.item(iid)["status"] == "posted" and any(m.startswith("✅ posted on poshmark") for m in said)
+
+
+def test_publish_first_cancelled_at_the_prompt_goes_back_to_the_queue(tmp_path, monkeypatch, harness):
+    s = _settings(tmp_path, role="prod")
+    db = DB(s.path("db"))
+    iid = _approved(db)
+    poster = StubPoster(Outcome("cancelled", note="not published: LIST wasn't typed"))
+    assert _first(monkeypatch, s, db, poster, iid).status == "cancelled"
+    row = db.post(iid, "poshmark")
+    assert (row["status"], row["url"], row["posted_at"]) == ("queued", None, None)
+    assert db.item(iid)["status"] == "ready"
+
+
+def test_a_publish_that_clicked_but_found_no_listing_is_never_requeued(tmp_path, monkeypatch, harness):
+    from thrift_agent import pipeline
+    said, _ = harness
+    s = _settings(tmp_path, role="prod")
+    db = DB(s.path("db"))
+    iid = _approved(db)
+    poster = StubPoster(Outcome("failed", error="PosterError: after List This Item no listing address", clicked=True))
+    _first(monkeypatch, s, db, poster, iid)
+    row = db.post(iid, "poshmark")
+    assert row["status"] == "failed" and row["last_error"].startswith(runner.UNCONFIRMED) and row["url"] is None
+    assert any("unconfirmed publish: PosterError: after List This Item" in m for m in said)    # the Telegram ping
+    with pytest.raises(ValueError, match="may be live"):
+        pipeline.requeue(s, db, iid)                                       # invariant 4: reconcile by hand
+    with pytest.raises(ValueError, match="may have gone live"):
+        _first(monkeypatch, s, db, poster, iid)
+
+
+def test_the_list_prompt_takes_only_list(monkeypatch):
+    for typed, ok in (("LIST", True), (" LIST ", True), ("list", False), ("", False), ("yes", False)):
+        monkeypatch.setattr("builtins.input", lambda prompt, typed=typed: typed)
+        assert asyncio.run(runner.terminal_confirm(RENDER, "panel")) is ok, typed
+
+
+def test_publish_first_with_chrome_still_held_by_the_poster_service_claims_nothing(tmp_path, monkeypatch, harness):
+    s = _settings(tmp_path, role="prod")
+    db = DB(s.path("db"))
+    iid = _approved(db)
+
+    async def profile_in_use(profile_dir, timezone_id):
+        raise RuntimeError("ProcessSingleton: the profile directory is already in use")
+    monkeypatch.setattr(runner, "open_browser", profile_in_use)
+    poster = StubPoster(Outcome("posted", url="https://poshmark.com/listing/x"))
+    with pytest.raises(RuntimeError, match="services.sh stop"):
+        _first(monkeypatch, s, db, poster, iid)
+    assert poster.calls == [] and db.post(iid, "poshmark") is None          # never left in 'posting'

@@ -364,3 +364,11 @@ def test_the_drafts_are_counted_after_failed_and_parked_dry_runs_but_never_live(
 
     p = Counting(GOOD, [0, 1])
     assert run(p, shots=tmp_path).status == "posted" and p.counts == [0, 1]     # a live post: never counted
+
+
+def test_the_live_check_reads_the_price_exactly():
+    from thrift_agent.post.base import _shows_price
+    assert _shows_price("Naturino sneakers $50 $120", 50) and _shows_price("$ 50.00", 50)
+    assert _shows_price("Size 7 · $1,200", 1200) and _shows_price("$1200", 1200)
+    assert not _shows_price("$500", 50) and not _shows_price("$50.99", 50) and not _shows_price("$5", 50)
+    assert not _shows_price("$50,5", 50) and not _shows_price("50 dollars", 50)

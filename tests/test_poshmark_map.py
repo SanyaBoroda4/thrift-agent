@@ -95,7 +95,7 @@ def test_submit_refuses_while_its_steps_are_unrecorded(mode):
 
 def test_every_unverified_name_is_a_selector_and_the_verified_ones_are_the_forms_hooks():
     assert UNVERIFIED <= set(SEL)
-    assert {"list_item", "listing_url"} <= UNVERIFIED and "draft_saved" in UNVERIFIED
+    assert {"listing_url", "draft_saved", "promote_toggle"} <= UNVERIFIED
     verified = set(SEL) - UNVERIFIED
     assert {"photo_input", "title", "description", "category_open", "department", "category_items",
             "subcategory_items", "size_open", "size_tabs", "size_buttons", "size_done", "condition_open",
@@ -106,7 +106,11 @@ def test_every_unverified_name_is_a_selector_and_the_verified_ones_are_the_forms
     # WO11, from the Mac snapshot: the cover dialog after the upload and Poshmark's modal hook.
     assert {"cover_dialog", "cover_title", "cover_thumbs", "cover_selected", "cover_crop", "cover_apply",
             "any_dialog"} <= verified
-    assert "crop_dialog" not in SEL and {"photo_thumbs", "leave"} <= UNVERIFIED
+    assert "crop_dialog" not in SEL
+    # WO15, from the Mac's form and review stages (2026-10-02): the photo tiles, Cancel's dialog, the Share Listing
+    # panel, its ‹ Back and List This Item.
+    assert {"photo_thumbs", "leave", "share_panel", "review_back", "list_item", "share_connect",
+            "closet_links"} <= verified
 
 
 def test_condition_codes_are_poshmarks():
@@ -187,3 +191,17 @@ def test_pick_reads_a_list_again_when_it_changed_under_it(after):
     lst = _List(full, [["", "Denim", "Denim"]], after)
     handle, options = asyncio.run(PoshmarkPoster("closet")._pick(_Page(), lst, "Denim"))
     assert handle.row == ["", "Denim", "Denim"] and lst.reads == 2 and options == ["Denim"]
+
+
+def test_the_read_back_matches_what_the_live_form_showed():
+    """The Mac's form stage (2026-10-02): every closed dropdown's text exactly as the live form read back."""
+    from thrift_agent.post.base import compare
+    r = render(department="Kids", category="Shoes", subcategory="Sneakers", size="EU 24 / US Toddler 7.5",
+               kids_gender="unisex", colors=["Pink", "Green"], condition="good", brand="Naturino", price=50,
+               photos=[f"{i:02d}.jpg" for i in range(6)])
+    seen = {"title": "t", "description": "d", "brand": "Naturino", "price": "50", "original_price": "0", "sku": "i_1",
+            "photos": 6, "category": "Kids Shoes", "subcategory": "Sneakers", "size": "7.5 (Toddler Girl)",
+            "condition": "Good", "colors": "Pink Green", "smart_sell": "off"}
+    assert compare(seen, PoshmarkPoster("closet").expected(r)) == {}
+    assert compare({**seen, "category": "Women Shoes"}, PoshmarkPoster("closet").expected(r)) != {}
+    assert compare({**seen, "size": "7.5 (Toddler Boy)"}, PoshmarkPoster("closet").expected(r)) != {}

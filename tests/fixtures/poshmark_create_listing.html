@@ -34,14 +34,23 @@
     as a draft?") with "Discard Changes" [data-et-name=discard] and "Save Draft" [data-et-name=save_draft], then
     "Saved" / Ok; the Drafts panel [data-et-name=draftsSection]; hidden modals elsewhere on the page.
 
-  GUESSES for what is still UNVERIFIED (keep in step with post/poshmark.py): the photo tiles after Apply, the text a
-  closed dropdown shows, the brand suggestions' markup, that Cancel opens the "Save Draft" dialog, the page after Next
-  with an Edit button and "List This Item".
+  After Next (Mac dry-run, 2026-10-02): the form stays where it is and a "Share Listing" panel slides up over it, on a
+  backdrop that takes every click meant for the form: "‹ Back", "Share your listing to your networks…", the cover and
+  title, a "Promote My Closet" toggle (Off), Pinterest a[data-et-name=pn_v2_connect] and Facebook
+  a[data-et-name=fb_connect] "Connect Now", and button[data-et-name=list] "List This Item".
+
+  GUESSES for what is still UNVERIFIED (keep in step with post/poshmark.py): the brand suggestions' markup, that Cancel
+  opens the "Save Draft" dialog, the markup of "‹ Back" and of the Promote toggle, what happens after List This Item
+  (a redirect to the new listing; variants: it stays, or an error).
 
   window.__FIXTURE (set by the test) switches variants: lastDept, smartSell, noCoverDialog, slowCover, coverNoApply,
   coverSecondSelected, strangeDialog, priceBug, noLeaveDialog, categoryLinks, conditionLabel, leaveDraft,
   sizeAutoClose (the size menu closes itself on a pick, no Done: Kids shoes on the Mac), sizeStuck (neither),
-  sizeFieldLabel (what the size field shows after an auto-close).
+  sizeFieldLabel (what the size field shows after an auto-close), promoteOn, promoteText (the toggle without a
+  checkbox: only its "Off"/"On" text), listStays, listError, listAlert (a native alert after List), listTwice (two
+  listings come of one click), skuOnListing (the listing page shows the SKU).
+  The page reports to the test site: POST /api/list-click on each List This Item, GET /api/created?title=&price= for
+  the listing it creates.
   The Drafts count lives in localStorage, so a reopened create page shows what the last one left.
   window.__events records what the page registered.
 -->
@@ -316,10 +325,32 @@
   </div>
 </main>
 
-<div id="review" class="hidden">
-  <h2>Review your listing</h2>
-  <button type="button" id="review-edit">Edit</button>
-  <button type="button" id="list-it" data-et-name="list_item">List This Item</button>
+<div class="share-backdrop hidden" id="share-backdrop"
+     style="position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 20;"></div>
+<div data-test="modal-container" class="modal simple-modal share-listing hidden" id="share-panel"
+     style="top: auto; bottom: 0; left: 0; right: 0; z-index: 30;">
+  <div class="share-listing__header">
+    <a class="share-listing__back" id="share-back">&lsaquo; Back</a>
+    <div class="share-listing__title">Share Listing</div>  <!-- not a heading on the Mac; the item's title is -->
+  </div>
+  <p>Share your listing to your networks to increase exposure and boost sales!</p>
+  <div class="share-listing__item"><img alt="cover" id="share-cover"><h4 id="share-item-title"></h4></div>
+  <div class="share-listing__row">
+    <h4>Promote My Closet</h4>
+    <div data-test="toggle"><label data-test="toggle-switch" class="toggle__switch">
+      <input type="checkbox" data-test="toggle-input" class="toggle__switch__input" id="promote">
+      <div class="toggle__switch__slider">Off</div>
+    </label></div>
+  </div>
+  <div class="share-listing__row"><h4>Pinterest</h4><a data-et-name="pn_v2_connect" id="pn-connect">Connect Now</a></div>
+  <div class="share-listing__row"><h4>Facebook</h4><a data-et-name="fb_connect" id="fb-connect">Connect Now</a></div>
+  <button data-et-name="list" class="btn btn--primary btn--large btn--wide" id="list-it">List This Item</button>
+</div>
+<div data-test="modal-container" class="modal simple-modal hidden" id="listed-modal">
+  <h5 data-test="modal-title" class="modal__title">Listed!</h5><p>Your listing is live.</p>
+</div>
+<div data-test="modal-container" class="modal simple-modal hidden" id="list-error-modal">
+  <h5 data-test="modal-title" class="modal__title">Something went wrong</h5><p>Please try again.</p>
 </div>
 
 <div>
@@ -462,7 +493,10 @@
     cat = name;
     touch();
     show($('#category-menu'), false);
-    label($('#category-selector'), `${TREE[dept].name} / ${name}`);     // UNVERIFIED guess of the breadcrumb
+    $('#category-selector').innerHTML = '';                            // reads "Kids Shoes" (Mac, 2026-10-02)
+    $('#category-selector').appendChild(make('span', {}, TREE[dept].name));
+    $('#category-selector').appendChild(document.createTextNode(' '));
+    $('#category-selector').appendChild(make('span', {}, name));
     events.push(`category:${TREE[dept].name}/${name}`);
     const subMenu = $('#subcategory-menu');
     label($('#subcategory-selector'), 'Select Subcategory (optional)');
@@ -604,7 +638,7 @@
   $('#color-selector').addEventListener('click', () => show($('#color-menu'), !isOpen($('#color-menu'))));
   $('#color-apply').addEventListener('click', () => {
     show($('#color-menu'), false);
-    label($('#color-selector'), chosenColors.length ? chosenColors.join(', ') : 'Select up to 2 colors');
+    label($('#color-selector'), chosenColors.length ? chosenColors.join(' ') : 'Select up to 2 colors');   // "Pink Green"
     for (const c of chosenColors) events.push(`color:${c}`);
     touch();
   });
@@ -662,10 +696,37 @@
     events.push(opening ? 'show-details' : 'hide-details');
   });
 
-  // ---- Next, the page after it, publishing (UNVERIFIED guess) ----
-  $('#next').addEventListener('click', () => { events.push('next'); show($('#form'), false); show($('#review')); });
-  $('#review-edit').addEventListener('click', () => { events.push('back'); show($('#review'), false); show($('#form')); });
-  $('#list-it').addEventListener('click', () => { events.push('publish'); location.href = '/listing/published-123'; });
+  // ---- Next: the "Share Listing" panel slides up over the form (the form stays, behind a backdrop) ----
+  $('#next').addEventListener('click', () => {
+    events.push('next');
+    $('#share-item-title').textContent = $('[data-vv-name="title"]').value;
+    if ($('#promote')) $('#promote').checked = !!cfg.promoteOn;
+    $('#share-panel .toggle__switch__slider').textContent = cfg.promoteOn ? 'On' : 'Off';
+    later(() => { show($('#share-backdrop')); show($('#share-panel')); });
+  });
+  $('#share-back').addEventListener('click', () => {
+    events.push('back');
+    later(() => { show($('#share-panel'), false); show($('#share-backdrop'), false); });   // it slides down
+  });
+  if (cfg.promoteText) $('#promote').remove();
+  else $('#promote').addEventListener('change', () => events.push('promote'));
+  $('#pn-connect').addEventListener('click', () => events.push('connect:pinterest'));
+  $('#fb-connect').addEventListener('click', () => events.push('connect:facebook'));
+  $('#list-it').addEventListener('click', async () => {
+    events.push('list');
+    await fetch('/api/list-click', {method: 'POST'});
+    if (cfg.listError) { show($('#list-error-modal')); return; }
+    if (cfg.listAlert) alert('Your listing is being processed');
+    const title = $('[data-vv-name="title"]').value;
+    const price = $('[data-vv-name="listingPrice"]').value.replace('$', '');
+    const sku = cfg.skuOnListing ? $('[data-vv-name="sku"]').value : '';
+    const create = () => fetch('/api/created?title=' + encodeURIComponent(title) + '&price=' + encodeURIComponent(price)
+                               + '&sku=' + encodeURIComponent(sku));
+    if (cfg.listTwice) await create();
+    const created = await (await create()).json();
+    if (cfg.listStays) { show($('#share-panel'), false); show($('#share-backdrop'), false); show($('#listed-modal')); return; }
+    location.href = '/listing/' + created.slug;
+  });
 
   // ---- leaving: the form's Cancel -> "Save Draft" dialog (the opening is UNVERIFIED) ----
   $('#form-cancel').addEventListener('click', ev => {

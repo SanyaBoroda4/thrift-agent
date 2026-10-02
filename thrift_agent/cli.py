@@ -240,10 +240,28 @@ def poster(once: bool = False, dry_run: bool = False,
            stage: str = typer.Option(None, "--stage",
                                      help="Dry-run stage for this run: 'form' (fill, read back, Discard) or 'review' "
                                           "(also press Next and record the page after it). Default: "
-                                          "poster.dry_run_stage. Never publishes.")) -> None:
+                                          "poster.dry_run_stage. Never publishes."),
+           publish_first: str = typer.Option(None, "--publish-first", metavar="ITEM",
+                                             help="Publish this one item, supervised: on the Mac, at the owner-"
+                                                  "approved price, after you type LIST in this terminal. Ignores "
+                                                  "poster.dry_run for this call; stop the poster service first.")
+           ) -> None:
     """Run the Chrome poster (the poster service on the Mac)."""
-    from thrift_agent.post.runner import dry_run_stage, run as run_poster
+    from thrift_agent.post.runner import dry_run_stage, publish_first as run_publish_first, run as run_poster
     s = settings()
+    if publish_first:
+        from thrift_agent.post.base import PosterError
+        if s.is_prod:
+            notify.check(s)
+        try:
+            out = asyncio.run(run_publish_first(s, _db(), publish_first))
+        except (ValueError, RuntimeError, PosterError) as e:
+            print(f"[red]not published[/] {publish_first}: {e}")
+            raise typer.Exit(1) from None
+        print(f"{out.status}: {out.url or out.error or out.note or ''}")
+        if out.status == "failed":
+            raise typer.Exit(1)
+        return
     try:
         stage = dry_run_stage(s, stage)
     except ValueError as e:

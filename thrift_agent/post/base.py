@@ -45,6 +45,10 @@ class NeedsOwner(PosterError):
         self.draft_left: str | None = None     # set by a dry-run's drafts check (Poster.post)
 
 
+class Cancelled(PosterError):
+    """The owner declined at the last prompt of a supervised publish (didn't type LIST): nothing was submitted."""
+
+
 class Mismatch(PosterError):
     """The form on screen differs from the approved Render. Carries the diff so it is recorded."""
 
@@ -55,13 +59,14 @@ class Mismatch(PosterError):
 
 @dataclass
 class Outcome:
-    status: Literal["posted", "drafted", "dryrun", "failed"]
+    status: Literal["posted", "drafted", "dryrun", "failed", "cancelled"]
     url: str | None = None
     screenshot: str | None = None
     diff: dict = field(default_factory=dict)
     error: str | None = None
     note: str | None = None      # remarks for the owner: a tag left out, the review page recorded, Discard unconfirmed
     draft_left: str | None = None  # "a draft was left behind (Drafts 0 → 1)": a dry-run that should have left none
+    clicked: bool = False        # the final publish/draft control was pressed: the listing may be live
 
 
 async def open_browser(profile_dir: Path, timezone_id: str) -> tuple[object, BrowserContext]:
@@ -143,6 +148,12 @@ def compare(seen: dict, expected: dict) -> dict:
     return diff
 
 
+def _shows_price(text: str, price: int) -> bool:
+    """The price as a listing page shows it: "$50", "$ 50", "$50.00", "$1,200" — not "$500" or "$50.99" for 50."""
+    amount = "|".join(re.escape(a) for a in {str(price), f"{price:,}"})
+    return re.search(rf"\$\s?(?:{amount})(?:\.00)?(?!\d|[.,]\d)", text) is not None
+
+
 async def keep_evidence(page: Page | None, shot: Path, record: dict | None = None) -> None:
     """The page as it is, next to each other in failed/shots: <shot>.png (full page), <shot>.html (the DOM, so a
     selector can be recorded from the file instead of another run) and, when given, <shot>.json (what was read back,
@@ -173,6 +184,10 @@ class Poster(ABC):
     create_url: str
     notes: list[str]            # remarks the adapter collects while filling one item (reset by post())
     counts_drafts = False       # the adapter reads the site's draft count on the create page (drafts())
+    # Set by post() to None ("don't know"). An adapter that tracks it sets False when submit() starts and True right
+    # before the click that can't be undone; until then the form can still be left through discard().
+    clicked: bool | None = None
+    shot: Path | None = None    # this post's evidence path (<sku>-<site>-<time>.png): adapters add files next to it
 
     @abstractmethod
     async def check_account(self, page: Page) -> None: ...
@@ -235,6 +250,10 @@ class Poster(ABC):
             return left, left
         return None, None
 
+    def _may_be_live(self, submitted: bool) -> bool:
+        """Once submit() started the listing may be live — unless the adapter says its final click hasn't happened."""
+        return submitted and self.clicked is not False
+
     async def _discard_quietly(self, page: Page | None) -> str | None:
         if page is None:
             return None
@@ -244,11 +263,14 @@ class Poster(ABC):
             return f"could not discard the form ({type(e).__name__}: {e})"
 
     async def verify_live(self, page: Page, url: str, r: Render) -> None:
+        """The live listing shows the title (its first 40 characters) and the price."""
         await page.goto(url)
         await page.wait_for_load_state("domcontentloaded")
         body = _norm(await page.inner_text("body"))
         if _norm(r.title)[:40] not in body:
             raise PosterError(f"live page at {url} doesn't show the title")
+        if not _shows_price(body, r.price):
+            raise PosterError(f"live page at {url} doesn't show the price ${r.price}")
 
     async def post(self, ctx: BrowserContext, r: Render, mode: Mode, dry_run: bool, shots: Path,
                    stage: Stage = "form") -> Outcome:
@@ -265,6 +287,7 @@ class Poster(ABC):
         """
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         shot = shots / f"{r.sku}-{self.name}-{stamp}.png"
+        self.shot, self.clicked = shot, None
         page: Page | None = None
         opened = submitted = kept = False
         count_drafts = dry_run and self.counts_drafts      # a dry-run must leave no draft: counted before and after
@@ -297,19 +320,24 @@ class Poster(ABC):
                 return Outcome("dryrun", screenshot=str(shot), note=_joined(self.notes + [note]), draft_left=left)
             submitted = True
             url = await self.submit(page, mode)
+            clicked = self._may_be_live(submitted)
             if mode != "publish":
-                return Outcome("drafted", url=url, screenshot=str(shot))
+                return Outcome("drafted", url=url, screenshot=str(shot), clicked=clicked)
             if not url:
                 raise PosterError("published but no listing URL captured")
             try:
                 await self.verify_live(page, url, r)
             except Exception as e:  # noqa: BLE001 — the listing IS live: keep its URL, never re-post it
-                return Outcome("failed", url=url, screenshot=str(shot),
+                return Outcome("failed", url=url, screenshot=str(shot), clicked=clicked,
                                error=f"published but the live check failed ({type(e).__name__}: {e}) — check {url}")
-            return Outcome("posted", url=url, screenshot=str(shot))
+            return Outcome("posted", url=url, screenshot=str(shot), clicked=clicked)
         except AccountBlocked:
             await keep_evidence(page, shot)     # and nothing else: stop, don't touch a blocked account
             raise
+        except Cancelled as e:
+            await keep_evidence(page, shot)
+            left = await self._discard_quietly(page) if opened and not self._may_be_live(submitted) else None
+            return Outcome("cancelled", screenshot=str(shot), note=_joined(self.notes + [str(e), left]))
         except NeedsOwner as e:
             await keep_evidence(page, shot)
             e.screenshot = str(shot)
@@ -322,13 +350,13 @@ class Poster(ABC):
             if not kept:
                 await keep_evidence(page, shot)
             left, draft_left, draft_note = None, None, None
-            if opened and not submitted:
+            if opened and not self._may_be_live(submitted):
                 left = await self._discard_quietly(page)
                 if count_drafts:
                     draft_left, draft_note = await self._left_behind(ctx, drafts_before)
             return Outcome("failed", screenshot=str(shot), error=f"{type(e).__name__}: {e}",
                            diff=getattr(e, "diff", {}), note=_joined(self.notes + [left, draft_note]),
-                           draft_left=draft_left)
+                           draft_left=draft_left, clicked=self._may_be_live(submitted))
         finally:
             if page:
                 try:

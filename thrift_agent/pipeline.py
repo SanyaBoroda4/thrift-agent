@@ -382,6 +382,9 @@ def requeue(s: Settings, db: DB, iid: str, marketplace: str | None = None) -> li
         if r["url"]:
             raise ValueError(f"{r['marketplace']}: has a listing URL ({r['url']}) — it reached the site; "
                              "check the closet and fix it by hand")
+        if (r["last_error"] or "").startswith("unconfirmed publish: "):
+            raise ValueError(f"{r['marketplace']}: List This Item was pressed and no listing address was found — it "
+                             "may be live; check the closet and fix it by hand")
     if it["status"] not in ("ready", "drafted", "needs_owner"):
         raise ValueError(f"item {iid} is {it['status']}, not ready — fix the item first (thrift answer)")
     with db.tx():

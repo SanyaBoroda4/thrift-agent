@@ -16,29 +16,35 @@ category, subcategory, size, condition, brand, colors, style tags, the Listing P
 details"). read_back() reads every field back, including the text each closed dropdown shows, and Poster.post() diffs
 it against expected() before anything else happens. Any other dialog after the upload fails the item with the evidence.
 
-UNVERIFIED (record on the Mac from the dry-run evidence in failed/shots, see reports/2026-09-30_11_*.md):
-  photo_thumbs                  the form's photo tiles once the cover dialog is applied (not in the 2026-09-30
-                                snapshot; the dialog's own tiles are verified: cover_thumbs)
-  leave                         that the form's Cancel link opens the "Save Draft" dialog (both are in the snapshot)
-  review_back, list_item,       the page after Next and its way back, the final publish button, the address after
-  listing_url, draft_saved      publishing, where Save Draft lands
+After Next (the Mac's review stage, 2026-10-02) the URL stays /create-listing and a "Share Listing" panel slides up
+over the form: "‹ Back", the cover and title, a "Promote My Closet" toggle (Off; never touched), Pinterest and Facebook
+"Connect Now" (never clicked) and button[data-et-name=list] "List This Item".
+
+UNVERIFIED (record on the Mac from the evidence in failed/shots):
+  promote_toggle                the markup of the Promote My Closet toggle (asserted off before List; an unreadable
+                                one stops the publish before the click)
+  listing_url, draft_saved      the address after List This Item, where Save Draft lands
   captcha                       the wording of Poshmark's bot check
   size_choice(): the Baby tab's labels, kids clothing tabs, Plus sizes.
-submit() refuses to publish or save a draft while a step it needs is UNVERIFIED: dry-runs only until then.
+submit() refuses to save a draft, and to publish unsupervised, while a step it needs is UNVERIFIED. The supervised first
+publish (`thrift poster --publish-first <item>`) sets `confirm`: the owner types LIST at the Share Listing panel, List
+This Item is pressed exactly once, and everything after the click is recorded.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urljoin
 
 from playwright.async_api import ElementHandle, Locator, Page
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
-from thrift_agent.post.base import (AccountBlocked, Contains, Mode, NeedsOwner, Poster, PosterError, human_type,
-                                    settle)
+from thrift_agent.post.base import (AccountBlocked, Cancelled, Contains, Mode, NeedsOwner, Poster, PosterError,
+                                    human_type, keep_evidence, settle)
 from thrift_agent.schema import Render
 
 # The condition menu's labels (verified). Poshmark has no "new without tags": unworn goes up as Like New, and
@@ -121,7 +127,6 @@ def size_choice(r: Render) -> SizeChoice | None:
 
 
 _DONE = re.compile(r"^\s*done\s*$", re.I)
-_BACK = re.compile(r"^\s*(back|edit|cancel)\s*$", re.I)
 _DROPDOWN = 'xpath=ancestor-or-self::*[@data-test="dropdown"][1]'     # Poshmark's dropdown component
 _COVER = '.image-edit-modal [data-test="modal-container"]:visible'  # the "Select a Covershot." dialog, when open
 
@@ -175,17 +180,24 @@ SEL = {
     "cover_crop": lambda d: d.locator(".croppie-container"),
     "cover_apply": lambda d: d.locator('[data-test="modal-footer"] button[data-et-name="apply"]'),
     "any_dialog": lambda p: p.locator('[data-test="modal-container"]:visible, [role="dialog"]:visible'),
-    # ---- UNVERIFIED: see the module docstring ----
+    # The form's photo tiles: 6 for 6 photos in the Mac's form stage (2026-10-02).
     "photo_thumbs": lambda p: p.locator('#imagePlaceholder img:visible, img[src^="blob:"]:visible'),
-    "leave": lambda p: p.locator('a[data-et-name="discard"]:visible'),          # the form's Cancel link
-    "review_back": lambda p: p.get_by_role("button", name=_BACK).or_(p.get_by_role("link", name=_BACK)),
-    "list_item": lambda p: p.get_by_role("button", name=re.compile(r"^\s*list( this item)?\s*$", re.I)),
+    "leave": lambda p: p.locator('a[data-et-name="discard"]:visible'),     # Cancel: opens "Save Draft" (Mac, 10-02)
+    # The "Share Listing" panel after Next (the Mac's review stage, 2026-10-02).
+    "share_panel": lambda p: p.locator('[data-test="modal-container"]:visible, [role="dialog"]:visible, '
+                                       '.modal:visible').filter(has_text=re.compile("Share Listing")),
+    "review_back": lambda p: SEL["share_panel"](p).get_by_text(re.compile(r"^\s*\u2039?\s*Back\s*$")),
+    "list_item": lambda p: SEL["share_panel"](p).locator('button[data-et-name="list"]'),
+    "share_connect": lambda p: p.locator('a[data-et-name="pn_v2_connect"], a[data-et-name="fb_connect"]'),  # never
+    "closet_links": lambda p: p.locator('a[href*="/listing/"]'),
+    # ---- UNVERIFIED: see the module docstring ----
+    "promote_toggle": lambda panel: panel.locator('input[type="checkbox"]'),
     "listing_url": re.compile(r"/listing/"),       # a value, not a locator: the address bar once the item is live
     "draft_saved": re.compile(r"/closet/|/listing/"),
     "captcha": lambda p: p.get_by_text(re.compile("captcha|verify you are human", re.I)),
 }
-UNVERIFIED = frozenset({"photo_thumbs", "leave", "review_back", "list_item", "listing_url", "draft_saved", "captcha"})
-PUBLISH_NEEDS = frozenset({"list_item", "listing_url"})      # submit() goes live only once these are recorded
+UNVERIFIED = frozenset({"promote_toggle", "listing_url", "draft_saved", "captcha"})
+PUBLISH_NEEDS = frozenset({"list_item", "listing_url"})      # submit() goes live unsupervised only once recorded
 DRAFT_NEEDS = frozenset({"draft_saved"})
 
 THUMB_TIMEOUT_MS = 90_000        # 16 photos over home Wi-Fi can take a while
@@ -194,6 +206,8 @@ MENU_TIMEOUT_MS = 8_000          # a menu or dialog to open; a list to show the 
 SUGGEST_TIMEOUT_MS = 8_000       # brand suggestions after typing
 TAG_TIMEOUT_MS = 3_000           # a curated style tag to be offered
 LEAVE_TIMEOUT_MS = 5_000          # the link that leaves the form; then the leave dialog to show
+AFTER_LIST_MS = 45_000           # after List This Item: the listing's address to show up
+LEFT_FORM_MS = 3_000             # ... or, once the page has left the form for something else, this long to settle
 POLL_MS = 250
 ROOT_TEXT_MAX = 300              # a dropdown "root" showing more text than this holds more than one field
 
@@ -201,6 +215,9 @@ ROOT_TEXT_MAX = 300              # a dropdown "root" showing more text than this
 _ITEM_JS = """e => [e.id || '', (e.innerText || e.textContent || '').trim(),
     ['title', 'aria-label', 'data-et-name'].map(a => e.getAttribute(a) || '').join('|')]"""
 _ITEMS_JS = f"els => els.map({_ITEM_JS})"
+# The closet's listing links: [href, the text a title can be in (the link's text, its title, its images' alt)].
+_LINKS_JS = """els => els.map(e => [e.getAttribute('href') || '', [e.innerText || '', e.getAttribute('title') || '',
+    ...[...e.querySelectorAll('img')].map(i => i.alt || '')].join(' ')])"""
 # The page after Next, for the review stage: what is on it, not what to click.
 _RECORD_JS = """() => {
   const shown = e => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
@@ -267,6 +284,10 @@ class PoshmarkPoster(Poster):
         self.notes: list[str] = []
         self._roots: dict[str, ElementHandle | None] = {}   # dropdown -> the element that shows its choice
         self._state: dict = {}                             # what fill() saw for read_back: thumbnails, Smart Sell
+        self._render: Render | None = None
+        self._closet_before: set[str] = set()              # the closet's listing links before this post
+        # The supervised first publish: an async (render, panel text) -> bool, True only when the owner typed LIST.
+        self.confirm = None
 
     @property
     def create_url(self) -> str:
@@ -281,6 +302,8 @@ class PoshmarkPoster(Poster):
             raise AccountBlocked("CAPTCHA shown — solve it by hand in the poster window")
         if await SEL["restricted_banner"](page).count():
             raise AccountBlocked("Poshmark account is restricted (unshipped/cancelled orders)")
+        # What the closet lists now, so a new listing can be told from an older one with the same title.
+        self._closet_before = {href for href, _ in await SEL["closet_links"](page).evaluate_all(_LINKS_JS)}
 
     async def drafts(self, page: Page) -> int | None:
         """The count in the create page's Drafts panel ("Drafts 0"), or None when it can't be read."""
@@ -295,7 +318,7 @@ class PoshmarkPoster(Poster):
     # ---------------------------------------------------------------- fill
 
     async def fill(self, page: Page, r: Render) -> None:
-        self._roots, self._state = {}, {}
+        self._roots, self._state, self._render = {}, {}, r
         await self._photos(page, r)
         await _type(SEL["title"](page), r.title)
         await settle(page)
@@ -686,9 +709,11 @@ class PoshmarkPoster(Poster):
 
     async def discard(self, page: Page) -> str | None:
         """Leave through the form's Cancel link and its "Save Draft" dialog ("Do you want to save this listing as a
-        draft?"), pressing "Discard Changes", so no draft is left behind. Both are in the 2026-09-30 snapshot; that the
-        link opens the dialog is UNVERIFIED (SEL["leave"]): anything short of a Discard click is reported."""
+        draft?"), pressing "Discard Changes", so no draft is left behind (the Mac's form stage, 2026-10-02). A Share
+        Listing panel still open (a review, a cancelled publish) is closed first: its backdrop takes every click meant
+        for the form. Anything short of a Discard click is reported."""
         try:
+            await self._close_share_panel(page)
             button = SEL["discard"](page).first
             if not await button.is_visible():          # the review stage may have opened the dialog already
                 await SEL["leave"](page).first.click(timeout=LEAVE_TIMEOUT_MS)
@@ -700,39 +725,176 @@ class PoshmarkPoster(Poster):
         return None
 
     async def review(self, page: Page, r: Render, shots: Path) -> str | None:
-        """Dry-run stage "review": press Next, record the page after it (a screenshot and <item>-review.json with its
-        buttons, tracked links, headings and labels), then come back. Only Next and a Back/Edit/Cancel control are
-        clicked here: never the final publish button."""
+        """Dry-run stage "review": press Next, record the Share Listing panel that slides up (a screenshot, the page's
+        HTML and <item>-review.json with its buttons, tracked links, headings and labels), then ‹ Back. Only Next and
+        ‹ Back are clicked here: never List This Item, never Promote My Closet or Connect Now."""
         await SEL["next"](page).click()
-        await page.wait_for_load_state("domcontentloaded")
+        panel = SEL["share_panel"](page)
+        try:
+            await panel.first.wait_for(state="visible", timeout=MENU_TIMEOUT_MS)
+        except PlaywrightTimeout:
+            pass                                       # recorded as it is; discard() still tries to leave
         await settle(page, 1.5, 2.5)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         await page.screenshot(path=str(shots / f"{r.sku}-{self.name}-{stamp}-review.png"), full_page=True)
+        (shots / f"{r.sku}-review.html").write_text(await page.content(), encoding="utf-8")
         out = shots / f"{r.sku}-review.json"
         out.write_text(json.dumps(await page.evaluate(_RECORD_JS), indent=1), encoding="utf-8")
-        back = SEL["review_back"](page)
         try:
-            if await back.count():
-                await back.first.click(timeout=LEAVE_TIMEOUT_MS)
-            else:
-                await page.go_back(timeout=LEAVE_TIMEOUT_MS * 2)
-            await page.wait_for_load_state("domcontentloaded")
+            await self._close_share_panel(page)
         except Exception as e:  # noqa: BLE001 — the record is written; discard() still tries to leave cleanly
-            return f"review page recorded in {out.name}; could not go back ({type(e).__name__})"
+            return f"review page recorded in {out.name}; could not close the Share Listing panel ({type(e).__name__})"
         await settle(page, 0.5, 1)
         return f"review page recorded in {out.name}"
 
+    async def _close_share_panel(self, page: Page) -> None:
+        """‹ Back on the Share Listing panel, then wait until it has slid away. Nothing to do when none is open."""
+        panel = SEL["share_panel"](page)
+        if not await panel.count():
+            return
+        await SEL["review_back"](page).first.click(timeout=LEAVE_TIMEOUT_MS)
+        await panel.first.wait_for(state="hidden", timeout=LEAVE_TIMEOUT_MS)
+
+    async def _check_share_panel(self, page: Page, r: Render) -> str:
+        """Before List This Item: the panel shows this item's title and Promote My Closet is off (never touched). An
+        unreadable toggle stops here, before anything is published. Returns the panel's text."""
+        panel = SEL["share_panel"](page).first
+        text = re.sub(r"\s+", " ", await panel.inner_text()).strip()
+        if _key(r.title)[:40] not in _key(text):
+            raise PosterError("the Share Listing panel doesn't show this item's title")
+        toggle = SEL["promote_toggle"](panel)
+        n = await toggle.count()
+        if n > 1:
+            raise PosterError(f"the Share Listing panel has {n} toggles: can't tell which is Promote My Closet")
+        if n == 1 and await toggle.is_checked():
+            raise PosterError("Promote My Closet is on in the Share Listing panel; it must stay off")
+        if n == 0 and not re.search(r"promote my closet off\b", _key(text)):
+            raise PosterError("can't tell whether Promote My Closet is off in the Share Listing panel")
+        return text
+
     async def submit(self, page: Page, mode: Mode) -> str | None:
+        self.clicked = False                           # until the click that can't be undone, the form can be left
         needs = PUBLISH_NEEDS if mode == "publish" else DRAFT_NEEDS
-        if missing := sorted(needs & UNVERIFIED):
+        missing = sorted(needs & UNVERIFIED)
+        if missing and not (mode == "publish" and self.confirm is not None):
             raise PosterError(f"the {mode} step is not recorded yet ({', '.join(missing)} UNVERIFIED in "
-                              "post/poshmark.py); keep poster.dry_run on until it is")
+                              "post/poshmark.py); keep poster.dry_run on until it is"
+                              + (" (or `thrift poster --publish-first <item>`, supervised)" if mode == "publish" else ""))
         if mode == "draft":
+            self.clicked = True
             await SEL["save_draft"](page).first.click()
             await page.wait_for_url(SEL["draft_saved"], timeout=60_000)
             return None
+        return await self._publish(page)
+
+    async def _publish(self, page: Page) -> str:
+        """Next, the Share Listing panel checked, the owner's LIST (supervised), List This Item pressed exactly once,
+        then everything after the click recorded and the new listing's address found."""
+        r = self._render
         await SEL["next"](page).click()
-        await settle(page, 1, 2)
-        await SEL["list_item"](page).click()
-        await page.wait_for_url(SEL["listing_url"], timeout=60_000)
-        return page.url.split("?")[0]
+        await self._wait(SEL["share_panel"](page), "the Share Listing panel")
+        text = await self._check_share_panel(page, r)
+        button = SEL["list_item"](page)
+        if (n := await button.count()) != 1 or _key(await button.first.inner_text()) != "list this item":
+            raise PosterError(f"the Share Listing panel's List This Item differs from the recording ({n} found)")
+        if self.confirm is not None and not await self.confirm(r, text):
+            raise Cancelled("not published: LIST wasn't typed")
+        before, navigations, native = page.url, [], []
+
+        def on_navigated(frame) -> None:
+            if frame == page.main_frame:
+                navigations.append(frame.url)
+
+        async def on_dialog(dialog) -> None:           # what Playwright does by default (dismiss), but recorded
+            native.append({"type": dialog.type, "message": dialog.message[:300]})
+            await dialog.dismiss()
+        page.on("framenavigated", on_navigated)
+        page.on("dialog", on_dialog)
+        self.clicked = True
+        click_error = None
+        try:
+            await button.first.click()                 # exactly once, whatever happens next
+        except Exception as e:  # noqa: BLE001 — it may still have gone through: watch, record, never click again
+            click_error = f"{type(e).__name__}: {(str(e).strip().splitlines() or [''])[0][:200]}"
+        return await self._after_list(page, r, before, navigations, native, click_error)
+
+    def _evidence(self, name: str) -> Path:
+        shot = self.shot or Path(f"{self._render.sku}-{self.name}.png")
+        return shot.with_name(f"{shot.stem}-{name}.png")
+
+    async def _after_list(self, page: Page, r: Render, before: str, navigations: list[str], native: list[dict],
+                          click_error: str | None) -> str:
+        """Watch the page after List This Item (its address, the dialogs it shows), keep it all as evidence
+        (<shot>-after-list.png/.html/.json), and return the listing's address: the one the page went to, else the one
+        new closet listing with this title. Nothing is clicked here. No address found fails the item; it may be live."""
+        waited, left_at, dialogs = 0, None, []
+        while waited < AFTER_LIST_MS and not SEL["listing_url"].search(page.url) and not page.is_closed():
+            try:
+                for text in await SEL["any_dialog"](page).all_inner_texts():
+                    text = re.sub(r"\s+", " ", text).strip()[:300]
+                    if text and text not in dialogs:
+                        dialogs.append(text)
+            except Exception:  # noqa: BLE001 — the page is navigating: look again next time
+                pass
+            if "/create-listing" not in page.url:      # it left the form, for something that isn't a listing
+                left_at = waited if left_at is None else left_at
+                if waited - left_at >= LEFT_FORM_MS:
+                    break
+            await asyncio.sleep(THUMB_POLL_MS / 1000)
+            waited += THUMB_POLL_MS
+        record = {"url_before": before, "url_after": page.url, "click_error": click_error, "navigations": navigations,
+                  "dialogs": dialogs, "native_dialogs": native, "waited_ms": waited}
+        try:
+            record["page"] = await page.evaluate(_RECORD_JS)
+        except Exception:  # noqa: BLE001
+            pass
+        await keep_evidence(page, self._evidence("after-list"), record)
+        if SEL["listing_url"].search(page.url):
+            return page.url.split("?")[0].split("#")[0]
+        url, closet = await self._find_in_closet(page.context, r)
+        self._evidence("closet").with_suffix(".json").write_text(json.dumps(closet, indent=1), encoding="utf-8")
+        if url:
+            return url
+        clicked = f"the click raised {click_error}; " if click_error else ""
+        raise PosterError(f"after List This Item no listing address: {clicked}the page is at {page.url}, and the "
+                          f"closet has {len(closet['new'])} new listing(s) with this title. It may be live: check the "
+                          "closet")
+
+    async def _find_in_closet(self, ctx, r: Render) -> tuple[str | None, dict]:
+        """The listing in the closet that carries this title and wasn't there before (check_account); when several
+        do, the one whose page carries our SKU. The SKU is a private field: whether its page shows it to the owner is
+        recorded (sku_seen), not relied on for a single match."""
+        page = await ctx.new_page()
+        skus: dict[str, bool | None] = {}
+        try:
+            await page.goto(f"{self.base_url}/closet/{self.username}")
+            await page.wait_for_load_state("domcontentloaded")
+            try:
+                await SEL["closet_links"](page).first.wait_for(state="attached", timeout=MENU_TIMEOUT_MS)
+            except PlaywrightTimeout:
+                pass
+            rows = await SEL["closet_links"](page).evaluate_all(_LINKS_JS)
+            want = _key(r.title)[:40]
+            titled = list(dict.fromkeys(href for href, text in rows if href and want in _key(text)))
+            new = [href for href in titled if href not in self._closet_before]
+            for href in new[:3]:                       # read only: open each candidate, look for the SKU
+                try:
+                    await page.goto(urljoin(self.base_url + "/", href))
+                    await page.wait_for_load_state("domcontentloaded")
+                    skus[href] = r.sku in await page.content()
+                except Exception:  # noqa: BLE001
+                    skus[href] = None
+        finally:
+            await page.close()
+        record = {"title_matches": titled, "new": new, "sku_seen": skus,
+                  "closet_links_before": len(self._closet_before)}
+        pick = new if len(new) == 1 else [href for href in new if skus.get(href)]
+        if len(pick) == 1:
+            return urljoin(self.base_url + "/", pick[0]).split("?")[0], record
+        return None, record
+
+    async def verify_live(self, page: Page, url: str, r: Render) -> None:
+        """The base check (title and price), plus whether the page carries the SKU (recorded: owner's view only?)."""
+        await super().verify_live(page, url, r)
+        record = {"url": url, "title": True, "price": True, "sku_on_page": r.sku in await page.content()}
+        self._evidence("live").with_suffix(".json").write_text(json.dumps(record, indent=1), encoding="utf-8")

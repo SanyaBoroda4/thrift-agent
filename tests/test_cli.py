@@ -270,3 +270,41 @@ def test_price_answer_confirm_announce_to_the_group(monkeypatch, tmp_path):
     assert db.outbox_lookup("-100", 12)["resolved_at"]
     assert [t.split(":")[0] for t in said] == [iid, iid, "batch b_1"]
     assert "$85" in said[0] and "worn twice" in said[1] and "(ok)" in said[2]
+
+
+def test_poster_publish_first_runs_the_supervised_publish(monkeypatch):
+    from typer.testing import CliRunner
+    import thrift_agent.post.runner as runner
+    from thrift_agent.post.base import Outcome
+    seen = {}
+
+    async def fake_publish_first(s, db, iid):
+        seen["iid"] = iid
+        return Outcome("posted", url="https://poshmark.com/listing/x")
+
+    async def no_loop(*a, **k):
+        raise AssertionError("the poster loop must not run")
+    monkeypatch.setattr(runner, "publish_first", fake_publish_first)
+    monkeypatch.setattr(runner, "run", no_loop)
+    monkeypatch.setattr(cli, "_db", lambda: object())
+    r = CliRunner().invoke(cli.app, ["poster", "--publish-first", "i_261002_abc123"])
+    assert r.exit_code == 0, r.output
+    assert seen == {"iid": "i_261002_abc123"} and "posted: https://poshmark.com/listing/x" in r.output
+
+
+def test_poster_publish_first_says_why_it_refused_and_exits_1(monkeypatch):
+    from typer.testing import CliRunner
+    import thrift_agent.post.runner as runner
+    from thrift_agent.post.base import Outcome
+
+    async def refused(s, db, iid):
+        raise ValueError(f"item {iid} has no owner-approved price (approve it in Telegram or `thrift price`)")
+
+    async def failed(s, db, iid):
+        return Outcome("failed", error="unconfirmed publish: PosterError: after List This Item no listing address")
+    monkeypatch.setattr(cli, "_db", lambda: object())
+    for fake, says in ((refused, "has no owner-approved price"), (failed, "failed: unconfirmed publish")):
+        monkeypatch.setattr(runner, "publish_first", fake)
+        r = CliRunner().invoke(cli.app, ["poster", "--publish-first", "i_261002_abc123"])
+        assert r.exit_code == 1 and says in " ".join(r.output.split()), r.output
+        assert "Traceback" not in r.output

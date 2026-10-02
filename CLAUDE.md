@@ -51,6 +51,8 @@ Item statuses: `new` → `awaiting_price` | `needs_info` → `ready` → `postin
    An LLM fallback (Playwright MCP) may *fill* a form when a selector breaks; code still verifies and submits.
 4. **Idempotent posting.** Row → `posting` before the form opens. A `posting` row after a crash is never
    retried automatically; reconcile against the closet first. One item ID posts once per marketplace, ever.
+   - A publish that pressed List This Item but found no listing address is `failed` with `last_error`
+     "unconfirmed publish: …" — it may be live. `thrift requeue` and `--publish-first` refuse it; check the closet.
 5. **Stop, don't guess.** Logged out / CAPTCHA / restricted account → write `PAUSE`, ping, exit. Unknown modal
    → fail the item with a screenshot. Never solve CAPTCHAs, never type credentials.
 6. **Human pacing, human hours.** `schedule` limits; no sharing/following/offers/relisting from this code.
@@ -101,13 +103,23 @@ Item statuses: `new` → `awaiting_price` | `needs_info` → `ready` → `postin
   but one field: an Original Price left empty reads back as **"0"**. The diff now treats "", "0", "0.00" and no price as
   one for `original_price` only (a planned 120 against 0 still fails). Every other read-back — the photo count and the
   category, size, condition and colour texts — passed on the live form; their exact texts are in that run's JSON.
-- **UNVERIFIED:** the form's photo tiles once the cover dialog is applied; the text a closed dropdown shows once a
-  choice is made (category breadcrumb, condition, colours) and the size field for adult sizes; which size menus
-  wait for Done; the brand suggestions' markup;
-  that the form's Cancel opens the "Save Draft" dialog; the page after Next and its final publish button; where Save
-  Draft lands; the CAPTCHA wording; the Baby-tab size labels, kids clothing and Plus size tabs; the Men/Home category
-  lists; all of Depop. Record them from the dry-run evidence in `failed/shots/` (`.png`/`.html`/`.json` per run,
-  `<item>-review.json`) or with `playwright codegen --channel chrome https://poshmark.com/create-listing` on the Mac.
+- Mac form + review stages (2026-10-02, WO15). Form: every read-back matched with these exact texts — photos **6**
+  (`photo_thumbs`), category **"Kids Shoes"**, subcategory **"Sneakers"**, size **"7.5 (Toddler Girl)"** (size menu
+  "closed by itself"), condition **"Good"**, colours **"Pink Green"**, Smart Sell off — and it left through Cancel →
+  "Save Draft" → Discard Changes (`leave`). Review: Next keeps the URL `/create-listing` and slides up a **"Share
+  Listing" panel** over the form, behind a backdrop (`share_panel`: a `[role=dialog]`/`.modal` with that text):
+  "‹ Back" (`review_back`, text — not a button or a tracked link), the cover and the full title (an h-heading, cut
+  with CSS ellipsis), "Promote My Closet" with an Off toggle, Pinterest / Facebook "Connect Now"
+  (`a[data-et-name=pn_v2_connect|fb_connect]`, never clicked) and **List This Item** `button[data-et-name=list]`
+  (`list_item`). None of the panel is in the DOM before Next. The old back-out (a Back/Edit/Cancel role, else browser
+  Back) timed out under the backdrop; it is now ‹ Back → the panel gone → Cancel → Discard Changes.
+- **UNVERIFIED:** the Promote My Closet toggle's markup (`promote_toggle`: one checkbox → must be unchecked; none →
+  the panel must read "Promote My Closet Off"; anything else stops before List); the page after List This Item and
+  the listing's address (`listing_url`) — the supervised first publish records them; where Save Draft lands
+  (`draft_saved`); the size field and Done for adult sizes; the CAPTCHA wording; the Baby-tab size labels, kids
+  clothing and Plus size tabs; the Men/Home category lists; all of Depop. Record them from the evidence in
+  `failed/shots/` (`.png`/`.html`/`.json` per run, `<item>-review.json`, `…-after-list.*`) or with
+  `playwright codegen --channel chrome https://poshmark.com/create-listing` on the Mac.
 
 ## Seller data (private)
 Seller-specific data — brand price tiers, real listing examples, sales findings, account notes, the closet username —
@@ -118,11 +130,18 @@ Without `private/`, the code falls back to `config/*.example.yaml` and `data/sty
 ## Commands
 `thrift init | run | process <dir> | confirm <batch> <cmd> | answer <item> "<note>" | price <item> <amount>`
 `thrift requeue <item> [marketplace] | status | show <item> | poster [--once] [--dry-run] [--stage form|review]
-[--allow-dev-browser]`
+[--publish-first <item>] [--allow-dev-browser]`
 `thrift login --site poshmark | telegram setup|test | harvest | build-style | eval`
 `thrift requeue` also takes back an item the poster parked in `needs_owner` as it is (no reprocessing, the question
 closed) — the retry after a poster fix. `confirm`, `answer` and `price` are the CLI twins of the Telegram replies;
 `telegram setup` prints the chat/user ids seen in recent updates, `telegram test` sends a test message.
+`poster --publish-first <item>` is the supervised first publish: on the Mac only (poster service stopped), one
+`ready` item at its owner-approved price, `poster.dry_run` ignored for this one call. It fills, reads back and diffs,
+checks the Share Listing panel (our title, Promote My Closet off), asks "Type LIST to publish" in the terminal, presses
+List This Item exactly once, records everything after the click (`<shot>-after-list.png/.html/.json`), finds the
+listing's address (the redirect, else the one new closet listing with this title; several → the one showing our
+SKU, else none), checks the live page (title, price) and records the post `posted` with the URL. Anything unrecognized after the click: never clicked again, `failed` with
+the evidence, a Telegram ping. Never retried automatically; autopublish stays off.
 `--allow-dev-browser` lets the poster open a browser on the dev machine for selector work; it stays dry-run and
 never logs into or touches the shop. `--stage` overrides `poster.dry_run_stage` for one run: `form` (fill, read back,
 evidence, Discard) or `review` (also Next, record the page after it to `failed/shots/<item>-review.json`, back out,
@@ -198,8 +217,11 @@ The owner shares retailer screenshots (product page with price, style name, colo
   code; curated tags, the SKU behind "show details", Cancel → "Save Draft" dialog → "Discard Changes" recorded.
   Done (WO12): 3:4 cover; style tags only from the 130 curated; the Drafts count checked after every dry-run
   (the create page reopened in a fresh tab; `[data-et-name=draftsSection]`).
-  Left: record the UNVERIFIED items from the next Mac dry-runs (see "What's verified vs not"), then take them out of
-  `UNVERIFIED` to enable drafts and publishing; a week of dry-runs.
+  Done (WO13–WO14): a size menu that closes itself; an empty Original Price reading back "0".
+  Done (WO15): the Share Listing panel after Next recorded; the review back-out fixed (‹ Back → Cancel → Discard);
+  `thrift poster --publish-first <item>`, the supervised first publish.
+  Left: the first supervised publish on the Mac, then pin `listing_url` (and the toggle) from its after-list evidence;
+  where Save Draft lands (`draft_saved`); a week of dry-runs. Autopublish stays off until then.
 - **M3 Telegram approval flow — done (v1):** long polling in the worker, one approval message per item
   ([Approve $P] [Change], questions folded in), `needs_owner` for the poster's own questions, re-send of pending
   messages after sleep. Nothing left code-wise; the owner creates the bot with @BotFather and fills

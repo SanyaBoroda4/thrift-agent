@@ -93,7 +93,7 @@ to the previous commit).
 ```
 thrift init | run | process <dir> | confirm <batch> <cmd> | answer <item> "<note>" | price <item> <amount>
 thrift requeue <item> [marketplace] | status | show <item>
-thrift poster [--once] [--dry-run] [--stage form|review] [--allow-dev-browser]
+thrift poster [--once] [--dry-run] [--stage form|review] [--publish-first <item>] [--allow-dev-browser]
 thrift login --site poshmark | telegram setup|test | harvest | build-style | eval
 ```
 - **`thrift price <item> <amount>`** approves an item's price from the command line — the same effect as replying
@@ -112,6 +112,8 @@ thrift login --site poshmark | telegram setup|test | harvest | build-style | eva
   poster does not launch a browser at all.
 - **`thrift poster --stage form|review`** picks the dry-run stage for this run (default `poster.dry_run_stage`,
   `form`). See "Poshmark poster (M2)".
+- **`thrift poster --publish-first <item>`** — the supervised first publish of one item on the Mac. See "Poshmark
+  poster (M2)".
 - **`HOLD_UNSHIPPED`** is a flag file in `paths.control` (set by the shipping watchdog or by hand). It blocks
   *publish* only: drafts and dry-runs keep running, so the queue is ready the moment the late order ships. `PAUSE`
   in the same folder stops the poster entirely.
@@ -128,7 +130,8 @@ menu (tabs, `size-<label>` buttons, Done), condition labels, brand suggestions, 
 Listing Price dialog (listing and original price, Smart Sell, Shipping Discount, Done), SKU, Next / Save Draft /
 Discard. The first Mac dry-run's page snapshot (2026-09-30) added the cover dialog after the upload, Poshmark's
 dropdown component, the condition items' codes, the curated style tags, the SKU behind "show details" and the Cancel
-link's "Save Draft" dialog. Every locator lives in `SEL`; the ones not verified yet are listed in `UNVERIFIED` and in
+link's "Save Draft" dialog; the Mac's review stage (2026-10-02) the "Share Listing" panel after Next. Every
+locator lives in `SEL`; the ones not verified yet are listed in `UNVERIFIED` and in
 the module docstring.
 
 - **Fill order:** photos, title, description, category, subcategory, size, condition, brand, colours, style tags,
@@ -155,15 +158,31 @@ the module docstring.
   then leave through the form's **Cancel** and the "Save Draft" dialog's **Discard Changes**, so no draft is left
   behind. Every dry-run also counts Poshmark's Drafts before the form and again on a freshly opened create page
   after it: a higher count means a draft was left behind, which is a Telegram warning and a note on the dry-run.
-  `review`: also press
-  **Next**, screenshot the page after it and record its buttons and labels to `failed/shots/<item>-review.json`, back
-  out, Discard. No dry-run ever presses the final publish button.
+  `review`: also press **Next** — the **Share Listing** panel slides up over the form (‹ Back, the cover and title,
+  Promote My Closet, Pinterest / Facebook Connect Now, **List This Item**) — screenshot it, save its HTML
+  (`<item>-review.html`) and record its buttons and labels to `failed/shots/<item>-review.json`, then **‹ Back**, wait
+  for the panel to slide away, Cancel, Discard Changes. No dry-run ever presses List This Item.
 - **Evidence** for every dry-run and failure in `failed/shots/`: `<item>-poshmark-<time>.png` (full page), `.html`
   (the DOM, to record selectors from) and `.json` (what was read back, what was expected, the diff). The HTML can
   contain account details: keep it on the Mac, never in the public repo.
-- **No publishing yet.** Publishing and saving drafts refuse to run ("not recorded yet") until the page after Next,
-  its publish button and where Save Draft lands are recorded; until then only dry-runs run, whatever
-  `poster.dry_run` says.
+- **Publishing: supervised only.** The poster service still refuses to publish or save drafts ("not recorded yet")
+  until the listing's address after List This Item and where Save Draft lands are recorded. The first publish is
+  supervised, one item, on the Mac:
+
+  ```bash
+  thrift poster --publish-first <item>
+  ```
+
+  It runs only on prod (stop the poster service first), only for a `ready` item whose price the owner approved, and
+  ignores `poster.dry_run` for this one call. It fills the form, reads back and diffs as usual, presses Next, checks the
+  Share Listing panel (it shows our title; Promote My Closet is off and never touched; Connect Now is never clicked),
+  then asks **"Type LIST to publish"** in the terminal — anything else cancels, discards the form and puts the item
+  back in the queue. After LIST it presses **List This Item exactly once** and records everything after the click
+  (`failed/shots/<item>-poshmark-<time>-after-list.png/.html/.json`: URL before/after, navigations, dialogs, buttons).
+  The listing's address comes from the redirect, else from the closet (the one listing with this title that wasn't
+  there before; when several are, the one whose page shows our SKU — never a guess). The live page must show the title and the price; then the post is `posted` with the URL. If anything
+  after the click is unrecognized, nothing is clicked again: the post is `failed` with "unconfirmed publish: …" and the
+  evidence, Telegram is pinged, and `thrift requeue` refuses it until the closet is checked by hand.
 
 ## iPhone Shortcut — "New item"
 Same Apple ID as the Mac, iCloud Drive on, folders `iCloud Drive/Posh/inbox`. Finished shares are moved to
@@ -244,7 +263,7 @@ Where the project is going, and the design decisions already made for each step.
   condition, because historic condition labels are unreliable.
 - **A laptop that is closed most of the day.** Everything queues and catches up when the Mac opens; listing
   hours are set to cover when it is usually open.
-- **Milestones:** M0 eval → M1 prompt tuning → M2 Poshmark poster (form structure verified 2026-09-29; the first
-  Mac dry-runs record the rest, then drafts and publishing) → M3 Telegram
+- **Milestones:** M0 eval → M1 prompt tuning → M2 Poshmark poster (form structure verified 2026-09-29; the Mac
+  dry-runs recorded the rest up to the Share Listing panel; next the supervised first publish) → M3 Telegram
   approval flow (implemented: long polling, one message per item) → M4 Airtable + n8n + My Sales sync → M5 Depop
   → M6 sold-comps pricing.

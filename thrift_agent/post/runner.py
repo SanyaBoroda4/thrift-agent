@@ -9,7 +9,7 @@ from pathlib import Path
 from thrift_agent import approve, notify
 from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
-from thrift_agent.post.base import STAGES, AccountBlocked, NeedsOwner, Poster, open_browser
+from thrift_agent.post.base import STAGES, AccountBlocked, NeedsOwner, Outcome, Poster, open_browser
 from thrift_agent.post.depop import DepopPoster
 from thrift_agent.post.poshmark import PoshmarkPoster
 from thrift_agent.scheduler import can_post, next_gap, windows
@@ -20,6 +20,9 @@ DEV_BROWSER_MSG = ("machine_role is 'dev': the dev machine never touches the sho
                    "Chrome, visits the create-listing page and uploads photos. Pass --allow-dev-browser to do that on "
                    "purpose; it stays a dry-run.")
 HOLD_REASON = "unshipped orders — publish held (drafts and dry-runs still run)"
+# last_error of a failed post whose final click (List This Item) happened but whose listing URL wasn't found: the
+# listing may be live, so nothing re-posts it — not the poster, not `thrift requeue` (invariant 4).
+UNCONFIRMED = "unconfirmed publish: "
 
 
 def posters(s: Settings) -> dict[str, Poster]:
@@ -84,6 +87,113 @@ def _warn_draft(mp: str, iid: str, left: str | None) -> None:
     if left:
         notify.say(f"\u26a0\ufe0f {mp}: {left} by the dry-run of {iid}. Delete it in the closet's Drafts; the "
                    "leave step (Cancel \u2192 Discard Changes) needs a look.")
+
+
+def record_outcome(db: DB, iid: str, mp: str, render: Render, out: Outcome, marketplaces: list[str],
+                   stage: str = "form") -> None:
+    """The post row, the event, the owner's message and the item's status for one Outcome.
+
+    posted_at = when this row last hit the site. A dry-run fills the real form (uploads included), so it gets a stamp
+    too and counts against the pacing caps in posted_since(). A cancelled supervised publish never reached the site:
+    the row goes back to 'queued'. A failed publish after the final click without a URL is "unconfirmed": the listing
+    may be live, so `thrift requeue` refuses it until the closet is checked by hand (invariant 4)."""
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    error = out.error
+    if out.status == "failed" and out.clicked and not out.url:
+        error = UNCONFIRMED + (error or "")
+    status = "queued" if out.status == "cancelled" else out.status
+    db.upsert_post(iid, mp, status=status, url=out.url, last_error=error if out.status != "cancelled" else out.note,
+                   posted_at=stamp if out.status in ("posted", "drafted", "dryrun") else None)
+    db.log(iid, f"post_{out.status}", {"mp": mp, "url": out.url, "error": error, "shot": out.screenshot,
+                                       "note": out.note, "draft_left": out.draft_left, "clicked": out.clicked})
+    _warn_draft(mp, iid, out.draft_left)
+    note = f"\n{out.note}" if out.note else ""
+    if out.status == "failed":
+        notify.photo(Path(out.screenshot or ""), f"❌ {mp} failed ({iid}): {render.title}\n{error}{note}")
+    elif out.status == "dryrun":
+        notify.photo(Path(out.screenshot or ""),
+                     f"🧪 dry-run {mp} ({stage}): {render.title} — ${render.price}{note}")
+    elif out.status == "cancelled":
+        notify.say(f"↩️ not published on {mp} ({iid}): {render.title}{note}")
+    else:
+        notify.say(f"✅ {out.status} on {mp}: {render.title} — ${render.price}\n{out.url or ''}")
+
+    # The item is done once every enabled marketplace holds it; 'drafted' until all of them went live.
+    statuses = [(db.post(iid, m) or {"status": ""})["status"] for m in marketplaces]
+    if all(st in ("posted", "drafted") for st in statuses):
+        db.set_item(iid, status="posted" if all(st == "posted" for st in statuses) else "drafted")
+
+
+async def terminal_confirm(r: Render, panel: str) -> bool:
+    """The supervised publish's last step: the Share Listing panel is open in the Chrome window, the owner types LIST."""
+    print(f"\nReady to list on Poshmark: {r.title}\n  ${r.price} · {r.size or 'no size'} · {r.condition} "
+          f"· SKU {r.sku}\n  The Share Listing panel is open in the Chrome window; Promote My Closet is off.")
+    answer = await asyncio.to_thread(input, "Type LIST to publish (anything else cancels): ")
+    return answer.strip() == "LIST"
+
+
+async def publish_first(s: Settings, db: DB, iid: str, confirm=terminal_confirm) -> Outcome:
+    """The supervised first publish (WO15): this one item on Poshmark, on prod, at the owner-approved price, with the
+    owner typing LIST at the Share Listing panel. poster.dry_run is ignored for this one call; autopublish stays off.
+    Fills, reads back and diffs as usual, presses List This Item exactly once, records everything after the click,
+    finds and checks the listing, records the post. Never retried automatically."""
+    if not s.is_prod:
+        raise RuntimeError("the supervised publish runs on the Mac only (machine_role: prod); the dev machine never "
+                           "touches the shop")
+    it = db.item(iid)
+    if it is None:
+        raise ValueError(f"unknown item {iid}")
+    if it["status"] != "ready":
+        raise ValueError(f"item {iid} is {it['status']}, not ready")
+    renders = loads(it["renders"]) or {}
+    if "poshmark" not in renders:
+        raise ValueError(f"item {iid} has no Poshmark listing")
+    render = Render.model_validate(renders["poshmark"])
+    if not it["owner_price"] or render.price != int(it["owner_price"]):
+        raise ValueError(f"item {iid} has no owner-approved price (approve it in Telegram or `thrift price`)")
+    row = db.post(iid, "poshmark")
+    if row and (row["status"] in ("posted", "posting", "drafted") or row["url"]):
+        raise ValueError(f"poshmark: status {row['status']}{' with ' + row['url'] if row['url'] else ''} — it reached "
+                         "the site: check the closet, never post it twice")
+    if row and (row["last_error"] or "").startswith(UNCONFIRMED):
+        raise ValueError("poshmark: an earlier List This Item may have gone live — check the closet by hand")
+    if row and row["status"] == "failed":
+        raise ValueError(f"poshmark: the last attempt failed — `thrift requeue {iid}` first (it checks that nothing "
+                         "reached the site)")
+    if s.flag_set("HOLD_UNSHIPPED"):
+        raise ValueError(HOLD_REASON)
+    hour_ago, midnight = windows(tz=s["schedule"]["timezone"])
+    ok, why = can_post(s, db.posted_since(hour_ago), db.posted_since(midnight))
+    if not ok:
+        raise ValueError(f"not now: {why}")
+    poster = posters(s).get("poshmark")
+    if poster is None:
+        raise ValueError("marketplaces.poshmark is not enabled")
+    poster.confirm = confirm
+    try:
+        pw, ctx = await open_browser(s.path("chrome_profile"), s["schedule"]["timezone"])
+    except Exception as e:  # noqa: BLE001 — nothing was claimed or touched yet
+        raise RuntimeError(f"Chrome didn't open ({type(e).__name__}) — is the poster service still running? Stop it "
+                           "first: bash deploy/services.sh stop") from e
+    try:
+        if not db.claim_post(iid, "poshmark", "publish"):     # 'posting' before the form opens (invariant 4)
+            raise ValueError(f"poshmark: could not claim {iid} (another poster has it?)")
+        try:
+            out = await poster.post(ctx, render, "publish", False, s.path("failed") / "shots")
+        except AccountBlocked as e:
+            db.upsert_post(iid, "poshmark", status="queued", last_error=str(e))
+            _halt(s, str(e), f"⛔ Poster paused: {e}\nFix it in the poster Chrome window, then delete the PAUSE file.")
+            raise
+        except NeedsOwner as e:
+            db.upsert_post(iid, "poshmark", status="queued", last_error=f"needs owner: {e.question}")
+            db.set_item(iid, status="needs_owner")
+            approve.ask_owner(s, db, iid, e.question)
+            raise
+    finally:
+        await ctx.close()
+        await pw.stop()
+    record_outcome(db, iid, "poshmark", render, out, ["poshmark"])
+    return out
 
 
 def _halt(s: Settings, reason: str, text: str) -> None:
@@ -164,26 +274,7 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, 
                 _halt(s, err, f"⛔ Poster paused: {mp} raised before the form ({err}).\nFix it, then delete the PAUSE file.")
                 return
 
-            # posted_at = when this row last hit the site. A dry-run fills the real form (uploads included),
-            # so it gets a stamp too and counts against the pacing caps in posted_since().
-            stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
-            db.upsert_post(iid, mp, status=out.status, url=out.url, last_error=out.error,
-                           posted_at=stamp if out.status in ("posted", "drafted", "dryrun") else None)
-            db.log(iid, f"post_{out.status}", {"mp": mp, "url": out.url, "error": out.error, "shot": out.screenshot,
-                                               "note": out.note, "draft_left": out.draft_left})
-            _warn_draft(mp, iid, out.draft_left)
-            note = f"\n{out.note}" if out.note else ""
-            if out.status == "failed":
-                notify.photo(Path(out.screenshot or ""), f"❌ {mp} failed ({iid}): {render.title}\n{out.error}{note}")
-            elif out.status == "dryrun":
-                notify.photo(Path(out.screenshot or ""), f"🧪 dry-run {mp} ({stage}): {render.title} — ${render.price}{note}")
-            else:
-                notify.say(f"✅ {out.status} on {mp}: {render.title} — ${render.price}\n{out.url or ''}")
-
-            # The item is done once every enabled marketplace holds it; 'drafted' until all of them went live.
-            statuses = [(db.post(iid, m) or {"status": ""})["status"] for m in ps]
-            if all(st in ("posted", "drafted") for st in statuses):
-                db.set_item(iid, status="posted" if all(st == "posted" for st in statuses) else "drafted")
+            record_outcome(db, iid, mp, render, out, list(ps), stage)
 
             # Circuit breaker: N failures in a row means the form, the account or the network changed, not
             # the items. Every further attempt is 16 uploads of noise on the account, so stop and ask.
