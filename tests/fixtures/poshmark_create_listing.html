@@ -39,7 +39,9 @@
   with an Edit button and "List This Item".
 
   window.__FIXTURE (set by the test) switches variants: lastDept, smartSell, noCoverDialog, slowCover, coverNoApply,
-  coverSecondSelected, strangeDialog, priceBug, noLeaveDialog, categoryLinks, conditionLabel, leaveDraft.
+  coverSecondSelected, strangeDialog, priceBug, noLeaveDialog, categoryLinks, conditionLabel, leaveDraft,
+  sizeAutoClose (the size menu closes itself on a pick, no Done: Kids shoes on the Mac), sizeStuck (neither),
+  sizeFieldLabel (what the size field shows after an auto-close).
   The Drafts count lives in localStorage, so a reopened create page shows what the last one left.
   window.__events records what the page registered.
 -->
@@ -504,6 +506,12 @@
         box.querySelectorAll('button').forEach(x => x.classList.remove('selected'));
         b.classList.add('selected');
         chosenSize = s;
+        if (cfg.sizeAutoClose) later(() => {                          // Kids shoes on the Mac: no Done to press
+          show($('#size-menu'), false);
+          label($('[data-test="size"]'), cfg.sizeFieldLabel || s);
+          events.push(`size:${s}`);
+          touch();
+        });
       });
       box.appendChild(b);
     }
@@ -522,6 +530,7 @@
       tabs.appendChild(li);
     }
     show($('#size-system'), !!menu.system);
+    show($('#size-apply'), !cfg.sizeAutoClose && !cfg.sizeStuck);
     renderSizeTab(menu, Object.keys(menu.tabs)[0]);
     show(menuEl);
   });

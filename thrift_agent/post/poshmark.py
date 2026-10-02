@@ -448,10 +448,29 @@ class PoshmarkPoster(Poster):
                                  "Which size should I pick? (reply e.g. 'size 8')")
             raise PosterError(f"size '{choice.button}' is not in {where}{_offer(sizes, 30)}; this size list is not "
                               "recorded yet")
-        done = SEL["size_done"](page)
-        await self._wait(done, "the size menu's Done button")
-        await done.first.click()
+        await self._confirm_size(page, choice)
         await settle(page, 0.3, 0.8)
+
+    async def _confirm_size(self, page: Page, choice: SizeChoice) -> None:
+        """After the pick, Poshmark's size menu either waits for Done (the inspection, 2026-09-29) or closes by itself
+        with the size on the form's size field (Kids shoes, Mac dry-run #2, 2026-10-01). Either is fine, for any size;
+        anything else fails the item (Poster.post keeps the screenshot and the page)."""
+        done, field, sizes = SEL["size_done"](page), SEL["size_open"](page), SEL["size_buttons"](page)
+        waited = 0
+        while True:
+            if await done.count():                     # (b) Done to press
+                await done.first.click()
+                self._state["size_menu"] = "Done"
+                return
+            shown = re.sub(r"\s+", " ", await field.inner_text()).strip() if await field.count() else ""
+            if not await sizes.count() and Contains(choice.button).matches(shown):
+                self._state["size_menu"] = "closed by itself"   # (a) the menu closed with the size on the form
+                return
+            if waited >= MENU_TIMEOUT_MS:
+                raise PosterError(f"after picking '{choice.button}' the size menu neither showed Done nor closed with "
+                                  f"that size on the form (the size field shows '{shown}')")
+            await page.wait_for_timeout(POLL_MS)
+            waited += POLL_MS
 
     async def _condition(self, page: Page, r: Render) -> None:
         """Clicked by Poshmark's code, then checked by the label the item shows over its description."""
@@ -644,6 +663,7 @@ class PoshmarkPoster(Poster):
             "smart_sell": self._state.get("smart_sell"),         # asserted off while the dialog was open
             "price_dialog": self._state.get("price_dialog"),     # recorded only, not diffed
             "cover_dialog": self._state.get("cover_dialog"),     # recorded only: None when Poshmark showed none
+            "size_menu": self._state.get("size_menu"),           # recorded only: "Done" | "closed by itself"
         }
 
     def expected(self, r: Render) -> dict:

@@ -139,6 +139,9 @@ the module docstring.
   Poshmark's default crop (never touches the frame, the slider or rotate), presses **Apply**, waits for it to close
   and for every photo to show. A dialog that differs from the recording, or any other dialog, fails the item with a
   screenshot and the page.
+- **The size menu** may wait for **Done** or close by itself when a size is picked (Kids shoes do, seen on the Mac).
+  Either is fine as long as the form's size field then shows the size; anything else fails the item with the
+  evidence.
 - **Poshmark's labels.** Condition, picked by Poshmark's code: NWT = "New With Tags (NWT)" (`nwt`), NWOT and like new
   = "Like New" (`uln`), excellent and good = "Good" (`ug`), fair = "Fair" (`uf`). Brand: the exact
   (case-insensitive) suggestion, else the owner is asked. Colours: the 15-colour palette's tiles. Style tags: only

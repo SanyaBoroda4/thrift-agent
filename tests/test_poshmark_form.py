@@ -448,3 +448,43 @@ def test_no_leave_dialog_is_reported_not_hidden(chrome, posh, photos, tmp_path, 
     out, site = post(chrome, posh, render(photos), tmp_path / "shots", noLeaveDialog=True)
     assert out.status == "dryrun" and "without Poshmark's Discard dialog" in out.note
     assert "check the closet's drafts" in out.note
+
+
+# ---------------------------------------------------------------- WO13: a size menu that closes itself
+
+KIDS_TODDLER = dict(department="Kids", category="Shoes", subcategory="Sneakers", size="EU 24 / US Toddler 7.5",
+                    kids_gender="unisex", brand="Nike", title="Nike Pink Sneakers", colors=["Pink"], condition="good",
+                    original_price=None)
+
+
+@pytest.mark.parametrize("variant,menu", [({}, "Done"), (dict(sizeAutoClose=True), "closed by itself")])
+@pytest.mark.parametrize("kw,button", [
+    (KIDS_TODDLER, "7.5 (Toddler Girl)"),                                     # Mac dry-run #2: no Done, it closed
+    (dict(), "7.5"),                                                          # Women's shoes
+    (dict(category="Tops", subcategory="Blouses", size="M"), "M"),
+])
+def test_the_size_menu_may_wait_for_done_or_close_by_itself(chrome, posh, photos, variant, menu, kw, button):
+    r = render(photos, **kw)
+    seen, events = fill_and_read(chrome, posh, r, steps=["_category", "_size"], **variant)
+    assert diff_on(seen, r, posh, "size") == {} and seen["size"] == button and seen["size_menu"] == menu
+    assert f"size:{button}" in events
+
+
+@pytest.mark.parametrize("variant,shown", [
+    (dict(sizeStuck=True), "Select Size"),                                   # neither Done nor closing
+    (dict(sizeAutoClose=True, sizeFieldLabel="7"), "7"),                     # closed, with another size on the form
+])
+def test_a_size_menu_that_does_neither_fails_with_the_evidence(chrome, posh, photos, monkeypatch, variant, shown):
+    err, _ = fill_expecting(chrome, posh, render(photos), PosterError, steps=["_category", "_size"],
+                            monkeypatch=monkeypatch, **variant)
+    assert not isinstance(err, NeedsOwner)
+    assert str(err) == ("after picking '7.5' the size menu neither showed Done nor closed with that size on the form "
+                        f"(the size field shows '{shown}')")
+
+
+def test_the_mac_kids_dry_run_gets_past_a_self_closing_size_menu(chrome, posh, photos, tmp_path):
+    out, site = post(chrome, posh, render(photos, **KIDS_TODDLER), tmp_path / "shots", sizeAutoClose=True)
+    assert out.status == "dryrun" and out.draft_left is None, out
+    record = json.loads(Path(out.screenshot).with_suffix(".json").read_text(encoding="utf-8"))
+    assert record["diff"] == {} and record["seen"]["size"] == "7.5 (Toddler Girl)"
+    assert record["seen"]["size_menu"] == "closed by itself"

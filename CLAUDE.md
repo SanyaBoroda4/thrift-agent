@@ -91,8 +91,14 @@ Item statuses: `new` → `awaiting_price` | `needs_info` → `ready` → `postin
   Draft" dialog ("Do you want to save this listing as a draft?": "Discard Changes" `[data-et-name=discard]` / "Save
   Draft" `[data-et-name=save_draft]`, then "Saved" / Ok); the Drafts panel `[data-et-name=draftsSection]` with its
   count.
+- Seen in Mac dry-run #2 (2026-10-01, WO13): photos, the cover dialog (Apply), title, description and Kids > Shoes >
+  Sneakers all went through; the Kids shoe size menu **closes itself** when a size is picked (no Done) and the size
+  field `[data-test=size]` then reads the label, e.g. "7.5 (Toddler Girl)". The poster accepts either path for any
+  size — Done to press, or a menu that closed with the expected size on the form — and fails on anything else; the
+  read-back JSON records which one (`size_menu`).
 - **UNVERIFIED:** the form's photo tiles once the cover dialog is applied; the text a closed dropdown shows once a
-  choice is made (category breadcrumb, condition, colours) and the size chip format; the brand suggestions' markup;
+  choice is made (category breadcrumb, condition, colours) and the size field for adult sizes; which size menus
+  wait for Done; the brand suggestions' markup;
   that the form's Cancel opens the "Save Draft" dialog; the page after Next and its final publish button; where Save
   Draft lands; the CAPTCHA wording; the Baby-tab size labels, kids clothing and Plus size tabs; the Men/Home category
   lists; all of Depop. Record them from the dry-run evidence in `failed/shots/` (`.png`/`.html`/`.json` per run,
