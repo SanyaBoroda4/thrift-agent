@@ -96,6 +96,11 @@ Item statuses: `new` → `awaiting_price` | `needs_info` → `ready` → `postin
   field `[data-test=size]` then reads the label, e.g. "7.5 (Toddler Girl)". The poster accepts either path for any
   size — Done to press, or a menu that closed with the expected size on the form — and fails on anything else; the
   read-back JSON records which one (`size_menu`).
+- Mac dry-run #3 (2026-10-02, WO14) filled the whole form (photos + cover, title, description, Kids > Shoes >
+  Sneakers, "7.5 (Toddler Girl)", Good, Naturino, Pink + Green, price 50, SKU) and its read-back matched everything
+  but one field: an Original Price left empty reads back as **"0"**. The diff now treats "", "0", "0.00" and no price as
+  one for `original_price` only (a planned 120 against 0 still fails). Every other read-back — the photo count and the
+  category, size, condition and colour texts — passed on the live form; their exact texts are in that run's JSON.
 - **UNVERIFIED:** the form's photo tiles once the cover dialog is applied; the text a closed dropdown shows once a
   choice is made (category breadcrumb, condition, colours) and the size field for adult sizes; which size menus
   wait for Done; the brand suggestions' markup;

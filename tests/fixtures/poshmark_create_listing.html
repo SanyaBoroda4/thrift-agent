@@ -647,7 +647,7 @@
     const lp = $('#listing-price-modal-listing-price-input').value.trim();
     const op = $('#listing-price-modal-original-price-input').value.trim();
     if (!cfg.priceBug) $('[data-vv-name="listingPrice"]').value = lp ? `$${lp}` : '';
-    $('[data-vv-name="originalPrice"]').value = op ? `$${op}` : '';
+    $('[data-vv-name="originalPrice"]').value = op ? `$${op}` : '0';    // Poshmark holds "0" when it's left empty
     show($('#price-modal'), false);
     events.push('price-done');
     touch();

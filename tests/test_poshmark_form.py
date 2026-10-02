@@ -213,7 +213,7 @@ def test_the_form_as_filled_matches_every_condition_label(chrome, posh, photos):
     seen, events = fill_and_read(chrome, posh, r, steps=["_condition", "_colors", "_price"])
     assert diff_on(seen, r, posh, "condition", "colors", "price", "original_price", "smart_sell") == {}, seen
     assert "condition:Like New" in events and ["color:Black", "color:White"] == [e for e in events if "color" in e]
-    assert seen["original_price"] == "" and seen["colors"] == "Black, White"
+    assert seen["original_price"] == "0" and seen["colors"] == "Black, White"      # Poshmark's "0" for empty
 
 
 @pytest.mark.parametrize("gender,size,tab,button", [

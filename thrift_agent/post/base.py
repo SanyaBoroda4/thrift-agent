@@ -128,7 +128,11 @@ def compare(seen: dict, expected: dict) -> dict:
         got = seen.get(k)
         if isinstance(want, Contains):
             ok = want.matches(got)
-        elif k in ("price", "original_price"):
+        elif k == "original_price":
+            # Poshmark's form holds "0" for an Original Price left empty (Mac dry-run #3): no price, "" and 0 are one.
+            # A real one still has to match: 120 planned, 0 on the form is a mismatch.
+            ok = (_money(got) or None) == (_money(want) or None)
+        elif k == "price":
             ok = _money(got) == _money(want)
         elif isinstance(want, list):
             ok = sorted(map(_norm, want)) == sorted(map(_norm, got or []))

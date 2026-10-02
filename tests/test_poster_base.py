@@ -298,6 +298,16 @@ def test_compare_normalises():
     assert compare({"original_price": ""}, {"original_price": None}) == {}
     assert compare({}, {"original_price": None}) == {}
     assert compare({"original_price": "120"}, {"original_price": None}) == {"original_price": (None, "120")}
+
+
+def test_an_empty_original_price_reads_back_as_zero():
+    """Mac dry-run #3: with no Original Price set, Poshmark's form holds "0". Only for original_price."""
+    for empty in ("", "0", "0.00", "$0", "$0.00", " 0 ", None, 0):
+        assert compare({"original_price": empty}, {"original_price": None}) == {}, empty
+    assert compare({"original_price": "0"}, {"original_price": 120}) == {"original_price": (120, "0")}
+    assert compare({"original_price": "$120.00"}, {"original_price": 120}) == {}
+    assert compare({"original_price": "n/a"}, {"original_price": None}) == {"original_price": (None, "n/a")}
+    assert compare({"price": "0"}, {"price": 85}) == {"price": (85, "0")}          # the listing price: no leniency
     assert compare({"photos": 15}, {"photos": 16}) == {"photos": (16, 15)}
 
 
