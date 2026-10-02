@@ -641,3 +641,13 @@ def test_publish_first_with_chrome_still_held_by_the_poster_service_claims_nothi
     with pytest.raises(RuntimeError, match="services.sh stop"):
         _first(monkeypatch, s, db, poster, iid)
     assert poster.calls == [] and db.post(iid, "poshmark") is None          # never left in 'posting'
+
+
+def test_publish_first_leaves_the_item_ready_while_another_marketplace_still_waits(tmp_path, monkeypatch, harness):
+    s = _settings(tmp_path, role="prod")
+    db = DB(s.path("db"))
+    iid = _approved(db)
+    poster = StubPoster(Outcome("posted", url="https://poshmark.com/listing/x", clicked=True))
+    monkeypatch.setattr(runner, "posters", lambda s_: {"poshmark": poster, "depop": StubPoster(Outcome("posted"))})
+    asyncio.run(runner.publish_first(s, db, iid, confirm="confirm"))
+    assert db.post(iid, "poshmark")["status"] == "posted" and db.item(iid)["status"] == "ready"

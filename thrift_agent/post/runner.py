@@ -166,7 +166,8 @@ async def publish_first(s: Settings, db: DB, iid: str, confirm=terminal_confirm)
     ok, why = can_post(s, db.posted_since(hour_ago), db.posted_since(midnight))
     if not ok:
         raise ValueError(f"not now: {why}")
-    poster = posters(s).get("poshmark")
+    ps = posters(s)
+    poster = ps.get("poshmark")
     if poster is None:
         raise ValueError("marketplaces.poshmark is not enabled")
     poster.confirm = confirm
@@ -192,7 +193,7 @@ async def publish_first(s: Settings, db: DB, iid: str, confirm=terminal_confirm)
     finally:
         await ctx.close()
         await pw.stop()
-    record_outcome(db, iid, "poshmark", render, out, ["poshmark"])
+    record_outcome(db, iid, "poshmark", render, out, list(ps))     # 'posted' once every enabled marketplace is
     return out
 
 
