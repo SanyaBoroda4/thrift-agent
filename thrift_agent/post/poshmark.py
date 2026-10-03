@@ -57,17 +57,19 @@ from thrift_agent.post.base import (AccountBlocked, Cancelled, Contains, Mode, N
                                     human_type, keep_evidence, settle)
 from thrift_agent.schema import Render
 
-# The condition menu's labels (verified). Poshmark has no "new without tags": unworn goes up as Like New, and
-# excellent as Good.
+# The condition menu's labels (verified). Poshmark has no "new without tags": unworn goes up as Like New. It has no
+# "very good" either: the owner lists excellent as Like New (WO17: torn between Like New and Good, Like New). The
+# shop never lists Fair: a fair reading goes up as Good (the pipeline already made it good and told the owner).
 CONDITION_TO_POSH = {
     "NWT": "New With Tags (NWT)", "NWOT": "Like New", "like_new": "Like New",
-    "excellent": "Good", "good": "Good", "fair": "Fair",
+    "excellent": "Like New", "good": "Good", "fair": "Good",
 }
 # Each condition item carries Poshmark's code (data-et-prop-content, the codes sold listings store) and shows its
 # label over a one-line description, so it is clicked by the code and checked by the label.
 CONDITION_CODES = {
-    "NWT": "nwt", "NWOT": "uln", "like_new": "uln", "excellent": "ug", "good": "ug", "fair": "uf",
+    "NWT": "nwt", "NWOT": "uln", "like_new": "uln", "excellent": "uln", "good": "ug", "fair": "ug",
 }
+POSH_FAIR = ("Fair", "uf")       # recorded on the live form (2026-09-29); never selected: the shop doesn't list Fair
 DEPARTMENTS = ("women", "men", "kids", "home", "pets", "electronics")    # a.dropdown__link[data-et-name=...]
 
 

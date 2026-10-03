@@ -87,3 +87,14 @@ def test_unsure_condition_is_a_note_not_a_question(facts, gate_cfg, pricing_cfg)
     r = evaluate(f, OK_PRICE, [], 0, gate_cfg, pricing_cfg)
     assert r.decision == "publish" and r.reasons == []
     assert any("unsure of the condition (0.55)" in n and "listed as good" in n for n in r.notes)
+
+
+def test_an_unsure_condition_note_names_the_grade_it_was_weighed_against(facts, gate_cfg, pricing_cfg):
+    from thrift_agent.brain.gate import evaluate
+    from thrift_agent.schema import Ev, PriceResult
+    f = facts(condition="like_new", condition_alternative="good",
+              condition_evidence=Ev(value="clean soles", photos=[4], source="photo", confidence=0.6))
+    pr = PriceResult(target=70, list_price=85, source="brand", by_marketplace={"poshmark": 85})
+    notes = evaluate(f, pr, [], 0, gate_cfg, pricing_cfg).notes
+    assert notes == ["model unsure of the condition (0.60, weighed against good): listed as like_new; reply with the "
+                     "condition if it is wrong"]

@@ -14,7 +14,7 @@ paths:
   harvest: ./private/harvest      # raw pages incl. buyer data — never public
 
 models:
-  segment: claude-sonnet-5
+  segment: claude-opus-5-5     # splitting the roll is the hardest call: the strongest model (WO17), one call a batch
   extract: claude-sonnet-5
   copy: claude-sonnet-5
   verify: claude-haiku-4-5-20251001
@@ -22,7 +22,8 @@ models:
 images:
   work_long_edge: 2048
   llm_long_edge: 1568
-  thumb_long_edge: 384
+  thumb_long_edge: 768             # segmentation previews (WO17: 384 -> 768: fabric, prints, labels)
+  thumb_fallback_long_edge: 384    # ... sent instead when the request would be too large (or the API says 413)
   cover_size: [1200, 1600] # width, height: 3:4 portrait, the frame of Poshmark's cover crop (padded, never cropped)
   dedupe_hamming: 4        # consecutive photos closer than this are treated as duplicates
 
@@ -32,6 +33,11 @@ inbox:
 
 segmentation:
   min_confidence: 0.85
+  max_request_mb: 20       # the API takes 32 MB per request; above this the previews fall back to the smaller size
+  pause_min_seconds: 30    # a break in shooting = a gap > max(pause_min_seconds, pause_factor x the roll's median
+  pause_factor: 4          # gap): shown to the model as "— pause 2 min —" and on the contact sheet
+  visual_change_min: 0.45  # a colour change between consecutive photos = a distance (0..1) >= max(visual_change_min,
+  visual_change_factor: 2.5   # visual_change_factor x the roll's median); with the pauses it flags doubtful splits
   always_confirm: true     # send the contact sheet for every batch until the eval says otherwise
 
 duplicates:

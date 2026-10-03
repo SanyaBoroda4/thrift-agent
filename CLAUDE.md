@@ -14,7 +14,9 @@ taps Share → "New item", and gets a Telegram ping when it's listed or when som
 ## Flow
 ```
 iCloud Posh/inbox/<ts>/ (+ _done) ─► register batch ─► prep (HEIC→JPEG, EXIF rotate, burst dedupe)
-  ─► segment (one vision call on thumbnails → groups; code checks partition, full shot, sizes, confidence)
+  ─► segment (one Opus vision call on 768 px previews → groups; visual identity first, "— pause 2 min —" markers
+     relative to the roll as the only timing; code checks partition, full shot, sizes, confidence, and a pause AND a
+     colour change inside an item / neither between two items)
   ─► contact sheet → Telegram; owner replies ok|12>2|split 7|merge 2 3|drop 7 (or `thrift confirm <batch> …`)
   ─► items ─► extract Facts (evidence per field) ─► price (brand_tiers.yaml) ─► copy (both marketplaces)
   ─► verify (LLM strip unsupported claims) + lint (deterministic) ─► gate: publish | draft | needs_info
@@ -33,7 +35,13 @@ Item statuses: `new` → `awaiting_price` | `needs_info` → `ready` → `postin
 ## Invariants — do not break these
 1. **Facts before prose.** `extract` never writes copy; `copy` may only restate Facts. Null facts are omitted.
 2. **NWT only with a hang-tag photo** (or a seller note). Mislabeled condition is the most common cause of
-   "not as described" cancellations and bad ratings. When unsure between two conditions, the lower one.
+   "not as described" cancellations and bad ratings.
+   - **Grades (owner decision, WO17 — replaces "when unsure, the lower one").** Torn between Like New and Good →
+     Like New: the model names the other grade it weighed (`condition_alternative`) and `pipeline.settle_condition`
+     takes the higher of good / excellent / like_new. Poshmark has no "very good": excellent goes up as Like New.
+     **Never Fair:** a fair reading (or good weighed against fair) is listed as Good, with the Note "looked well-worn —
+     listed as Good; check before approving"; the form never selects Fair (`CONDITION_TO_POSH`, `POSH_FAIR` recorded
+     only). NWT stays strict (`settle_nwt`); NWOT / like_new for "new, no tags".
    - **Owner rule (first run).** `gate.min_confidence` is 0.70 for brand, size and condition; the price is the
      owner's only routine input (Telegram approval or `thrift price`). NWT stays strict — `hang_tag_photo` or a
      seller note, never confidence. A price-table miss no longer blocks the gate: the per-department
@@ -87,7 +95,8 @@ Item statuses: `new` → `awaiting_price` | `needs_info` → `ready` → `postin
   `all` back link, categories `li.dropdown__menu__item`, subcategories `a.dropdown__link[data-et-name=sub_category]`
   incl. "None"); the size menu `[data-test=size]`, tabs `a.navigation--horizontal__link`, buttons
   `button[id="size-<label>"]`, Done `button[data-et-name=apply]`, the kids shoe labels ("7.5 (Toddler Girl)" on the
-  Girls/Boys tabs, `KIDS_SIZE_OPTIONS`); the condition labels (`CONDITION_TO_POSH`); brand suggestions; colour tiles;
+  Girls/Boys tabs, `KIDS_SIZE_OPTIONS`); the condition labels (`CONDITION_TO_POSH`; Fair `uf` is recorded but never
+  selected); brand suggestions; colour tiles;
   the Listing Price dialog (inputs, Smart Sell checkbox, Done); Next / Save Draft / Discard by `data-et-name`; the Women
   and Kids category lists with their Shoes subcategories (`data/poshmark_taxonomy.yaml`).
 - Verified from the DOM snapshot of the first Mac dry-run (2026-09-30, WO11): the **"Select a Covershot." dialog**
@@ -218,6 +227,7 @@ The owner shares retailer screenshots (product page with price, style name, colo
   accepted; everything else is ignored. Works in a group with BotFather privacy mode ON — the owner only replies to
   the bot's messages or presses its buttons.
 - Batch: contact sheet + summary; reply `ok | 12>2 | split 7 | merge 2 3 | drop 7` (same parser as `thrift confirm`);
+  the sheet marks the photo after each pause ("pause 2 min"), the message lists them and says why a split is doubtful;
   `segmentation.always_confirm` stays configurable.
 - Item: ONE message in `awaiting_price` — cover, title, size (with system), condition + flaw count, suggested price +
   basis, "Retail $X" if known, "no price history for <brand>" for a category default; [Approve $P] [Change]. A reply
@@ -239,6 +249,11 @@ The owner shares retailer screenshots (product page with price, style name, colo
   only — not condition, historic labels are unreliable.
   Targets before autopublish: segmentation ≥95%, brand/size ≥95%, condition ≥90%.
 - **M1 prompt tuning** — tune the segment/extract/copy/verify prompts against M0.
+  Done (WO17): segmentation on `claude-opus-5-5` with 768 px previews (384 px fallback above `max_request_mb` or on a
+  413), a visual-identity-first prompt, pauses relative to the roll (> max(30 s, 4 × the median gap); screenshots out
+  of the timing), and the code's doubt check (a pause AND a colour change inside an item, neither between two). The
+  batch record keeps the pauses, colour distances and changes: tune `segmentation.pause_*` / `visual_change_*` on
+  real rolls (M0).
 - **M2 Poshmark poster — in progress.** Done (WO9): the create-listing structure verified 2026-09-29 is in `SEL`; fill
   order photos → title → description → category → subcategory → size → condition → brand → colors → tags → price dialog
   → SKU; `read_back` of every field incl. the dropdowns' text; dry-run stages `form` | `review` leaving through

@@ -860,3 +860,81 @@ def test_a_flaw_without_a_photo_is_a_note_in_the_approval_message(tmp_path, monk
     assert "flaw without a photo, so the listing doesn't show it: small hole inside (seller note)" in notes
     caption, _ = pipeline.approve.item_caption(iid, db.item(iid))
     assert "Note: flaw without a photo, so the listing doesn't show it" in caption
+
+
+# ---------------------------------------------------------------- WO17: the owner's condition rules
+
+@pytest.mark.parametrize("cond,alt,want,notes", [
+    ("good", "like_new", "like_new", []),            # torn between Good and Like New: Like New
+    ("like_new", "good", "like_new", []),
+    ("excellent", "like_new", "like_new", []),
+    ("good", "excellent", "excellent", []),          # excellent goes up as Like New too
+    ("good", None, "good", []),
+    ("fair", None, "good", [pipeline.WELL_WORN]),    # never Fair
+    ("fair", "good", "good", [pipeline.WELL_WORN]),
+    ("good", "fair", "good", [pipeline.WELL_WORN]),
+    ("NWT", "like_new", "NWT", []),                  # NWT is settle_nwt's: strict, never by doubt
+    ("like_new", "NWT", "like_new", []),
+])
+def test_the_owners_condition_rules(facts, cond, alt, want, notes):
+    f, said = pipeline.settle_condition(facts(condition=cond, condition_alternative=alt))
+    assert (f.condition, said) == (want, notes)
+
+
+def test_a_fair_reading_goes_up_as_good_and_the_owner_is_told(tmp_path, monkeypatch, facts, owner_messages):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", fake_ask(lambda **kw: facts(condition="fair", **kw)))
+    monkeypatch.setattr("thrift_agent.pipeline.load_yaml",
+                        lambda name: {"brands": {"tory burch": {"target": 70}}, "aliases": {}, "category_defaults": {}})
+    iid = _one_item(tmp_path, db)
+    pipeline.process_item(s, db, iid)
+    it = db.item(iid)
+    assert loads(it["facts"])["condition"] == "good" and loads(it["renders"])["poshmark"]["condition"] == "good"
+    assert "looked well-worn — listed as Good; check before approving" in loads(it["gate"])["notes"]
+    caption, _ = pipeline.approve.item_caption(iid, it)
+    assert "Note: looked well-worn — listed as Good; check before approving" in caption
+    assert "Condition: good" in caption
+
+
+def test_the_extract_prompt_carries_the_owners_condition_rules():
+    from thrift_agent.brain import extract
+    assert "condition_alternative" in extract.SYSTEM and "choose like_new" in extract.SYSTEM
+    assert "the lower one" not in extract.SYSTEM and "never lists Fair" in extract.SYSTEM
+
+
+# ---------------------------------------------------------------- WO17: better item splitting
+
+def test_a_roll_with_a_break_shows_the_pause_and_doubts_a_grouping_across_it(tmp_path, monkeypatch, owner_messages):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    share = s.path("inbox") / "2026-10-03_1400"
+    t0 = datetime(2026, 10, 3, 14, 0)
+    for i, (c, sec) in enumerate([("red", 0), ("red", 8), ("red", 16), ("blue", 136), ("blue", 144), ("blue", 152)]):
+        img = Image.new("RGB", (300, 400), (128, 128, 128))
+        img.paste(c, (70 + 5 * i, 90, 230 + 5 * i, 310))           # a garment on the same grey backdrop
+        exif = Image.Exif()
+        exif[271], exif[272] = "Apple", "iPhone"
+        exif.get_ifd(0x8769)[36867] = (t0 + timedelta(seconds=sec)).strftime("%Y:%m:%d %H:%M:%S")
+        share.mkdir(parents=True, exist_ok=True)
+        img.save(share / f"IMG_{i:04d}.jpg", exif=exif)
+    (share / "_done").touch()
+    _settle(share)
+    seen = {}
+
+    def ask(model, system, content, out, tool, description, **kw):        # the model lumps it all into one item
+        seen["model"], seen["texts"] = model, [c["text"] for c in content if c["type"] == "text"]
+        return SegOut(groups=[Group(photos=list(range(6)), summary="red and blue", full_item_photos=[0],
+                                    confidence=0.9)])
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", ask)
+    [folder] = pipeline.ready_folders(s)
+    bid = pipeline.register(s, db, folder)
+    pipeline.process_batch(s, db, bid)
+    assert seen["model"] == "claude-opus-5-5" and "— pause 2 min —" in seen["texts"]
+    assert seen["texts"].index("— pause 2 min —") == seen["texts"].index("Photo 3") - 1
+    b = db.batch(bid)
+    segd = loads(b["segmentation"])
+    assert segd["pauses"] == [[3, 120]] and segd["changes"] == [3] and segd["preview_px"] == 768
+    assert "item 1: a pause (2 min) and a visual change between photos 2 and 3 — two items?" in loads(b["reasons"])
+    caption = pipeline.approve.batch_caption(bid, b)
+    assert "pauses before: #3 (2 min)" in caption and "two items?" in caption

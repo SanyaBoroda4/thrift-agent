@@ -7,6 +7,7 @@ contact sheet instead of guessing.
 from __future__ import annotations
 
 import re
+import statistics
 from datetime import datetime
 from pathlib import Path
 
@@ -36,10 +37,19 @@ class SegOut(BaseModel):
 
 SYSTEM = """You split a seller's photo roll into items for resale listings.
 The seller's own photos are in capture order. The seller shoots one item completely, then the next; items do
-not interleave, except that an occasional forgotten detail shot of an earlier item may appear later.
-Signals: a wide full-item shot after close-ups usually starts a new item; fabric, color and pattern
-continuity ties close-ups (labels, tags, soles, flaws) to the garment around them; a second size label
-that disagrees with the first means a new item; a longer time gap is a weak hint.
+not interleave, except that an occasional forgotten detail shot of an earlier item may appear later. Items are
+often shot in quick bursts, a minute or less apart, so decide by what the photos show.
+Visual identity first. Photos of the same item share:
+- the fabric or material texture (knit, denim, suede, grain, sequins), the color and shade, the print or pattern;
+- the shape and silhouette (neckline, sleeves, hem, heel, toe), construction details (seams, pockets, stitching),
+  hardware (buttons, zippers, buckles, chains) and trims;
+- the label, brand, size tag, insole or sole stamp.
+A close-up (label, tag, sole, flaw, detail) belongs to the item whose fabric, color and pattern it shows. A second
+size or brand label that disagrees with the first means a new item. A wide full-item shot after close-ups often starts
+a new item — check its identity.
+Time is a tiebreaker only. A line like "— pause 2 min —" marks a break in shooting much longer than this roll's usual
+gap: it supports a new item when the photos also differ, nothing more. Never split on a pause alone, and never keep
+different-looking photos together because there is no pause between them.
 Two items that look identical (same brand, type, color, size) cannot be separated from photos alone —
 keep them apart only if something visible differs, and lower confidence when unsure.
 Retail screenshots: some photos are phone screenshots of a retailer's product page (style name, colour, price).
@@ -51,18 +61,141 @@ Sizes: one normalized size per physical label, e.g. 'US 7.5' — a label printin
 Every own photo must appear in exactly one group."""
 
 
-def segment(photos: list[tuple[Path, datetime]], model: str, thumb_px: int,
-            kinds: list[str] | None = None) -> SegOut:
-    """`kinds[i]` is prep.photo_kind() of photo i ("own" | "retail"); None = all own."""
-    kinds = kinds or ["own"] * len(photos)
-    t0 = next((ts for (_, ts), k in zip(photos, kinds) if k != "retail"), photos[0][1])   # screenshots have no EXIF time
+MAX_REQUEST_BYTES = 20_000_000    # the API takes 32 MB per request: above this the previews fall back to a smaller size
+
+
+def fmt_pause(seconds: float) -> str:
+    """45 -> "45 s", 61 -> "1 min", 150 -> "3 min", 3900 -> "1 h 5 min"."""
+    if seconds < 60:
+        return f"{int(seconds)} s"
+    minutes = int(seconds / 60 + 0.5)
+    return f"{minutes} min" if minutes < 60 else f"{minutes // 60} h {minutes % 60} min"
+
+
+def own_pairs(kinds: list[str]) -> list[tuple[int, int]]:
+    """Consecutive pairs of the seller's own photos, in capture order; retail screenshots (assigned by content, their
+    times are only file times) take no part."""
+    own = [i for i, k in enumerate(kinds) if k != "retail"]
+    return list(zip(own, own[1:]))
+
+
+def pauses(times: list[datetime], kinds: list[str] | None = None, min_seconds: float = 30,
+           factor: float = 4) -> dict[int, float]:
+    """Breaks in shooting, relative to this batch: {photo that comes after the break: seconds}. A gap between two
+    consecutive own photos is a pause when it is longer than max(min_seconds, factor × the batch's median gap) — a
+    roll shot in quick bursts has a short median, so even a minute between items stands out, while a slow roll needs
+    a longer break. Fewer than two gaps: no pauses."""
+    kinds = kinds or ["own"] * len(times)
+    gaps = {b: (times[b] - times[a]).total_seconds() for a, b in own_pairs(kinds)}
+    if len(gaps) < 2:
+        return {}
+    at = max(min_seconds, factor * statistics.median(gaps.values()))
+    return {b: g for b, g in gaps.items() if g > at}
+
+
+def _content(photos: list[tuple[Path, datetime]], kinds: list[str], breaks: dict[int, float], px: int) -> list[dict]:
     content: list[dict] = []
-    for i, ((p, ts), kind) in enumerate(zip(photos, kinds)):
-        tag = "retail screenshot" if kind == "retail" else f"t=+{int((ts - t0).total_seconds())}s"
-        content.append(llm.text(f"Photo {i} · {tag}"))
-        content.append(llm.image(p, thumb_px))
+    for i, ((p, _), kind) in enumerate(zip(photos, kinds)):
+        if i in breaks:
+            content.append(llm.text(f"— pause {fmt_pause(breaks[i])} —"))
+        content.append(llm.text(f"Photo {i} · retail screenshot" if kind == "retail" else f"Photo {i}"))
+        content.append(llm.image(p, px))
     content.append(llm.text(f"{len(photos)} photos. Group them into items."))
-    return llm.ask(model, SYSTEM, content, SegOut, "report_groups", "Report the item groups", max_tokens=3000)
+    return content
+
+
+def _request_bytes(content: list[dict]) -> int:
+    return sum(len(c["source"]["data"]) if c["type"] == "image" else len(c.get("text", "")) for c in content)
+
+
+def segment(photos: list[tuple[Path, datetime]], model: str, thumb_px: int, kinds: list[str] | None = None,
+            breaks: dict[int, float] | None = None, fallback_px: int | None = None,
+            max_bytes: int = MAX_REQUEST_BYTES, report: dict | None = None) -> SegOut:
+    """`kinds[i]` is prep.photo_kind() of photo i ("own" | "retail"); None = all own. `breaks` are pauses() — shown
+    to the model as "— pause 2 min —" lines, the only timing it sees. Previews are `thumb_px` on the long edge;
+    when that request would be larger than `max_bytes`, or the API answers 413 (too large), they are sent at
+    `fallback_px` instead of failing. `report` (if given) gets the size used: {"preview_px": …}."""
+    kinds = kinds or ["own"] * len(photos)
+    breaks = breaks or {}
+    px = thumb_px
+    content = _content(photos, kinds, breaks, px)
+    if fallback_px and fallback_px < px and _request_bytes(content) > max_bytes:
+        px, content = fallback_px, _content(photos, kinds, breaks, fallback_px)
+    try:
+        out = llm.ask(model, SYSTEM, content, SegOut, "report_groups", "Report the item groups", max_tokens=3000)
+    except Exception as e:                            # a request too large after all: once more, smaller
+        if getattr(e, "status_code", None) != 413 or not fallback_px or fallback_px >= px:
+            raise
+        px = fallback_px
+        out = llm.ask(model, SYSTEM, _content(photos, kinds, breaks, px), SegOut, "report_groups",
+                      "Report the item groups", max_tokens=3000)
+    if report is not None:
+        report["preview_px"] = px
+    return out
+
+
+# ---------------------------------------------------------------- the code's own reading of the roll
+
+SIG_PX, HUES, SATS, GREYS = 48, 12, 3, 3
+GREY_SAT, DARK = 48, 40          # HSV (0..255): below this saturation, or this brightness, a pixel is a grey
+
+
+def color_signature(path: Path) -> list[float]:
+    """The colours of the photo's central area — mostly the item, not the backdrop — as a coarse histogram: 12 hues ×
+    3 saturations, plus 3 grey levels. Sums to 1."""
+    with Image.open(path) as im:
+        im = im.convert("RGB")
+        w, h = im.size
+        data = im.crop((w // 5, h // 5, w - w // 5, h - h // 5)).resize((SIG_PX, SIG_PX)).convert("HSV").tobytes()
+    bins = [0] * (HUES * SATS + GREYS)
+    for k in range(0, len(data), 3):
+        hue, sat, val = data[k], data[k + 1], data[k + 2]
+        if sat < GREY_SAT or val < DARK:
+            bins[HUES * SATS + min(val * GREYS // 256, GREYS - 1)] += 1
+        else:
+            bins[(hue * HUES // 256) * SATS + min((sat - GREY_SAT) * SATS // (256 - GREY_SAT), SATS - 1)] += 1
+    return [b / (SIG_PX * SIG_PX) for b in bins]
+
+
+def color_distance(a: list[float], b: list[float]) -> float:
+    """0 = the same colours, 1 = nothing in common (one minus the histograms' overlap)."""
+    return 1.0 - sum(min(x, y) for x, y in zip(a, b))
+
+
+def visual_changes(photos: list[Path], kinds: list[str] | None = None, min_distance: float = 0.45,
+                   factor: float = 2.5) -> tuple[dict[int, float], set[int]]:
+    """({own photo: colour distance from the own photo before it}, {photos where the look changes}). A change is a
+    distance of at least max(min_distance, factor × the batch's median distance): close-ups of one item vary, so the
+    bar is relative to the roll. Colour only — it can't tell two black dresses apart; the model judges identity."""
+    kinds = kinds or ["own"] * len(photos)
+    pairs = own_pairs(kinds)
+    sigs = {i: color_signature(photos[i]) for pair in pairs for i in pair}
+    dist = {b: round(color_distance(sigs[a], sigs[b]), 3) for a, b in pairs}
+    if not dist:
+        return {}, set()
+    at = max(min_distance, factor * statistics.median(dist.values()))
+    return dist, {b for b, d in dist.items() if d >= at}
+
+
+def timing_check(groups: list[list[int]], kinds: list[str] | None, breaks: dict[int, float],
+                 changes: set[int]) -> list[str]:
+    """What the code doubts in the model's grouping (shown in the contact-sheet message): one item spanning a pause
+    AND a visual change (two items?), or a boundary between items with neither (one item?). Never a decision: the
+    owner confirms the batch."""
+    kinds = kinds or ["own"] * (max((i for g in groups for i in g), default=-1) + 1)
+    owner = {i: k for k, g in enumerate(groups) for i in g}
+    reasons = []
+    for a, b in own_pairs(kinds):
+        if a not in owner or b not in owner:
+            continue                                  # a partition error: check() says so
+        pause, change = b in breaks, b in changes
+        if owner[a] == owner[b] and pause and change:
+            reasons.append(f"item {owner[a] + 1}: a pause ({fmt_pause(breaks[b])}) and a visual change between "
+                           f"photos {a} and {b} — two items?")
+        elif owner[a] != owner[b] and not pause and not change:
+            reasons.append(f"items {owner[a] + 1} and {owner[b] + 1}: no pause and no visual change between photos "
+                           f"{a} and {b} — one item?")
+    return reasons
 
 
 def check(seg: SegOut, n: int, min_conf: float, kinds: list[str] | None = None) -> list[str]:
@@ -177,8 +310,9 @@ LABEL_STRIP = 40           # px under each tile for "#i · item k"; the seller r
 
 
 def contact_sheet(photos: list[Path], groups: list[list[int]], dst: Path, tile: int = 260, cols: int = 5,
-                  kinds: list[str] | None = None) -> Path:
-    """Tiles labelled "#i · item k"; retail screenshots read "#i · retail · item k" ("?" when in no item)."""
+                  kinds: list[str] | None = None, breaks: dict[int, float] | None = None) -> Path:
+    """Tiles labelled "#i · item k"; retail screenshots read "#i · retail · item k" ("?" when in no item). A photo
+    taken after a pause (pauses()) carries a dark "pause 2 min" banner at its top left."""
     owner = {i: k for k, g in enumerate(groups) for i in g}
     rows = (len(photos) + cols - 1) // cols
     sheet = Image.new("RGB", (cols * tile, rows * (tile + LABEL_STRIP)), "white")
@@ -198,6 +332,10 @@ def contact_sheet(photos: list[Path], groups: list[list[int]], dst: Path, tile: 
                 label, color = f"#{i} · item {owner.get(i, -1) + 1}", PALETTE[owner.get(i, 0) % len(PALETTE)]
             draw.rectangle([x + 2, y + 2, x + tile - 3, y + tile - 3], outline=color, width=6)
             sheet.paste(im, (x + (tile - im.width) // 2, y + (tile - im.height) // 2))
+            if breaks and i in breaks:                          # shot after a break: where a new item may start
+                mark = f"pause {fmt_pause(breaks[i])}"
+                draw.rectangle([x + 8, y + 8, x + 16 + int(draw.textlength(mark, font=small)), y + 36], fill="#222222")
+                draw.text((x + 12, y + 10), mark, fill="white", font=small)
             draw.rectangle([x, y + tile, x + tile - 1, y + tile + LABEL_STRIP - 1], fill="white")
             f = font if draw.textlength(label, font=font) <= tile - 16 else small
             draw.text((x + 8, y + tile + 5), label, fill=color, font=f)

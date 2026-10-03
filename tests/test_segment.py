@@ -160,10 +160,10 @@ def test_segment_labels_retail_screenshots(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "ask", fake_ask)
     segment.segment(photos, "m", 64, kinds=["own", "own", "retail"])
     labels = [c["text"] for c in captured["content"] if c.get("type") == "text"]
-    assert labels[:3] == ["Photo 0 · t=+0s", "Photo 1 · t=+10s", "Photo 2 · retail screenshot"]
+    assert labels[:3] == ["Photo 0", "Photo 1", "Photo 2 · retail screenshot"]     # WO17: no clock, pauses only
     assert "unassigned" in captured["system"] and "ONE size" in captured["system"]
     segment.segment(photos, "m", 64)                                             # no kinds = all own
-    assert [c["text"] for c in captured["content"] if c.get("type") == "text"][2] == "Photo 2 · t=+20s"
+    assert [c["text"] for c in captured["content"] if c.get("type") == "text"][2] == "Photo 2"
 
 
 def test_contact_sheet_with_kinds(tmp_path):
@@ -175,3 +175,149 @@ def test_contact_sheet_with_kinds(tmp_path):
     sheet = contact_sheet(photos, [[0, 1, 2]], tmp_path / "sheet.png", tile=200, cols=4,
                           kinds=["own", "own", "retail", "retail"])                # 2 in item 1, 3 in no item
     assert sheet.exists() and Image.open(sheet).size == (800, 240)
+
+
+
+# ---------------------------------------------------------------- WO17: better item splitting
+
+T0 = datetime(2026, 10, 3, 14, 0, 0)
+
+
+def at(*seconds):
+    return [T0 + timedelta(seconds=s) for s in seconds]
+
+
+def test_a_pause_is_relative_to_the_rolls_own_rhythm():
+    burst = at(0, 10, 20, 90, 100, 110)                    # 10 s apart, then a 70 s break: a pause
+    assert segment.pauses(burst) == {3: 70.0}
+    slow = at(0, 20, 40, 100, 120, 140)                    # 20 s apart: 60 s is not 4 x the usual gap
+    assert segment.pauses(slow) == {}
+    quick = at(0, 2, 4, 40, 42, 44)                        # 2 s apart: the 30 s floor still applies (36 s > 30 s)
+    assert segment.pauses(quick) == {3: 36.0}
+    assert segment.pauses(at(0, 500)) == {}                # one gap: nothing to compare it with
+
+
+def test_retail_screenshots_take_no_part_in_the_timing():
+    times = at(0, 10, 9999, 20, 90, 100)                   # a screenshot's file time sits in the middle
+    kinds = ["own", "own", "retail", "own", "own", "own"]
+    assert segment.pauses(times, kinds) == {4: 70.0}       # 20 -> 90 between own photos 3 and 4
+    assert segment.own_pairs(kinds) == [(0, 1), (1, 3), (3, 4), (4, 5)]
+
+
+@pytest.mark.parametrize("seconds,text", [(45, "45 s"), (61, "1 min"), (89, "1 min"), (150, "3 min"),
+                                          (3900, "1 h 5 min")])
+def test_pause_wording(seconds, text):
+    assert segment.fmt_pause(seconds) == text
+
+
+def _shot(path, color, backdrop=(128, 128, 128), wobble=0):
+    """An item photo: a coloured garment in the middle of a grey backdrop, shifted a little per shot."""
+    im = Image.new("RGB", (300, 400), backdrop)
+    im.paste(color, (70 + wobble, 90 + wobble, 230 + wobble, 310 + wobble))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    im.save(path)
+    return path
+
+
+def _roll(tmp_path, colors):
+    return [_shot(tmp_path / f"{i:02d}.jpg", c, wobble=(i % 3) * 7) for i, c in enumerate(colors)]
+
+
+RED, BLUE = (200, 30, 40), (30, 60, 200)
+
+
+def test_the_colour_signature_tells_items_apart_not_angles(tmp_path):
+    red1, red2, blue = (_shot(tmp_path / f"{n}.jpg", c, wobble=w) for n, c, w in (("a", RED, 0), ("b", RED, 14),
+                                                                                    ("c", BLUE, 0)))
+    sig = segment.color_signature
+    assert segment.color_distance(sig(red1), sig(red2)) < 0.1          # the same item, another angle
+    assert segment.color_distance(sig(red1), sig(blue)) > 0.6          # another item, same backdrop
+    assert abs(sum(sig(red1)) - 1) < 1e-9
+
+
+def test_visual_changes_mark_where_the_look_changes(tmp_path):
+    photos = _roll(tmp_path, [RED, RED, RED, BLUE, BLUE, BLUE])
+    distances, changes = segment.visual_changes(photos)
+    assert changes == {3} and set(distances) == {1, 2, 3, 4, 5}
+    retail = segment.visual_changes(photos, ["own", "own", "own", "retail", "own", "own"])[1]
+    assert retail == {4}                                              # the screenshot is skipped, not compared
+
+
+@pytest.mark.parametrize("groups,flag", [
+    ([[0, 1, 2], [3, 4, 5]], None),                                                      # as shot: nothing to doubt
+    ([[0, 1, 2, 3, 4, 5]], "item 1: a pause (1 min) and a visual change between photos 2 and 3 — two items?"),
+    ([[0, 1], [2, 3, 4, 5]], "items 1 and 2: no pause and no visual change between photos 1 and 2 — one item?"),
+])
+def test_timing_check_doubts_a_grouping_that_both_signals_contradict(tmp_path, groups, flag):
+    photos = _roll(tmp_path, [RED, RED, RED, BLUE, BLUE, BLUE])
+    breaks = segment.pauses(at(0, 10, 20, 90, 100, 110))
+    reasons = segment.timing_check(groups, None, breaks, segment.visual_changes(photos)[1])
+    assert (flag in reasons) if flag else reasons == [], reasons
+
+
+def test_one_signal_alone_never_raises_a_doubt(tmp_path):
+    black = _roll(tmp_path, [(20, 20, 20)] * 6)                         # two black dresses: colour can't tell
+    pause_only = segment.timing_check([[0, 1, 2], [3, 4, 5]], None, {3: 70.0}, segment.visual_changes(black)[1])
+    assert pause_only == []                                            # a pause between them is enough of a reason
+    burst = _roll(tmp_path / "b", [RED, RED, RED, BLUE, BLUE, BLUE])   # shot back to back, no pause
+    assert segment.timing_check([[0, 1, 2], [3, 4, 5]], None, {}, segment.visual_changes(burst)[1]) == []
+
+
+def test_the_model_sees_pauses_not_clock_times(tmp_path, monkeypatch):
+    photos = [(p, ts) for p, ts in zip(_roll(tmp_path, [RED, RED, BLUE, BLUE]), at(0, 10, 75, 85))]
+    seen = {}
+    monkeypatch.setattr(llm, "ask", lambda model, system, content, *a, **k: seen.update(content=content) or SegOut(groups=[]))
+    segment.segment(photos, "m", 64, breaks={2: 65.0})
+    texts = [c["text"] for c in seen["content"] if c["type"] == "text"]
+    assert texts[:5] == ["Photo 0", "Photo 1", "— pause 1 min —", "Photo 2", "Photo 3"]
+    assert "Time is a tiebreaker only" in segment.SYSTEM and "Never split on a pause alone" in segment.SYSTEM
+
+
+def _px(content):
+    import base64
+    import io
+    im = next(c for c in content if c["type"] == "image")
+    return max(Image.open(io.BytesIO(base64.b64decode(im["source"]["data"]))).size)
+
+
+def test_previews_fall_back_to_the_smaller_size_when_the_request_is_too_large(tmp_path, monkeypatch):
+    photos = [(p, ts) for p, ts in zip(_roll(tmp_path, [RED, BLUE]), at(0, 10))]
+    sizes = []
+    monkeypatch.setattr(llm, "ask", lambda model, system, content, *a, **k: sizes.append(_px(content)) or SegOut(groups=[]))
+    report = {}
+    segment.segment(photos, "m", 200, fallback_px=96, report=report)                  # fits: the big previews
+    segment.segment(photos, "m", 200, fallback_px=96, max_bytes=10, report=report)    # too large: the small ones
+    assert sizes == [200, 96] and report == {"preview_px": 96}
+
+
+def test_a_413_from_the_api_is_answered_with_the_smaller_previews(tmp_path, monkeypatch):
+    class TooLarge(Exception):
+        status_code = 413
+    photos = [(p, ts) for p, ts in zip(_roll(tmp_path, [RED, BLUE]), at(0, 10))]
+    sizes = []
+
+    def ask(model, system, content, *a, **k):
+        sizes.append(_px(content))
+        if len(sizes) == 1:
+            raise TooLarge("request_too_large")
+        return SegOut(groups=[])
+    monkeypatch.setattr(llm, "ask", ask)
+    report = {}
+    segment.segment(photos, "m", 200, fallback_px=96, report=report)
+    assert sizes == [200, 96] and report == {"preview_px": 96}
+
+    class Overloaded(Exception):
+        status_code = 529
+    monkeypatch.setattr(llm, "ask", lambda *a, **k: (_ for _ in ()).throw(Overloaded("busy")))
+    with pytest.raises(Overloaded):                                                   # anything else: as before
+        segment.segment(photos, "m", 200, fallback_px=96)
+
+
+def test_the_contact_sheet_marks_the_photo_after_a_pause(tmp_path):
+    photos = _roll(tmp_path, [RED, RED, BLUE, BLUE])
+    plain = Image.open(contact_sheet(photos, [[0, 1], [2, 3]], tmp_path / "a.png", tile=200, cols=4)).convert("RGB")
+    marked = Image.open(contact_sheet(photos, [[0, 1], [2, 3]], tmp_path / "b.png", tile=200, cols=4,
+                                      breaks={2: 65.0})).convert("RGB")
+    banner = (2 * 200 + 10, 12)                                       # top left of photo 2's tile
+    assert marked.getpixel(banner) == (34, 34, 34) and plain.getpixel(banner) != (34, 34, 34)
+    assert marked.getpixel((10, 12)) == plain.getpixel((10, 12))      # photo 0: no pause, no banner

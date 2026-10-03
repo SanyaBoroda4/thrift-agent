@@ -69,6 +69,8 @@ class Facts(BaseModel):
     retailer: Ev = Field(default_factory=Ev, description="Retailer or brand site a retail screenshot shows, e.g. "
                                                         "'Nordstrom'; cite the screenshot index, source=photo")
     condition: Condition
+    condition_alternative: Condition | None = Field(None, description="Only when unsure between two grades: the "
+                                                                      "other grade you weighed, else null")
     condition_evidence: Ev = Field(description="Photo(s) and the observation that justify the condition grade "
                                                "(soles, insoles, pilling, tag), from the seller's own photos only — "
                                                "never a retail screenshot. For NWT include the hang-tag photo "

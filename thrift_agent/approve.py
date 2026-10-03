@@ -17,6 +17,7 @@ from pathlib import Path
 from thrift_agent import notify, pipeline
 from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
+from thrift_agent.ingest import segment as seg
 from thrift_agent.telegram import MAX_CAPTION, Bot
 
 OFFSET_KEY = "telegram_offset"                       # kv: the last getUpdates update_id we handled
@@ -114,6 +115,8 @@ def batch_caption(bid: str, b) -> str:
         lines.append(f"item {k}: {summary} - photos {list(g)}")
     if unassigned := segd.get("unassigned"):
         lines.append(f"unassigned screenshots: {list(unassigned)}")
+    if pauses := segd.get("pauses"):                    # [[photo, seconds], ...]: breaks in shooting, as on the sheet
+        lines.append("pauses before: " + ", ".join(f"#{i} ({seg.fmt_pause(sec)})" for i, sec in pauses))
     if reasons := loads(b["reasons"]) or []:
         lines.append("Check: " + "; ".join(str(r) for r in reasons))
     lines.append(BATCH_HINT)

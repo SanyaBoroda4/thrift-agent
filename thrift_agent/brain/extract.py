@@ -27,10 +27,13 @@ Rules:
   NWT only if an attached retail hang tag is visible in one of the seller's own photos — put that
   index in hang_tag_photo (and in condition_evidence). A box, a loose tag or a retailer screenshot
   is not NWT.
-  NWOT = unworn, no tag: pristine soles/insoles, no pilling, no wear.
+  NWOT = new, never worn, no tag: pristine soles/insoles, no pilling, no wear.
   like_new / excellent / good / fair for used items; list every visible flaw with the photo(s) that show it — the
   listing discloses a flaw only by showing that photo (the copy never describes wear), so a flaw needs its photo.
-  When unsure between two grades, choose the lower one.
+  When unsure between two grades, put the likelier one in condition and the other in condition_alternative. The
+  owner's rule: torn between like new and good (or excellent), the shop lists Like New — choose like_new. fair only
+  for a clearly well-worn item; say so when you see it (the shop never lists Fair: it goes up as Good and the owner
+  checks it before approving).
   - condition_evidence: always fill it for every grade — the photos and what you saw that justify the grade,
     with your confidence in the grade.
 - Photos marked (retail screenshot) are retailer web/app pages the seller shared. From them read

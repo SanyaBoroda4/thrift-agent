@@ -21,8 +21,11 @@ def render(**kw) -> Render:
 
 
 def test_condition_labels_are_poshmarks_menu():
+    """WO17, the owner's rules: excellent goes up as Like New (no "very good" on Poshmark), and Fair never."""
+    from thrift_agent.post.poshmark import POSH_FAIR
     assert CONDITION_TO_POSH == {"NWT": "New With Tags (NWT)", "NWOT": "Like New", "like_new": "Like New",
-                                 "excellent": "Good", "good": "Good", "fair": "Fair"}
+                                 "excellent": "Like New", "good": "Good", "fair": "Good"}
+    assert "Fair" not in CONDITION_TO_POSH.values() and POSH_FAIR == ("Fair", "uf")   # recorded, never used
 
 
 @pytest.mark.parametrize("ours,poshmark_group", [
@@ -69,7 +72,7 @@ def test_expected_reads_the_dropdowns_as_display_text():
     p = PoshmarkPoster("closet")
     exp = p.expected(render(original_price=228, colors=["Red", "Pink", "Blue"], brand="Levi’s"))
     assert exp["category"] == Contains("Women", "Shoes") and exp["subcategory"] == Contains("Flats & Loafers")
-    assert exp["condition"] == Contains("Good") and exp["size"] == Contains("7.5")
+    assert exp["condition"] == Contains("Like New") and exp["size"] == Contains("7.5")   # excellent: Like New
     assert exp["colors"] == Contains("Red", "Pink")                        # Poshmark takes two colours
     assert exp["brand"] == "Levi's" and exp["original_price"] == 228 and exp["photos"] == 2
     assert exp["smart_sell"] == "off" and exp["sku"] == "i_1"
@@ -158,9 +161,9 @@ def test_the_created_listing_id_comes_from_poshmarks_redirect():
 def test_condition_codes_are_poshmarks():
     from thrift_agent.post.poshmark import CONDITION_CODES
 
-    assert CONDITION_CODES == {"NWT": "nwt", "NWOT": "uln", "like_new": "uln", "excellent": "ug", "good": "ug",
-                               "fair": "uf"}
-    assert set(CONDITION_CODES) == set(CONDITION_TO_POSH)
+    assert CONDITION_CODES == {"NWT": "nwt", "NWOT": "uln", "like_new": "uln", "excellent": "uln", "good": "ug",
+                               "fair": "ug"}
+    assert set(CONDITION_CODES) == set(CONDITION_TO_POSH) and "uf" not in CONDITION_CODES.values()
 
 
 def test_the_module_docstring_lists_every_unverified_selector():

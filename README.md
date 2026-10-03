@@ -123,6 +123,17 @@ thrift login --site poshmark | telegram setup|test | harvest | build-style | eva
   and tear, fraying, pilling, hole, tear, smell…); a used item says "Gently pre-loved, please see photos for
   condition." and is never "like new", "excellent" or "no flaws". Every flaw has a photo in the listing, never the
   cover; a flaw without a photo shows up as a Note in the approval message.
+- **Condition grades** (owner rule). Torn between Like New and Good, the item is Like New (the model names the grade
+  it weighed against, code picks the higher; Poshmark has no "very good", so excellent goes up as Like New too). The
+  shop never lists Fair: a fair reading goes up as Good with the Note "looked well-worn — listed as Good; check before
+  approving". NWT still needs the attached hang tag in a photo, or the owner saying NWT.
+- **Item splitting.** The roll is split by the strongest model (`models.segment: claude-opus-5-5`) on 768 px previews
+  (384 px when the request would pass `segmentation.max_request_mb`, or the API says it is too large). Visual identity
+  decides — fabric, colour, print, shape, hardware, label; time is only a tiebreaker: the model sees "— pause 2 min —"
+  where a gap is longer than max(30 s, 4 × this roll's median gap), and no clock times. Retail screenshots stay out of
+  the timing. The code doubts an item that spans a pause AND a colour change, and a split with neither; the contact
+  sheet marks each pause and the message says why a split is doubtful. Every batch keeps the pauses and colour
+  distances, to tune the thresholds on real rolls.
 - **`HOLD_UNSHIPPED`** is a flag file in `paths.control` (set by the shipping watchdog or by hand). It blocks
   *publish* only: drafts and dry-runs keep running, so the queue is ready the moment the late order ships. `PAUSE`
   in the same folder stops the poster entirely.
@@ -230,7 +241,8 @@ messages or presses its buttons.
 ### Flow
 - **Batch confirmation.** The worker sends the contact sheet with a summary; the owner replies to it with `ok`,
   `12>2`, `split 7`, `merge 2 3` or `drop 7` — the same parser as `thrift confirm`. `segmentation.always_confirm`
-  stays configurable.
+  stays configurable. The sheet marks the photo after each pause ("pause 2 min"); the summary lists the pauses and
+  any doubt ("item 2: a pause (2 min) and a visual change between photos 6 and 7 — two items?").
 - **One message per item.** After extraction the item waits in `awaiting_price` and gets a single message: cover
   photo, title, size (with its system), condition and flaw count, the suggested price with a short basis, "Retail $X"
   when known, and "no price history for <brand>" when the price came from a category default. Inline buttons

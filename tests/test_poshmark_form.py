@@ -249,7 +249,7 @@ def test_women_shoes_fill_reads_back_exactly_what_was_planned(chrome, posh, phot
     seen, events = fill_and_read(chrome, posh, r)
     assert compare(seen, posh.expected(r)) == {}, seen
     assert events == ["cover-apply", "category:Women/Shoes", "subcategory:Flats & Loafers", "size-tab:Standard",
-                      "size:7.5", "condition:Good", "brand:Tory Burch", "color:Red", "tag:Casual", "price-done",
+                      "size:7.5", "condition:Like New", "brand:Tory Burch", "color:Red", "tag:Casual", "price-done",
                       "show-details"]                              # the SKU sits behind "show details"
     assert seen["cover_dialog"] == {"photos": 3, "crop": "Poshmark's default"}
     assert seen["photos"] == 3 and seen["price"] == "$85" and seen["original_price"] == "$228"
@@ -706,3 +706,12 @@ def test_a_list_click_that_raises_is_watched_recorded_and_never_repeated(chrome,
     assert "the click raised TimeoutError: locator.click" in str(err) and "may be live" in str(err)
     record = json.loads((tmp_path / f"{SKU}-poshmark-x-after-list.json").read_text(encoding="utf-8"))
     assert record["click_error"].startswith("TimeoutError") and site.list_clicks == 0
+
+
+
+@pytest.mark.parametrize("condition,label", [("fair", "Good"), ("good", "Good"), ("excellent", "Like New")])
+def test_the_form_never_selects_fair(chrome, posh, photos, condition, label):
+    """WO17: the shop never lists Fair. A fair reading that slipped past the pipeline still goes up as Good."""
+    r = render(photos, condition=condition)
+    seen, events = fill_and_read(chrome, posh, r, steps=["_condition"])
+    assert seen["condition"] == label and f"condition:{label}" in events and "condition:Fair" not in events, events

@@ -36,7 +36,9 @@ def evaluate(facts: Facts, price: PriceResult, lint: list[str], unsupported: int
     if not facts.size_us.value or facts.size_us.confidence < mc["size"]:
         need.append(f"size unclear ({facts.size_us.value}, {facts.size_us.confidence:.2f})")
     if facts.condition_evidence.confidence < mc.get("condition", 0.70):
-        notes.append(f"model unsure of the condition ({facts.condition_evidence.confidence:.2f}): listed as "
+        weighed = (f", weighed against {facts.condition_alternative}"
+                   if facts.condition_alternative and facts.condition_alternative != facts.condition else "")
+        notes.append(f"model unsure of the condition ({facts.condition_evidence.confidence:.2f}{weighed}): listed as "
                      f"{facts.condition}; reply with the condition if it is wrong")
     # Invariant 2: NWT needs the seller's own photo of the attached hang tag, or a seller note saying so.
     if facts.condition == "NWT" and facts.hang_tag_photo is None and facts.condition_evidence.source != "note":

@@ -23,6 +23,7 @@ from thrift_agent.brain import taxonomy
 from thrift_agent.brain.extract import extract
 from thrift_agent.config import Settings
 from thrift_agent.ingest import prep, segment as seg
+from thrift_agent.pipeline import settle_condition
 
 FIELDS = ("brand", "size_us", "category", "condition")
 
@@ -40,17 +41,22 @@ def run_case(s: Settings, case: Path) -> dict:
     kept, _ = prep.drop_near_duplicates(norm, [t for _, t in listed], s["images"]["dedupe_hamming"])
     times = [listed[int(p.stem)][1] for p in kept]
 
-    out = seg.segment(list(zip(kept, times)), s["models"]["segment"], s["images"]["thumb_long_edge"])
+    cfg = s["segmentation"]
+    breaks = seg.pauses(times, None, cfg.get("pause_min_seconds", 30), cfg.get("pause_factor", 4))
+    out = seg.segment(list(zip(kept, times)), s["models"]["segment"], s["images"]["thumb_long_edge"], breaks=breaks,
+                      fallback_px=s["images"].get("thumb_fallback_long_edge"))
     got_groups = [g.photos for g in out.groups]
     want_groups = [i["photos"] for i in exp["items"]]
     result = {"case": case.name, "segmentation_ok": got_groups == want_groups,
               "groups": {"want": want_groups, "got": got_groups},
-              "flags": seg.check(out, len(kept), s["segmentation"]["min_confidence"]), "fields": {}}
+              "flags": seg.check(out, len(kept), cfg["min_confidence"])
+              + seg.timing_check(got_groups, None, breaks, seg.visual_changes(kept)[1]), "fields": {}}
 
     # Extraction is scored on the TRUE groups so one segmentation miss doesn't hide extraction quality.
     for k, item in enumerate(exp["items"]):
         facts = extract([kept[i] for i in item["photos"]], None, s["models"]["extract"], s["images"]["llm_long_edge"])
         facts = taxonomy.fit(facts)[0]                  # scored on Poshmark's names, as the pipeline lists it
+        facts = settle_condition(facts)[0]              # and on the grade the shop lists (never Fair; doubt -> like new)
         got = {"brand": facts.brand.value, "size_us": facts.size_us.value,
                "category": facts.category, "condition": facts.condition}
         result["fields"][k] = {f: {"want": item.get(f), "got": got[f], "ok": _eq(item.get(f), got[f])}

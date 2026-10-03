@@ -98,20 +98,32 @@ def process_batch(s: Settings, db: DB, bid: str) -> None:
     if len(kept) > MAX_SEGMENT_PHOTOS:
         raise ValueError(f"batch has {len(kept)} photos after dedupe; the model takes at most {MAX_SEGMENT_PHOTOS} "
                          "— share it in smaller sets")
+    cfg = s["segmentation"]
+    # Breaks in shooting, relative to this roll (own photos only: screenshots are placed by content).
+    breaks = seg.pauses(kept_times, kept_kinds, cfg.get("pause_min_seconds", 30), cfg.get("pause_factor", 4))
+    distances, changes, report = {}, set(), {}
     if len(kept) == 1:
         groups, reasons, summaries, unassigned = [[0]], [], ["single photo"], []
     else:
         out = seg.segment(list(zip(kept, kept_times)), s["models"]["segment"], s["images"]["thumb_long_edge"],
-                          kinds=kept_kinds)
+                          kinds=kept_kinds, breaks=breaks, fallback_px=s["images"].get("thumb_fallback_long_edge"),
+                          max_bytes=int(cfg.get("max_request_mb", 20) * 1_000_000), report=report)
         groups = [g.photos for g in out.groups]
         summaries = [g.summary for g in out.groups]
         unassigned = list(out.unassigned)                 # screenshots the model could not match to an item
-        reasons = seg.check(out, len(kept), s["segmentation"]["min_confidence"], kinds=kept_kinds)
+        reasons = seg.check(out, len(kept), cfg["min_confidence"], kinds=kept_kinds)
+        distances, changes = seg.visual_changes(kept, kept_kinds, cfg.get("visual_change_min", 0.45),
+                                                cfg.get("visual_change_factor", 2.5))
+        reasons += seg.timing_check(groups, kept_kinds, breaks, changes)   # a pause AND a change inside, neither between
 
-    seg.contact_sheet(kept, groups, work / "contact_sheet.png", kinds=kept_kinds)   # sent by approve.send_batch
+    seg.contact_sheet(kept, groups, work / "contact_sheet.png", kinds=kept_kinds, breaks=breaks)   # approve.send_batch
     db.set_batch(bid, segmentation={"groups": groups, "summaries": summaries, "photos": [str(p) for p in kept],
                                     "kinds": kept_kinds, "unassigned": unassigned,
-                                    "dropped": [str(p) for p in dropped], "note": note},
+                                    "dropped": [str(p) for p in dropped], "note": note,
+                                    # what the code saw, kept to tune the thresholds on real rolls
+                                    "pauses": [[i, round(sec)] for i, sec in sorted(breaks.items())],
+                                    "distances": [[i, d] for i, d in sorted(distances.items())],
+                                    "changes": sorted(changes), "preview_px": report.get("preview_px")},
                  reasons=reasons)
 
     if reasons or s["segmentation"]["always_confirm"]:
@@ -283,6 +295,23 @@ def settle_nwt(facts: Facts, note: str | None) -> tuple[Facts, list[str]]:
             ["model saw NWT but no attached hang tag: listed as like new; reply 'NWT' if the tag is attached"])
 
 
+GRADES_UP = ("good", "excellent", "like_new")      # torn between two of these: the higher (the owner's rule, WO17)
+WELL_WORN = "looked well-worn — listed as Good; check before approving"
+
+
+def settle_condition(facts: Facts) -> tuple[Facts, list[str]]:
+    """The owner's condition rules (WO17). Torn between like new and good (or excellent): like new — Poshmark has no
+    "very good", and Like New is the owner's choice; between excellent and good: excellent (which Poshmark lists as
+    Like New too). Never Fair: a fair reading — or a good one the model thought might be fair — is listed as Good, and
+    the owner is told to check. NWT is settle_nwt()'s and stays strict. Returns (facts, notes for the approval)."""
+    cond, alt = facts.condition, facts.condition_alternative
+    if cond in GRADES_UP and alt in GRADES_UP and GRADES_UP.index(alt) > GRADES_UP.index(cond):
+        return facts.model_copy(update={"condition": alt}), []
+    if cond == "fair" or (cond == "good" and alt == "fair"):
+        return facts.model_copy(update={"condition": "good"}), [WELL_WORN]
+    return facts, []
+
+
 def kids_gender_notes(facts: Facts) -> list[str]:
     """Poshmark files a kids size under Girls or Boys. A kids item the model read as unisex (or couldn't read) goes
     under Girls, and the approval message says so; never a question."""
@@ -302,6 +331,8 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
     facts = extract(photos, it["note"], s["models"]["extract"], s["images"]["llm_long_edge"], kinds=kinds)
     facts = strip_screenshot_evidence(facts, retail)     # a screenshot is never evidence for condition, size or flaws
     facts, notes = settle_nwt(facts, it["note"])         # NWT needs a tag photo or the owner's word; else like new
+    facts, graded = settle_condition(facts)              # doubt -> like new; never Fair (Good, and a note)
+    notes += graded
     facts, fit_notes, fit_questions = taxonomy.fit(facts)   # Poshmark's own category names (Kids Tops -> Shirts & Tops)
     shown = listing_photos(s, facts, len(photos), kinds)  # flaw photos in, never the cover: the condition rule
     notes += fit_notes + kids_gender_notes(facts) + flaw_notes(facts, shown)
