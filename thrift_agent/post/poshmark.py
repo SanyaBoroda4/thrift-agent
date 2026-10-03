@@ -20,25 +20,35 @@ After Next (the Mac's review stage, 2026-10-02) the URL stays /create-listing an
 over the form: "‹ Back", the cover and title, a "Promote My Closet" toggle (Off; never touched), Pinterest and Facebook
 "Connect Now" (never clicked) and button[data-et-name=list] "List This Item".
 
+After List This Item (the first live listing, 2026-10-03) Poshmark goes to /closet/<user>?created_listing_id=<24 hex>,
+then drops the query. The closet did not show the new listing yet 5 s later, so it is reloaded until it does
+(_poll_closet). The listing's page is /listing/<slug>-<24 hex>: the slug is the title with everything but letters,
+digits and spaces dropped and the words joined by "-" (48 of 48 closet listings: "Toddler size 7.5" -> "Toddler-size-75",
+"One-Shoulder" -> "OneShoulder"); the id is a MongoDB ObjectId whose first 8 hex digits are its creation time (the
+moment the create form opened, not the click).
+
 UNVERIFIED (record on the Mac from the evidence in failed/shots):
   promote_toggle                the markup of the Promote My Closet toggle (asserted off before List; an unreadable
                                 one stops the publish before the click)
-  listing_url, draft_saved      the address after List This Item, where Save Draft lands
+  draft_saved                   where Save Draft lands
   captcha                       the wording of Poshmark's bot check
   size_choice(): the Baby tab's labels, kids clothing tabs, Plus sizes.
-submit() refuses to save a draft, and to publish unsupervised, while a step it needs is UNVERIFIED. The supervised first
-publish (`thrift poster --publish-first <item>`) sets `confirm`: the owner types LIST at the Share Listing panel, List
-This Item is pressed exactly once, and everything after the click is recorded.
+submit() refuses to save a draft while draft_saved is UNVERIFIED. Publishing is decided by the caller: the poster loop
+publishes only with poster.dry_run off and poster.autopublish_confirmed on (runner.run); the supervised publish
+(`thrift poster --publish-first <item>`) sets `confirm`, so the owner types LIST at the Share Listing panel. Either way
+List This Item is pressed exactly once, and everything after the click is recorded.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import re
+import time
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urlparse
 
 from playwright.async_api import ElementHandle, Locator, Page
 from playwright.async_api import TimeoutError as PlaywrightTimeout
@@ -189,15 +199,21 @@ SEL = {
     "review_back": lambda p: SEL["share_panel"](p).get_by_text(re.compile(r"^\s*\u2039?\s*Back\s*$")),
     "list_item": lambda p: SEL["share_panel"](p).locator('button[data-et-name="list"]'),
     "share_connect": lambda p: p.locator('a[data-et-name="pn_v2_connect"], a[data-et-name="fb_connect"]'),  # never
+    # The closet's listing tiles (the first live listing, 2026-10-03): a cover link a.tile__covershot
+    # [data-et-name=listing][data-et-prop-listing_id=<id>] whose image alt is the title, and a title link whose first
+    # line is the title; both href="/listing/<slug>-<id>".
     "closet_links": lambda p: p.locator('a[href*="/listing/"]'),
+    # Values, not locators. The listing's path (fullmatch on the path): /listing/<slug>-<24 hex id>. The redirect after
+    # List This Item: /closet/<user>?created_listing_id=<24 hex id>.
+    "listing_url": re.compile(r"/listing/(?P<slug>[^/?#]+)-(?P<id>[0-9a-f]{24})"),
+    "created_id": re.compile(r"[?&]created_listing_id=(?P<id>[0-9a-f]{24})(?![0-9a-f])"),
     # ---- UNVERIFIED: see the module docstring ----
     "promote_toggle": lambda panel: panel.locator('input[type="checkbox"]'),
-    "listing_url": re.compile(r"/listing/"),       # a value, not a locator: the address bar once the item is live
     "draft_saved": re.compile(r"/closet/|/listing/"),
     "captcha": lambda p: p.get_by_text(re.compile("captcha|verify you are human", re.I)),
 }
-UNVERIFIED = frozenset({"promote_toggle", "listing_url", "draft_saved", "captcha"})
-PUBLISH_NEEDS = frozenset({"list_item", "listing_url"})      # submit() goes live unsupervised only once recorded
+UNVERIFIED = frozenset({"promote_toggle", "draft_saved", "captcha"})
+PUBLISH_NEEDS = frozenset({"list_item", "listing_url"})      # submit() publishes only once these are recorded
 DRAFT_NEEDS = frozenset({"draft_saved"})
 
 THUMB_TIMEOUT_MS = 90_000        # 16 photos over home Wi-Fi can take a while
@@ -206,8 +222,11 @@ MENU_TIMEOUT_MS = 8_000          # a menu or dialog to open; a list to show the 
 SUGGEST_TIMEOUT_MS = 8_000       # brand suggestions after typing
 TAG_TIMEOUT_MS = 3_000           # a curated style tag to be offered
 LEAVE_TIMEOUT_MS = 5_000          # the link that leaves the form; then the leave dialog to show
-AFTER_LIST_MS = 45_000           # after List This Item: the listing's address to show up
-LEFT_FORM_MS = 3_000             # ... or, once the page has left the form for something else, this long to settle
+AFTER_LIST_MS = 45_000           # after List This Item: the page to leave the form
+LEFT_FORM_MS = 3_000             # ... and, once it has, this long to settle before it is recorded
+CLOSET_POLL_MS = 90_000          # then the closet is reloaded for this long until the new listing shows
+CLOSET_EVERY_MS = 10_000         # ... once every this often
+ID_SKEW_S = 600                  # a listing id created this long before the run started is still "new" (clock skew)
 POLL_MS = 250
 ROOT_TEXT_MAX = 300              # a dropdown "root" showing more text than this holds more than one field
 
@@ -215,9 +234,11 @@ ROOT_TEXT_MAX = 300              # a dropdown "root" showing more text than this
 _ITEM_JS = """e => [e.id || '', (e.innerText || e.textContent || '').trim(),
     ['title', 'aria-label', 'data-et-name'].map(a => e.getAttribute(a) || '').join('|')]"""
 _ITEMS_JS = f"els => els.map({_ITEM_JS})"
-# The closet's listing links: [href, the text a title can be in (the link's text, its title, its images' alt)].
-_LINKS_JS = """els => els.map(e => [e.getAttribute('href') || '', [e.innerText || '', e.getAttribute('title') || '',
-    ...[...e.querySelectorAll('img')].map(i => i.alt || '')].join(' ')])"""
+# The closet's listing links: [href, data-et-prop-listing_id, [its images' alt], the first line of its text] — a tile's
+# title is the cover image's alt and the title link's first line ("<title>\n$90\nOS").
+_LINKS_JS = """els => els.map(e => [e.getAttribute('href') || '', e.getAttribute('data-et-prop-listing_id') || '',
+    [...e.querySelectorAll('img')].map(i => i.alt || '').filter(Boolean),
+    ((e.innerText || '').trim().split('\\n')[0] || '').trim()])"""
 # The page after Next, for the review stage: what is on it, not what to click.
 _RECORD_JS = """() => {
   const shown = e => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
@@ -243,6 +264,32 @@ def _straight(s: str) -> str:
 
 def _key(s: str) -> str:
     return re.sub(r"\s+", " ", _straight(s)).strip().casefold()
+
+
+def _letters(s: str) -> str:
+    """ASCII letters and digits only, lowercased: how a title and its listing slug compare. Poshmark's slug drops
+    everything but letters, digits and spaces and joins the words with "-", so "Toddler size 7.5" and
+    "Toddler-size-75" are the same here (48 of 48 closet listings, 2026-10-03)."""
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def posh_slug(title: str) -> str:
+    """The slug Poshmark gives a listing with this title: "Top - Black" -> "Top-Black", "7.5" -> "75"."""
+    return "-".join(re.sub(r"[^A-Za-z0-9\s]", "", title).split())
+
+
+def _created_id(urls: list[str]) -> str | None:
+    """The listing id Poshmark names in its redirect after List This Item (?created_listing_id=<id>), if any."""
+    for url in urls:
+        if m := SEL["created_id"].search(url):
+            return m["id"]
+    return None
+
+
+def _id_time(listing_id: str) -> int:
+    """The creation time (epoch seconds) in a listing id: its first 8 hex digits, as in any MongoDB ObjectId."""
+    return int(listing_id[:8], 16)
 
 
 def _is(want: str, el_id: str, text: str, attrs: str, loose: bool = False) -> bool:
@@ -285,7 +332,8 @@ class PoshmarkPoster(Poster):
         self._roots: dict[str, ElementHandle | None] = {}   # dropdown -> the element that shows its choice
         self._state: dict = {}                             # what fill() saw for read_back: thumbnails, Smart Sell
         self._render: Render | None = None
-        self._closet_before: set[str] = set()              # the closet's listing links before this post
+        self._closet_before: set[str] = set()              # the closet's listing ids before this post
+        self._started = 0.0                                # when this post started (epoch s): new ids are younger
         # The supervised first publish: an async (render, panel text) -> bool, True only when the owner typed LIST.
         self.confirm = None
 
@@ -303,7 +351,9 @@ class PoshmarkPoster(Poster):
         if await SEL["restricted_banner"](page).count():
             raise AccountBlocked("Poshmark account is restricted (unshipped/cancelled orders)")
         # What the closet lists now, so a new listing can be told from an older one with the same title.
-        self._closet_before = {href for href, _ in await SEL["closet_links"](page).evaluate_all(_LINKS_JS)}
+        self._started = time.time()
+        rows = await SEL["closet_links"](page).evaluate_all(_LINKS_JS)
+        self._closet_before = set(self._listings(rows))
 
     async def drafts(self, page: Page) -> int | None:
         """The count in the create page's Drafts panel ("Drafts 0"), or None when it can't be read."""
@@ -775,11 +825,9 @@ class PoshmarkPoster(Poster):
     async def submit(self, page: Page, mode: Mode) -> str | None:
         self.clicked = False                           # until the click that can't be undone, the form can be left
         needs = PUBLISH_NEEDS if mode == "publish" else DRAFT_NEEDS
-        missing = sorted(needs & UNVERIFIED)
-        if missing and not (mode == "publish" and self.confirm is not None):
+        if missing := sorted(needs & UNVERIFIED):
             raise PosterError(f"the {mode} step is not recorded yet ({', '.join(missing)} UNVERIFIED in "
-                              "post/poshmark.py); keep poster.dry_run on until it is"
-                              + (" (or `thrift poster --publish-first <item>`, supervised)" if mode == "publish" else ""))
+                              "post/poshmark.py); keep poster.dry_run on until it is")
         if mode == "draft":
             self.clicked = True
             await SEL["save_draft"](page).first.click()
@@ -818,17 +866,90 @@ class PoshmarkPoster(Poster):
             click_error = f"{type(e).__name__}: {(str(e).strip().splitlines() or [''])[0][:200]}"
         return await self._after_list(page, r, before, navigations, native, click_error)
 
-    def _evidence(self, name: str) -> Path:
-        shot = self.shot or Path(f"{self._render.sku}-{self.name}.png")
+    def _evidence(self, name: str, sku: str | None = None) -> Path:
+        shot = self.shot or Path(f"{sku or (self._render.sku if self._render else 'item')}-{self.name}.png")
         return shot.with_name(f"{shot.stem}-{name}.png")
+
+    def listing_address(self, url: str) -> str | None:
+        """The canonical address of a listing on this site — https://poshmark.com/listing/<slug>-<24 hex id>, as the
+        first live listing's (2026-10-03) — or None for anything else. A query, a fragment or a final "/" is dropped."""
+        u, base = urlparse((url or "").strip()), urlparse(self.base_url)
+        path = u.path.rstrip("/")
+        if (u.scheme, u.netloc) != (base.scheme, base.netloc) or not SEL["listing_url"].fullmatch(path):
+            return None
+        return f"{self.base_url}{path}"
+
+    def _listings(self, rows: list) -> dict[str, dict]:
+        """The closet's listings by id, from _LINKS_JS rows: {"path", "slug", "titles"} (two links per tile)."""
+        out: dict[str, dict] = {}
+        for href, lid, alts, first in rows:
+            m = SEL["listing_url"].fullmatch(urlparse(href).path.rstrip("/"))
+            if not m or (lid and lid != m["id"]):
+                continue
+            e = out.setdefault(m["id"], {"path": m.group(0), "slug": m["slug"], "titles": set()})
+            e["titles"] |= {_key(t) for t in [*alts, first] if t}
+        return out
+
+    def _ours(self, rows: list, r: Render, created: str | None) -> tuple[list[str], dict]:
+        """This post's listing among the closet's: not there before the post (check_account), the tile shows this
+        title AND the address carries a slug of this title, and it is the one Poshmark named (created_listing_id) —
+        or, when Poshmark named none, an id created since the post started. Returns (the addresses, what was seen)."""
+        listings = self._listings(rows)
+        want, letters = _key(r.title), _letters(r.title)
+        new = [lid for lid in listings if lid not in self._closet_before]
+        titled = [lid for lid in new if want in listings[lid]["titles"] and _letters(listings[lid]["slug"]) == letters]
+        if created:
+            ours = [lid for lid in titled if lid == created]
+        else:
+            ours = [lid for lid in titled if _id_time(lid) >= self._started - ID_SKEW_S]
+        seen = {"listings": len(listings), "new": new[:10], "new_with_this_title": titled,
+                "created_listing_shown": created in listings if created else None}
+        return [f"{self.base_url}{listings[lid]['path']}" for lid in ours], seen
+
+    async def _poll_closet(self, page: Page, r: Render, created: str | None) -> tuple[str | None, dict]:
+        """Reload the closet until this listing shows (CLOSET_POLL_MS, every CLOSET_EVERY_MS): Poshmark lands on
+        /closet/<user> after List This Item, and the new listing was not there yet 5 s later (2026-10-03). The page
+        Poshmark landed on is read first and then reloaded; any other landing is left alone and the closet is read in
+        a new tab. Read only: nothing is clicked. Returns (the address or None, the record for <shot>-closet.json)."""
+        closet = f"{self.base_url}/closet/{self.username}"
+        landed = urlparse(page.url).path.rstrip("/") == f"/closet/{self.username}"
+        tab = page if landed else await page.context.new_page()
+        record: dict = {"created_listing_id": created, "listings_before": len(self._closet_before),
+                        "landed_on_closet": landed, "polls": []}
+        start = time.monotonic()
+        try:
+            while True:
+                try:
+                    if record["polls"] or not landed:
+                        await tab.goto(closet)
+                        await tab.wait_for_load_state("domcontentloaded")
+                    try:
+                        await SEL["closet_links"](tab).first.wait_for(state="attached", timeout=MENU_TIMEOUT_MS)
+                    except PlaywrightTimeout:
+                        pass
+                    ours, seen = self._ours(await SEL["closet_links"](tab).evaluate_all(_LINKS_JS), r, created)
+                except Exception as e:  # noqa: BLE001 — a reload that failed: try again on the next round
+                    ours, seen = [], {"error": f"{type(e).__name__}"}
+                record["polls"].append({"t_s": round(time.monotonic() - start, 1), **seen, "ours": ours})
+                if len(ours) == 1:
+                    others = [lid for lid in seen["new_with_this_title"] if not ours[0].endswith(lid)]
+                    record["found"], record["other_new_with_this_title"] = ours[0], others
+                    return ours[0], record
+                if len(ours) > 1 or time.monotonic() - start >= CLOSET_POLL_MS / 1000:
+                    return None, record                # several: never a guess; none: it may still be live
+                await asyncio.sleep(CLOSET_EVERY_MS / 1000)
+        finally:
+            if tab is not page:
+                await tab.close()
 
     async def _after_list(self, page: Page, r: Render, before: str, navigations: list[str], native: list[dict],
                           click_error: str | None) -> str:
-        """Watch the page after List This Item (its address, the dialogs it shows), keep it all as evidence
-        (<shot>-after-list.png/.html/.json), and return the listing's address: the one the page went to, else the one
-        new closet listing with this title. Nothing is clicked here. No address found fails the item; it may be live."""
+        """Watch the page after List This Item until it leaves the form (its address, the dialogs it shows), keep it
+        all as evidence (<shot>-after-list.png/.html/.json), then find the new listing's address: the page itself when
+        it is a listing, else the closet, reloaded until the listing shows (<shot>-closet.json). Nothing is clicked
+        here. No address found fails the item: it may be live."""
         waited, left_at, dialogs = 0, None, []
-        while waited < AFTER_LIST_MS and not SEL["listing_url"].search(page.url) and not page.is_closed():
+        while waited < AFTER_LIST_MS and not self.listing_address(page.url) and not page.is_closed():
             try:
                 for text in await SEL["any_dialog"](page).all_inner_texts():
                     text = re.sub(r"\s+", " ", text).strip()[:300]
@@ -842,59 +963,36 @@ class PoshmarkPoster(Poster):
                     break
             await asyncio.sleep(THUMB_POLL_MS / 1000)
             waited += THUMB_POLL_MS
-        record = {"url_before": before, "url_after": page.url, "click_error": click_error, "navigations": navigations,
-                  "dialogs": dialogs, "native_dialogs": native, "waited_ms": waited}
+        created = _created_id([*navigations, page.url])
+        record = {"url_before": before, "url_after": page.url, "created_listing_id": created,
+                  "click_error": click_error, "navigations": navigations, "dialogs": dialogs, "native_dialogs": native,
+                  "waited_ms": waited}
         try:
             record["page"] = await page.evaluate(_RECORD_JS)
         except Exception:  # noqa: BLE001
             pass
         await keep_evidence(page, self._evidence("after-list"), record)
-        if SEL["listing_url"].search(page.url):
-            return page.url.split("?")[0].split("#")[0]
-        url, closet = await self._find_in_closet(page.context, r)
+        if url := self.listing_address(page.url):
+            return url
+        url, closet = await self._poll_closet(page, r, created)
         self._evidence("closet").with_suffix(".json").write_text(json.dumps(closet, indent=1), encoding="utf-8")
         if url:
+            if others := closet.get("other_new_with_this_title"):
+                self.notes.append(f"another new listing with this title showed up in the closet ({', '.join(others)}):"
+                                  " check for a duplicate")
             return url
+        last = closet["polls"][-1] if closet["polls"] else {}
+        several = len(last.get("ours") or [])
+        why = (f"{several} new listings with this title in the closet, none named by Poshmark: never a guess"
+               if several > 1 else
+               f"the new listing didn't show in the closet within {CLOSET_POLL_MS // 1000} s"
+               + (f" (Poshmark named it {created})" if created else ""))
         clicked = f"the click raised {click_error}; " if click_error else ""
-        raise PosterError(f"after List This Item no listing address: {clicked}the page is at {page.url}, and the "
-                          f"closet has {len(closet['new'])} new listing(s) with this title. It may be live: check the "
-                          "closet")
-
-    async def _find_in_closet(self, ctx, r: Render) -> tuple[str | None, dict]:
-        """The listing in the closet that carries this title and wasn't there before (check_account); when several
-        do, the one whose page carries our SKU. The SKU is a private field: whether its page shows it to the owner is
-        recorded (sku_seen), not relied on for a single match."""
-        page = await ctx.new_page()
-        skus: dict[str, bool | None] = {}
-        try:
-            await page.goto(f"{self.base_url}/closet/{self.username}")
-            await page.wait_for_load_state("domcontentloaded")
-            try:
-                await SEL["closet_links"](page).first.wait_for(state="attached", timeout=MENU_TIMEOUT_MS)
-            except PlaywrightTimeout:
-                pass
-            rows = await SEL["closet_links"](page).evaluate_all(_LINKS_JS)
-            want = _key(r.title)[:40]
-            titled = list(dict.fromkeys(href for href, text in rows if href and want in _key(text)))
-            new = [href for href in titled if href not in self._closet_before]
-            for href in new[:3]:                       # read only: open each candidate, look for the SKU
-                try:
-                    await page.goto(urljoin(self.base_url + "/", href))
-                    await page.wait_for_load_state("domcontentloaded")
-                    skus[href] = r.sku in await page.content()
-                except Exception:  # noqa: BLE001
-                    skus[href] = None
-        finally:
-            await page.close()
-        record = {"title_matches": titled, "new": new, "sku_seen": skus,
-                  "closet_links_before": len(self._closet_before)}
-        pick = new if len(new) == 1 else [href for href in new if skus.get(href)]
-        if len(pick) == 1:
-            return urljoin(self.base_url + "/", pick[0]).split("?")[0], record
-        return None, record
+        raise PosterError(f"after List This Item no listing address: {clicked}the page went to {page.url}; {why}. "
+                          "It may be live: check the closet, then `thrift mark-posted`")
 
     async def verify_live(self, page: Page, url: str, r: Render) -> None:
         """The base check (title and price), plus whether the page carries the SKU (recorded: owner's view only?)."""
         await super().verify_live(page, url, r)
         record = {"url": url, "title": True, "price": True, "sku_on_page": r.sku in await page.content()}
-        self._evidence("live").with_suffix(".json").write_text(json.dumps(record, indent=1), encoding="utf-8")
+        self._evidence("live", r.sku).with_suffix(".json").write_text(json.dumps(record, indent=1), encoding="utf-8")

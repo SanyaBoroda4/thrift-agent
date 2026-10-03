@@ -20,6 +20,8 @@ iCloud Posh/inbox/<ts>/ (+ _done) ─► register batch ─► prep (HEIC→JPEG
   ─► verify (LLM strip unsupported claims) + lint (deterministic) ─► gate: publish | draft | needs_info
   ─► awaiting_price ─► Telegram: ONE message [Approve $P] [Change] (open questions folded in) ─► ready
   ─► poster: fill form → read back → diff → dry-run | draft | publish → verify live page → record URL
+     (publish: List This Item once → Poshmark's closet ?created_listing_id=<id> → the closet reloaded until that
+      listing shows, ≤ 90 s → its /listing/<slug>-<id> address; not found → "unconfirmed publish", `mark-posted`)
      (dry-run stage form | review: never the publish button; the form is left through Poshmark's Discard;
       after the upload Poshmark's cover dialog is applied with its default crop, any other dialog fails the item;
       each dry-run compares Poshmark's Drafts count before and after — more drafts → Telegram warning + Outcome note)
@@ -41,6 +43,14 @@ Item statuses: `new` → `awaiting_price` | `needs_info` → `ready` → `postin
      NWT without `hang_tag_photo` is listed as **like new** unless the owner's reply says "NWT" (the note then
      becomes the evidence); a suspected **re-share stays held** (the price is recorded, the item stays
      `awaiting_price`) until the reply says "different item" (list it) or "same item" (drop it, status `dropped`).
+   - **Condition wording (owner rule, WO16).** Wear and flaws are never put in words — no dirt, dirty, stain, scuff,
+     worn, wear and tear, fraying, pilling, hole, tear, smell… in the title, the descriptions or the tags. A used item
+     (like_new, excellent, good, fair) says ONE neutral line, "Gently pre-loved, please see photos for condition.", and
+     is never "no flaws", "like new" or "excellent". Every flaw has a photo that is in the listing, never the cover
+     (`pipeline.photo_order` / `fit_photos`); a flaw without a photo is a Note in the approval message. The copy
+     writer never sees the flaws or the condition evidence; `copy.condition_rule` runs after the verifier (drops a
+     sentence with wear words, puts the line in) and `verify.lint` checks the result (wear words, used-item claims,
+     the line and the flaw photos).
    - **The only questions.** Brand or size below 0.70, NWT without a hang-tag photo, category "Other" (or a
      department/category not on Poshmark's list, `data/poshmark_taxonomy.yaml`), a possible re-share, and the poster's
      `needs_owner`. The model's own `questions` about optional facts (material,
@@ -52,7 +62,9 @@ Item statuses: `new` → `awaiting_price` | `needs_info` → `ready` → `postin
 4. **Idempotent posting.** Row → `posting` before the form opens. A `posting` row after a crash is never
    retried automatically; reconcile against the closet first. One item ID posts once per marketplace, ever.
    - A publish that pressed List This Item but found no listing address is `failed` with `last_error`
-     "unconfirmed publish: …" — it may be live. `thrift requeue` and `--publish-first` refuse it; check the closet.
+     "unconfirmed publish: …" — it may be live. `thrift requeue` and `--publish-first` refuse it; check the closet,
+     then `thrift mark-posted <item> <marketplace> <url>` (only for such a row: the URL must be a listing page no
+     other item holds, showing the item's title and price; then `posted` + URL, "✅ confirmed live" in Telegram).
 5. **Stop, don't guess.** Logged out / CAPTCHA / restricted account → write `PAUSE`, ping, exit. Unknown modal
    → fail the item with a screenshot. Never solve CAPTCHAs, never type credentials.
 6. **Human pacing, human hours.** `schedule` limits; no sharing/following/offers/relisting from this code.
@@ -113,9 +125,19 @@ Item statuses: `new` → `awaiting_price` | `needs_info` → `ready` → `postin
   (`a[data-et-name=pn_v2_connect|fb_connect]`, never clicked) and **List This Item** `button[data-et-name=list]`
   (`list_item`). None of the panel is in the DOM before Next. The old back-out (a Back/Edit/Cancel role, else browser
   Back) timed out under the backdrop; it is now ‹ Back → the panel gone → Cancel → Discard Changes.
+- The first live listing (2026-10-03, WO16, supervised `--publish-first`): after List This Item Poshmark goes to
+  `/closet/<user>?created_listing_id=<24 hex>` (`created_id`), then drops the query; 5 s later that closet did NOT show
+  the new listing yet — the poster now reloads it every 10 s for up to 90 s. Closet tiles: `a.tile__covershot
+  [data-et-name=listing][data-et-prop-listing_id=<id>]` with the title as the image alt, and a title link whose first
+  line is the title; both `href="/listing/<slug>-<id>"`. The listing's address (`listing_url`):
+  `https://poshmark.com/listing/<slug>-<24 hex id>`, the slug = the title with everything but letters, digits and
+  spaces dropped and the words joined by "-" (48 of 48 closet listings: "Toddler size 7.5" → "Toddler-size-75",
+  "One-Shoulder" → "OneShoulder"); the id's first 8 hex digits are its creation time (when the form opened). Matching:
+  new since the post started, the tile's title AND the slug are this title's, and it is the id Poshmark named (else an
+  id created since the post started); several → never a guess.
 - **UNVERIFIED:** the Promote My Closet toggle's markup (`promote_toggle`: one checkbox → must be unchecked; none →
-  the panel must read "Promote My Closet Off"; anything else stops before List); the page after List This Item and
-  the listing's address (`listing_url`) — the supervised first publish records them; where Save Draft lands
+  the panel must read "Promote My Closet Off"; anything else stops before List — the first publish passed through the
+  one-checkbox path); where Save Draft lands
   (`draft_saved`); the size field and Done for adult sizes; the CAPTCHA wording; the Baby-tab size labels, kids
   clothing and Plus size tabs; the Men/Home category lists; all of Depop. Record them from the evidence in
   `failed/shots/` (`.png`/`.html`/`.json` per run, `<item>-review.json`, `…-after-list.*`) or with
@@ -129,8 +151,8 @@ Without `private/`, the code falls back to `config/*.example.yaml` and `data/sty
 
 ## Commands
 `thrift init | run | process <dir> | confirm <batch> <cmd> | answer <item> "<note>" | price <item> <amount>`
-`thrift requeue <item> [marketplace] | status | show <item> | poster [--once] [--dry-run] [--stage form|review]
-[--publish-first <item>] [--allow-dev-browser]`
+`thrift requeue <item> [marketplace] | mark-posted <item> <marketplace> <url> | status | show <item>`
+`thrift poster [--once] [--dry-run] [--stage form|review] [--publish-first <item>] [--allow-dev-browser]`
 `thrift login --site poshmark | telegram setup|test | harvest | build-style | eval`
 `thrift requeue` also takes back an item the poster parked in `needs_owner` as it is (no reprocessing, the question
 closed) — the retry after a poster fix. `confirm`, `answer` and `price` are the CLI twins of the Telegram replies;
@@ -139,9 +161,13 @@ closed) — the retry after a poster fix. `confirm`, `answer` and `price` are th
 `ready` item at its owner-approved price, `poster.dry_run` ignored for this one call. It fills, reads back and diffs,
 checks the Share Listing panel (our title, Promote My Closet off), asks "Type LIST to publish" in the terminal, presses
 List This Item exactly once, records everything after the click (`<shot>-after-list.png/.html/.json`), finds the
-listing's address (the redirect, else the one new closet listing with this title; several → the one showing our
-SKU, else none), checks the live page (title, price) and records the post `posted` with the URL. Anything unrecognized after the click: never clicked again, `failed` with
-the evidence, a Telegram ping. Never retried automatically; autopublish stays off.
+listing's address (the closet Poshmark lands on, reloaded until the listing shows — see "What's verified"), checks
+the live page (title, price) and records the post `posted` with the URL. Anything unrecognized after the click: never
+clicked again, `failed` with the evidence, a Telegram ping. Never retried automatically.
+The poster loop (`thrift poster`) publishes only with `poster.dry_run: false` AND `poster.autopublish_confirmed:
+true` (both off by default; plus `marketplaces.<mp>.autopublish: true`, else a publish-gated item is a draft, which
+still refuses: `draft_saved` UNVERIFIED). `mark-posted <item> <marketplace> <url>` records a listing found by hand for
+an "unconfirmed publish" row (Mac only, poster service stopped).
 `--allow-dev-browser` lets the poster open a browser on the dev machine for selector work; it stays dry-run and
 never logs into or touches the shop. `--stage` overrides `poster.dry_run_stage` for one run: `form` (fill, read back,
 evidence, Discard) or `review` (also Next, record the page after it to `failed/shots/<item>-review.json`, back out,
@@ -155,6 +181,9 @@ The owner shares retailer screenshots (product page with price, style name, colo
 - Always last in the listing, never the cover. Original Price = retail price.
 
 ## Copy rules
+- **Condition is shown, not told** (owner rule, WO16 — see invariant 2): no wear or flaw words anywhere; a used item's
+  condition line is "Gently pre-loved, please see photos for condition."; NWT/NWOT say "New with tags." / "New without
+  tags."; flaw photos are in the listing, never the cover.
 - **Materials need evidence.** `item_type`/`features` may not name a material (leather, suede, wool, …) unless
   `facts.material` has label/stamp evidence; texture words (woven, quilted, ribbed, glitter) are fine. The verifier
   treats material words as claims; lint flags any material word in title/description/tags that `facts.material`
@@ -220,8 +249,10 @@ The owner shares retailer screenshots (product page with price, style name, colo
   Done (WO13–WO14): a size menu that closes itself; an empty Original Price reading back "0".
   Done (WO15): the Share Listing panel after Next recorded; the review back-out fixed (‹ Back → Cancel → Discard);
   `thrift poster --publish-first <item>`, the supervised first publish.
-  Left: the first supervised publish on the Mac, then pin `listing_url` (and the toggle) from its after-list evidence;
-  where Save Draft lands (`draft_saved`); a week of dry-runs. Autopublish stays off until then.
+  Done (WO16): the first live listing (supervised); `listing_url` pinned from its evidence; the closet polled after
+  List (`created_listing_id`, title AND slug, ≤ 90 s); `thrift mark-posted`; the owner's condition-wording rule;
+  `poster.autopublish_confirmed` as the second key for the poster loop.
+  Left: where Save Draft lands (`draft_saved`); the Promote toggle's markup; a week of dry-runs, then the two keys.
 - **M3 Telegram approval flow — done (v1):** long polling in the worker, one approval message per item
   ([Approve $P] [Change], questions folded in), `needs_owner` for the poster's own questions, re-send of pending
   messages after sleep. Nothing left code-wise; the owner creates the bot with @BotFather and fills

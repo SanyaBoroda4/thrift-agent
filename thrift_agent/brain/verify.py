@@ -6,16 +6,20 @@ import re
 import unicodedata
 
 from thrift_agent.brain import llm, taxonomy
-from thrift_agent.brain.copy import strip_tag_lines
+from thrift_agent.brain.copy import HAS_CONDITION_LINE, NEGATIVE_WORDS, USED, USED_CLAIMS, strip_tag_lines
 from thrift_agent.brain.sizes import kids_parts, size_label
 from thrift_agent.schema import CopyOut, Facts, VerifyOut
 
 SYSTEM = """You audit resale listing copy against a fact sheet. A claim is unsupported if the facts
 don't state it (fabric, fit, measurements, era, authenticity, odor/smoke claims, "true to size",
-a condition better than the facts', a missing flaw). Return the copy with unsupported claims removed
-and missing flaws added, changing nothing else. If everything is supported, return it unchanged.
+a condition better than the facts'). Return the copy with unsupported claims removed, changing nothing
+else. If everything is supported, return it unchanged.
 Material words (leather, suede, cashmere, silk...) are claims: unsupported unless facts.material states them —
 an item_type that says "leather sneakers" is not evidence.
+The owner's condition rule: wear and flaws are never put in words — the listing's photos show them, and a used item
+carries the one line "Gently pre-loved, please see photos for condition.". Never add or restore a description of wear
+or a flaw (facts.flaws are disclosed by their photos, not by text), and leave that line as it is; code removes any
+wear words that are left after you.
 poshmark_style_tags are shown for the audit only (an unsupported tag goes in `unsupported`); they are not
 part of your output, and the Depop hashtag line is added by code after your audit."""
 
@@ -34,11 +38,6 @@ def verify(facts: Facts, copy: CopyOut, model: str) -> VerifyOut:
 
 
 MIN_DESCRIPTION = 20
-# Whole words and their inflections only: "activewear", "footwear", "market", "pillow", "whole", "stainless"
-# must not count as a flaw disclosure.
-FLAW_WORDS = (r"\b(flaws?|wear|worn|scuff(?:s|ed|ing)?|stain(?:s|ed|ing)?|marks?|markings?|pill(?:s|ed|ing)?|"
-              r"snag(?:s|ged|ging)?|holes?|tears?|torn|scratch(?:es|ed|ing)?|creas(?:e|es|ed|ing)|"
-              r"fad(?:e|es|ed|ing)|discolou?r(?:ed|ation|ing)?|missing)\b")
 # Shades copy uses for the palette colours (schema.Color). Both the copy's colour words and the facts' are normalised
 # through SHADES before comparing, so "navy" on a Blue item or "ivory" on a Cream one is not a mismatch.
 SHADES = {
@@ -140,7 +139,15 @@ def fit_style_tags(tags: list[str], facts: Facts) -> list[str]:
     return out[:3]
 
 
-def lint(facts: Facts, copy: CopyOut) -> list[str]:
+def _found(pattern: re.Pattern, text: str) -> list[str]:
+    """The distinct phrases `pattern` finds in `text`, lowercased, spacing normalised, sorted."""
+    return sorted({re.sub(r"\s+", " ", m.group(0).lower()) for m in pattern.finditer(text)})
+
+
+def lint(facts: Facts, copy: CopyOut, photos: list[int] | None = None) -> list[str]:
+    """The deterministic checks on finished copy. `photos` are the photo indices the listing shows, cover first
+    (pipeline.listing_photos): a flaw counts as disclosed when the description carries the condition line and one of
+    the flaw's photos is in the listing, not as the cover (the owner's condition rule)."""
     problems: list[str] = []
     t, d, dd = copy.poshmark_title, copy.poshmark_description, copy.depop_description
     everything = f"{t}\n{d}\n{dd}\n{' '.join(copy.poshmark_style_tags)}"
@@ -176,8 +183,10 @@ def lint(facts: Facts, copy: CopyOut) -> list[str]:
         foreign = [f"{kw} {num}" for kw, num in SIZE_TOKENS.findall(t) if kw.lower() == "eu" or num != n]
         if foreign:                                   # "EU 38", "size 24 (US 7.5)": the title is US-only
             problems.append(f"title must show the US size only (found {', '.join(foreign)})")
-    rank = RANK.index(facts.condition)
+    rank, used = RANK.index(facts.condition), facts.condition in USED
     for grade, pat in CONDITION_CLAIMS.items():
+        if grade == "like_new" and used:
+            continue                                   # a used item makes no grade claim at all: USED_CLAIMS below
         if RANK.index(grade) > rank and re.search(pat, everything, re.I):
             problems.append("says NWT but facts aren't NWT" if grade == "NWT"
                             else f"copy claims {grade} but facts are {facts.condition}")
@@ -215,8 +224,20 @@ def lint(facts: Facts, copy: CopyOut) -> list[str]:
     named = {w: _shade(w) for w in re.findall(COLOR_WORDS, HARDWARE_COLOR.sub(" ", everything.lower()))}
     if off := sorted(w for w, base in named.items() if base not in allowed):
         problems.append(f"color words not in facts: {off}")
+    # The owner's condition rule: wear and flaws are never put in words; the photos show them.
+    tags = " ".join([*copy.poshmark_style_tags, *copy.depop_hashtags])
+    for where, text in (("title", t), ("poshmark description", d), ("depop description", dd), ("tags", tags)):
+        if words := _found(NEGATIVE_WORDS, text):
+            problems.append(f"wear words in the {where}: {', '.join(words)}")
+    if used and (claims := _found(USED_CLAIMS, everything)):
+        problems.append(f"a used item claims {', '.join(claims)}")
     if facts.flaws:
         for marketplace, text in (("poshmark", d), ("depop", dd)):
-            if not re.search(FLAW_WORDS, text, re.I):
-                problems.append(f"facts list flaws but the {marketplace} description doesn't mention any")
+            if not HAS_CONDITION_LINE.search(text):
+                problems.append(f"facts list flaws but the {marketplace} description lacks the condition line")
+        if photos is not None:
+            shown = set(photos[1:])                    # the cover never counts: a flaw photo is never the cover
+            unshown = [f.description for f in facts.flaws if f.photos and not shown & set(f.photos)]
+            if unshown:
+                problems.append(f"flaw photos not in the listing: {'; '.join(unshown)}")
     return problems

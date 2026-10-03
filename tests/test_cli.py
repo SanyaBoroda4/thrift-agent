@@ -308,3 +308,25 @@ def test_poster_publish_first_says_why_it_refused_and_exits_1(monkeypatch):
         r = CliRunner().invoke(cli.app, ["poster", "--publish-first", "i_261002_abc123"])
         assert r.exit_code == 1 and says in " ".join(r.output.split()), r.output
         assert "Traceback" not in r.output
+
+
+def test_mark_posted_reports_the_address_or_why_not(monkeypatch):
+    from typer.testing import CliRunner
+    import thrift_agent.post.runner as runner
+    url = "https://poshmark.com/listing/Naturino-Sneakers-Toddler-size-75-6ac111490000000000000a01"
+    calls = []
+
+    async def marked(s, db, iid, mp, address):
+        calls.append((iid, mp, address))
+        return address
+
+    async def refused(s, db, iid, mp, address):
+        raise ValueError(f"{mp}: only a post in 'unconfirmed publish' can be marked posted ({iid} has status posted)")
+    monkeypatch.setattr(cli, "_db", lambda: object())
+    monkeypatch.setattr(runner, "mark_posted", marked)
+    r = CliRunner().invoke(cli.app, ["mark-posted", "i_261002_abc123", "poshmark", url])
+    assert r.exit_code == 0 and calls == [("i_261002_abc123", "poshmark", url)], r.output
+    assert "posted i_261002_abc123 on poshmark" in " ".join(r.output.split())
+    monkeypatch.setattr(runner, "mark_posted", refused)
+    r = CliRunner().invoke(cli.app, ["mark-posted", "i_261002_abc123", "poshmark", url])
+    assert r.exit_code == 1 and "not marked" in r.output and "Traceback" not in r.output

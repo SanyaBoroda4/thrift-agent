@@ -28,7 +28,8 @@ Rules:
   index in hang_tag_photo (and in condition_evidence). A box, a loose tag or a retailer screenshot
   is not NWT.
   NWOT = unworn, no tag: pristine soles/insoles, no pilling, no wear.
-  like_new / excellent / good / fair for used items; list every visible flaw with its photo.
+  like_new / excellent / good / fair for used items; list every visible flaw with the photo(s) that show it — the
+  listing discloses a flaw only by showing that photo (the copy never describes wear), so a flaw needs its photo.
   When unsure between two grades, choose the lower one.
   - condition_evidence: always fill it for every grade — the photos and what you saw that justify the grade,
     with your confidence in the grade.
@@ -37,8 +38,8 @@ Rules:
   and source=photo. NEVER use a screenshot as evidence for condition, size, hang tag or flaws — those
   come only from the seller's own photos. A screenshot is never the cover.
 - A seller note, if present, is authoritative: use source=note, confidence 1.0.
-- cover_photo = cleanest full-item shot. photo_order = every index: cover, back/sides, details,
-  labels, flaws.
+- cover_photo = cleanest full-item shot, never a photo that shows a flaw. photo_order = every index: cover,
+  back/sides, details, labels, flaws.
 - questions = only what a photo truly can't settle (e.g. "size tag unreadable — what size?")."""
 
 

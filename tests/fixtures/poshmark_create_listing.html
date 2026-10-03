@@ -39,18 +39,23 @@
   title, a "Promote My Closet" toggle (Off), Pinterest a[data-et-name=pn_v2_connect] and Facebook
   a[data-et-name=fb_connect] "Connect Now", and button[data-et-name=list] "List This Item".
 
-  GUESSES for what is still UNVERIFIED (keep in step with post/poshmark.py): the brand suggestions' markup, that Cancel
-  opens the "Save Draft" dialog, the markup of "‹ Back" and of the Promote toggle, what happens after List This Item
-  (a redirect to the new listing; variants: it stays, or an error).
+  After List This Item, as on the Mac (2026-10-03): the page goes to /closet/<user>?created_listing_id=<id> (the
+  test site's closet page then drops the query), and the closet shows the new listing only after a reload or two
+  (the test site's `lag`). Variants: toListing (straight to the listing's page instead), listStays (no redirect: a
+  "Listed!" modal), listError.
+
+  GUESSES for what is still UNVERIFIED (keep in step with post/poshmark.py): the brand suggestions' markup, the
+  markup of "‹ Back" and of the Promote toggle.
 
   window.__FIXTURE (set by the test) switches variants: lastDept, smartSell, noCoverDialog, slowCover, coverNoApply,
   coverSecondSelected, strangeDialog, priceBug, noLeaveDialog, categoryLinks, conditionLabel, leaveDraft,
   sizeAutoClose (the size menu closes itself on a pick, no Done: Kids shoes on the Mac), sizeStuck (neither),
   sizeFieldLabel (what the size field shows after an auto-close), promoteOn, promoteText (the toggle without a
-  checkbox: only its "Off"/"On" text), listStays, listError, listAlert (a native alert after List), listTwice (two
-  listings come of one click), skuOnListing (the listing page shows the SKU).
+  checkbox: only its "Off"/"On" text), toListing, listStays, listError, listAlert (a native alert after List),
+  listTwice (two listings come of one click), skuOnListing (the listing page shows the SKU), closetUser (the closet
+  the redirect goes to; default "closet", the tests' poster).
   The page reports to the test site: POST /api/list-click on each List This Item, GET /api/created?title=&price= for
-  the listing it creates.
+  the listing it creates (the site answers its slug and id).
   The Drafts count lives in localStorage, so a reopened create page shows what the last one left.
   window.__events records what the page registered.
 -->
@@ -725,7 +730,8 @@
     if (cfg.listTwice) await create();
     const created = await (await create()).json();
     if (cfg.listStays) { show($('#share-panel'), false); show($('#share-backdrop'), false); show($('#listed-modal')); return; }
-    location.href = '/listing/' + created.slug;
+    if (cfg.toListing) { location.href = '/listing/' + created.slug; return; }
+    location.href = '/closet/' + (cfg.closetUser || 'closet') + '?created_listing_id=' + created.id;
   });
 
   // ---- leaving: the form's Cancel -> "Save Draft" dialog (the opening is UNVERIFIED) ----

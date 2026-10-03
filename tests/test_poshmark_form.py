@@ -13,6 +13,7 @@ fixture or aborted, and the site lives at https://fixture.invalid, a name that c
 """
 import asyncio
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -57,19 +58,38 @@ def chrome():
     loop.close()
 
 
+def listing(title: str, price="85", made: float | None = None, n: int = 0, sku: str = "") -> dict:
+    """A closet listing as Poshmark makes one: slug from the title, a 24-hex id whose first 8 digits are its creation
+    time (default: an hour ago, i.e. older than any post a test starts)."""
+    lid = f"{int(made if made is not None else time.time() - 3600):08x}{n:016x}"
+    return {"slug": f"{poshmark.posh_slug(title)}-{lid}", "id": lid, "title": title, "price": str(price), "sku": sku,
+            "shows_at": 0}
+
+
 class Site:
     """Answers every request of one test context: the fixture for /create-listing; the closet (its listings, newest
-    first) and each listing's page (title and price); the fixture's beacons /api/list-click and /api/created; a plain
-    page for any other path of BASE; an abort for anything else. `urls` is every address the browser asked for."""
+    first, in Poshmark's tile markup) and each listing's page (title and price); the fixture's beacons /api/list-click
+    and /api/created; a plain page for any other path of BASE; an abort for anything else. `urls` is every address the
+    browser asked for. A listing made by the fixture shows in the closet only after `lag` more closet loads, as on the
+    Mac, where the closet Poshmark landed on 5 s after List This Item did not show it yet."""
 
-    def __init__(self, closet=(), appear=()):
+    def __init__(self, closet=(), appear=(), lag=1):
         self.urls: list[str] = []
-        self.listings: list[dict] = [dict(x) for x in closet]     # [{"slug", "title", "price"}], oldest first
+        self.listings: list[dict] = [dict(x) for x in closet]     # listing() dicts, oldest first
         self.appear = [dict(x) for x in appear]                    # listed elsewhere while List This Item is pressed
-        self.list_clicks = 0
+        self.lag, self.closet_loads, self.list_clicks = lag, 0, 0
 
     async def _html(self, route, body: str):
         await route.fulfill(status=200, content_type="text/html; charset=utf-8", body=body)
+
+    def _tile(self, x: dict) -> str:
+        from html import escape
+        title, href = escape(x["title"]), f'/listing/{x["slug"]}'
+        return (f'<div class="card"><a href="{href}" class="tile__covershot" data-et-name="listing" '
+                f'data-et-prop-listing_id="{x["id"]}"><div class="img__container"><img alt="{title}"></div>'
+                f'<div class="views">73</div></a><a href="{href}" class="tile__title" data-et-name="listing" '
+                f'data-et-prop-listing_id="{x["id"]}"><div>{title}</div>'
+                f'<div>${x["price"]}</div><div>OS</div></a></div>')
 
     async def handle(self, route):
         from html import escape
@@ -83,20 +103,21 @@ class Site:
             await self._html(route, FIXTURE.read_text(encoding="utf-8"))
         elif path == "/api/list-click":
             self.list_clicks += 1
-            self.listings += self.appear
+            self.listings += [{**x, "shows_at": self.closet_loads + 1 + self.lag} for x in self.appear]
             await route.fulfill(status=204, body="")
         elif path == "/api/created":
             q = parse_qs(urlparse(url).query)
-            slug = f"made-{len(self.listings) + 1}-6ad{len(self.listings):05d}"
-            self.listings.append({"slug": slug, "title": q["title"][0], "price": q.get("price", [""])[0],
-                                  "sku": q.get("sku", [""])[0]})
-            await route.fulfill(status=200, content_type="application/json", body=json.dumps({"slug": slug}))
+            x = listing(q["title"][0], q.get("price", [""])[0], made=time.time(), n=len(self.listings),
+                        sku=q.get("sku", [""])[0])
+            self.listings.append({**x, "shows_at": self.closet_loads + 1 + self.lag})
+            await route.fulfill(status=200, content_type="application/json",
+                                body=json.dumps({"slug": x["slug"], "id": x["id"]}))
         elif path.startswith("/closet/"):
-            tiles = "".join(f'<div class="tile"><a href="/listing/{x["slug"]}" class="tile__covershot">'
-                            f'<img alt="{escape(x["title"])}"></a><a href="/listing/{x["slug"]}" class="tile__title">'
-                            f'{escape(x["title"])}</a><span>${x["price"]}</span></div>'
-                            for x in reversed(self.listings))
-            await self._html(route, f"<html><body><h1>closet</h1>{tiles}</body></html>")
+            self.closet_loads += 1
+            shown = [x for x in self.listings if x["shows_at"] <= self.closet_loads]
+            tiles = "".join(self._tile(x) for x in reversed(shown))
+            drop = "<script>history.replaceState(null, '', location.pathname)</script>"   # as Poshmark: no query
+            await self._html(route, f"<html><body><h1>closet</h1>{tiles}{drop}</body></html>")
         elif path.startswith("/listing/"):
             x = next((x for x in self.listings if x["slug"] == path.split("/")[-1]), None)
             sku = f'<p class="sku">SKU {escape(x["sku"])}</p>' if x and x.get("sku") else ""
@@ -109,14 +130,14 @@ class Site:
         return [u for u in self.urls if part in u]
 
 
-def drive(chrome, scenario, closet=(), appear=(), **variant):
+def drive(chrome, scenario, closet=(), appear=(), lag=1, **variant):
     """Run `scenario(ctx, site)` in a fresh context; `variant` becomes window.__FIXTURE (see the fixture's header);
     `closet` is the listings the closet holds before the run."""
     loop, browser = chrome
 
     async def go():
         ctx = await browser.new_context(viewport={"width": 1280, "height": 900})
-        site = Site(closet, appear)
+        site = Site(closet, appear, lag)
         await ctx.route("**/*", site.handle)
         await ctx.add_init_script(f"window.__FIXTURE = {json.dumps(variant)};")
         try:
@@ -142,7 +163,8 @@ def posh(monkeypatch):
     # 10-20x what a step takes on a laptop, so a slow CI runner still passes; the "not offered" tests wait them out.
     for name, ms in (("MENU_TIMEOUT_MS", 2000), ("SUGGEST_TIMEOUT_MS", 1500), ("TAG_TIMEOUT_MS", 800),
                      ("LEAVE_TIMEOUT_MS", 1500), ("THUMB_TIMEOUT_MS", 5000), ("POLL_MS", 25),
-                     ("AFTER_LIST_MS", 2000), ("LEFT_FORM_MS", 300)):
+                     ("AFTER_LIST_MS", 2000), ("LEFT_FORM_MS", 300), ("CLOSET_POLL_MS", 2500),
+                     ("CLOSET_EVERY_MS", 150)):
         monkeypatch.setattr(poshmark, name, ms)
     p = poshmark.PoshmarkPoster("closet")
     p.base_url = BASE
@@ -542,31 +564,75 @@ def publish(chrome, p, r, shots, answer=True, closet=(), appear=(), **variant):
     return out, site, shown
 
 
-def test_supervised_publish_presses_list_once_and_records_the_listing(chrome, posh, photos, tmp_path):
+def evidence(shots, kind):
+    return json.loads(next(shots.glob(f"{SKU}-poshmark-*-{kind}.json")).read_text(encoding="utf-8"))
+
+
+def test_supervised_publish_presses_list_once_and_finds_the_listing_in_the_closet(chrome, posh, photos, tmp_path):
+    """As on the Mac (2026-10-03): List This Item -> /closet/<user>?created_listing_id=<id>, a closet that doesn't show
+    the new listing yet, then shows it on a reload."""
     shots = tmp_path / "shots"
     r = render(photos)
     out, site, shown = publish(chrome, posh, r, shots)
-    assert out.status == "posted" and out.clicked, out
-    assert out.url.startswith(BASE + "/listing/made-1-") and site.list_clicks == 1
+    made = site.listings[-1]
+    assert out.status == "posted" and out.clicked and site.list_clicks == 1, out
+    assert out.url == f"{BASE}/listing/{poshmark.posh_slug(r.title)}-{made['id']}"
     assert len(shown) == 1 and r.title in shown[0] and "Promote My Closet" in shown[0]
     after = sorted(shots.glob(f"{SKU}-poshmark-*-after-list.*"))
     assert [f.suffix for f in after] == [".html", ".json", ".png"]
-    record = json.loads(after[1].read_text(encoding="utf-8"))
-    assert record["url_before"].endswith("/create-listing") and "/listing/made-1-" in record["url_after"]
-    live = json.loads(next(shots.glob(f"{SKU}-poshmark-*-live.json")).read_text(encoding="utf-8"))
+    record = evidence(shots, "after-list")
+    assert record["url_before"].endswith("/create-listing") and record["url_after"] == f"{BASE}/closet/closet"
+    assert record["created_listing_id"] == made["id"]
+    assert any(f"created_listing_id={made['id']}" in u for u in record["navigations"])
+    closet = evidence(shots, "closet")
+    assert closet["landed_on_closet"] and closet["found"] == out.url
+    assert [bool(p["ours"]) for p in closet["polls"]] == [False, True]     # the landed closet first, then a reload
+    live = evidence(shots, "live")
     assert live["url"] == out.url and live["sku_on_page"] is False             # the public page doesn't carry it
     assert not site.visited("connect")                                        # Pinterest / Facebook never touched
 
 
+def test_a_closet_slower_than_the_poll_fails_as_possibly_live_and_names_the_id(chrome, posh, photos, tmp_path):
+    other = listing("Madewell Leopard Shirt Jacket size 4", n=2)        # a closet with something in it already
+    out, site, _ = publish(chrome, posh, render(photos), tmp_path / "shots", closet=[other], lag=1000)
+    assert out.status == "failed" and out.clicked and out.url is None and site.list_clicks == 1, out
+    assert f"Poshmark named it {site.listings[-1]['id']}" in out.error and "thrift mark-posted" in out.error
+    assert len(evidence(tmp_path / "shots", "closet")["polls"]) > 2            # reloaded, never clicked
+
+
+def test_the_created_id_picks_ours_over_a_twin_listed_meanwhile(chrome, posh, photos, tmp_path):
+    r = render(photos)
+    twin = listing(r.title, made=time.time(), n=77)          # the same title, listed by hand during the post
+    out, site, _ = publish(chrome, posh, r, tmp_path / "shots", appear=[twin])
+    assert out.status == "posted" and out.url.endswith(site.listings[-1]["id"]), out
+    closet = evidence(tmp_path / "shots", "closet")
+    assert closet["other_new_with_this_title"] == [twin["id"]]
+    assert "another new listing with this title showed up" in out.note         # told: maybe a duplicate
+
+
 def test_without_a_redirect_the_closet_names_the_new_listing_not_an_older_twin(chrome, posh, photos, tmp_path):
     r = render(photos)
-    twin = {"slug": "old-twin-6a0000000000000000000001", "title": r.title, "price": "85"}   # the same title, earlier
-    out, site, _ = publish(chrome, posh, r, tmp_path / "shots", closet=[twin], listStays=True)
-    assert out.status == "posted" and out.url == BASE + "/listing/made-2-6ad00001", out
-    closet = json.loads(next((tmp_path / "shots").glob(f"{SKU}-poshmark-*-closet.json")).read_text(encoding="utf-8"))
-    assert closet["new"] == ["/listing/made-2-6ad00001"] and len(closet["title_matches"]) == 2
-    record = json.loads(next((tmp_path / "shots").glob(f"{SKU}-poshmark-*-after-list.json")).read_text(encoding="utf-8"))
-    assert "Listed! Your listing is live." in record["dialogs"]                # recorded, never clicked
+    old = listing(r.title, n=1)                              # the same title, listed an hour ago
+    out, site, _ = publish(chrome, posh, r, tmp_path / "shots", closet=[old], listStays=True)
+    assert out.status == "posted" and out.url.endswith(site.listings[-1]["id"]), out
+    closet = evidence(tmp_path / "shots", "closet")
+    assert not closet["landed_on_closet"] and closet["created_listing_id"] is None
+    assert old["id"] not in closet["polls"][-1]["new"]                          # it was there before the post
+    assert "Listed! Your listing is live." in evidence(tmp_path / "shots", "after-list")["dialogs"]   # never clicked
+
+
+def test_without_a_redirect_two_new_listings_with_this_title_are_never_guessed(chrome, posh, photos, tmp_path):
+    r = render(photos)
+    twin = listing(r.title, made=time.time(), n=77)
+    out, site, _ = publish(chrome, posh, r, tmp_path / "shots", appear=[twin], listStays=True)
+    assert out.status == "failed" and out.url is None and out.clicked and site.list_clicks == 1, out
+    assert "2 new listings with this title in the closet, none named by Poshmark: never a guess" in out.error
+
+
+def test_a_redirect_straight_to_the_listing_is_taken_as_it_is(chrome, posh, photos, tmp_path):
+    out, site, _ = publish(chrome, posh, render(photos), tmp_path / "shots", toListing=True)
+    assert out.status == "posted" and out.url == f"{BASE}/listing/{site.listings[-1]['slug']}", out
+    assert not list((tmp_path / "shots").glob("*-closet.json"))                # no closet needed
 
 
 def test_an_unrecognised_page_after_list_is_never_clicked_again(chrome, posh, photos, tmp_path):
@@ -595,42 +661,32 @@ def test_a_toggle_without_a_checkbox_is_read_by_its_off_text(chrome, posh, photo
     assert out.status == "posted" and site.list_clicks == 1 and "Promote My Closet Off" in shown[0], out
 
 
-def test_an_unsupervised_publish_is_refused_while_the_listing_address_is_unrecorded(chrome, posh, photos, tmp_path):
+def test_an_unsupervised_publish_goes_through_once_the_listing_address_is_recorded(chrome, posh, photos, tmp_path):
+    """The adapter no longer refuses (listing_url is pinned); whether the poster loop publishes at all is the runner's
+    poster.dry_run + poster.autopublish_confirmed (test_runner)."""
     async def scenario(ctx, site):
         return await posh.post(ctx, render(photos), "publish", False, tmp_path / "shots"), site
     out, site = drive(chrome, scenario)
-    assert out.status == "failed" and "the publish step is not recorded yet (listing_url UNVERIFIED" in out.error
-    assert site.list_clicks == 0 and not out.clicked
+    assert out.status == "posted" and site.list_clicks == 1 and out.clicked, out
 
 
 def test_a_native_dialog_after_list_is_recorded_and_the_listing_still_found(chrome, posh, photos, tmp_path):
     out, site, _ = publish(chrome, posh, render(photos), tmp_path / "shots", listAlert=True)
     assert out.status == "posted" and site.list_clicks == 1, out
-    record = json.loads(next((tmp_path / "shots").glob(f"{SKU}-poshmark-*-after-list.json")).read_text(encoding="utf-8"))
-    assert record["native_dialogs"] == [{"type": "alert", "message": "Your listing is being processed"}]
+    assert evidence(tmp_path / "shots", "after-list")["native_dialogs"] == [
+        {"type": "alert", "message": "Your listing is being processed"}]
 
 
-@pytest.mark.parametrize("sku_on_listing", [True, False])
-def test_two_new_listings_with_this_title_are_told_apart_by_the_sku_or_not_at_all(chrome, posh, photos, tmp_path,
-                                                                                 sku_on_listing):
-    r = render(photos)
-    twin = {"slug": "by-hand-6a0000000000000000000009", "title": r.title, "price": "85"}     # listed meanwhile, no SKU
-    out, site, _ = publish(chrome, posh, r, tmp_path / "shots", appear=[twin], listStays=True,
-                           skuOnListing=sku_on_listing)
-    closet = json.loads(next((tmp_path / "shots").glob(f"{SKU}-poshmark-*-closet.json")).read_text(encoding="utf-8"))
-    assert len(closet["new"]) == 2 and site.list_clicks == 1 and out.clicked
-    if sku_on_listing:
-        assert out.status == "posted" and out.url == BASE + "/listing/made-2-6ad00001", out
-        assert closet["sku_seen"] == {"/listing/made-2-6ad00001": True, f"/listing/{twin['slug']}": False}
-    else:
-        assert out.status == "failed" and out.url is None and "2 new listing(s) with this title" in out.error, out
+def test_one_click_that_made_two_listings_records_poshmarks_and_warns(chrome, posh, photos, tmp_path):
+    out, site, _ = publish(chrome, posh, render(photos), tmp_path / "shots", listTwice=True)
+    assert out.status == "posted" and out.url.endswith(site.listings[-1]["id"]) and site.list_clicks == 1, out
+    assert f"({site.listings[-2]['id']}): check for a duplicate" in out.note
 
 
-def test_one_click_that_made_two_listings_is_never_guessed(chrome, posh, photos, tmp_path):
-    out, site, _ = publish(chrome, posh, render(photos), tmp_path / "shots", listStays=True, listTwice=True,
-                           skuOnListing=True)
-    assert out.status == "failed" and out.url is None and site.list_clicks == 1, out    # both carry our SKU
-    assert "2 new listing(s) with this title" in out.error and "may be live" in out.error
+def test_one_click_that_made_two_listings_without_a_redirect_is_never_guessed(chrome, posh, photos, tmp_path):
+    out, site, _ = publish(chrome, posh, render(photos), tmp_path / "shots", listStays=True, listTwice=True)
+    assert out.status == "failed" and out.url is None and site.list_clicks == 1, out
+    assert "never a guess" in out.error and "may be live" in out.error
 
 
 def test_a_list_click_that_raises_is_watched_recorded_and_never_repeated(chrome, posh, photos, tmp_path):
@@ -642,6 +698,7 @@ def test_a_list_click_that_raises_is_watched_recorded_and_never_repeated(chrome,
         page = await ctx.new_page()
         await page.goto(BASE + "/create-listing")
         posh._render, posh.shot, posh._closet_before = r, tmp_path / f"{SKU}-poshmark-x.png", set()
+        posh._started = time.time()
         with pytest.raises(PosterError) as e:
             await posh._after_list(page, r, page.url, [], [], "TimeoutError: locator.click: Timeout 30000ms exceeded.")
         return e.value, site

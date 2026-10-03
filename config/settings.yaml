@@ -67,6 +67,9 @@ copy:
 
 poster:
   dry_run: true            # fill + screenshot, never click publish. Flip on the Mac after the dry-run week.
+  autopublish_confirmed: false   # the second key: the poster loop publishes only with dry_run false AND this true
+                                 # (and marketplaces.<mp>.autopublish true; else a publish-gated item is a draft).
+                                 # `thrift poster --publish-first <item>` ignores both: one supervised item.
   dry_run_stage: form      # form = fill, read back, screenshot, leave via Discard | review = also press Next, record
                            # the page after it (failed/shots/<item>-review.json), back out, Discard. Never publishes.
   max_consecutive_failures: 3   # after this many failed items in a row the poster writes PAUSE and stops (stop, don't guess)

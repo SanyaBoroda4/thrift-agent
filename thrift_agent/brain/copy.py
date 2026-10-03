@@ -9,15 +9,42 @@ import yaml
 from thrift_agent.brain import llm, taxonomy
 from thrift_agent.brain.sizes import size_label, title_size
 from thrift_agent.config import style_dir
-from thrift_agent.schema import CONDITION_LABEL, CopyOut, Ev, Facts, VerifyOut
+from thrift_agent.schema import CopyOut, Ev, Facts, VerifyOut
 
 TITLE_MAX, DEPOP_MAX = 80, 1000
 TEXT_FIELDS = ("poshmark_title", "poshmark_description", "depop_description")
-# kids_gender is the model's best guess for Poshmark's size tab, not evidence: the copy never states it.
-VIEW_EXCLUDE = {"cover_photo", "photo_order", "questions", "kids_gender"}
-KEEP_EMPTY = {"flaws"}          # an empty flaws list tells the writer there is nothing to disclose
+# kids_gender is the model's best guess for Poshmark's size tab, not evidence: the copy never states it. The flaws and
+# the condition evidence are what the photos show: the copy never describes them (the owner's condition rule, below).
+VIEW_EXCLUDE = {"cover_photo", "photo_order", "questions", "kids_gender", "flaws", "condition_evidence",
+                "hang_tag_photo"}
 TAG_LINE = re.compile(r"(?m)^[ \t]*(#\w+[ \t]*)+\r?$")   # a line that is nothing but hashtags
 TRAILING_TAGS = re.compile(r"(\s*#\w+)+\s*$")           # hashtags tacked onto the end of the last sentence
+
+# The owner's condition rule (WO16, after the first live listing). Wear and flaws are never put in words — not in the
+# title, the descriptions or the tags: the photos show them (every flaw photo is in the listing, never the cover), and a
+# used item says so in ONE neutral line. A used item is never called like new, excellent or flawless.
+USED = ("like_new", "excellent", "good", "fair")
+CONDITION_LINE = "Gently pre-loved, please see photos for condition."
+CONDITION_LINES = {"NWT": "New with tags.", "NWOT": "New without tags.", **{c: CONDITION_LINE for c in USED}}
+HAS_CONDITION_LINE = re.compile(r"gently\s+pre-?loved,?\s+please\s+see\s+(?:the\s+)?photos\s+for\s+(?:the\s+)?"
+                                r"condition", re.I)
+# Whole words and their inflections. "wear" alone is fine ("everyday wear"), wear with a measure of it is not ("light
+# wear", "signs of wear", "wear and tear"); "worn" never is, even "never worn" (say "new without tags"). Left out on
+# purpose, for what they also mean: faded (a wash), spots (a print), marks (a brand), wrinkle-free, stretch.
+_WEAR_MEASURE = (r"(?:signs?\s+of|light|lightly|minor|minimal|some|slight|slightly|small|visible|general|normal|heavy|"
+                 r"heavily|moderate|gentle|noticeable|little|faint)")
+NEGATIVE_WORDS = re.compile(
+    r"\b(dirt|dirty|grime|grimy|stain(?:s|ed|ing)?|scuff(?:s|ed|ing)?|worn|"
+    rf"(?:{_WEAR_MEASURE}\s+)?wear[\s-]+and[\s-]+tear|{_WEAR_MEASURE}\s+wear(?:ing)?|"
+    r"fray(?:s|ed|ing)?|pill(?:s|ed|ing)?|bobbl(?:e|es|ed|ing)|holes?|tears?|torn|tearing|rips?|ripped|ripping|"
+    r"snag(?:s|ged|ging)?|smell(?:s|y|ed|ing)?|odou?rs?|musty|scratch(?:es|ed|ing)?|crack(?:s|ed|ing)?|"
+    r"peel(?:s|ed|ing)|creas(?:e|es|ed|ing)|discolou?r(?:ed|ation|ing)?|yellow(?:ed|ing)|damage[ds]?|"
+    r"defects?|defective|flaws?|flawed|imperfections?|blemish(?:es|ed)?|wrinkled|missing|loose\s+threads?|"
+    r"stretched\s+out|(?:small|minor|light|faint|some|few|visible)\s+marks?|markings?)\b", re.I)
+# Claims a used item never makes (the facts' grade says what Poshmark's condition field shows; the copy doesn't grade).
+USED_CLAIMS = re.compile(r"\b(like[\s-]+new|excellent|mint\s+condition|pristine|perfect\s+condition|flawless|"
+                         r"no\s+flaws|without\s+flaws|no\s+(?:signs\s+of\s+)?wear|as\s+new|new\s+condition)\b", re.I)
+_SENTENCES = re.compile(r"(?<=[.!?])\s+")
 
 
 def style_examples() -> str:
@@ -45,8 +72,9 @@ POSHMARK
 - Description, in this closet's proven shape:
   1) 2–4 short sentences describing what the photos show (type, color, material if known, details).
      Plain and specific; at most one adjective like "chic" or "versatile" — never a string of them.
-  2) Then ONE short, plain line in the seller's voice with condition and anything a buyer must know:
-     "New, no tags." / "Worn once, light wear on soles as shown." / "Size 38 EU, fits US 7.5-8."
+  2) Then the condition: condition_line from the facts, verbatim, as its own line ("New with tags." / "New without
+     tags." / for every used item "Gently pre-loved, please see photos for condition."). A fit line may go before it
+     ("Size 38 EU, fits US 7.5-8.").
   3) If retail_price is known, the description ends with "Retail $<price>." as its own last line
      (after the condition line).
   4) Then the footer if one is given. No keyword stuffing, no emojis.
@@ -54,7 +82,7 @@ POSHMARK
   Wool, Silk, Cashmere, Linen, Nylon, Satin, Denim, Faux Fur) only when `material` states that material.
 
 DEPOP
-- Casual, first-person-seller voice, lowercase is fine. Same facts, fewer words.
+- Casual, first-person-seller voice, lowercase is fine. Same facts, fewer words; condition_line verbatim.
 - ≤1000 characters INCLUDING a final line of exactly 5 hashtags. Then the footer.
 
 HARD RULES
@@ -63,26 +91,32 @@ HARD RULES
   only when `material` states it — an item_type or feature wording is not evidence.
 - Color words must match the facts' colors; department words must match the department
   (never "kids" or "men's" for a Women's item) — past listings lost buyers over exactly this.
-- Condition wording must match the facts' condition exactly; mention every flaw.
-- Never copy wording from the examples — match their shape, not their text."""
+- Condition is never put in words beyond condition_line: no wear or flaw words anywhere — title, descriptions,
+  style tags, hashtags (dirt, dirty, stain, scuff, worn — even "never worn" —, wear and tear, light wear, fraying,
+  pilling, hole, tear, rip, snag, smell, odor, crease, crack, peeling, discoloration, damage, flaw, imperfection).
+  The photos show the condition. A used item is never "like new", "excellent", "perfect", "pristine", "flawless" or
+  "no flaws".
+- Never copy wording from the examples — match their shape, not their text (older examples describe wear in words:
+  never do that)."""
 
 
 def facts_view(facts: Facts) -> dict:
     """The facts as the copywriter sees them. Null facts are omitted (invariant 1): an Ev with no value, a None
-    scalar or an empty list is simply absent, so there is nothing null for the model to restate."""
+    scalar or an empty list is simply absent, so there is nothing null for the model to restate. The flaws and the
+    condition evidence are left out (the photos show them); condition_line is the one thing to say about condition."""
     view: dict = {}
     for name, val in facts.model_dump(exclude=VIEW_EXCLUDE).items():
         if isinstance(getattr(facts, name), Ev):
             if val["value"] is None:
                 continue
-        elif val is None or (val == [] and name not in KEEP_EMPTY):
+        elif val is None or val == []:
             continue
         view[name] = val
     if (label := size_label(facts)) is not None:      # "EU 24 / US Toddler 7.5" for a kids shoe, size_us otherwise
         view["size_label"] = label
     if (ts := title_size(facts)) is not None:          # "Toddler size 7.5" / "size 7.5": the only size the title shows
         view["title_size"] = ts
-    view["condition_label"] = CONDITION_LABEL[facts.condition]
+    view["condition_line"] = CONDITION_LINES[facts.condition]
     return view
 
 
@@ -164,6 +198,46 @@ def ensure_retail_line(description: str, facts: Facts) -> str:
     if not m or re.search(r"\bretail\w*[^\n$]{0,10}\$", text, re.I):
         return description
     return f"{text}\nRetail ${int(float(m.group()))}."
+
+
+def condition_wording(text: str, condition: str) -> str:
+    """`text` under the owner's condition rule: every sentence that puts wear or a flaw in words (NEGATIVE_WORDS), or
+    grades a used item (USED_CLAIMS), is dropped — the photos show the condition — and a used item's text carries
+    CONDITION_LINE: where the first dropped sentence was, else as its own line before a closing "Retail $…" line,
+    else at the end. Nothing else changes: a dropped sentence is never rewritten, only left out."""
+    used, mark, marked = condition in USED, "\x00", False
+    lines = []
+    for line in text.split("\n"):
+        kept = []
+        for sentence in _SENTENCES.split(line.strip()) if line.strip() else []:
+            if NEGATIVE_WORDS.search(sentence) or (used and USED_CLAIMS.search(sentence)):
+                if not marked:
+                    kept.append(mark)
+                    marked = True
+            else:
+                kept.append(sentence)
+        lines.append(" ".join(kept))
+    body = "\n".join(lines)
+    if used and not HAS_CONDITION_LINE.search(body):
+        if marked:
+            body = body.replace(mark, CONDITION_LINE)
+        else:
+            rows = body.rstrip().split("\n")
+            at = len(rows) - 1 if re.match(r"\s*retail\b", rows[-1], re.I) and len(rows) > 1 else len(rows)
+            body = "\n".join(rows[:at] + [CONDITION_LINE] + rows[at:])
+    body = re.sub(r"[ \t]+\n", "\n", body.replace(mark, "")).replace(" \n", "\n")
+    return re.sub(r"\n{3,}", "\n\n", body).strip()
+
+
+def condition_rule(out: CopyOut, facts: Facts) -> CopyOut:
+    """The owner's condition rule on finished copy (after the verifier): both descriptions through
+    condition_wording(), and no style tag or hashtag that names wear. The title is left as it is: a title that breaks
+    the rule is a lint problem, not something to cut."""
+    out.poshmark_description = condition_wording(out.poshmark_description, facts.condition)
+    out.depop_description = condition_wording(strip_tag_lines(out.depop_description), facts.condition)
+    out.poshmark_style_tags = [t for t in out.poshmark_style_tags if not NEGATIVE_WORDS.search(t)]
+    out.depop_hashtags = [t for t in out.depop_hashtags if not NEGATIVE_WORDS.search(t)]
+    return clean(out)                                  # re-attaches the hashtag line within Depop's limit
 
 
 def dump(out: CopyOut) -> dict:

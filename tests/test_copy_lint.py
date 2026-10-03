@@ -8,8 +8,9 @@ from thrift_agent.schema import CopyOut, Ev, Flaw, VerifyOut
 def co(**kw):
     # No material word by default: the facts fixture has no material, and a material word without one is a lint problem.
     base = dict(poshmark_title="Tory Burch Red Bow Ballet Flats size 7.5",
-                poshmark_description="Classic flats.\n\nCondition: excellent, light wear on soles.",
-                poshmark_style_tags=["classic"], depop_description="cute red flats, light wear on the soles",
+                poshmark_description="Classic flats.\n\nGently pre-loved, please see photos for condition.",
+                poshmark_style_tags=["classic"],
+                depop_description="cute red flats. Gently pre-loved, please see photos for condition.",
                 depop_hashtags=["torybur ch", "flats"])
     base.update(kw)
     return CopyOut(**base)
@@ -20,6 +21,7 @@ def ev(value, **kw):
 
 
 SCUFF = [Flaw(description="scuff on left toe", photos=[4])]
+LINE = "Gently pre-loved, please see photos for condition."
 
 
 def test_title_cleanup():
@@ -97,7 +99,9 @@ def test_facts_view_omits_null_facts(facts):
                    "questions"):
         assert absent not in view
     assert "material" not in json.dumps(view)
-    assert view["flaws"] == [] and view["condition_label"] == "Excellent used condition"
+    assert "flaws" not in view and "condition_evidence" not in view          # the photos show them, not the copy
+    assert view["condition_line"] == "Gently pre-loved, please see photos for condition."
+    assert facts_view(facts(condition="NWOT"))["condition_line"] == "New without tags."
     assert view["brand"]["value"] == "Tory Burch" and view["colors"] == ["Red"]
     assert facts_view(facts(material=ev("Suede")))["material"]["value"] == "Suede"
 
@@ -247,33 +251,49 @@ def test_lint_banned_phrases_in_hashtags_and_style_tags(facts):
     assert any("color" in p for p in lint(facts(), co(poshmark_style_tags=["navy"])))
 
 
-def test_lint_flaws_checked_on_both_descriptions(facts):
-    probs = lint(facts(flaws=SCUFF), co(poshmark_description="Classic flats, small scuff on the left toe.",
-                                        depop_description="cute red flats, super comfy, chic"))
-    assert probs == ["facts list flaws but the depop description doesn't mention any"]
-    probs = lint(facts(flaws=SCUFF), co(poshmark_description="Classic red bow flats, super comfy.",
-                                        depop_description="cute red flats, scuffed left toe"))
-    assert probs == ["facts list flaws but the poshmark description doesn't mention any"]
+def test_a_flaw_is_disclosed_by_the_condition_line_and_its_photo_in_the_listing(facts):
+    """The owner's rule: one neutral line, and the flaw's photo in the listing (not as the cover) — never words."""
+    assert lint(facts(flaws=SCUFF), co(), photos=[0, 1, 4]) == []
+    assert lint(facts(flaws=SCUFF), co(depop_description="cute red flats, super comfy, chic"), photos=[0, 4]) == \
+        ["facts list flaws but the depop description lacks the condition line"]
+    assert lint(facts(flaws=SCUFF), co(), photos=[4, 0, 1]) == ["flaw photos not in the listing: scuff on left toe"]
+    assert lint(facts(flaws=SCUFF), co(), photos=[0, 1, 2]) == ["flaw photos not in the listing: scuff on left toe"]
+    assert lint(facts(flaws=[Flaw(description="small hole (seller note)")]), co(), photos=[0]) == []   # a Note instead
+    assert lint(facts(flaws=SCUFF), co()) == []                          # no photo list given: the line alone
 
 
-def test_lint_flaw_words_are_whole_words(facts):
+def test_wear_words_are_never_in_the_copy(facts):
+    probs = lint(facts(flaws=SCUFF), co(poshmark_title="Tory Burch Red Flats Worn Once size 7.5",
+                                        poshmark_description="Classic flats, small scuff on the left toe. " + LINE,
+                                        depop_description="cute red flats, light wear, a few pills " + LINE,
+                                        depop_hashtags=["flats", "worn"]))
+    assert probs == ["wear words in the title: worn", "wear words in the poshmark description: scuff",
+                     "wear words in the depop description: light wear, pills", "wear words in the tags: worn"]
+
+
+def test_wear_words_are_whole_words(facts):
     for text in ("Great activewear and footwear for the market.", "Pillow soft, a whole lot of love.",
-                 "Stainless steel hardware, tearsheet included."):
-        assert any("flaws" in p for p in lint(facts(flaws=SCUFF), co(poshmark_description=text)))
-    for text in ("Light wear on soles and a scuffed toe.", "Small stain on the lining.", "One faded spot, see photo.",
-                 "A few pills on the cuffs, a mark on the heel."):
-        assert not any("poshmark description doesn't mention" in p for p in lint(facts(flaws=SCUFF),
-                                                                                  co(poshmark_description=text)))
+                 "Stainless steel hardware, tearsheet included.", "Faded wash, stretch denim, mint green.",
+                 "Perfect for everyday wear.", "Marks & Spencer wrinkle-free shirt."):
+        assert not any("wear words" in p for p in lint(facts(), co(poshmark_description=text + " " + LINE))), text
+    for text, word in (("Light wear on soles.", "light wear"), ("A scuffed toe.", "scuffed"),
+                       ("Small stain on the lining.", "stain"), ("Some wear and tear.", "some wear and tear"),
+                       ("A few pills on the cuffs.", "pills"), ("Smells musty.", "musty, smells"),
+                       ("Never worn.", "worn"), ("Fraying straps.", "fraying"), ("A tiny hole.", "hole")):
+        assert f"wear words in the poshmark description: {word}" in lint(facts(), co(poshmark_description=text)), text
 
 
 def test_lint_condition_ladder(facts):
-    d = "Classic flats, like new. Light wear on soles."
-    assert "copy claims like_new but facts are excellent" in lint(facts(), co(poshmark_description=d))
+    d = "Classic flats, like new."
+    assert "a used item claims like new" in lint(facts(), co(poshmark_description=d))
+    assert "a used item claims like new" in lint(facts(condition="like_new"), co(poshmark_description=d))
+    assert "a used item claims excellent, no flaws" in lint(facts(condition="good"), co(
+        poshmark_description="Excellent shape, no flaws. " + LINE))
+    assert not any("claims" in p for p in lint(facts(condition="NWOT"), co(poshmark_description="Like new.")))
     assert "copy claims NWOT but facts are excellent" in lint(facts(), co(poshmark_description="Never worn. Red flats."))
     assert "says NWT but facts aren't NWT" in lint(facts(condition="NWOT"), co(poshmark_description="New with tags flats."))
     assert not any("claims" in p or "NWT" in p for p in lint(facts(condition="NWT"),
                                                               co(poshmark_description="Brand new, NWT red flats.")))
-    assert not any("claims" in p for p in lint(facts(condition="like_new"), co(poshmark_description=d)))
     assert any("title starts with New" in p for p in lint(facts(), co(poshmark_title="New Tory Burch Flats size 7.5")))
     assert not any("title starts with New" in p
                    for p in lint(facts(condition="NWOT"), co(poshmark_title="New Tory Burch Flats size 7.5")))
@@ -401,3 +421,48 @@ def test_the_copy_prompt_offers_only_poshmarks_style_tags(facts, monkeypatch):
     copywriter.write(facts(), "model", {"poshmark_footer": "", "depop_footer": ""})
     assert "POSHMARK STYLE TAGS below" in seen["system"]
     assert "POSHMARK STYLE TAGS (the only ones Poshmark offers): 70s, 80s, 90s, Activewear," in seen["text"]
+
+
+# ---------------------------------------------------------------- WO16: the owner's condition rule
+
+# Shaped like the first live listing's description (the real text stays in private/NOTES.md).
+LIVE = ("Glitter star sneakers with silver accents. Fun everyday shoe for a little one.\n"
+        "Size 24 EU, fits US Toddler 7.5. Good used condition, worn with dirt and scuffing on the soles, light "
+        "staining on the toe, and some fraying at the straps.")
+
+
+def test_condition_wording_on_a_description_like_the_first_live_listings():
+    from thrift_agent.brain.copy import condition_wording
+    assert condition_wording(LIVE, "good") == (
+        "Glitter star sneakers with silver accents. Fun everyday shoe for a little one.\n"
+        "Size 24 EU, fits US Toddler 7.5. Gently pre-loved, please see photos for condition.")
+
+
+def test_condition_wording_places_the_line_and_never_rewrites():
+    from thrift_agent.brain.copy import condition_wording
+    assert condition_wording("Classic flats. Perfect for everyday wear.\nRetail $228.", "excellent") == \
+        "Classic flats. Perfect for everyday wear.\n" + LINE + "\nRetail $228."            # before Retail, if missing
+    assert condition_wording("Classic red flats, like new.\n\nRetail $228.", "like_new") == LINE + "\n\nRetail $228."
+    assert condition_wording("Red flats. " + LINE, "good") == "Red flats. " + LINE           # already there: as is
+    assert condition_wording("New with tags. Never worn, still boxed.", "NWT") == "New with tags."   # no line for new
+    assert condition_wording("cute flats, light wear on the soles", "fair") == LINE
+    assert condition_wording("Smells musty. Holes. Stains.", "good") == LINE                 # one line, not three
+
+
+def test_condition_rule_cleans_both_descriptions_and_the_tags(facts):
+    from thrift_agent.brain.copy import condition_rule
+    out = condition_rule(clean(co(poshmark_description="Red flats. Light wear on the soles.",
+                                  depop_description="red flats, scuffed toe\n\n#flats #scuffed",
+                                  poshmark_style_tags=["Classic"], depop_hashtags=["flats", "scuffed", "worn"])),
+                         facts(condition="good"))
+    assert out.poshmark_description == "Red flats. " + LINE
+    assert out.depop_description == LINE + "\n\n#flats" and out.depop_hashtags == ["flats"]
+    assert lint(facts(condition="good"), out) == []
+
+
+def test_both_prompts_carry_the_owners_condition_rule():
+    from thrift_agent.brain import copy as copywriter, verify as verifier
+    assert "condition_line" in copywriter.SYSTEM and "never put in words" in copywriter.SYSTEM
+    assert "never \"like new\", \"excellent\"" in copywriter.SYSTEM.replace("is never", "never")
+    assert "Never add or restore a description of wear" in verifier.SYSTEM
+    assert "missing flaws added" not in verifier.SYSTEM and "mention every flaw" not in copywriter.SYSTEM

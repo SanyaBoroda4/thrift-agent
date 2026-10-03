@@ -231,6 +231,24 @@ def requeue(item_id: str, marketplace: str = typer.Argument(None)) -> None:
     print(f"[green]queued[/] {item_id}: {', '.join(done)}")
 
 
+@app.command("mark-posted")
+def mark_posted(item_id: str, marketplace: str, url: str) -> None:
+    """Record a listing that went live while the poster couldn't find its address (a post in "unconfirmed publish"):
+    checks that the page shows the item's title and price, then marks the post posted with that address. Mac only;
+    stop the poster service first. e.g.  thrift mark-posted i_... poshmark https://poshmark.com/listing/...-<id>"""
+    from thrift_agent.post.base import PosterError
+    from thrift_agent.post.runner import mark_posted as run_mark_posted
+    s = settings()
+    if s.is_prod:
+        notify.check(s)
+    try:
+        address = asyncio.run(run_mark_posted(s, _db(), item_id, marketplace, url))
+    except (ValueError, RuntimeError, PosterError) as e:
+        print(f"[red]not marked[/] {item_id}: {e}")
+        raise typer.Exit(1) from None
+    print(f"[green]posted[/] {item_id} on {marketplace}: {address}")
+
+
 @app.command()
 def poster(once: bool = False, dry_run: bool = False,
            allow_dev_browser: bool = typer.Option(False, "--allow-dev-browser",

@@ -7,8 +7,8 @@ import pytest
 
 from thrift_agent.post import poshmark
 from thrift_agent.post.base import Contains, PosterError
-from thrift_agent.post.poshmark import (CONDITION_TO_POSH, KIDS_SIZE_OPTIONS, SEL, UNVERIFIED, PoshmarkPoster,
-                                        SizeChoice, size_choice)
+from thrift_agent.post.poshmark import (CONDITION_TO_POSH, KIDS_SIZE_OPTIONS, PUBLISH_NEEDS, SEL, UNVERIFIED,
+                                        PoshmarkPoster, SizeChoice, size_choice)
 from thrift_agent.schema import Render
 
 
@@ -81,21 +81,22 @@ def test_expected_reads_the_dropdowns_as_display_text():
         Contains("8 (Toddler Boy)")
 
 
-@pytest.mark.parametrize("mode", ["publish", "draft"])
-def test_submit_refuses_while_its_steps_are_unrecorded(mode):
-    """Stop, don't guess: until the page after Next, the publish button and where Save Draft lands are recorded,
-    only dry-runs can run, whatever poster.dry_run says."""
+def test_submit_refuses_a_draft_while_where_save_draft_lands_is_unrecorded():
+    """Stop, don't guess: until where Save Draft lands is recorded, no draft is saved, whatever poster.dry_run says.
+    (Publishing is no longer refused here: List This Item and the listing's address are recorded, and whether the
+    poster publishes at all is the runner's poster.dry_run + poster.autopublish_confirmed.)"""
     class NoPage:
         def __getattr__(self, name):
             raise AssertionError(f"submit touched the page ({name}) before the guard")
 
-    with pytest.raises(PosterError, match=rf"the {mode} step is not recorded yet \(.*UNVERIFIED"):
-        asyncio.run(PoshmarkPoster("closet").submit(NoPage(), mode))
+    with pytest.raises(PosterError, match=r"the draft step is not recorded yet \(draft_saved UNVERIFIED"):
+        asyncio.run(PoshmarkPoster("closet").submit(NoPage(), "draft"))
+    assert not PUBLISH_NEEDS & UNVERIFIED
 
 
 def test_every_unverified_name_is_a_selector_and_the_verified_ones_are_the_forms_hooks():
     assert UNVERIFIED <= set(SEL)
-    assert {"listing_url", "draft_saved", "promote_toggle"} <= UNVERIFIED
+    assert {"draft_saved", "promote_toggle"} <= UNVERIFIED
     verified = set(SEL) - UNVERIFIED
     assert {"photo_input", "title", "description", "category_open", "department", "category_items",
             "subcategory_items", "size_open", "size_tabs", "size_buttons", "size_done", "condition_open",
@@ -111,6 +112,47 @@ def test_every_unverified_name_is_a_selector_and_the_verified_ones_are_the_forms
     # panel, its ‹ Back and List This Item.
     assert {"photo_thumbs", "leave", "share_panel", "review_back", "list_item", "share_connect",
             "closet_links"} <= verified
+    # WO16, from the first live listing (2026-10-03): the listing's address and the redirect after List This Item.
+    assert {"listing_url", "created_id"} <= verified
+
+
+LIVE = "https://poshmark.com/listing/Naturino-Glitter-Star-Sneakers-Toddler-size-75-6ac111490000000000000a01"
+
+
+def test_the_first_live_listings_address_is_a_listing_address():
+    p = PoshmarkPoster("closet")
+    assert p.listing_address(LIVE) == LIVE
+    assert p.listing_address(LIVE + "?utm=x#top") == LIVE and p.listing_address(LIVE + "/") == LIVE
+    for wrong in ("https://poshmark.com/closet/someone", "https://poshmark.com/listing/no-id-here",
+                  "http://poshmark.com/listing/x-6ac111490000000000000a01",            # not https
+                  "https://evil.example/listing/x-6ac111490000000000000a01",           # not Poshmark
+                  "https://poshmark.com/listing/x-6ac111490000000000000a0",            # 23 hex digits
+                  "https://poshmark.com/listing/x-6AC11149C24EA63CD4E55880", ""):      # Poshmark's ids are lowercase
+        assert p.listing_address(wrong) is None, wrong
+
+
+def test_poshmarks_slug_is_built_from_the_title():
+    from thrift_agent.post.poshmark import _letters, posh_slug
+    title = "Naturino Glitter Star Sneakers Toddler size 7.5"
+    assert posh_slug(title) == "Naturino-Glitter-Star-Sneakers-Toddler-size-75"   # the live listing's pattern
+    # The patterns of the recorded closet titles (2026-10-03), on invented titles: punctuation, even an inner
+    # hyphen, is dropped; " - " is just a space.
+    for t, slug in (("Classic Straw Sun Hat - Ivory", "Classic-Straw-Sun-Hat-Ivory"),
+                    ("Olive One-Shoulder linen Midi Dress size Small", "Olive-OneShoulder-linen-Midi-Dress-size-Small"),
+                    ("Navy Women's Wrap Dress size M-L", "Navy-Womens-Wrap-Dress-size-ML"),
+                    ("Plaid size 4 Button-Up Shirt Jacket - Red/Black",
+                     "Plaid-size-4-ButtonUp-Shirt-Jacket-RedBlack")):
+        assert posh_slug(t) == slug and _letters(t) == _letters(slug)
+    assert _letters("Levi’s Café 7.5") == _letters("Levis-Cafe-75")
+
+
+def test_the_created_listing_id_comes_from_poshmarks_redirect():
+    from thrift_agent.post.poshmark import _created_id, _id_time
+    urls = ["https://poshmark.com/create-listing",
+            "https://poshmark.com/closet/someone?created_listing_id=6ac111490000000000000a01",
+            "https://poshmark.com/closet/someone"]
+    assert _created_id(urls) == "6ac111490000000000000a01" and _created_id(urls[::2]) is None
+    assert _id_time("6ac111490000000000000a01") == 1791037769      # 2026-10-03 10:29:29 New York: the form opened
 
 
 def test_condition_codes_are_poshmarks():

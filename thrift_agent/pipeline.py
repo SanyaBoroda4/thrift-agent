@@ -303,7 +303,8 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
     facts = strip_screenshot_evidence(facts, retail)     # a screenshot is never evidence for condition, size or flaws
     facts, notes = settle_nwt(facts, it["note"])         # NWT needs a tag photo or the owner's word; else like new
     facts, fit_notes, fit_questions = taxonomy.fit(facts)   # Poshmark's own category names (Kids Tops -> Shirts & Tops)
-    notes += fit_notes + kids_gender_notes(facts)
+    shown = listing_photos(s, facts, len(photos), kinds)  # flaw photos in, never the cover: the condition rule
+    notes += fit_notes + kids_gender_notes(facts) + flaw_notes(facts, shown)
     pr = price(facts, load_yaml("brand_tiers.yaml"), s["pricing"], it["note"])
     enabled = [mp for mp, m in s["marketplaces"].items() if m.get("enabled")]
     if it["owner_price"]:
@@ -314,9 +315,10 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
         poshmark_title=audit.poshmark_title, poshmark_description=audit.poshmark_description,
         poshmark_style_tags=draft.poshmark_style_tags, depop_description=audit.depop_description,
         depop_hashtags=draft.depop_hashtags))
+    final = copywriter.condition_rule(final, facts)      # wear is shown in the photos, never put in words
     final.poshmark_description = copywriter.ensure_retail_line(final.poshmark_description, facts)
     final.poshmark_style_tags = fit_style_tags(final.poshmark_style_tags, facts)   # Poshmark's curated tags only
-    problems = lint(facts, final)
+    problems = lint(facts, final, shown)
     if not audit.unsupported:
         # The gate only sees the verifier's self-reported count. A verifier that rewrites the text but reports
         # nothing would otherwise publish an LLM-rewritten listing that nobody reviewed.
@@ -384,7 +386,7 @@ def requeue(s: Settings, db: DB, iid: str, marketplace: str | None = None) -> li
                              "check the closet and fix it by hand")
         if (r["last_error"] or "").startswith("unconfirmed publish: "):
             raise ValueError(f"{r['marketplace']}: List This Item was pressed and no listing address was found — it "
-                             "may be live; check the closet and fix it by hand")
+                             f"may be live; check the closet, then `thrift mark-posted {iid} {r['marketplace']} <url>`")
     if it["status"] not in ("ready", "drafted", "needs_owner"):
         raise ValueError(f"item {iid} is {it['status']}, not ready — fix the item first (thrift answer)")
     with db.tx():
@@ -449,24 +451,68 @@ def answer(s: Settings, db: DB, iid: str, note: str) -> str:
     return "new"
 
 
+def flaw_photos(facts: Facts, n: int) -> set[int]:
+    """The photos that show a flaw: they go in the listing, never as its cover (the owner's condition rule)."""
+    return {i for f in facts.flaws for i in f.photos if 0 <= i < n}
+
+
 def photo_order(facts: Facts, n: int, kinds: list[str] | None = None) -> list[int]:
     """The listing's photo order: the cover first, then the model's order, every photo once; retail screenshots last
-    and never the cover."""
+    and never the cover; a photo that shows a flaw never the cover either (the first clean own photo is, when there
+    is one)."""
     kinds = kinds or ["own"] * n
     order = [i for i in facts.photo_order if 0 <= i < n]
     if 0 <= facts.cover_photo < n:
         order = [facts.cover_photo] + order
     order = list(dict.fromkeys(order + list(range(n))))         # cover first, then the model's order, no repeats
     own = [i for i in order if kinds[i] != "retail"]
-    return (own + [i for i in order if kinds[i] == "retail"]) if own else order   # screenshots last, never the cover
+    order = (own + [i for i in order if kinds[i] == "retail"]) if own else order   # screenshots last, never the cover
+    flawed = flaw_photos(facts, n)
+    clean = [i for i in own if i not in flawed]
+    if order and order[0] in flawed and clean:
+        order = [clean[0]] + [i for i in order if i != clean[0]]
+    return order
+
+
+def fit_photos(order: list[int], keep: set[int], limit: int) -> list[int]:
+    """At most `limit` photos in `order`, the cover first and every photo in `keep` (the flaw photos) among them:
+    when there are too many, the last photos that are neither the cover nor kept make room."""
+    out = list(order)
+    while len(out) > limit:
+        drop = next((i for i in reversed(out[1:]) if i not in keep), None)
+        if drop is None:
+            break
+        out.remove(drop)
+    return out[:limit]
+
+
+def listing_photos(s: Settings, facts: Facts, n: int, kinds: list[str] | None = None) -> list[int]:
+    """The photos (indices, cover first) every enabled marketplace's listing shows at least: the order cut to the
+    smallest photo limit, flaw photos kept. What lint checks the flaw photos against."""
+    limits = [m.get("max_photos", n) for m in s["marketplaces"].values() if m.get("enabled")] or [n]
+    return fit_photos(photo_order(facts, n, kinds), flaw_photos(facts, n), min(limits))
+
+
+def flaw_notes(facts: Facts, photos: list[int]) -> list[str]:
+    """For the approval message: a flaw no photo shows isn't in the listing at all, and a cover that shows a flaw
+    means every own photo does. Told, never asked."""
+    notes = [f"flaw without a photo, so the listing doesn't show it: {f.description}" for f in facts.flaws
+             if not f.photos]
+    if photos and photos[0] in flaw_photos(facts, max(photos) + 1):
+        notes.append("every photo shows a flaw, so the cover does too")
+    return notes
 
 
 def build_renders(s: Settings, iid: str, d: Path, photos: list[Path], facts: Facts, c: CopyOut,
                   pr: PriceResult, kinds: list[str] | None = None) -> dict[str, Render]:
     order = photo_order(facts, len(photos), kinds)
+    flawed = flaw_photos(facts, len(photos))
     width, height = prep.cover_dims(s["images"]["cover_size"])
     cover = prep.portrait_cover(photos[order[0]], d / "cover.jpg", width, height)   # 3:4: Poshmark's cover frame
-    ordered = [str(cover)] + [str(photos[i]) for i in order[1:]]
+
+    def paths(limit: int) -> list[str]:                # this marketplace's photos: flaw photos are never cut
+        shown = fit_photos(order, flawed, limit)
+        return [str(cover)] + [str(photos[i]) for i in shown[1:]]
 
     common = dict(brand=facts.brand.value, department=facts.department, category=facts.category,
                   subcategory=facts.subcategory, size=sizes.size_label(facts), colors=list(facts.colors),
@@ -484,7 +530,7 @@ def build_renders(s: Settings, iid: str, d: Path, photos: list[Path], facts: Fac
             description=c.poshmark_description if is_posh else c.depop_description,
             tags=c.poshmark_style_tags if is_posh else c.depop_hashtags,
             price=pr.by_marketplace.get(mp, pr.list_price or 0),
-            photos=ordered[: mcfg["max_photos"]],
+            photos=paths(mcfg["max_photos"]),
             **common,
         )
     return out

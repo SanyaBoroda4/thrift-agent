@@ -9,7 +9,7 @@ from pathlib import Path
 from thrift_agent import approve, notify
 from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
-from thrift_agent.post.base import STAGES, AccountBlocked, NeedsOwner, Outcome, Poster, open_browser
+from thrift_agent.post.base import STAGES, AccountBlocked, NeedsOwner, Outcome, Poster, keep_evidence, open_browser
 from thrift_agent.post.depop import DepopPoster
 from thrift_agent.post.poshmark import PoshmarkPoster
 from thrift_agent.scheduler import can_post, next_gap, windows
@@ -89,6 +89,16 @@ def _warn_draft(mp: str, iid: str, left: str | None) -> None:
                    "leave step (Cancel \u2192 Discard Changes) needs a look.")
 
 
+def why_dry(s: Settings, force_dry: bool = False) -> str:
+    """Why the poster loop runs dry on the Mac: it publishes only with poster.dry_run off AND
+    poster.autopublish_confirmed on (both deliberate flips; the defaults keep it dry)."""
+    if force_dry:
+        return "dry-run: --dry-run"
+    if s.get("poster.dry_run", True):
+        return "dry-run: poster.dry_run is on"
+    return "dry-run: poster.autopublish_confirmed is off (poster.dry_run alone doesn't publish)"
+
+
 def record_outcome(db: DB, iid: str, mp: str, render: Render, out: Outcome, marketplaces: list[str],
                    stage: str = "form") -> None:
     """The post row, the event, the owner's message and the item's status for one Outcome.
@@ -116,9 +126,12 @@ def record_outcome(db: DB, iid: str, mp: str, render: Render, out: Outcome, mark
     elif out.status == "cancelled":
         notify.say(f"↩️ not published on {mp} ({iid}): {render.title}{note}")
     else:
-        notify.say(f"✅ {out.status} on {mp}: {render.title} — ${render.price}\n{out.url or ''}")
+        notify.say(f"✅ {out.status} on {mp}: {render.title} — ${render.price}\n{out.url or ''}{note}")
+    _settle_item(db, iid, marketplaces)
 
-    # The item is done once every enabled marketplace holds it; 'drafted' until all of them went live.
+
+def _settle_item(db: DB, iid: str, marketplaces: list[str]) -> None:
+    """The item is done once every enabled marketplace holds it; 'drafted' until all of them went live."""
     statuses = [(db.post(iid, m) or {"status": ""})["status"] for m in marketplaces]
     if all(st in ("posted", "drafted") for st in statuses):
         db.set_item(iid, status="posted" if all(st == "posted" for st in statuses) else "drafted")
@@ -156,7 +169,8 @@ async def publish_first(s: Settings, db: DB, iid: str, confirm=terminal_confirm)
         raise ValueError(f"poshmark: status {row['status']}{' with ' + row['url'] if row['url'] else ''} — it reached "
                          "the site: check the closet, never post it twice")
     if row and (row["last_error"] or "").startswith(UNCONFIRMED):
-        raise ValueError("poshmark: an earlier List This Item may have gone live — check the closet by hand")
+        raise ValueError("poshmark: an earlier List This Item may have gone live — check the closet, then "
+                         f"`thrift mark-posted {iid} poshmark <url>`")
     if row and row["status"] == "failed":
         raise ValueError(f"poshmark: the last attempt failed — `thrift requeue {iid}` first (it checks that nothing "
                          "reached the site)")
@@ -197,6 +211,66 @@ async def publish_first(s: Settings, db: DB, iid: str, confirm=terminal_confirm)
     return out
 
 
+async def mark_posted(s: Settings, db: DB, iid: str, mp: str, url: str) -> str:
+    """Record a listing that went live while its address wasn't found (a post row in "unconfirmed publish"): the
+    owner found it in the closet and gives its address. Mac only (it opens the poster's Chrome profile, read only).
+    The address must be a listing page of that marketplace (https://poshmark.com/listing/<slug>-<24 hex id>) that no
+    other item holds, and the page must show the item's title and price; then the row is 'posted' with the URL, the
+    item 'posted' once every enabled marketplace is, and Telegram hears "✅ confirmed live". Anything else is refused
+    and nothing changes. Returns the canonical address."""
+    if not s.is_prod:
+        raise RuntimeError("mark-posted runs on the Mac only (machine_role: prod): it opens the poster's Chrome "
+                           "profile to look at the listing")
+    it = db.item(iid)
+    if it is None:
+        raise ValueError(f"unknown item {iid}")
+    row = db.post(iid, mp)
+    if row is None or row["status"] != "failed" or row["url"] or not (row["last_error"] or "").startswith(UNCONFIRMED):
+        state = "no post" if row is None else f"status {row['status']}" + (f" with {row['url']}" if row["url"] else "")
+        raise ValueError(f"{mp}: only a post in 'unconfirmed publish' can be marked posted ({iid} has {state})")
+    renders = loads(it["renders"]) or {}
+    if mp not in renders:
+        raise ValueError(f"item {iid} has no {mp} listing")
+    render = Render.model_validate(renders[mp])
+    ps = posters(s)
+    poster = ps.get(mp)
+    if poster is None:
+        raise ValueError(f"marketplaces.{mp} is not enabled")
+    address = poster.listing_address(url)
+    if address is None:
+        raise ValueError(f"not a {mp} listing address: {url!r} (expected e.g. https://poshmark.com/listing/"
+                         "<title-words>-<24 hex id>)")
+    if (other := db.conn.execute("SELECT item_id FROM posts WHERE url=? AND NOT (item_id=? AND marketplace=?)",
+                                 (address, iid, mp)).fetchone()) is not None:
+        raise ValueError(f"{address} is already recorded for item {other['item_id']}")
+    try:
+        pw, ctx = await open_browser(s.path("chrome_profile"), s["schedule"]["timezone"])
+    except Exception as e:  # noqa: BLE001 — nothing was touched
+        raise RuntimeError(f"Chrome didn't open ({type(e).__name__}) — is the poster service still running? Stop it "
+                           "first: bash deploy/services.sh stop") from e
+    shots = s.path("failed") / "shots"
+    shots.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    poster.shot = shots / f"{iid}-{mp}-{stamp}-confirm.png"
+    page = None
+    try:
+        page = await ctx.new_page()
+        await poster.verify_live(page, address, render)             # title and price on the page, else it raises
+        await keep_evidence(page, poster.shot, {"item": iid, "url": address, "title": True, "price": True})
+    except Exception as e:  # noqa: BLE001
+        await keep_evidence(page, poster.shot, {"item": iid, "url": address, "error": f"{type(e).__name__}: {e}"})
+        raise ValueError(f"{address} doesn't show this item ({type(e).__name__}: {e}); nothing changed") from None
+    finally:
+        await ctx.close()
+        await pw.stop()
+    # posted_at: when the listing went live, as near as the row knows it (the failed attempt's last update).
+    db.upsert_post(iid, mp, status="posted", url=address, last_error=None, posted_at=row["updated_at"])
+    db.log(iid, "post_confirmed", {"mp": mp, "url": address, "was": row["last_error"]})
+    notify.say(f"✅ confirmed live on {mp}: {render.title} — ${render.price}\n{address}")
+    _settle_item(db, iid, list(ps))
+    return address
+
+
 def _halt(s: Settings, reason: str, text: str) -> None:
     """Invariant 5 — stop, don't guess: PAUSE makes can_post() refuse until the seller deletes the file."""
     s.flag("PAUSE").write_text(f"{datetime.now():%F %T} {reason}\n", encoding="utf-8")
@@ -214,7 +288,9 @@ def dry_run_stage(s: Settings, override: str | None = None) -> str:
 
 async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, allow_dev_browser: bool = False,
               stage: str | None = None) -> None:
-    dry = force_dry or not s.is_prod or s.get("poster.dry_run", True)
+    # Publishing for real takes two deliberate flips on the Mac: poster.dry_run off AND poster.autopublish_confirmed on.
+    dry = (force_dry or not s.is_prod or s.get("poster.dry_run", True)
+           or not s.get("poster.autopublish_confirmed", False))
     if not s.is_prod and not allow_dev_browser:
         raise RuntimeError(DEV_BROWSER_MSG)
     stage = dry_run_stage(s, stage)
@@ -223,7 +299,8 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, 
     stop = asyncio.Event()
     _install_stop(stop)
     pw, ctx = await open_browser(s.path("chrome_profile"), s["schedule"]["timezone"])
-    notify.say(f"Poster started ({f'DRY-RUN, {stage} stage' if dry else 'LIVE'}) — {', '.join(ps)}")
+    notify.say(f"Poster started ({f'DRY-RUN, {stage} stage' if dry else 'LIVE'}) — {', '.join(ps)}"
+               + (f"\n{why_dry(s, force_dry)}" if dry and s.is_prod else ""))
     failures = 0
     try:
         while True:

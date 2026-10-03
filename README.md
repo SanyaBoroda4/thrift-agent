@@ -92,7 +92,7 @@ to the previous commit).
 ## Commands
 ```
 thrift init | run | process <dir> | confirm <batch> <cmd> | answer <item> "<note>" | price <item> <amount>
-thrift requeue <item> [marketplace] | status | show <item>
+thrift requeue <item> [marketplace] | mark-posted <item> <marketplace> <url> | status | show <item>
 thrift poster [--once] [--dry-run] [--stage form|review] [--publish-first <item>] [--allow-dev-browser]
 thrift login --site poshmark | telegram setup|test | harvest | build-style | eval
 ```
@@ -114,6 +114,15 @@ thrift login --site poshmark | telegram setup|test | harvest | build-style | eva
   `form`). See "Poshmark poster (M2)".
 - **`thrift poster --publish-first <item>`** — the supervised first publish of one item on the Mac. See "Poshmark
   poster (M2)".
+- **`thrift mark-posted <item> <marketplace> <url>`** records a listing that went live while the poster couldn't find
+  its address (a post marked "unconfirmed publish"): the address must be a listing page (`https://poshmark.com/
+  listing/<title-words>-<24 hex id>`) that no other item holds and that shows the item's title and price. Then the
+  post is `posted` with that address and Telegram says "✅ confirmed live". Anything else is refused and nothing
+  changes. Mac only, with the poster service stopped (it opens the poster's Chrome profile to look at the page).
+- **Condition is shown, not told** (owner rule). No listing text names wear or flaws (dirt, stain, scuff, worn, wear
+  and tear, fraying, pilling, hole, tear, smell…); a used item says "Gently pre-loved, please see photos for
+  condition." and is never "like new", "excellent" or "no flaws". Every flaw has a photo in the listing, never the
+  cover; a flaw without a photo shows up as a Note in the approval message.
 - **`HOLD_UNSHIPPED`** is a flag file in `paths.control` (set by the shipping watchdog or by hand). It blocks
   *publish* only: drafts and dry-runs keep running, so the queue is ready the moment the late order ships. `PAUSE`
   in the same folder stops the poster entirely.
@@ -165,9 +174,10 @@ the module docstring.
 - **Evidence** for every dry-run and failure in `failed/shots/`: `<item>-poshmark-<time>.png` (full page), `.html`
   (the DOM, to record selectors from) and `.json` (what was read back, what was expected, the diff). The HTML can
   contain account details: keep it on the Mac, never in the public repo.
-- **Publishing: supervised only.** The poster service still refuses to publish or save drafts ("not recorded yet")
-  until the listing's address after List This Item and where Save Draft lands are recorded. The first publish is
-  supervised, one item, on the Mac:
+- **Publishing: two keys.** The poster service publishes only with `poster.dry_run: false` AND
+  `poster.autopublish_confirmed: true` in the Mac's settings (both off by default; publish-gated items also need
+  `marketplaces.poshmark.autopublish: true`, else they would be drafts, which still refuse until where Save Draft
+  lands is recorded). Until then it dry-runs, and one item at a time can be published supervised on the Mac:
 
   ```bash
   thrift poster --publish-first <item>
@@ -179,10 +189,12 @@ the module docstring.
   then asks **"Type LIST to publish"** in the terminal — anything else cancels, discards the form and puts the item
   back in the queue. After LIST it presses **List This Item exactly once** and records everything after the click
   (`failed/shots/<item>-poshmark-<time>-after-list.png/.html/.json`: URL before/after, navigations, dialogs, buttons).
-  The listing's address comes from the redirect, else from the closet (the one listing with this title that wasn't
-  there before; when several are, the one whose page shows our SKU — never a guess). The live page must show the title and the price; then the post is `posted` with the URL. If anything
-  after the click is unrecognized, nothing is clicked again: the post is `failed` with "unconfirmed publish: …" and the
-  evidence, Telegram is pinged, and `thrift requeue` refuses it until the closet is checked by hand.
+  After List, Poshmark goes to the closet (`?created_listing_id=<id>`), which shows the new listing only after a
+  while: the poster reloads it every 10 s for up to 90 s until the listing Poshmark named appears with this title and a
+  URL slug made of this title (`failed/shots/…-closet.json` records every reload). The live page must show the title
+  and the price; then the post is `posted` with the URL. If anything after the click is unrecognized, nothing is
+  clicked again: the post is `failed` with "unconfirmed publish: …" and the evidence, Telegram is pinged, and
+  `thrift requeue` refuses it — check the closet, then `thrift mark-posted`.
 
 ## iPhone Shortcut — "New item"
 Same Apple ID as the Mac, iCloud Drive on, folders `iCloud Drive/Posh/inbox`. Finished shares are moved to

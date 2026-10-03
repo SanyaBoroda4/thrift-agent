@@ -262,6 +262,11 @@ class Poster(ABC):
         except Exception as e:  # noqa: BLE001 — leaving is a courtesy; it never replaces the item's outcome
             return f"could not discard the form ({type(e).__name__}: {e})"
 
+    def listing_address(self, url: str) -> str | None:
+        """The canonical address of a listing page on this site, or None. An adapter that knows its listing addresses
+        overrides this; without it a listing found by hand can't be recorded (`thrift mark-posted` refuses)."""
+        return None
+
     async def verify_live(self, page: Page, url: str, r: Render) -> None:
         """The live listing shows the title (its first 40 characters) and the price."""
         await page.goto(url)
@@ -322,15 +327,15 @@ class Poster(ABC):
             url = await self.submit(page, mode)
             clicked = self._may_be_live(submitted)
             if mode != "publish":
-                return Outcome("drafted", url=url, screenshot=str(shot), clicked=clicked)
+                return Outcome("drafted", url=url, screenshot=str(shot), clicked=clicked, note=_joined(self.notes))
             if not url:
                 raise PosterError("published but no listing URL captured")
             try:
                 await self.verify_live(page, url, r)
             except Exception as e:  # noqa: BLE001 — the listing IS live: keep its URL, never re-post it
-                return Outcome("failed", url=url, screenshot=str(shot), clicked=clicked,
+                return Outcome("failed", url=url, screenshot=str(shot), clicked=clicked, note=_joined(self.notes),
                                error=f"published but the live check failed ({type(e).__name__}: {e}) — check {url}")
-            return Outcome("posted", url=url, screenshot=str(shot), clicked=clicked)
+            return Outcome("posted", url=url, screenshot=str(shot), clicked=clicked, note=_joined(self.notes))
         except AccountBlocked:
             await keep_evidence(page, shot)     # and nothing else: stop, don't touch a blocked account
             raise

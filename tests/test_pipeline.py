@@ -774,3 +774,89 @@ def test_the_listing_keeps_only_poshmarks_curated_style_tags(tmp_path, monkeypat
     it = db.item(iid)
     assert loads(it["renders"])["poshmark"]["tags"] == ["Casual"]            # boho: not Poshmark's; Leather: no label
     assert not any("material" in r for r in loads(it["gate"])["reasons"])   # dropped, so never a lint problem
+
+
+# ---------------------------------------------------------------- WO16: the owner's condition rule, photos
+
+def test_a_flaw_photo_is_never_the_cover(facts):
+    from thrift_agent.schema import Flaw
+    f = facts(cover_photo=3, photo_order=[3, 0, 1, 2, 4], flaws=[Flaw(description="scuff", photos=[3, 4])])
+    assert pipeline.photo_order(f, 5) == [0, 3, 1, 2, 4]              # the first clean photo goes first
+    assert pipeline.photo_order(facts(cover_photo=3, photo_order=[3, 0, 1, 2, 4]), 5)[0] == 3   # no flaw: as chosen
+    every = facts(cover_photo=0, photo_order=[0, 1], flaws=[Flaw(description="hole", photos=[0, 1])])
+    assert pipeline.photo_order(every, 2)[0] == 0                     # nothing clean to swap in
+    assert pipeline.flaw_notes(every, [0, 1]) == ["every photo shows a flaw, so the cover does too"]
+
+
+def test_flaw_photos_survive_the_photo_limit_and_a_flaw_without_one_is_a_note(facts):
+    from thrift_agent.schema import Flaw
+    assert pipeline.fit_photos(list(range(10)), {8, 9}, 4) == [0, 1, 8, 9]
+    assert pipeline.fit_photos([5, 1, 2], {5}, 2) == [5, 1]          # the cover is never what makes room
+    assert pipeline.fit_photos([0, 1, 2], set(), 5) == [0, 1, 2]
+    f = facts(flaws=[Flaw(description="scuff on left toe", photos=[4]), Flaw(description="small hole (seller note)")])
+    assert pipeline.flaw_notes(f, [0, 1, 4]) == [
+        "flaw without a photo, so the listing doesn't show it: small hole (seller note)"]
+
+
+def test_every_marketplaces_listing_keeps_the_flaw_photos(tmp_path, facts):
+    from thrift_agent.schema import Flaw
+    import copy
+    s = _settings(tmp_path)
+    s.data["marketplaces"] = copy.deepcopy(s.data["marketplaces"])  # _settings shares the loaded dicts: never mutate
+    s.data["marketplaces"]["poshmark"]["max_photos"] = 3            # fewer slots than photos
+    d = tmp_path / "item"
+    colors = ["red", "green", "blue", "gold", "pink", "white"]
+    photos = [_jpg(d / "photos" / f"{i:02d}.jpg", c) for i, c in enumerate(colors)]
+    f = facts(cover_photo=5, photo_order=[5, 0, 1, 2, 3, 4], flaws=[Flaw(description="scuff", photos=[5])])
+    c = CopyOut(poshmark_title="t", poshmark_description="d", poshmark_style_tags=[], depop_description="d",
+                depop_hashtags=[])
+    pr = PriceResult(target=70, list_price=85, source="brand", by_marketplace={"poshmark": 85})
+    r = pipeline.build_renders(s, "i_1", d, photos, f, c, pr)["poshmark"]
+    assert [Path(p).name for p in r.photos] == ["cover.jpg", "05.jpg", "01.jpg"]   # cover from 00; 05 kept, not cut
+    assert pipeline.listing_photos(s, f, 6) == [0, 5, 1]               # what lint checks: the same photos
+
+
+def test_the_owner_rule_rewrites_nothing_but_drops_wear_words_and_adds_the_line(tmp_path, monkeypatch, facts,
+                                                                              owner_messages):
+    """The live listing's own description (2026-10-03) through the whole pipeline: the wear sentence goes, the neutral
+    line takes its place, the rest is the model's text, and lint finds nothing."""
+    from thrift_agent.schema import Flaw
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    worded = ("Red flats with a bow.\nSize 38 EU, fits US 7.5. Good used condition, worn with dirt and scuffing on "
+              "the soles, light staining on the toe.")
+    base = fake_ask(lambda **kw: facts(flaws=[Flaw(description="scuffed soles", photos=[2])], **kw))
+
+    def ask(model, system, content, out, tool, description, **kw):
+        result = base(model, system, content, out, tool, description, **kw)
+        if out in (CopyOut, VerifyOut):
+            result.poshmark_description = worded
+            result.depop_description = "red tory burch flats, light wear on the soles"
+        return result
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", ask)
+    monkeypatch.setattr("thrift_agent.pipeline.load_yaml",
+                        lambda name: {"brands": {"tory burch": {"target": 70}}, "aliases": {}, "category_defaults": {}})
+    iid = _one_item(tmp_path, db)
+    pipeline.process_item(s, db, iid)
+    it = db.item(iid)
+    posh = loads(it["renders"])["poshmark"]
+    assert posh["description"] == ("Red flats with a bow.\nSize 38 EU, fits US 7.5. Gently pre-loved, please see "
+                                   "photos for condition.")
+    assert loads(it["gate"])["decision"] == "publish", loads(it["gate"])        # nothing left for lint to find
+    assert "02.jpg" in [Path(p).name for p in posh["photos"][1:]]               # the flaw's photo, not the cover
+
+
+def test_a_flaw_without_a_photo_is_a_note_in_the_approval_message(tmp_path, monkeypatch, facts, owner_messages):
+    from thrift_agent.schema import Flaw
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    flawed = [Flaw(description="scuffed soles", photos=[1]), Flaw(description="small hole inside (seller note)")]
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", fake_ask(lambda **kw: facts(flaws=flawed, **kw)))
+    monkeypatch.setattr("thrift_agent.pipeline.load_yaml",
+                        lambda name: {"brands": {"tory burch": {"target": 70}}, "aliases": {}, "category_defaults": {}})
+    iid = _one_item(tmp_path, db)
+    pipeline.process_item(s, db, iid)
+    notes = loads(db.item(iid)["gate"])["notes"]
+    assert "flaw without a photo, so the listing doesn't show it: small hole inside (seller note)" in notes
+    caption, _ = pipeline.approve.item_caption(iid, db.item(iid))
+    assert "Note: flaw without a photo, so the listing doesn't show it" in caption

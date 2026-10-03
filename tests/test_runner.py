@@ -8,7 +8,7 @@ from thrift_agent import approve, notify
 from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
 from thrift_agent.post import runner
-from thrift_agent.post.base import AccountBlocked, NeedsOwner, Outcome
+from thrift_agent.post.base import AccountBlocked, NeedsOwner, Outcome, PosterError
 from thrift_agent.post.depop import DepopPoster
 from thrift_agent.post.poshmark import PoshmarkPoster
 from thrift_agent.schema import Render
@@ -18,13 +18,16 @@ RENDER = Render(marketplace="poshmark", title="Tory Burch Red Flats size 7.5", d
                 price=85, photos=[], sku="i_1")
 
 
-def _settings(tmp_path, role="dev", autopublish=False, dry_run=True, max_fail=3, username="closet", depop=False) -> Settings:
+def _settings(tmp_path, role="dev", autopublish=False, dry_run=True, max_fail=3, username="closet", depop=False,
+              confirmed=None) -> Settings:
     """Built from scratch, not from config/settings.yaml: the tests must not depend on the checked-in file."""
     paths = {k: str(tmp_path / k) for k in ("inbox", "work", "archive", "failed", "chrome_profile", "control")}
     s = Settings({
         "machine_role": role,
         "paths": {**paths, "db": str(tmp_path / "state.db")},
-        "poster": {"dry_run": dry_run, "max_consecutive_failures": max_fail},
+        # A test that turns dry_run off means "live" unless it says otherwise: the second key goes with it.
+        "poster": {"dry_run": dry_run, "max_consecutive_failures": max_fail,
+                   "autopublish_confirmed": (not dry_run) if confirmed is None else confirmed},
         "schedule": {"timezone": "America/New_York", "hours": ["09:00", "21:00"], "per_hour_max": 10, "daily_cap": 25,
                      "gap_seconds": [150, 420]},
         "marketplaces": {
@@ -651,3 +654,123 @@ def test_publish_first_leaves_the_item_ready_while_another_marketplace_still_wai
     monkeypatch.setattr(runner, "posters", lambda s_: {"poshmark": poster, "depop": StubPoster(Outcome("posted"))})
     asyncio.run(runner.publish_first(s, db, iid, confirm="confirm"))
     assert db.post(iid, "poshmark")["status"] == "posted" and db.item(iid)["status"] == "ready"
+
+
+# ---------------------------------------------------------------- WO16: two keys, and mark-posted
+
+@pytest.mark.parametrize("dry_run,confirmed,live,why", [
+    (False, False, False, "poster.autopublish_confirmed is off (poster.dry_run alone doesn't publish)"),
+    (True, True, False, "poster.dry_run is on"),
+    (False, True, True, None),
+])
+def test_the_loop_publishes_only_with_dry_run_off_and_autopublish_confirmed(tmp_path, monkeypatch, harness, dry_run,
+                                                                            confirmed, live, why):
+    said, _ = harness
+    s = _settings(tmp_path, role="prod", autopublish=True, dry_run=dry_run, confirmed=confirmed)
+    db = DB(s.path("db"))
+    _ready_item(db)
+    poster = StubPoster(Outcome("posted", url="https://poshmark.com/listing/x") if live else Outcome("dryrun"))
+    _run(monkeypatch, s, db, poster, once=True)
+    assert poster.calls == [("i_1", "publish", not live)]
+    started = next(m for m in said if m.startswith("Poster started"))
+    assert ("LIVE" in started) is live and (why is None or why in started), started
+
+
+LIVE_URL = "https://poshmark.com/listing/Tory-Burch-Red-Flats-size-75-6ac111490000000000000a01"
+
+
+class PageCtx(FakeCtx):
+    async def new_page(self):
+        return object()          # keep_evidence swallows what a stand-in page can't do
+
+
+def _seeing(shows=True) -> PoshmarkPoster:
+    """The real address check; the live page stubbed: it shows the item, or it doesn't."""
+    p = PoshmarkPoster("closet")
+
+    async def verify_live(page, url, r):
+        p.seen = (url, r.title, r.price)
+        if not shows:
+            raise PosterError(f"live page at {url} doesn't show the title")
+    p.verify_live = verify_live
+    return p
+
+
+def _unconfirmed(db: DB, iid: str) -> None:
+    db.upsert_post(iid, "poshmark", status="failed", mode="publish",
+                   last_error=runner.UNCONFIRMED + "PosterError: after List This Item no listing address")
+
+
+def _mark(monkeypatch, s, db, iid, url=LIVE_URL, poster=None):
+    poster = poster or _seeing()
+
+    async def open_browser(profile_dir, timezone_id):
+        return FakePW(), PageCtx()
+    monkeypatch.setattr(runner, "posters", lambda s_: {"poshmark": poster})
+    monkeypatch.setattr(runner, "open_browser", open_browser)
+    return asyncio.run(runner.mark_posted(s, db, iid, "poshmark", url)), poster
+
+
+def test_mark_posted_records_a_listing_found_by_hand(tmp_path, monkeypatch, harness):
+    said, _ = harness
+    s = _settings(tmp_path, role="prod")
+    db = DB(s.path("db"))
+    iid = _approved(db)
+    _unconfirmed(db, iid)
+    before = db.post(iid, "poshmark")
+    address, poster = _mark(monkeypatch, s, db, iid, url=LIVE_URL + "?utm_source=share")
+    assert address == LIVE_URL and poster.seen == (LIVE_URL, RENDER.title, 85)
+    row = db.post(iid, "poshmark")
+    assert (row["status"], row["url"], row["last_error"]) == ("posted", LIVE_URL, None)
+    assert row["posted_at"] == before["updated_at"]                     # when it went live, as near as known
+    assert db.item(iid)["status"] == "posted"
+    assert f"✅ confirmed live on poshmark: {RENDER.title} — $85\n{LIVE_URL}" in said
+    assert "post_confirmed" in [e["kind"] for e in db.conn.execute("SELECT kind FROM events WHERE ref=?", (iid,))]
+    assert list((s.path("failed") / "shots").glob(f"{iid}-poshmark-*-confirm.json"))   # the evidence of the check
+
+
+@pytest.mark.parametrize("setup,url,why", [
+    (lambda db, iid: None, LIVE_URL, r"only a post in 'unconfirmed publish' can be marked posted \(i_\w+ has no post\)"),
+    (lambda db, iid: db.upsert_post(iid, "poshmark", status="failed", last_error="Mismatch: title"), LIVE_URL,
+     "only a post in 'unconfirmed publish'"),
+    (lambda db, iid: db.upsert_post(iid, "poshmark", status="posted", url=LIVE_URL), LIVE_URL,
+     "has status posted with https://poshmark.com/listing/"),
+    (lambda db, iid: db.upsert_post(iid, "poshmark", status="dryrun"), LIVE_URL, "has status dryrun"),
+    (_unconfirmed, "https://poshmark.com/closet/someone", "not a poshmark listing address"),
+    (_unconfirmed, "https://poshmark.com/listing/x-6ac11149", "not a poshmark listing address"),
+])
+def test_mark_posted_refuses_anything_else(tmp_path, monkeypatch, harness, setup, url, why):
+    s = _settings(tmp_path, role="prod")
+    db = DB(s.path("db"))
+    iid = _approved(db)
+    setup(db, iid)
+    before = dict(db.post(iid, "poshmark") or {})
+    with pytest.raises(ValueError, match=why):
+        _mark(monkeypatch, s, db, iid, url=url)
+    assert dict(db.post(iid, "poshmark") or {}) == before                  # nothing changed
+
+
+def test_mark_posted_refuses_an_address_another_item_holds_or_a_page_without_the_item(tmp_path, monkeypatch, harness):
+    said, _ = harness
+    s = _settings(tmp_path, role="prod")
+    db = DB(s.path("db"))
+    iid, other = _approved(db), _ready_item(db, seq=2)
+    _unconfirmed(db, iid)
+    db.upsert_post(other, "poshmark", status="posted", url=LIVE_URL)
+    with pytest.raises(ValueError, match=f"already recorded for item {other}"):
+        _mark(monkeypatch, s, db, iid)
+    db.upsert_post(other, "poshmark", url="https://poshmark.com/listing/y-6ac111490000000000000a02")
+    with pytest.raises(ValueError, match="doesn't show this item .*nothing changed"):
+        _mark(monkeypatch, s, db, iid, poster=_seeing(shows=False))
+    row = db.post(iid, "poshmark")
+    assert row["status"] == "failed" and row["last_error"].startswith(runner.UNCONFIRMED) and row["url"] is None
+    assert not any("confirmed live" in m for m in said)
+
+
+def test_mark_posted_runs_on_the_mac_only(tmp_path, monkeypatch, harness):
+    s = _settings(tmp_path, role="dev")
+    db = DB(s.path("db"))
+    iid = _approved(db)
+    _unconfirmed(db, iid)
+    with pytest.raises(RuntimeError, match="runs on the Mac only"):
+        _mark(monkeypatch, s, db, iid)
