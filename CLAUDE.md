@@ -158,7 +158,9 @@ Without `private/`, the code falls back to `config/*.example.yaml` and `data/sty
 closed) — the retry after a poster fix. `confirm`, `answer` and `price` are the CLI twins of the Telegram replies;
 `telegram setup` prints the chat/user ids seen in recent updates, `telegram test` sends a test message.
 `poster --publish-first <item>` is the supervised first publish: on the Mac only (poster service stopped), one
-`ready` item at its owner-approved price, `poster.dry_run` ignored for this one call. It fills, reads back and diffs,
+`ready` item at its owner-approved price, `poster.dry_run` ignored for this one call; a listing whose stored text
+predates the condition rule is refused (`thrift answer <item> "recheck"` reprocesses it, price kept). It fills,
+reads back and diffs,
 checks the Share Listing panel (our title, Promote My Closet off), asks "Type LIST to publish" in the terminal, presses
 List This Item exactly once, records everything after the click (`<shot>-after-list.png/.html/.json`), finds the
 listing's address (the closet Poshmark lands on, reloaded until the listing shows — see "What's verified"), checks

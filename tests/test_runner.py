@@ -774,3 +774,17 @@ def test_mark_posted_runs_on_the_mac_only(tmp_path, monkeypatch, harness):
     _unconfirmed(db, iid)
     with pytest.raises(RuntimeError, match="runs on the Mac only"):
         _mark(monkeypatch, s, db, iid)
+
+
+def test_publish_first_refuses_a_listing_written_before_the_condition_rule(tmp_path, monkeypatch, harness):
+    s = _settings(tmp_path, role="prod")
+    db = DB(s.path("db"))
+    iid = _approved(db)
+    old = RENDER.model_copy(update={"description": "Red flats. Excellent used condition, light wear on soles."})
+    db.set_item(iid, renders={"poshmark": old.model_dump()})
+    poster = StubPoster(Outcome("posted", url=LIVE_URL))
+    with pytest.raises(ValueError, match=r"written before the condition rule \(excellent, light wear\): reprocess it "
+                                         rf"first — thrift answer {iid} \"recheck\""):
+        _first(monkeypatch, s, db, poster, iid)
+    assert poster.calls == [] and db.post(iid, "poshmark") is None
+    assert runner.condition_rule_breaks(RENDER) == []

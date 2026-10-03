@@ -184,7 +184,8 @@ the module docstring.
   ```
 
   It runs only on prod (stop the poster service first), only for a `ready` item whose price the owner approved, and
-  ignores `poster.dry_run` for this one call. It fills the form, reads back and diffs as usual, presses Next, checks the
+  ignores `poster.dry_run` for this one call. An item processed before the condition rule (its text still names
+  wear) is refused: `thrift answer <item> "recheck"` reprocesses it, the price kept. It fills the form, reads back and diffs as usual, presses Next, checks the
   Share Listing panel (it shows our title; Promote My Closet is off and never touched; Connect Now is never clicked),
   then asks **"Type LIST to publish"** in the terminal — anything else cancels, discards the form and puts the item
   back in the queue. After LIST it presses **List This Item exactly once** and records everything after the click

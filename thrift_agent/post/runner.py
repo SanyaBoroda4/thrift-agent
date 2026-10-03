@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from thrift_agent import approve, notify
+from thrift_agent.brain.copy import NEGATIVE_WORDS, USED, USED_CLAIMS
 from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
 from thrift_agent.post.base import STAGES, AccountBlocked, NeedsOwner, Outcome, Poster, keep_evidence, open_browser
@@ -89,6 +90,16 @@ def _warn_draft(mp: str, iid: str, left: str | None) -> None:
                    "leave step (Cancel \u2192 Discard Changes) needs a look.")
 
 
+def condition_rule_breaks(r: Render) -> list[str]:
+    """What in a stored listing breaks the owner's condition rule (wear words; a used item's grade claims): a listing
+    rendered before the rule existed. The pipeline never makes one now (copy.condition_rule + lint)."""
+    text = f"{r.title}\n{r.description}\n{' '.join(r.tags)}"
+    found = {m.group(0).lower() for m in NEGATIVE_WORDS.finditer(text)}
+    if r.condition in USED:
+        found |= {m.group(0).lower() for m in USED_CLAIMS.finditer(text)}
+    return sorted(found)
+
+
 def why_dry(s: Settings, force_dry: bool = False) -> str:
     """Why the poster loop runs dry on the Mac: it publishes only with poster.dry_run off AND
     poster.autopublish_confirmed on (both deliberate flips; the defaults keep it dry)."""
@@ -164,6 +175,9 @@ async def publish_first(s: Settings, db: DB, iid: str, confirm=terminal_confirm)
     render = Render.model_validate(renders["poshmark"])
     if not it["owner_price"] or render.price != int(it["owner_price"]):
         raise ValueError(f"item {iid} has no owner-approved price (approve it in Telegram or `thrift price`)")
+    if broken := condition_rule_breaks(render):
+        raise ValueError(f"item {iid}'s listing text was written before the condition rule ({', '.join(broken)}): "
+                         f"reprocess it first — thrift answer {iid} \"recheck\" (the price is kept)")
     row = db.post(iid, "poshmark")
     if row and (row["status"] in ("posted", "posting", "drafted") or row["url"]):
         raise ValueError(f"poshmark: status {row['status']}{' with ' + row['url'] if row['url'] else ''} — it reached "
