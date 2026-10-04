@@ -555,12 +555,22 @@ def test_a_pending_question_is_sent_again_after_a_restart_and_dropped_once_answe
 
 def test_the_whole_flow_tap_then_the_price_card_with_the_new_price(env, tmp_path, facts, monkeypatch):
     """A shoe in doubt: the question, a tap on NWT, the reprocessing, then the normal price card — priced as new."""
-    from tests.test_pipeline import fake_ask
-    from thrift_agent.schema import Ev
+    from thrift_agent.schema import CopyOut, Ev, VerifyOut
     s, db, bot = env
     model = dict(category="Shoes", condition="good", condition_alternative="like_new",
-                 unworn=Ev(value="yes", photos=[2], source="photo", confidence=0.6))
-    monkeypatch.setattr("thrift_agent.brain.llm.ask", fake_ask(lambda **kw: facts(**{**model, **kw})))
+                 unworn=Ev(value="yes", photos=[2], source="photo", confidence=0.6), photo_order=[0, 1, 2])
+    copy = dict(poshmark_title="Tory Burch Red Ballet Flats size 7.5", poshmark_description="Red flats.",
+                depop_description="red tory burch flats")
+
+    def ask(model_name, system, content, out, tool, description, **kw):    # the model, stubbed: no API call
+        if out.__name__ == "Facts":
+            return facts(**model)
+        if out is CopyOut:
+            return CopyOut(**copy, poshmark_style_tags=[], depop_hashtags=["toryburch", "flats"])
+        if out is VerifyOut:
+            return VerifyOut(**copy)
+        raise AssertionError(out)
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", ask)
     monkeypatch.setattr("thrift_agent.pipeline.load_yaml",
                         lambda name: {"brands": {"tory burch": {"target": 70}}, "aliases": {}, "category_defaults": {}})
     d = tmp_path / "shoe"
