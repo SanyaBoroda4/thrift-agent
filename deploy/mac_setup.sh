@@ -1,18 +1,29 @@
 #!/usr/bin/env bash
-# One-time MacBook setup. Run from ~/thrift-agent after cloning:
+# MacBook setup: once after cloning, and again on every deploy (deploy/mac_deploy.sh runs it). From ~/thrift-agent:
 #     bash deploy/mac_setup.sh
 # Assumes: macOS 27, Python 3.14 from python.org, Google Chrome, Apple's Command Line Tools (git).
 # No Homebrew needed.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-command -v python3 >/dev/null || { echo "Install Python from python.org first"; exit 1; }
 [ -d "/Applications/Google Chrome.app" ] || { echo "Install Google Chrome first"; exit 1; }
-python3 -c 'import sys; assert sys.version_info >= (3, 11), sys.version' \
-  || { echo "Python 3.11+ required"; exit 1; }
-
-echo "== creating virtual environment (.venv) with $(python3 --version)"
-python3 -m venv .venv
+# The interpreter: the venv's own when there is one (never rebuilt with another Python); else python.org's. An SSH
+# session's PATH is only /usr/bin:/bin:/usr/sbin:/sbin, where python3 is Apple's 3.9, so python.org's is looked for
+# where its installer puts it.
+PY=""
+for c in .venv/bin/python /usr/local/bin/python3 /Library/Frameworks/Python.framework/Versions/Current/bin/python3 \
+         python3; do
+  if command -v "$c" >/dev/null 2>&1 && "$c" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+    PY="$c"
+    break
+  fi
+done
+[ -n "$PY" ] || { echo "Python 3.11+ required: install it from python.org"; exit 1; }
+if [ "$PY" != .venv/bin/python ]; then
+  echo "== creating virtual environment (.venv) with $("$PY" --version)"
+  "$PY" -m venv .venv
+fi
+echo "== packages ($(.venv/bin/python --version))"
 .venv/bin/pip install -U pip -q
 .venv/bin/pip install -e ".[dev]" -q
 
