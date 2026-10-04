@@ -284,7 +284,7 @@ The owner shares retailer screenshots (product page with price, style name, colo
   small flaw stays the cover (WO23: that rule had made the live Lacoste tee's plain back the cover).
   1. The extraction names every photo's role (`facts.photo_roles`: front, back, side, detail, label, tag, flaw, worn,
      box, other).
-  2. **The front check** (`brain/cover.py`, `models.cover`, one call): the item-alone photos (front/side/back), side by
+  2. **The front check** (`brain/cover.py`, `models.cover` = Opus 5.5 — live, the skirt 3/3 right vs Sonnet 2/3; one call): the item-alone photos (front/side/back), side by
      side in shooting order at `images.cover_check_long_edge`, with the try-on / mirror photos as a labelled reference
      for how the front looks when worn (never a candidate), ONE question — which shows the front? — with per photo the
      side, the printed design (none/some/strong) and where the item's top lies. Cues: print, graphic, text, logo,
@@ -296,7 +296,7 @@ The owner shares retailer screenshots (product page with price, style name, colo
      printed design. "cover: no front flat-lay photo" only when no item-alone photo could be the front (backs only, or
      none). The decision is `facts.cover_photo` + `facts.cover_upright`; `photo_order` trusts it (the card, the renders
      and the poster all use it).
-  4. **Upright** (`cover.upright_check`, one small call): the cover photo shown turned four ways, the model picks the
+  4. **Upright** (`cover.upright_check`, `models.upright` = Sonnet 5, one small call): the cover photo shown turned four ways, the model picks the
      upright picture — steadier than naming where a collar lies, which varied from run to run live (probed: the same
      answer twice on all ten live items). The cover is turned by that exact quarter turn before the 3:4 padding
      (`prep.portrait_cover`), never cropped; if the call fails, the comparison's reading. EXIF orientation is applied

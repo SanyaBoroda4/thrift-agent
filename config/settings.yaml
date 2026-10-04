@@ -18,7 +18,9 @@ models:
   extract: claude-sonnet-5
   copy: claude-sonnet-5
   verify: claude-haiku-4-5-20251001
-  cover: claude-sonnet-5       # which photo shows the front: one comparison of the item-alone photos (WO23)
+  cover: claude-opus-5-5       # which photo shows the front: one comparison of the item-alone photos (WO23).
+                               # Opus: the live floral skirt 3 of 3 runs right, Sonnet 2 of 3 (~$0.03 an item)
+  upright: claude-sonnet-5     # the cover turned four ways, pick the upright one: same answer twice on 10 live items
 
 images:
   work_long_edge: 2048

@@ -690,7 +690,8 @@ def upright_view(s: Settings, db: DB, iid: str, photo: Path, fallback: int) -> i
     """The turn that puts the cover upright, from the four-turn check (brain/cover.py); `fallback` (the front check's
     reading) when that call fails — logged."""
     try:
-        return cover_brain.upright_check(photo, s["models"].get("cover") or s["models"]["extract"])
+        return cover_brain.upright_check(photo, s["models"].get("upright") or s["models"].get("cover")
+                                         or s["models"]["extract"])
     except Exception as e:  # noqa: BLE001
         db.log(iid, "upright_check_failed", f"{type(e).__name__}: {e}")
         return fallback
