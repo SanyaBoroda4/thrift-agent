@@ -40,8 +40,10 @@ def evaluate(facts: Facts, price: PriceResult, lint: list[str], unsupported: int
                    if facts.condition_alternative and facts.condition_alternative != facts.condition else "")
         notes.append(f"model unsure of the condition ({facts.condition_evidence.confidence:.2f}{weighed}): listed as "
                      f"{facts.condition}; reply with the condition if it is wrong")
-    # Invariant 2: NWT needs the seller's own photo of the attached hang tag, or a seller note saying so.
-    if facts.condition == "NWT" and facts.hang_tag_photo is None and facts.condition_evidence.source != "note":
+    # Invariant 2: NWT needs the seller's own photo of the attached hang tag, or the owner saying so (a seller note, or
+    # the answer to "Brand new or worn?").
+    owner_says = facts.condition_evidence.source in ("note", "owner")
+    if facts.condition == "NWT" and facts.hang_tag_photo is None and not owner_says:
         need.append("NWT claimed without a hang-tag photo")
     if facts.category.strip().lower() in ("", "other") or (facts.subcategory or "").strip().lower() == "other":
         need.append("category/subcategory is 'Other' — pick the real Poshmark category")

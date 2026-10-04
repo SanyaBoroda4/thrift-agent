@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 Condition = Literal["NWT", "NWOT", "like_new", "excellent", "good", "fair"]
 Color = Literal["Red", "Pink", "Orange", "Yellow", "Green", "Blue", "Purple", "Gold", "Silver",
                 "Black", "Gray", "White", "Cream", "Brown", "Tan"]
-Source = Literal["photo", "note", "derived", "none"]
+Source = Literal["photo", "note", "derived", "owner", "none"]
 KidsGender = Literal["girls", "boys", "unisex"]
 
 CONDITION_LABEL = {
@@ -22,7 +22,8 @@ class Ev(BaseModel):
     value: str | None = Field(None, description="The value, or null if it cannot be read")
     photos: list[int] = Field(default_factory=list, description="Indices of photos that show it")
     source: Source = Field("none", description="photo = read from a photo; note = seller's note; "
-                                               "derived = standard conversion (e.g. EU→US shoe size)")
+                                               "derived = standard conversion (e.g. EU→US shoe size); "
+                                               "owner = the owner's answer in Telegram (set by code, never by you)")
     confidence: float = Field(0.0, ge=0, le=1)
 
     @field_validator("value", mode="before")
@@ -78,6 +79,12 @@ class Facts(BaseModel):
     hang_tag_photo: int | None = Field(None, description="Index of the seller's OWN photo showing an ATTACHED retail "
                                                          "hang tag, else null. Required for NWT. A box, a loose tag "
                                                          "or a retail screenshot does not count")
+    unworn: Ev = Field(default_factory=Ev, description="Shoes only (any department): is the pair unworn? value "
+                                                        "'yes' or 'no', with your confidence in that value and the "
+                                                        "photos that show it (soles, insoles, toe box, box, tags, "
+                                                        "sole stickers). null for anything that isn't shoes")
+    box_photo: int | None = Field(None, description="Shoes: index of the seller's OWN photo showing the shoe box, "
+                                                    "else null")
     flaws: list[Flaw] = Field(default_factory=list)
     features: list[str] = Field(default_factory=list, description="Visible details: lining, hardware, heel height…")
     cover_photo: int = Field(description="Best photo for the cover (full item, clean)")

@@ -466,3 +466,17 @@ def test_both_prompts_carry_the_owners_condition_rule():
     assert "never \"like new\", \"excellent\"" in copywriter.SYSTEM.replace("is never", "never")
     assert "Never add or restore a description of wear" in verifier.SYSTEM
     assert "missing flaws added" not in verifier.SYSTEM and "mention every flaw" not in copywriter.SYSTEM
+
+
+
+# ---------------------------------------------------------------- WO18: the copy for new shoes
+
+def test_the_condition_line_for_new_items(facts):
+    from thrift_agent.brain.copy import condition_line
+    assert condition_line(facts(condition="NWT")) == "New with tags."
+    assert condition_line(facts(condition="NWT", box_photo=3)) == "New in box."             # the box is in the photos
+    assert condition_line(facts(condition="NWOT", box_photo=3)) == "New without tags."
+    assert condition_line(facts(condition="good")) == LINE
+    view = facts_view(facts(condition="NWT", box_photo=3, unworn=ev("yes"), condition_alternative="NWOT"))
+    assert view["condition_line"] == "New in box."
+    assert not {"unworn", "box_photo", "condition_alternative"} & set(view)                  # evidence, not copy

@@ -16,7 +16,7 @@ TEXT_FIELDS = ("poshmark_title", "poshmark_description", "depop_description")
 # kids_gender is the model's best guess for Poshmark's size tab, not evidence: the copy never states it. The flaws and
 # the condition evidence are what the photos show: the copy never describes them (the owner's condition rule, below).
 VIEW_EXCLUDE = {"cover_photo", "photo_order", "questions", "kids_gender", "flaws", "condition_evidence",
-                "hang_tag_photo"}
+                "condition_alternative", "hang_tag_photo", "unworn", "box_photo"}
 TAG_LINE = re.compile(r"(?m)^[ \t]*(#\w+[ \t]*)+\r?$")   # a line that is nothing but hashtags
 TRAILING_TAGS = re.compile(r"(\s*#\w+)+\s*$")           # hashtags tacked onto the end of the last sentence
 
@@ -26,6 +26,7 @@ TRAILING_TAGS = re.compile(r"(\s*#\w+)+\s*$")           # hashtags tacked onto t
 USED = ("like_new", "excellent", "good", "fair")
 CONDITION_LINE = "Gently pre-loved, please see photos for condition."
 CONDITION_LINES = {"NWT": "New with tags.", "NWOT": "New without tags.", **{c: CONDITION_LINE for c in USED}}
+NEW_IN_BOX = "New in box."      # NWT shoes whose box is in the seller's photos (WO18)
 HAS_CONDITION_LINE = re.compile(r"gently\s+pre-?loved,?\s+please\s+see\s+(?:the\s+)?photos\s+for\s+(?:the\s+)?"
                                 r"condition", re.I)
 # Whole words and their inflections. "wear" alone is fine ("everyday wear"), wear with a measure of it is not ("light
@@ -72,8 +73,8 @@ POSHMARK
 - Description, in this closet's proven shape:
   1) 2–4 short sentences describing what the photos show (type, color, material if known, details).
      Plain and specific; at most one adjective like "chic" or "versatile" — never a string of them.
-  2) Then the condition: condition_line from the facts, verbatim, as its own line ("New with tags." / "New without
-     tags." / for every used item "Gently pre-loved, please see photos for condition."). A fit line may go before it
+  2) Then the condition: condition_line from the facts, verbatim, as its own line ("New with tags." / "New in box." /
+     "New without tags." / for every used item "Gently pre-loved, please see photos for condition."). A fit line may go before it
      ("Size 38 EU, fits US 7.5-8.").
   3) If retail_price is known, the description ends with "Retail $<price>." as its own last line
      (after the condition line).
@@ -116,8 +117,16 @@ def facts_view(facts: Facts) -> dict:
         view["size_label"] = label
     if (ts := title_size(facts)) is not None:          # "Toddler size 7.5" / "size 7.5": the only size the title shows
         view["title_size"] = ts
-    view["condition_line"] = CONDITION_LINES[facts.condition]
+    view["condition_line"] = condition_line(facts)
     return view
+
+
+def condition_line(facts: Facts) -> str:
+    """The one thing the copy says about condition: "New with tags." ("New in box." for shoes whose box is in the
+    photos), "New without tags.", or for any used item the neutral pre-loved line."""
+    if facts.condition == "NWT" and facts.box_photo is not None:
+        return NEW_IN_BOX
+    return CONDITION_LINES[facts.condition]
 
 
 def write(facts: Facts, model: str, cfg: dict) -> CopyOut:

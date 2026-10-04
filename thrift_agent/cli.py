@@ -182,6 +182,23 @@ def price(item_id: str, amount: int) -> None:
     approve.announce(s, f"{item_id}: price ${amount} set from the CLI -> {status}")
 
 
+@app.command()
+def condition(item_id: str, choice: str = typer.Argument(..., metavar="nwt|like_new|good")) -> None:
+    """Answer "Brand new or worn?" for a pair of shoes (the CLI twin of the [NWT] [Like New] [Good] buttons): nwt =
+    new with tags, like_new = brand new without tags, good = worn. The item is reprocessed with that condition and
+    the price card follows."""
+    s, db = settings(), _db()
+    try:
+        pipeline.set_condition(s, db, item_id, choice)
+    except ValueError as e:
+        print(f"[red]not set[/] {item_id}: {e}")
+        raise typer.Exit(1) from None
+    db.outbox_resolve("condition", item_id)                          # the pending question is settled
+    label = approve.CONDITION_TAPPED[pipeline.owner_choice(choice)]
+    print(f"[green]{label}[/] set for {item_id} — reprocessing, the price card follows")
+    approve.announce(s, f"{item_id}: condition {label} set from the CLI - repricing")
+
+
 @telegram_app.command("setup")
 def telegram_setup() -> None:
     """Print the chat ids and user ids seen in recent updates, to fill TELEGRAM_CHAT_ID and
@@ -322,6 +339,8 @@ def status() -> None:
     print(t)
     for b in db.batches("needs_confirm"):
         print(f"[yellow]awaiting confirm[/] {b['id']}  →  thrift confirm {b['id']} ok")
+    for it in db.items("awaiting_condition"):
+        print(f"[yellow]brand new or worn?[/] {it['id']}  →  thrift condition {it['id']} nwt|like_new|good")
     for it in db.items("awaiting_price"):
         print(f"[yellow]awaiting price[/] {it['id']}  →  thrift price {it['id']} <amount>")
     for it in db.items("needs_owner"):

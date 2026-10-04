@@ -98,3 +98,15 @@ def test_an_unsure_condition_note_names_the_grade_it_was_weighed_against(facts, 
     notes = evaluate(f, pr, [], 0, gate_cfg, pricing_cfg).notes
     assert notes == ["model unsure of the condition (0.60, weighed against good): listed as like_new; reply with the "
                      "condition if it is wrong"]
+
+
+
+def test_the_owners_answer_is_proof_enough_for_nwt(facts, gate_cfg, pricing_cfg):
+    from thrift_agent.brain.gate import evaluate
+    from thrift_agent.schema import Ev, PriceResult
+    pr = PriceResult(target=70, list_price=85, source="brand", by_marketplace={"poshmark": 85})
+    owner = facts(condition="NWT", condition_evidence=Ev(value="owner: new with tags", source="owner", confidence=1.0))
+    model = facts(condition="NWT", condition_evidence=Ev(value="looks new", photos=[2], source="photo",
+                                                         confidence=0.9))
+    assert not any("hang-tag" in r for r in evaluate(owner, pr, [], 0, gate_cfg, pricing_cfg).reasons)
+    assert any("hang-tag" in r for r in evaluate(model, pr, [], 0, gate_cfg, pricing_cfg).reasons)

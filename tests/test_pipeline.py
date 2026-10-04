@@ -37,6 +37,7 @@ def owner_messages(monkeypatch):
     monkeypatch.setattr(pipeline.approve, "send_batch", lambda s, db, bid: sent.append(("batch", bid)))
     monkeypatch.setattr(pipeline.approve, "send_item", lambda s, db, iid: sent.append(("item", iid)))
     monkeypatch.setattr(pipeline.approve, "ask_owner", lambda s, db, iid, q: sent.append(("owner_q", iid, q)))
+    monkeypatch.setattr(pipeline.approve, "ask_condition", lambda s, db, iid: sent.append(("condition", iid)))
     return sent
 
 
@@ -938,3 +939,126 @@ def test_a_roll_with_a_break_shows_the_pause_and_doubts_a_grouping_across_it(tmp
     assert "item 1: a pause (2 min) and a visual change between photos 2 and 3 — two items?" in loads(b["reasons"])
     caption = pipeline.approve.batch_caption(bid, b)
     assert "pauses before: #3 (2 min)" in caption and "two items?" in caption
+
+
+
+# ---------------------------------------------------------------- WO18: shoes, brand new or worn?
+
+def _unworn(value, confidence):
+    return Ev(value=value, photos=[2], source="photo", confidence=confidence)
+
+
+@pytest.mark.parametrize("value,confidence,ask", [
+    ("yes", 0.29, False), ("yes", 0.30, True), ("yes", 0.55, True), ("yes", 0.80, True), ("yes", 0.81, False),
+    ("yes", 0.97, False),                                   # box, tags, sole stickers: a clear yes, never asked
+    ("no", 0.70, True), ("no", 0.71, False),                # "no" at 0.70 = 0.30 sure it is unworn
+    ("no", 0.95, False),                                    # sole wear, footbed imprints: a clear no, never asked
+    (None, 0.0, False),                                     # no reading at all: no question either
+])
+def test_the_shoe_doubt_rule_boundaries(facts, value, confidence, ask):
+    assert pipeline.shoe_condition_doubt(facts(unworn=_unworn(value, confidence))) is ask
+
+
+@pytest.mark.parametrize("cond,alt,ask", [
+    ("good", "like_new", True), ("like_new", "excellent", True), ("NWOT", "good", True), ("NWT", "fair", True),
+    ("NWT", "NWOT", False), ("good", "excellent", False), ("like_new", "NWOT", False), ("good", None, False),
+])
+def test_two_grades_across_new_and_used_are_a_doubt(facts, cond, alt, ask):
+    assert pipeline.shoe_condition_doubt(facts(condition=cond, condition_alternative=alt,
+                                               unworn=_unworn("yes", 0.95))) is ask
+
+
+def test_only_shoes_are_ever_asked(facts):
+    for category in ("Dresses", "Bags", "Accessories", "Jackets & Coats"):
+        f = facts(category=category, unworn=_unworn("yes", 0.5), condition="good", condition_alternative="like_new")
+        assert not pipeline.shoe_condition_doubt(f), category
+
+
+def _shoe_ask(facts, **kw):
+    base = dict(category="Shoes", condition="good", condition_alternative="like_new", unworn=_unworn("yes", 0.6))
+    return fake_ask(lambda **k: facts(**{**base, **kw, **k}))
+
+
+def test_a_shoe_in_doubt_is_asked_before_the_price_and_the_answer_reprices_it(tmp_path, monkeypatch, facts,
+                                                                              owner_messages):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", _shoe_ask(facts))
+    monkeypatch.setattr("thrift_agent.pipeline.load_yaml",
+                        lambda name: {"brands": {"tory burch": {"target": 70}}, "aliases": {}, "category_defaults": {}})
+    iid = _one_item(tmp_path, db)
+    pipeline.process_item(s, db, iid)
+    it = db.item(iid)
+    assert it["status"] == "awaiting_condition" and owner_messages == [("condition", iid)]     # no price card yet
+    before = loads(it["price"])["list_price"]
+
+    assert pipeline.set_condition(s, db, iid, "NWT") == "new"
+    assert db.item(iid)["owner_condition"] == "NWT"
+    pipeline.process_item(s, db, iid)
+    it = db.item(iid)
+    facts_after = loads(it["facts"])
+    assert facts_after["condition"] == "NWT" and facts_after["condition_evidence"]["source"] == "owner"
+    assert it["status"] == "awaiting_price" and owner_messages[-1] == ("item", iid)    # now the price card
+    assert loads(it["price"])["list_price"] > before                                     # repriced as new with tags
+    assert not any("hang-tag" in r for r in loads(it["gate"])["reasons"])                # the owner's word is the proof
+    pipeline.process_item(s, db, iid)                                                    # a later reprocessing
+    assert owner_messages.count(("condition", iid)) == 1                                 # never asks again
+
+
+@pytest.mark.parametrize("choice,condition,line", [("like_new", "NWOT", "New without tags."),
+                                                   ("good", "good", "Gently pre-loved")])
+def test_the_owners_answer_sets_the_listed_condition(tmp_path, monkeypatch, facts, owner_messages, choice, condition,
+                                                     line):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", _shoe_ask(facts))
+    monkeypatch.setattr("thrift_agent.pipeline.load_yaml",
+                        lambda name: {"brands": {"tory burch": {"target": 70}}, "aliases": {}, "category_defaults": {}})
+    iid = _one_item(tmp_path, db)
+    pipeline.process_item(s, db, iid)
+    pipeline.set_condition(s, db, iid, choice)
+    pipeline.process_item(s, db, iid)
+    it = db.item(iid)
+    assert loads(it["facts"])["condition"] == condition and loads(it["renders"])["poshmark"]["condition"] == condition
+    from thrift_agent.brain.copy import condition_line
+    from thrift_agent.schema import Facts
+    assert condition_line(Facts.model_validate(loads(it["facts"]))).startswith(line)
+
+
+@pytest.mark.parametrize("kw", [
+    dict(category="Dresses"),                                               # not shoes: never asked
+    dict(unworn=Ev(value="yes", photos=[2], source="photo", confidence=0.97), condition_alternative=None),  # clear new
+    dict(unworn=Ev(value="no", photos=[2], source="photo", confidence=0.95), condition_alternative=None),   # clear worn
+])
+def test_no_question_when_not_shoes_or_when_the_photos_are_clear(tmp_path, monkeypatch, facts, owner_messages, kw):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", _shoe_ask(facts, **kw))
+    monkeypatch.setattr("thrift_agent.pipeline.load_yaml",
+                        lambda name: {"brands": {"tory burch": {"target": 70}}, "aliases": {}, "category_defaults": {}})
+    iid = _one_item(tmp_path, db)
+    pipeline.process_item(s, db, iid)
+    assert db.item(iid)["status"] == "awaiting_price" and owner_messages == [("item", iid)]
+
+
+def test_set_condition_refuses_nonsense_and_a_listed_item(tmp_path):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid = _new_item(s, db)
+    db.set_item(iid, status="awaiting_condition")
+    with pytest.raises(ValueError, match="must be one of nwt, like_new, good"):
+        pipeline.set_condition(s, db, iid, "fair")                       # never Fair (WO17)
+    with pytest.raises(ValueError, match="first needs its condition"):
+        pipeline.set_price(s, db, iid, 50)                               # the price comes after the answer
+    db.set_item(iid, status="posted")
+    with pytest.raises(ValueError, match="can't be changed now"):
+        pipeline.set_condition(s, db, iid, "good")
+    assert pipeline.owner_choice("Like New") == pipeline.owner_choice("like-new") == "like_new"
+
+
+def test_a_screenshot_is_no_proof_of_an_unworn_pair_or_its_box(facts):
+    from thrift_agent.brain.extract import SYSTEM, strip_screenshot_evidence
+    f = strip_screenshot_evidence(facts(unworn=Ev(value="yes", photos=[4], source="photo", confidence=0.9),
+                                        box_photo=4), retail={4})
+    assert f.unworn.value is None and f.box_photo is None
+    assert "unworn" in SYSTEM and "box_photo" in SYSTEM

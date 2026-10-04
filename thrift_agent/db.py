@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS kv (
 #        button press can be mapped back to its batch/item; kv holds the getUpdates offset.
 
 # Columns added after the first release; applied with ALTER TABLE when an older DB is opened.
-MIGRATIONS = {"items": {"cover_hash": "TEXT", "owner_price": "INTEGER"}}
+MIGRATIONS = {"items": {"cover_hash": "TEXT", "owner_price": "INTEGER", "owner_condition": "TEXT"}}
 
 
 def now() -> str:

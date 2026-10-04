@@ -484,3 +484,97 @@ def test_item_caption_shows_notes(env, tmp_path, facts):
                                           "notes": ["model saw NWT but no attached hang tag: listed as like new"]})
     send_item(s, db, iid)
     assert "Note: model saw NWT but no attached hang tag" in bot.texts()[-1]
+
+
+
+# ---------------------------------------------------------------- WO18: "Brand new or worn?"
+
+def _waiting_shoe(db, tmp_path, facts):
+    return _item(db, tmp_path, facts, status="awaiting_condition")
+
+
+def test_ask_condition_sends_the_cover_the_question_and_three_buttons(env, tmp_path, facts):
+    s, db, bot = env
+    iid = _waiting_shoe(db, tmp_path, facts)
+    approve.ask_condition(s, db, iid)
+    [photo] = bot.sent("sendPhoto")
+    assert photo["caption"].endswith("Brand new or worn? (couldn't tell from the photos)")
+    assert [b["text"] for b in photo["reply_markup"]["inline_keyboard"][0]] == ["NWT", "Like New", "Good"]
+    assert [b["callback_data"] for b in photo["reply_markup"]["inline_keyboard"][0]] == [
+        f"cond:{iid}:nwt", f"cond:{iid}:like_new", f"cond:{iid}:good"]
+    assert [r["kind"] for r in db.outbox_pending()] == ["condition"]
+
+
+@pytest.mark.parametrize("choice,condition", [("nwt", "NWT"), ("like_new", "NWOT"), ("good", "good")])
+def test_a_tap_sets_the_condition_and_reprocesses(env, tmp_path, facts, choice, condition):
+    s, db, bot = env
+    iid = _waiting_shoe(db, tmp_path, facts)
+    approve.ask_condition(s, db, iid)
+    result = handle_update(s, db, bot, _callback(f"cond:{iid}:{choice}"))
+    it = db.item(iid)
+    assert (it["status"], it["owner_condition"]) == ("new", condition), result
+    assert db.outbox_pending() == []                                                   # the question is settled
+    assert bot.sent("answerCallbackQuery")[-1]["text"] == approve.CONDITION_TAPPED[choice]
+    assert "repricing" in bot.texts()[-1]
+
+
+def test_a_tap_from_someone_else_is_ignored(env, tmp_path, facts):
+    s, db, bot = env
+    iid = _waiting_shoe(db, tmp_path, facts)
+    approve.ask_condition(s, db, iid)
+    assert handle_update(s, db, bot, _callback(f"cond:{iid}:nwt", user=STRANGER)) == "ignored: unauthorized"
+    assert handle_update(s, db, bot, _callback(f"cond:{iid}:nwt", chat=999)) == "ignored: unauthorized"
+    it = db.item(iid)
+    assert (it["status"], it["owner_condition"]) == ("awaiting_condition", None)
+    assert [r["kind"] for r in db.outbox_pending()] == ["condition"]                    # still waiting
+
+
+def test_a_typed_answer_works_too(env, tmp_path, facts):
+    s, db, bot = env
+    iid = _waiting_shoe(db, tmp_path, facts)
+    approve.ask_condition(s, db, iid)
+    question = bot.next_id
+    handle_update(s, db, bot, _reply("hmm", reply_to=question))
+    assert bot.texts()[-1] == approve.CONDITION_HINT and db.item(iid)["status"] == "awaiting_condition"
+    handle_update(s, db, bot, _reply("brand new, no tags", reply_to=question))
+    assert db.item(iid)["owner_condition"] == "NWOT"
+    assert [approve.parse_condition(x) for x in ("NWT", "with tags", "like new", "worn", "used", "?")] == [
+        "nwt", "nwt", "like_new", "good", "good", None]
+
+
+def test_a_pending_question_is_sent_again_after_a_restart_and_dropped_once_answered(env, tmp_path, facts):
+    s, db, bot = env
+    iid = _waiting_shoe(db, tmp_path, facts)
+    approve.ask_condition(s, db, iid)
+    _age(db, bot.next_id, hours=9)                                                       # the Mac slept overnight
+    assert resend_pending(s, db, force=True) == [iid]                                   # the worker starts again
+    assert len(bot.sent("sendPhoto")) == 2 and len(db.outbox_pending()) == 1           # the new message is the one
+    db.set_item(iid, status="awaiting_price")                                            # answered elsewhere
+    assert resend_pending(s, db, force=True) == [] and db.outbox_pending() == []
+
+
+def test_the_whole_flow_tap_then_the_price_card_with_the_new_price(env, tmp_path, facts, monkeypatch):
+    """A shoe in doubt: the question, a tap on NWT, the reprocessing, then the normal price card — priced as new."""
+    from tests.test_pipeline import fake_ask
+    from thrift_agent.schema import Ev
+    s, db, bot = env
+    model = dict(category="Shoes", condition="good", condition_alternative="like_new",
+                 unworn=Ev(value="yes", photos=[2], source="photo", confidence=0.6))
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", fake_ask(lambda **kw: facts(**{**model, **kw})))
+    monkeypatch.setattr("thrift_agent.pipeline.load_yaml",
+                        lambda name: {"brands": {"tory burch": {"target": 70}}, "aliases": {}, "category_defaults": {}})
+    d = tmp_path / "shoe"
+    for i, c in enumerate(["red", "green", "blue"]):
+        (d / "photos").mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (60, 80), c).save(d / "photos" / f"{i:02d}.jpg")
+    iid = db.add_item(db.add_batch("share", 3), 1, str(d))
+    pipeline.process_item(s, db, iid)
+    assert db.item(iid)["status"] == "awaiting_condition"
+    assert not any("Approve $" in str(p.get("reply_markup")) for p in bot.sent("sendPhoto"))   # no price card yet
+    guess = loads(db.item(iid)["price"])["list_price"]
+    handle_update(s, db, bot, _callback(f"cond:{iid}:nwt"))
+    pipeline.process_item(s, db, iid)                                                    # what the worker does next
+    card = bot.sent("sendPhoto")[-1]
+    price = loads(db.item(iid)["price"])["list_price"]
+    assert price > guess and f"Approve ${price}" in str(card["reply_markup"])
+    assert "Condition: NWT (your answer)" in card["caption"]

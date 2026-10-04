@@ -34,6 +34,11 @@ Rules:
   owner's rule: torn between like new and good (or excellent), the shop lists Like New — choose like_new. fair only
   for a clearly well-worn item; say so when you see it (the shop never lists Fair: it goes up as Good and the owner
   checks it before approving).
+  - Shoes (any department): also fill unworn — is the pair unworn? Look at the soles/outsoles (tread wear, dirt in
+    the grooves), the insoles (footprint marks), creasing at the toe box, and for a box, tags or stickers on the soles.
+    value "yes" or "no", your confidence in that value, the photos. A box, tags or sole stickers in the seller's own
+    photos are a clear yes; visible sole wear, footbed imprints or creasing are a clear no; when you can't tell, say
+    so with a middling confidence — the owner is asked. box_photo = the seller's own photo of the shoe box, if any.
   - condition_evidence: always fill it for every grade — the photos and what you saw that justify the grade,
     with your confidence in the grade.
 - Photos marked (retail screenshot) are retailer web/app pages the seller shared. From them read
@@ -59,7 +64,7 @@ def extract(photos: list[Path], note: str | None, model: str, long_edge: int, ki
     return llm.ask(model, system, content, Facts, "report_facts", "Report the item facts", max_tokens=4000)
 
 
-SELLER_PHOTO_ONLY = ("condition_evidence", "size_printed", "size_us", "size_eu")   # Evs a screenshot can't prove
+SELLER_PHOTO_ONLY = ("condition_evidence", "unworn", "size_printed", "size_us", "size_eu")   # a screenshot can't prove
 
 
 def strip_screenshot_evidence(facts: Facts, retail: set[int]) -> Facts:
@@ -86,4 +91,6 @@ def strip_screenshot_evidence(facts: Facts, retail: set[int]) -> Facts:
     out.flaws = flaws
     if out.hang_tag_photo in retail:
         out.hang_tag_photo = None
+    if out.box_photo in retail:                        # a box on the retailer's page is not this pair's box
+        out.box_photo = None
     return out

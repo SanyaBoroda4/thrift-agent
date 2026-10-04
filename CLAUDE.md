@@ -20,6 +20,8 @@ iCloud Posh/inbox/<ts>/ (+ _done) ─► register batch ─► prep (HEIC→JPEG
   ─► contact sheet → Telegram; owner replies ok|12>2|split 7|merge 2 3|drop 7 (or `thrift confirm <batch> …`)
   ─► items ─► extract Facts (evidence per field) ─► price (brand_tiers.yaml) ─► copy (both marketplaces)
   ─► verify (LLM strip unsupported claims) + lint (deterministic) ─► gate: publish | draft | needs_info
+  ─► (shoes in doubt, brand new vs worn: awaiting_condition ─► "Brand new or worn?" [NWT] [Like New] [Good] ─►
+      reprocessed with the answer)
   ─► awaiting_price ─► Telegram: ONE message [Approve $P] [Change] (open questions folded in) ─► ready
   ─► poster: fill form → read back → diff → dry-run | draft | publish → verify live page → record URL
      (publish: List This Item once → Poshmark's closet ?created_listing_id=<id> → the closet reloaded until that
@@ -29,8 +31,8 @@ iCloud Posh/inbox/<ts>/ (+ _done) ─► register batch ─► prep (HEIC→JPEG
       each dry-run compares Poshmark's Drafts count before and after — more drafts → Telegram warning + Outcome note)
      (stuck on an owner-only field → separate question, item waits in `needs_owner`, the others continue)
 ```
-Item statuses: `new` → `awaiting_price` | `needs_info` → `ready` → `posting` → `posted` | `drafted` | `failed`;
-`needs_owner` while the poster's question is open. Nothing publishes without price approval.
+Item statuses: `new` → (`awaiting_condition` →) `awaiting_price` | `needs_info` → `ready` → `posting` → `posted` |
+`drafted` | `failed`; `needs_owner` while the poster's question is open. Nothing publishes without price approval.
 
 ## Invariants — do not break these
 1. **Facts before prose.** `extract` never writes copy; `copy` may only restate Facts. Null facts are omitted.
@@ -41,7 +43,18 @@ Item statuses: `new` → `awaiting_price` | `needs_info` → `ready` → `postin
      takes the higher of good / excellent / like_new. Poshmark has no "very good": excellent goes up as Like New.
      **Never Fair:** a fair reading (or good weighed against fair) is listed as Good, with the Note "looked well-worn —
      listed as Good; check before approving"; the form never selects Fair (`CONDITION_TO_POSH`, `POSH_FAIR` recorded
-     only). NWT stays strict (`settle_nwt`); NWOT / like_new for "new, no tags".
+     only). NWT stays strict (`settle_nwt`); NWOT / like_new for "new, no tags". Excellent → Like New on Poshmark:
+     confirmed by the owner (WO18).
+   - **Shoes: brand new or worn? (owner rule, WO18 — ask only in doubt, never routinely).** For shoes (any
+     department) the model reads `unworn` (yes/no + confidence + photos: soles, insoles, toe-box creasing, box, tags,
+     sole stickers) and `box_photo`. `pipeline.shoe_condition_doubt` — code, on the model's own reading — asks when
+     0.30 ≤ the confidence that the pair is unworn ≤ 0.80, or when `condition` and `condition_alternative` straddle new
+     (NWT / NWOT / like_new) and used. Not when the owner already priced or answered; never for clothing, bags or
+     accessories. The item waits in `awaiting_condition` with ONE message before the price card: cover + "Brand new or
+     worn? (couldn't tell from the photos)" + [NWT] [Like New] [Good] (or `thrift condition <item> nwt|like_new|good`).
+     The answer is `items.owner_condition`, the condition with source `owner` (NWT then needs no hang-tag photo): NWT;
+     Like New = brand new without tags = NWOT ("New without tags."); Good = worn. The item is reprocessed (new price,
+     copy, listing) and the price card follows; it is never asked again. Never Fair.
    - **Owner rule (first run).** `gate.min_confidence` is 0.70 for brand, size and condition; the price is the
      owner's only routine input (Telegram approval or `thrift price`). NWT stays strict — `hang_tag_photo` or a
      seller note, never confidence. A price-table miss no longer blocks the gate: the per-department
@@ -60,8 +73,8 @@ Item statuses: `new` → `awaiting_price` | `needs_info` → `ready` → `postin
      sentence with wear words, puts the line in) and `verify.lint` checks the result (wear words, used-item claims,
      the line and the flaw photos).
    - **The only questions.** Brand or size below 0.70, NWT without a hang-tag photo, category "Other" (or a
-     department/category not on Poshmark's list, `data/poshmark_taxonomy.yaml`), a possible re-share, and the poster's
-     `needs_owner`. The model's own `questions` about optional facts (material,
+     department/category not on Poshmark's list, `data/poshmark_taxonomy.yaml`), a possible re-share, a pair of shoes in
+     doubt between brand new and worn (its own message, before the price), and the poster's `needs_owner`. The model's own `questions` about optional facts (material,
      measurements) are dropped — a missing optional fact is left out of the listing; an unsure condition is a
      "Note:", not a question. CLI actions (`thrift price` / `answer` / `confirm`) are echoed to the Telegram group
      and settle the pending message.
@@ -160,6 +173,7 @@ Without `private/`, the code falls back to `config/*.example.yaml` and `data/sty
 
 ## Commands
 `thrift init | run | process <dir> | confirm <batch> <cmd> | answer <item> "<note>" | price <item> <amount>`
+`thrift condition <item> nwt|like_new|good` (the CLI twin of the shoe question's buttons)
 `thrift requeue <item> [marketplace] | mark-posted <item> <marketplace> <url> | status | show <item>`
 `thrift poster [--once] [--dry-run] [--stage form|review] [--publish-first <item>] [--allow-dev-browser]`
 `thrift login --site poshmark | telegram setup|test | harvest | build-style | eval`
@@ -194,7 +208,8 @@ The owner shares retailer screenshots (product page with price, style name, colo
 ## Copy rules
 - **Condition is shown, not told** (owner rule, WO16 — see invariant 2): no wear or flaw words anywhere; a used item's
   condition line is "Gently pre-loved, please see photos for condition."; NWT/NWOT say "New with tags." / "New without
-  tags."; flaw photos are in the listing, never the cover.
+  tags." ("New in box." for NWT shoes whose box is in the photos, `box_photo`); flaw photos are in the listing, never
+  the cover.
 - **Materials need evidence.** `item_type`/`features` may not name a material (leather, suede, wool, …) unless
   `facts.material` has label/stamp evidence; texture words (woven, quilted, ribbed, glitter) are fine. The verifier
   treats material words as claims; lint flags any material word in title/description/tags that `facts.material`
@@ -229,6 +244,10 @@ The owner shares retailer screenshots (product page with price, style name, colo
 - Batch: contact sheet + summary; reply `ok | 12>2 | split 7 | merge 2 3 | drop 7` (same parser as `thrift confirm`);
   the sheet marks the photo after each pause ("pause 2 min"), the message lists them and says why a split is doubtful;
   `segmentation.always_confirm` stays configurable.
+- Condition question (WO18, shoes in doubt only): ONE message in `awaiting_condition`, before the price card — cover,
+  title, "Brand new or worn? (couldn't tell from the photos)", [NWT] [Like New] [Good]; a typed reply works too (nwt /
+  like new / good). Outbox kind `condition`, re-sent while pending; the tap reprocesses the item and the price card
+  follows ("Condition: NWT (your answer)").
 - Item: ONE message in `awaiting_price` — cover, title, size (with system), condition + flaw count, suggested price +
   basis, "Retail $X" if known, "no price history for <brand>" for a category default; [Approve $P] [Change]. A reply
   with a number (`85`, `$85`, `85.00`, `85 dollars`) sets the price (source `owner`) → `ready`. Unreadable brand/size

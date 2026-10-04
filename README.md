@@ -92,6 +92,7 @@ to the previous commit).
 ## Commands
 ```
 thrift init | run | process <dir> | confirm <batch> <cmd> | answer <item> "<note>" | price <item> <amount>
+thrift condition <item> nwt|like_new|good
 thrift requeue <item> [marketplace] | mark-posted <item> <marketplace> <url> | status | show <item>
 thrift poster [--once] [--dry-run] [--stage form|review] [--publish-first <item>] [--allow-dev-browser]
 thrift login --site poshmark | telegram setup|test | harvest | build-style | eval
@@ -127,6 +128,13 @@ thrift login --site poshmark | telegram setup|test | harvest | build-style | eva
   it weighed against, code picks the higher; Poshmark has no "very good", so excellent goes up as Like New too). The
   shop never lists Fair: a fair reading goes up as Good with the Note "looked well-worn — listed as Good; check before
   approving". NWT still needs the attached hang tag in a photo, or the owner saying NWT.
+- **Shoes: brand new or worn?** For shoes only, and only when the photos leave it open (the model is 30–80 % sure
+  the pair is unworn, or it wavers between a new and a used grade), the item waits for ONE message before the price:
+  the cover and "Brand new or worn? (couldn't tell from the photos)" with [NWT] [Like New] [Good]. The tap is the
+  condition (the owner's word: NWT needs no hang-tag photo then; Like New means brand new without tags, "New without
+  tags."; Good means worn). The item is repriced and rewritten with it, and the normal price card follows. A box in the
+  photos makes an NWT pair "New in box.". CLI twin: `thrift condition <item> nwt|like_new|good`. Clothing, bags and
+  accessories are never asked.
 - **Item splitting.** The roll is split by the strongest model (`models.segment: claude-opus-5-5`) on 768 px previews
   (384 px when the request would pass `segmentation.max_request_mb`, or the API says it is too large). Visual identity
   decides — fabric, colour, print, shape, hardware, label; time is only a tiebreaker: the model sees "— pause 2 min —"

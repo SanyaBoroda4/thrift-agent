@@ -21,10 +21,11 @@ from thrift_agent.brain.verify import fit_style_tags, lint, verify
 from thrift_agent.config import Settings, load_yaml
 from thrift_agent.db import DB, loads
 from thrift_agent.ingest import prep, segment as seg
-from thrift_agent.schema import CopyOut, Facts, PriceResult, Render
+from thrift_agent.schema import CopyOut, Ev, Facts, PriceResult, Render
 
 MAX_SEGMENT_PHOTOS = 90        # the Messages API takes at most 100 image blocks per request; keep headroom
-ANSWERABLE = ("needs_info", "ready", "failed", "new", "awaiting_price", "needs_owner")   # a note resets these to 'new'
+ANSWERABLE = ("needs_info", "ready", "failed", "new", "awaiting_price", "needs_owner",   # a note resets these to 'new'
+              "awaiting_condition")
 REQUEUEABLE = ("failed", "dryrun")                      # post statuses `thrift requeue` may send back to the queue
 PARKED = "needs owner: "                                # last_error of a row the poster parked with a question
 PRICEABLE = ("awaiting_price", "needs_info", "ready", "needs_owner")   # item statuses an owner price may be set on
@@ -312,6 +313,46 @@ def settle_condition(facts: Facts) -> tuple[Facts, list[str]]:
     return facts, []
 
 
+UNWORN_DOUBT = (0.30, 0.80)       # how sure "unworn: yes" may be and still be a question (owner rule, WO18)
+NEW_SIDE = ("NWT", "NWOT", "like_new")
+# The owner's answer to "Brand new or worn?" (buttons and `thrift condition`): Like New there means brand new without
+# tags, i.e. NWOT (Poshmark's Like New, the copy's "New without tags."); worn is Good (never Fair, WO17).
+OWNER_CONDITIONS = {"nwt": "NWT", "like_new": "NWOT", "good": "good"}
+OWNER_CONDITION_LABELS = {"NWT": "new with tags", "NWOT": "new without tags (Like New)", "good": "worn (Good)"}
+CONDITIONABLE = ("awaiting_condition", "awaiting_price", "needs_info", "ready", "new", "failed", "needs_owner")
+
+
+def unworn_yes(ev: Ev) -> float | None:
+    """How sure the model is that the pair is unworn (0..1), from unworn's value and confidence; None = no reading."""
+    value = (ev.value or "").strip().lower()
+    if value in ("yes", "true", "unworn"):
+        return ev.confidence
+    if value in ("no", "false", "worn"):
+        return 1 - ev.confidence
+    return None
+
+
+def shoe_condition_doubt(facts: Facts) -> bool:
+    """Ask the owner "brand new or worn?" — shoes only, any department, and only in doubt (owner rule, WO18): the model
+    is between 30% and 80% sure the pair is unworn, or its two grades straddle new and used (one of NWT / NWOT /
+    like_new, the other used). A clear new (box, tags, sole stickers) or a clear worn (sole wear, footbed imprints,
+    creasing) is never asked. Judged on the model's own reading, before settle_nwt / settle_condition."""
+    if facts.category.strip().lower() != "shoes":
+        return False
+    p = unworn_yes(facts.unworn)
+    if p is not None and UNWORN_DOUBT[0] <= p <= UNWORN_DOUBT[1]:
+        return True
+    alt = facts.condition_alternative
+    return alt is not None and (facts.condition in NEW_SIDE) != (alt in NEW_SIDE)
+
+
+def apply_owner_condition(facts: Facts, condition: str) -> Facts:
+    """The owner's answer is the evidence (source owner): NWT needs no hang-tag photo then (invariant 2)."""
+    ev = Ev(value=f"owner: {OWNER_CONDITION_LABELS.get(condition, condition)}", photos=[], source="owner",
+            confidence=1.0)
+    return facts.model_copy(update={"condition": condition, "condition_alternative": None, "condition_evidence": ev})
+
+
 def kids_gender_notes(facts: Facts) -> list[str]:
     """Poshmark files a kids size under Girls or Boys. A kids item the model read as unisex (or couldn't read) goes
     under Girls, and the approval message says so; never a question."""
@@ -330,9 +371,16 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
     retail = {i for i, k in enumerate(kinds) if k == "retail"}
     facts = extract(photos, it["note"], s["models"]["extract"], s["images"]["llm_long_edge"], kinds=kinds)
     facts = strip_screenshot_evidence(facts, retail)     # a screenshot is never evidence for condition, size or flaws
+    if facts.condition_evidence.source == "owner":       # only the owner's answer is source owner, never the model
+        facts.condition_evidence.source = "photo"
+    # Shoes, in doubt between brand new and worn: the owner is asked before the price (WO18) — on the model's own
+    # reading, before the settles below merge its two grades. Once answered, the answer is the condition.
+    ask_condition = (not it["owner_condition"] and not it["owner_price"] and shoe_condition_doubt(facts))
     facts, notes = settle_nwt(facts, it["note"])         # NWT needs a tag photo or the owner's word; else like new
     facts, graded = settle_condition(facts)              # doubt -> like new; never Fair (Good, and a note)
     notes += graded
+    if it["owner_condition"]:
+        facts, notes = apply_owner_condition(facts, it["owner_condition"]), []   # the owner's word settles it all
     facts, fit_notes, fit_questions = taxonomy.fit(facts)   # Poshmark's own category names (Kids Tops -> Shirts & Tops)
     shown = listing_photos(s, facts, len(photos), kinds)  # flaw photos in, never the cover: the condition rule
     notes += fit_notes + kids_gender_notes(facts) + flaw_notes(facts, shown)
@@ -378,12 +426,15 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
     # re-share) ride along in the same message; an item the owner already priced comes back only while something
     # is still unresolved.
     unresolved = gate.decision == "needs_info"
-    status = "awaiting_price" if unresolved or not it["owner_price"] else "ready"
+    status = ("awaiting_condition" if ask_condition
+              else "awaiting_price" if unresolved or not it["owner_price"] else "ready")
     db.set_item(iid, status=status, facts=facts.model_dump(), price=pr.model_dump(),
                 renders={k: v.model_dump() for k, v in renders.items()}, gate=gate_doc, cover_hash=cover_hash)
     db.log(iid, "item_processed", {"decision": gate.decision, "reasons": gate.reasons, "status": status})
 
-    if status == "awaiting_price":
+    if status == "awaiting_condition":
+        approve.ask_condition(s, db, iid)                # "Brand new or worn?" [NWT] [Like New] [Good], then the price
+    elif status == "awaiting_price":
         approve.send_item(s, db, iid)
     elif gate.decision == "draft":
         first = next(iter(renders.values()), None)
@@ -438,6 +489,9 @@ def set_price(s: Settings, db: DB, iid: str, amount: int) -> str:
     it = db.item(iid)
     if it is None:
         raise ValueError(f"unknown item {iid}")
+    if it["status"] == "awaiting_condition":
+        raise ValueError(f"item {iid} first needs its condition: brand new or worn? (the buttons, or `thrift condition "
+                         f"{iid} nwt|like_new|good`)")
     if it["status"] not in PRICEABLE:
         raise ValueError(f"item {iid} is {it['status']} — the price can't be changed now")
     amount = int(amount)
@@ -455,6 +509,33 @@ def set_price(s: Settings, db: DB, iid: str, amount: int) -> str:
         db.set_item(iid, owner_price=amount, price=pr, renders=renders, status=status)
         db.log(iid, "price_set", {"amount": amount, "status": status})
     return status
+
+
+def owner_choice(choice: str) -> str | None:
+    """"NWT" / "like new" / "like-new" / "Good" -> the OWNER_CONDITIONS key, or None."""
+    key = (choice or "").strip().lower().replace(" ", "_").replace("-", "_")
+    return key if key in OWNER_CONDITIONS else None
+
+
+def set_condition(s: Settings, db: DB, iid: str, choice: str) -> str:
+    """The owner's answer to "Brand new or worn?" (a button, a reply, or `thrift condition`): nwt | like_new | good.
+    Stored as items.owner_condition (a reprocessing keeps it and never asks again) and the item goes through the
+    pipeline again, so the price, the copy and the listing follow the answer; then the price card comes. Returns
+    'new' (reprocessing)."""
+    if (key := owner_choice(choice)) is None:
+        raise ValueError(f"condition must be one of {', '.join(OWNER_CONDITIONS)}, got {choice!r}")
+    condition = OWNER_CONDITIONS[key]
+    it = db.item(iid)
+    if it is None:
+        raise ValueError(f"unknown item {iid}")
+    if it["status"] not in CONDITIONABLE:
+        raise ValueError(f"item {iid} is {it['status']} — its condition can't be changed now")
+    with db.tx():
+        # As with a note: earlier dry-runs and queue entries are forgotten, real post history stays.
+        db.conn.execute("DELETE FROM posts WHERE item_id=? AND status IN ('dryrun','queued')", (iid,))
+        db.set_item(iid, owner_condition=condition, status="new")
+        db.log(iid, "condition_set", {"condition": condition, "from": it["status"]})
+    return "new"
 
 
 def answer(s: Settings, db: DB, iid: str, note: str) -> str:

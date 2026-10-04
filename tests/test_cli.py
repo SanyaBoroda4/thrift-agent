@@ -330,3 +330,28 @@ def test_mark_posted_reports_the_address_or_why_not(monkeypatch):
     monkeypatch.setattr(runner, "mark_posted", refused)
     r = CliRunner().invoke(cli.app, ["mark-posted", "i_261002_abc123", "poshmark", url])
     assert r.exit_code == 1 and "not marked" in r.output and "Traceback" not in r.output
+
+
+
+def test_condition_is_the_cli_twin_of_the_buttons(monkeypatch):
+    from typer.testing import CliRunner
+    from thrift_agent import approve, pipeline
+    calls, said, resolved = [], [], []
+
+    class Outbox:
+        def outbox_resolve(self, kind, ref):
+            resolved.append((kind, ref))
+
+    def set_condition(s, db, iid, choice):
+        if pipeline.owner_choice(choice) is None:
+            raise ValueError(f"condition must be one of nwt, like_new, good, got {choice!r}")
+        calls.append((iid, choice))
+        return "new"
+    monkeypatch.setattr(cli, "_db", lambda: Outbox())
+    monkeypatch.setattr(pipeline, "set_condition", set_condition)
+    monkeypatch.setattr(approve, "announce", lambda s, text: said.append(text) or True)
+    r = CliRunner().invoke(cli.app, ["condition", "i_261003_abc123", "like_new"])
+    assert r.exit_code == 0 and calls == [("i_261003_abc123", "like_new")], r.output
+    assert resolved == [("condition", "i_261003_abc123")] and "Like New (brand new, no tags)" in said[0]
+    r = CliRunner().invoke(cli.app, ["condition", "i_261003_abc123", "fair"])
+    assert r.exit_code == 1 and "not set" in r.output and "Traceback" not in r.output

@@ -25,6 +25,10 @@ WAITING_ITEM = ("awaiting_price", "needs_info")      # item statuses whose price
 BATCH_HINT = "Reply to this message: ok | 12>2 | split 7 | merge 2 3 | drop 7"
 ITEM_HINT = "Reply with a number (the price) or an answer like 'size 8, 45'"
 HELD_HINT = " (still held as a possible re-share: reply 'different item' to list it or 'same item' to drop it)"
+CONDITION_QUESTION = "Brand new or worn? (couldn't tell from the photos)"
+CONDITION_BUTTONS = (("NWT", "nwt"), ("Like New", "like_new"), ("Good", "good"))    # label, callback choice
+CONDITION_HINT = "Tap a button, or reply nwt / like new / good"
+CONDITION_TAPPED = {"nwt": "New with tags", "like_new": "Like New (brand new, no tags)", "good": "Good (worn)"}
 
 _NUM = r"\d+(?:\.\d+)?"
 # A number that is money, whichever way the owner says it: "$85", "$ 85", "85 usd", "85 dollars", "price 85", "list: 85".
@@ -166,6 +170,8 @@ def item_caption(iid: str, it) -> tuple[str, int | None]:
         printed = _ev(facts, "size_printed")
         lines.append(f"Size: {size}" + (f" (printed {printed})" if printed and printed != size else ""))
     cond = facts.get("condition") or "condition unknown"
+    if (facts.get("condition_evidence") or {}).get("source") == "owner":
+        cond += " (your answer)"                                    # "Brand new or worn?" was answered
     n_flaws = len(facts.get("flaws") or [])
     lines.append(f"Condition: {cond}, " + ("no flaws" if n_flaws == 0 else f"{n_flaws} flaw{'s' if n_flaws != 1 else ''}"))
     lines += [f"Note: {n}" for n in gate.get("notes") or []]      # told, not asked (e.g. NWT listed as like new)
@@ -220,6 +226,55 @@ def send_item(s: Settings, db: DB, iid: str) -> None:
     db.add_outbox(bot.chat_id, mid, "item", iid, text=caption)
 
 
+def condition_buttons(iid: str) -> list[list[dict]]:
+    return [[{"text": label, "callback_data": f"cond:{iid}:{choice}"} for label, choice in CONDITION_BUTTONS]]
+
+
+def ask_condition(s: Settings, db: DB, iid: str) -> None:
+    """Shoes in doubt between brand new and worn (pipeline.shoe_condition_doubt): ONE message before the price card —
+    cover photo, title, "Brand new or worn? (couldn't tell from the photos)", [NWT] [Like New] [Good]. Records the
+    outbox row (kind condition), so it is re-sent while pending. Without a bot: print (dev)."""
+    it = db.item(iid)
+    if it is None:
+        raise ValueError(f"unknown item {iid}")
+    renders = loads(it["renders"]) or {}
+    title = (renders.get("poshmark") or next(iter(renders.values()), None) or {}).get("title") or iid
+    caption = f"{title}\nItem {iid}\n{CONDITION_QUESTION}"
+    cover = Path(it["dir"]) / "cover.jpg"
+    bot = bot_for(s)
+    if bot is None:
+        text = f"{caption}\n(thrift condition {iid} nwt|like_new|good)"
+        notify.photo(cover, text) if cover.is_file() else notify.say(text)
+        return
+    buttons = condition_buttons(iid)
+    mid = bot.send_photo(cover, caption, buttons) if cover.is_file() else bot.send_message(caption, buttons)
+    db.add_outbox(bot.chat_id, mid, "condition", iid, text=caption)
+
+
+def parse_condition(text: str) -> str | None:
+    """A typed answer to the condition question: "nwt" / "with tags" -> nwt; "like new" / "no tags" / "brand new" /
+    "nwot" -> like_new; "good" / "worn" / "used" -> good; anything else None."""
+    t = text.strip().lower()
+    if re.search(r"\bnwt\b|with tags", t):
+        return "nwt"
+    if re.search(r"like[\s-]*new|\bnwot\b|no tags|without tags|brand new|\bnew\b", t):
+        return "like_new"
+    if re.search(r"\b(good|worn|used)\b", t):
+        return "good"
+    return None
+
+
+def _set_condition(s: Settings, db: DB, bot: Bot, iid: str, choice: str, reply_to: int | None) -> str:
+    try:
+        pipeline.set_condition(s, db, iid, choice)
+    except ValueError as e:
+        bot.send_message(str(e), reply_to=reply_to)
+        return f"condition {iid}: rejected {choice!r}: {e}"
+    db.outbox_resolve("condition", iid)
+    bot.send_message(f"{iid}: {CONDITION_TAPPED[choice]} - repricing, the price card follows", reply_to=reply_to)
+    return f"condition {iid}: {choice}"
+
+
 def announce(s: Settings, text: str) -> bool:
     """A short one-way line to the group when the owner acts from the CLI (thrift price / answer / confirm), so
     everyone who approves sees what changed. Best effort: True when sent, False without a bot or on an error."""
@@ -270,6 +325,11 @@ def handle_update(s: Settings, db: DB, bot: Bot, update: dict) -> str:
         return _reply_item(s, db, bot, ref, text, mid)
     if kind == "owner_q":
         return _reply_owner_q(s, db, bot, ref, text, mid)
+    if kind == "condition":
+        if (choice := parse_condition(text)) is None:
+            bot.send_message(CONDITION_HINT, reply_to=mid)
+            return f"condition {ref}: unreadable reply {text!r}"
+        return _set_condition(s, db, bot, ref, choice, mid)
     return f"ignored: unknown outbox kind {kind}"
 
 
@@ -291,6 +351,10 @@ def _handle_callback(s: Settings, db: DB, bot: Bot, cq: dict) -> str:
         bot.send_message(f"{iid}: approved at ${amount} -> {status}" + (HELD_HINT if status == "awaiting_price" else ""),
                          reply_to=src_mid)
         return f"approved {iid} at ${amount} ({status})"
+    if parts[0] == "cond" and len(parts) == 3 and parts[2] in CONDITION_TAPPED:
+        result = _set_condition(s, db, bot, parts[1], parts[2], src_mid)
+        bot.answer_callback(cid, CONDITION_TAPPED[parts[2]] if "rejected" not in result else "Could not set it")
+        return result
     if parts[0] == "change" and len(parts) == 2:
         iid = parts[1]
         mid = bot.send_message(f"Reply to this message with the price for {iid}.", reply_to=src_mid)
@@ -416,6 +480,13 @@ def resend_pending(s: Settings, db: DB, force: bool = False) -> list[str]:
                 sent.append(ref)
             else:
                 db.outbox_resolve("item", ref)
+        elif kind == "condition":
+            it = db.item(ref)
+            if it is not None and it["status"] == "awaiting_condition":
+                ask_condition(s, db, ref)
+                sent.append(ref)
+            else:
+                db.outbox_resolve("condition", ref)
         elif kind == "owner_q":
             it = db.item(ref)
             if it is not None and it["status"] == "needs_owner":
