@@ -674,10 +674,12 @@ def front_view(s: Settings, db: DB, iid: str, photos: list[Path], facts: Facts, 
     cands = cover_candidates(facts, len(photos), kinds)
     if not cands:
         return None
+    worn = sorted(r.photo for r in facts.photo_roles if r.role == "worn" and 0 <= r.photo < len(photos))[:2]
     try:
         return cover_brain.front_check([(i, photos[i]) for i in sorted(cands)],    # in shooting order: no bias
                                        s["models"].get("cover") or s["models"]["extract"],
-                                       int(s["images"].get("cover_check_long_edge", 1024)))
+                                       int(s["images"].get("cover_check_long_edge", 1024)),
+                                       worn=[(i, photos[i]) for i in worn])   # how the front looks when worn
     except Exception as e:  # noqa: BLE001
         db.log(iid, "front_check_failed", f"{type(e).__name__}: {e}")
         return None

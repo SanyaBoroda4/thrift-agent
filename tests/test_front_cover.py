@@ -304,7 +304,7 @@ def test_recover_fixes_cover_category_and_size_and_keeps_price_and_answers(tmp_p
     db.set_item(iid, status="ready", owner_price=20, owner_condition="NWOT", owner_kids_gender="boys", views=None,
                 facts=old.model_dump(), renders=renders, gate=gate, price=price)
     asked = []
-    monkeypatch.setattr(pipeline.cover_brain, "front_check", lambda photos, m, e: asked.append([i for i, _ in photos])
+    monkeypatch.setattr(pipeline.cover_brain, "front_check", lambda photos, m, e, worn=(): asked.append([i for i, _ in photos])
                         or LACOSTE_CHECK)
     out = pipeline.recover_item(s, db, iid)
     assert (out["cover"], out["role"], out["view"], out["upright"]) == (0, "front", "front", 90)
@@ -327,7 +327,7 @@ def test_recover_sends_a_waiting_card_again_and_leaves_a_listed_item_alone(tmp_p
     monkeypatch.setattr(pipeline.approve, "pump", lambda *a: None)
     iid = _processed_tee(s, db, tmp_path, facts, monkeypatch)
     db.add_outbox("-100", 7, "item", iid)
-    monkeypatch.setattr(pipeline.cover_brain, "front_check", lambda photos, m, e: LACOSTE_CHECK)
+    monkeypatch.setattr(pipeline.cover_brain, "front_check", lambda photos, m, e, worn=(): LACOSTE_CHECK)
     assert pipeline.recover_item(s, db, iid)["status"] == "awaiting_price"   # no price yet: its card comes again
     assert db.outbox_pending() == []
     db.set_item(iid, status="posted")
@@ -367,7 +367,7 @@ def test_recover_never_writes_over_an_answer_that_came_in_meanwhile(tmp_path, fa
     monkeypatch.setattr(pipeline.approve, "pump", lambda *a: None)
     iid = _processed_tee(s, db, tmp_path, facts, monkeypatch)
 
-    def check_while_the_owner_answers(photos, m, e):
+    def check_while_the_owner_answers(photos, m, e, worn=()):
         import time
         time.sleep(1.1)                                               # updated_at has whole seconds
         pipeline.set_price(s, db, iid, 25)                            # the owner's price, meanwhile
@@ -377,3 +377,28 @@ def test_recover_never_writes_over_an_answer_that_came_in_meanwhile(tmp_path, fa
         pipeline.recover_item(s, db, iid)
     it = db.item(iid)
     assert it["status"] == "ready" and it["owner_price"] == 25 and loads(it["renders"])["poshmark"]["price"] == 25
+
+
+@pytest.mark.parametrize("top,turn", [("top", 0), ("left", 90), ("bottom", 180), ("right", 270)])
+def test_the_turn_is_worked_out_from_where_the_top_lies(top, turn):
+    """The model names where the collar/waistband lies; code turns it (live: a skirt laid sideways came back "0")."""
+    assert View(photo=0, view="front", top=top).upright == turn
+    assert View.model_validate({"photo": 0, "view": "front", "upright": turn}).top == top     # stored before
+
+
+def test_worn_photos_go_along_as_a_reference_never_as_a_candidate(tmp_path, facts, monkeypatch):
+    """Live: a skirt's centre-back zip side was taken for the front; the mirror selfie shows the front has no zip."""
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    seen = {}
+
+    def front_check(photos, model, long_edge, worn=()):
+        seen.update(alone=[i for i, _ in photos], worn=[i for i, _ in worn])
+        return check(0, (0, "front", "some", 90), (2, "back", "some", 90))
+    monkeypatch.setattr(pipeline.cover_brain, "front_check", front_check)
+    skirt = facts(photo_roles=roles("front", "label", "back", "detail", "worn"), cover_photo=2,
+                  photo_order=[2, 0, 1, 3, 4])
+    photos = [tmp_path / f"{i:02d}.jpg" for i in range(5)]
+    out = pipeline.front_view(s, db, "i_x", photos, skirt, ["own"] * 5)
+    assert seen == {"alone": [0, 2], "worn": [4]} and out.front == 0
+    assert pipeline.choose_cover(skirt, 5, None, out) == (0, 90, None)

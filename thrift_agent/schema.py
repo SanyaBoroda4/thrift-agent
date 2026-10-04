@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 Condition = Literal["NWT", "NWOT", "like_new", "excellent", "good", "fair"]
 Color = Literal["Red", "Pink", "Orange", "Yellow", "Green", "Blue", "Purple", "Gold", "Silver",
@@ -48,6 +48,9 @@ class Flaw(BaseModel):
     photos: list[int] = Field(default_factory=list)
 
 
+TOP_TURN = {"top": 0, "left": 90, "bottom": 180, "right": 270}     # where the item's top lies -> clockwise turn
+
+
 class View(BaseModel):
     """One photo in the front/back comparison (brain/cover.py, WO23)."""
     photo: int
@@ -55,9 +58,23 @@ class View(BaseModel):
     design: Literal["none", "some", "strong"] = Field("none", description="How much printed design it shows: a print, "
                                                                           "graphic, text or logo (not seams, zips or "
                                                                           "pockets)")
-    upright: Literal[0, 90, 180, 270] = Field(0, description="Clockwise degrees that would put the item upright: "
-                                                             "collar, neckline or waistband at the top; shoes sole "
-                                                             "down. 0 when it already is")
+    top: Literal["top", "left", "right", "bottom"] = Field("top", description="Which edge of the photo the item's top "
+                                                                              "is nearest to: the collar or neckline; "
+                                                                              "the waistband; a shoe's opening")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_turn(cls, data):
+        """A comparison stored before the model gave positions carried the turn itself."""
+        if isinstance(data, dict) and "top" not in data and data.get("upright") in (0, 90, 180, 270):
+            data = {**data, "top": {v: k for k, v in TOP_TURN.items()}[data["upright"]]}
+        return data
+
+    @property
+    def upright(self) -> int:
+        """The clockwise turn that puts the item upright: worked out in code from where its top lies (a model names a
+        position far more reliably than it does rotation arithmetic)."""
+        return TOP_TURN[self.top]
 
 
 class FrontOut(BaseModel):
