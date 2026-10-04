@@ -38,7 +38,10 @@ segmentation:
   pause_factor: 4          # gap): shown to the model as "— pause 2 min —" and on the contact sheet
   visual_change_min: 0.45  # a colour change between consecutive photos = a distance (0..1) >= max(visual_change_min,
   visual_change_factor: 2.5   # visual_change_factor x the roll's median); with the pauses it flags doubtful splits
-  always_confirm: true     # send the contact sheet for every batch until the eval says otherwise
+  auto_confirm: true       # the owner never confirms the grouping (owner decision, WO20b): it is accepted at once, no
+                           # contact sheet; doubts stay in thrift status; [Wrong photos] on a card reopens it. false:
+                           # the old flow (contact sheet + ok), for testing
+  always_confirm: true     # with auto_confirm false only: the contact sheet for every batch, not just doubtful ones
 
 duplicates:
   lookback_days: 60        # a new item's cover is compared with covers of items from this window

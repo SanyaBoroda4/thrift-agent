@@ -3,8 +3,8 @@
 fit() puts the model's department, category and subcategory onto those names right after extraction (Kids "Tops" is
 Poshmark's "Shirts & Tops"), so the poster never meets a name the form doesn't have. What it can't place is a question
 for the owner (a department or category Poshmark doesn't have) or a note (a subcategory, which Poshmark treats as
-optional: it is left out and the owner is told). Lists marked unverified (Men, Home) are never grounds for a question:
-the poster asks (needs_owner) if the live form turns out not to have the name.
+optional: it is left out and noted in the item's record). Lists marked unverified (Men, Home) are never grounds for a
+question: the poster asks (needs_owner) if the live form turns out not to have the name.
 """
 from __future__ import annotations
 

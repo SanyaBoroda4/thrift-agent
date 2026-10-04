@@ -109,10 +109,10 @@ def test_end_to_end(tmp_path, monkeypatch, facts, owner_messages):
     [folder] = pipeline.ready_folders(s)
     bid = pipeline.register(s, db, folder)
     pipeline.process_batch(s, db, bid)
-    assert db.batch(bid)["status"] == "needs_confirm"        # always_confirm is on by default
-    assert ("batch", bid) in owner_messages                    # the contact sheet went to the owner
-
-    pipeline.confirm(s, db, bid, "ok")
+    assert db.batch(bid)["status"] == "split"                 # accepted at once: segmentation.auto_confirm (WO20b)
+    assert ("batch", bid) not in owner_messages                # no contact sheet goes out...
+    assert (s.path("work") / bid / "contact_sheet.png").exists()   # ...it is still drawn, for the record
+    assert loads(db.batch(bid)["segmentation"])["auto_accepted"]
     items = db.items("new")
     assert len(items) == 2 and not share.exists()             # inbox cleared, batch archived
     pipeline.process_item(s, db, items[0]["id"])
@@ -449,8 +449,7 @@ def test_retail_screenshots_are_detected_assigned_by_content_and_rendered_last(t
     assert segd["kinds"] == ["own", "own", "own", "own", "retail", "retail"]
     assert any("retail screenshot" in t for t in seen["segment"])
     assert not any("non-contiguous" in r for r in loads(db.batch(bid)["reasons"]) or [])
-
-    pipeline.confirm(s, db, bid, "ok")
+    assert db.batch(bid)["status"] == "split"                          # accepted at once (WO20b)
     items = db.items("new")
     assert len(items) == 2
     d1 = Path(items[0]["dir"])
@@ -468,8 +467,15 @@ def test_retail_screenshots_are_detected_assigned_by_content_and_rendered_last(t
     assert it["status"] == "awaiting_price" and any("size unclear" in x for x in loads(it["gate"])["reasons"])
 
 
+def _old_flow(s):
+    """segmentation.auto_confirm off: the contact sheet and the owner's ok, as before WO20b (a copy: settings are
+    shared)."""
+    s.data["segmentation"] = {**s.data["segmentation"], "auto_confirm": False}
+    return s
+
+
 def test_unassigned_screenshot_can_be_dropped_or_placed(tmp_path, monkeypatch, facts):
-    s = _settings(tmp_path)
+    s = _old_flow(_settings(tmp_path))
     db = DB(s.path("db"))
     _mixed_share(s)
     seg_out = SegOut(groups=[Group(photos=[0, 1], summary="red flats", full_item_photos=[0], confidence=0.95),
@@ -491,6 +497,67 @@ def test_unassigned_screenshot_can_be_dropped_or_placed(tmp_path, monkeypatch, f
              for it in items]
     assert kinds == [["own", "own"], ["own", "own", "retail"]]
     assert any(r["kind"] == "photos_dropped" for r in db.conn.execute("SELECT kind FROM events WHERE ref=?", (bid,)))
+
+
+def test_auto_confirm_leaves_out_a_screenshot_that_matches_no_item(tmp_path, monkeypatch, facts, owner_messages):
+    """WO20b: a retail screenshot the model can't place isn't a photo of any item: left out, recorded, never asked."""
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    _mixed_share(s)
+    seg_out = SegOut(groups=[Group(photos=[0, 1], summary="red flats", full_item_photos=[0], confidence=0.95),
+                             Group(photos=[2, 3], summary="blue dress", full_item_photos=[2], confidence=0.95),
+                             Group(photos=[5], summary="a screenshot", full_item_photos=[5], confidence=0.5)],
+                     unassigned=[4])
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", _wo2_ask(facts, {}, seg_out, {}))
+    [folder] = pipeline.ready_folders(s)
+    bid = pipeline.register(s, db, folder)
+    pipeline.process_batch(s, db, bid)
+    b = db.batch(bid)
+    assert b["status"] == "split" and owner_messages == []
+    reasons = loads(b["reasons"])
+    assert "screenshot 4 matches no item: left out" in reasons and "screenshot 5 matches no item: left out" in reasons
+    assert [len(json.loads((Path(i["dir"]) / "photos.json").read_text(encoding="utf-8"))) for i in db.items("new")] == [2, 2]
+
+
+@pytest.mark.parametrize("groups,unassigned,result", [
+    ([[0, 1, 2], [3, 4]], [], ([[0, 1, 2], [3, 4]], [], [])),
+    ([[0, 1], [2, 3, 4], []], [], ([[0, 1], [2, 3, 4]], [], [])),                  # an empty group: nothing lost
+    ([[0, 1, 2], [3]], [4], ([[0, 1, 2], [3]], [4], ["screenshot 4 matches no item: left out"])),
+    ([[0, 1, 2], [3], [4]], [], ([[0, 1, 2], [3]], [4], ["screenshot 4 matches no item: left out"])),
+    ([[0, 1], [3, 4]], [], None),                                                  # photo 2 in no item: asked
+    ([[0, 1, 2], [2, 3, 4]], [], None),                                            # photo 2 twice: asked
+])
+def test_accept_grouping(groups, unassigned, result):
+    kinds = ["own", "own", "own", "own", "retail"]
+    assert pipeline.accept_grouping(groups, 5, kinds, unassigned) == result
+
+
+def test_a_grouping_that_loses_a_photo_still_asks_with_the_contact_sheet(tmp_path, monkeypatch, facts, owner_messages):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    _mixed_share(s)
+    seg_out = SegOut(groups=[Group(photos=[0, 1], summary="red flats", full_item_photos=[0], confidence=0.95),
+                             Group(photos=[3, 4, 5], summary="blue dress", full_item_photos=[3], confidence=0.95)])
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", _wo2_ask(facts, {}, seg_out, {}))
+    [folder] = pipeline.ready_folders(s)
+    bid = pipeline.register(s, db, folder)
+    pipeline.process_batch(s, db, bid)                                     # photo 2 is in no item: never guessed
+    assert db.batch(bid)["status"] == "needs_confirm" and owner_messages == [("batch", bid)]
+
+
+def test_auto_confirm_off_is_the_old_flow(tmp_path, monkeypatch, facts, owner_messages):
+    s = _old_flow(_settings(tmp_path))
+    db = DB(s.path("db"))
+    _mixed_share(s)
+    seg_out = SegOut(groups=[Group(photos=[0, 1, 4], summary="red flats", full_item_photos=[0], confidence=0.95),
+                             Group(photos=[2, 3, 5], summary="blue dress", full_item_photos=[2], confidence=0.95)])
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", _wo2_ask(facts, {}, seg_out, {}))
+    [folder] = pipeline.ready_folders(s)
+    bid = pipeline.register(s, db, folder)
+    pipeline.process_batch(s, db, bid)
+    assert db.batch(bid)["status"] == "needs_confirm" and owner_messages == [("batch", bid)]   # always_confirm
+    pipeline.confirm(s, db, bid, "ok")
+    assert db.batch(bid)["status"] == "split" and len(db.items("new")) == 2
 
 
 def test_reshared_item_is_held_as_a_possible_duplicate(tmp_path, monkeypatch, facts):
@@ -1163,7 +1230,7 @@ def test_a_batch_that_failed_on_the_tool_choice_400_is_requeued_and_split(tmp_pa
     c, calls = _api_like(groups)
     monkeypatch.setattr(llm, "client", lambda: c)
     pipeline.process_batch(s, db, bid)                     # what the worker does with a 'new' batch
-    assert db.batch(bid)["status"] == "needs_confirm" and ("batch", bid) in owner_messages
+    assert db.batch(bid)["status"] == "split" and ("batch", bid) not in owner_messages     # accepted at once (WO20b)
     assert loads(db.batch(bid)["segmentation"])["groups"] == [[0], [1]]
     assert [k["model"] for k in calls] == ["claude-opus-5-5"] and calls[0]["tool_choice"]["type"] == "auto"
 

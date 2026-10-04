@@ -17,7 +17,10 @@ iCloud Posh/inbox/<ts>/ (+ _done) ─► register batch ─► prep (HEIC→JPEG
   ─► segment (one Opus vision call on 768 px previews → groups; visual identity first, "— pause 2 min —" markers
      relative to the roll as the only timing; code checks partition, full shot, sizes, confidence, and — only for an
      item the model was unsure of — non-contiguous photos, a pause AND a colour change inside it / neither between two)
-  ─► contact sheet → Telegram; owner replies ok|12>2|split 7|merge 2 3|drop 7 (or `thrift confirm <batch> …`)
+  ─► the grouping is accepted at once (owner decision, WO20b: `segmentation.auto_confirm`; the contact sheet is saved,
+     not sent; the doubts stay in `thrift status`; a grouping that isn't a partition still asks with the sheet)
+     ([Wrong photos] on a price card reopens it: the sheet as the open message, 12>2|split 7|merge 2 3|drop 7|ok,
+      only the items whose photos changed are rebuilt; never for an item on the marketplace)
   ─► items ─► extract Facts (evidence per field) ─► price (brand_tiers.yaml) ─► copy (both marketplaces)
   ─► verify (LLM strip unsupported claims) + lint (deterministic) ─► gate: publish | draft | needs_info
   ─► (shoes in doubt, brand new vs worn: awaiting_condition ─► "Brand new or worn?" [NWT] [Like New] [Good] ─►
@@ -80,7 +83,10 @@ same item). Nothing publishes without price approval.
    - **The only questions.** Brand or size below 0.70, NWT without a hang-tag photo, category "Other" (or a
      department/category not on Poshmark's list, `data/poshmark_taxonomy.yaml`), a possible re-share, a pair of shoes in
      doubt between brand new and worn (its own message, before the price), Girls or Boys for a kids item the model is
-     under 0.70 sure of (its own message, WO20), and the poster's `needs_owner`. The model's own `questions` about
+     under 0.70 sure of (its own message, WO20), and the poster's `needs_owner`. **Never the grouping** (owner
+     decision, WO20b): it is accepted without asking; [Wrong photos] on a card is the owner's way back, not a routine
+     question; only a grouping that isn't a partition (a photo in no item, or in two) still sends the contact sheet,
+     since taking it would lose or double a photo. The model's own `questions` about
      optional facts (material, measurements) are dropped — a missing optional fact is left out of the listing; an
      unsure condition is kept in the item's record (`gate.info`), never on the card. CLI actions (`thrift price` /
      `answer` / `confirm` / `condition` / `kids` / `redo`) are echoed to the Telegram group and settle the pending
@@ -194,7 +200,8 @@ messages dropped; the owner's condition and Girls/Boys answers kept — and the 
 follow, one at a time. Left alone, and listed: posting / posted / drafted, a post with a URL or an unconfirmed publish,
 and an item the owner dropped as a re-share. Refuses a batch with nothing to rebuild.
 `thrift requeue` also takes back an item the poster parked in `needs_owner` as it is (no reprocessing, the question
-closed) — the retry after a poster fix. `confirm`, `answer` and `price` are the CLI twins of the Telegram replies;
+closed) — the retry after a poster fix. `confirm`, `answer` and `price` are the CLI twins of the Telegram replies
+(`confirm <batch> "<fix>"` also answers a [Wrong photos] sheet);
 `telegram setup` prints the chat/user ids seen in recent updates, `telegram test` sends a test message.
 `poster --publish-first <item>` is the supervised first publish: on the Mac only (poster service stopped), one
 `ready` item at its owner-approved price, `poster.dry_run` ignored for this one call; a listing whose stored text
@@ -268,7 +275,7 @@ The owner shares retailer screenshots (product page with price, style name, colo
   without a reply reaches the bot only with privacy mode OFF (then remove and re-add the bot) or the bot an admin.
 - **ONE message at a time (owner rule, WO20).** Everything that waits for an answer — contact sheet, "Brand new or
   worn?", "Girls or Boys?", price card, the poster's question — is one queue read from the DB (`approve.queue`): the
-  oldest batch first, its contact sheet, then its items in photo order (each item's questions, then its card), then
+  oldest batch first, its contact sheet when one is asked, then its items in photo order (each item's questions, then its card), then
   the next batch. At most one message is open; `approve.pump` sends the next when it is answered (a send lock in
   `kv` keeps the worker's threads, the poster and a CLI command from both sending). The worker processes in the
   same order and runs ahead, so the next card is usually ready at once; the queue never skips an item still being
@@ -278,9 +285,18 @@ The owner shares retailer screenshots (product page with price, style name, colo
   queued so far (`items.deferred_at`). The queue is the DB: a restart re-sends only the open message; older unanswered
   copies are closed (their buttons still work). Info-only messages (errors, posted confirmations, the Drafts warning,
   CLI echoes) are not queued; a successful dry-run says nothing unless `poster.notify_dry_runs`.
-- Batch: contact sheet + summary; reply `ok | 12>2 | split 7 | merge 2 3 | drop 7` (same parser as `thrift confirm`);
-  the sheet marks the photo after each pause ("pause 2 min"), the message lists them and says why a split is doubtful;
-  `segmentation.always_confirm` stays configurable.
+- Batch (WO20b): the grouping is accepted at once (`segmentation.auto_confirm: true`) — no contact sheet, the
+  batch's first message is its first item. The sheet is still drawn (`work/<batch>/contact_sheet.png`); the code's
+  doubts stay in `batches.reasons` and `thrift status` ("grouping accepted with doubts"); a retail screenshot that
+  matches no item is left out (and recorded). A grouping that isn't a partition still sends the sheet. **[Wrong
+  photos]** on a price card (`pipeline.start_regroup`): the batch goes to `regroup`, the sheet as its items are now
+  (`regroup_sheet.png`) is the one open message (outbox kind `regroup`), its items wait unasked, unprocessed and
+  unposted; the reply `12>2 | split 7 | merge 2 3 | drop 7 | ok` (or `thrift confirm <batch> "<fix>"`) is applied by
+  `pipeline.regroup`: unchanged items keep everything, changed ones are rebuilt like `thrift redo` (same id, paired
+  by the most shared photos), new groups become items, emptied ones are removed; refused when it would change an
+  item on the marketplace. `auto_confirm: false` is the old flow: the sheet + summary, reply `ok | 12>2 | …` (same
+  parser as `thrift confirm`), the sheet marks the photo after each pause ("pause 2 min"), the message lists them and
+  the doubts; `segmentation.always_confirm` then decides whether a clean split also waits.
 - Condition question (WO18, shoes in doubt only): ONE message in `awaiting_condition`, before the price card — cover,
   title, "Brand new or worn? (couldn't tell from the photos)", [NWT] [Like New] [Good]; a typed reply works too (nwt /
   like new / good). Outbox kind `condition`, re-sent while pending; the tap reprocesses the item and the price card

@@ -168,7 +168,8 @@ def test_send_item_caption_buttons_and_outbox(env, tmp_path, facts):
     assert p["reply_markup"] == {"inline_keyboard": [
         [{"text": "\u2705 $85", "callback_data": f"approve:{iid}:85"}],
         [{"text": f"${n}", "callback_data": f"approve:{iid}:{n}"} for n in (75, 80, 90, 95)],
-        [{"text": "Later", "callback_data": f"later:{iid}"}, {"text": "Change", "callback_data": f"change:{iid}"}]]}
+        [{"text": "Later", "callback_data": f"later:{iid}"}, {"text": "Change", "callback_data": f"change:{iid}"},
+         {"text": "Wrong photos", "callback_data": f"regroup:{iid}"}]]}
     (row,) = _outbox(db, iid)
     assert (row["chat_id"], row["message_id"], row["kind"], row["resolved_at"]) == ("100", 11, "item", None)
     assert row["text"] == cap
@@ -208,7 +209,8 @@ def test_send_item_without_price_has_no_price_buttons(env, tmp_path, facts):
     p = bot.sent("sendPhoto")[0]
     assert p["caption"].endswith("No price yet: type one")
     assert p["reply_markup"] == {"inline_keyboard": [[{"text": "Later", "callback_data": f"later:{iid}"},
-                                                      {"text": "Change", "callback_data": f"change:{iid}"}]]}
+                                                      {"text": "Change", "callback_data": f"change:{iid}"},
+                                                      {"text": "Wrong photos", "callback_data": f"regroup:{iid}"}]]}
 
 
 def test_send_item_without_bot_prints(tmp_path, facts, capsys):

@@ -389,6 +389,9 @@ def test_requeue_sends_a_failed_batch_back_and_status_lists_the_batches(tmp_path
     db.log(failed, "error", "Traceback ...\nanthropic.BadRequestError: Error code: 400 - tool_choice not supported")
     waiting = db.add_batch(str(tmp_path / "inbox" / "other"), 5)
     db.set_batch(waiting, status="needs_confirm")
+    doubted = db.add_batch(str(tmp_path / "inbox" / "third"), 9)            # accepted without the owner (WO20b)
+    db.set_batch(doubted, status="split", segmentation={"auto_accepted": True},
+                 reasons=["item 2: low confidence 0.60"])
     monkeypatch.setattr(cli, "_db", lambda: db)
 
     raw = CliRunner().invoke(cli.app, ["status"], terminal_width=200).output
@@ -396,6 +399,7 @@ def test_requeue_sends_a_failed_batch_back_and_status_lists_the_batches(tmp_path
     assert f"{failed} failed 12" in out and f"{waiting} needs_confirm 5" in out
     assert f"failed batch {failed} → thrift requeue {failed} anthropic.BadRequestError: Error code: 400" in out
     assert f"awaiting confirm {waiting} → thrift confirm {waiting} ok" in out
+    assert f"grouping accepted with doubts {doubted}: item 2: low confidence 0.60" in out   # kept, never sent
     assert f"Telegram open: nothing; 1 in the queue, next: batch {waiting}" in out       # the owner's queue (WO20)
 
     r = CliRunner().invoke(cli.app, ["requeue", failed])

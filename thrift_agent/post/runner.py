@@ -46,6 +46,9 @@ def next_job(s: Settings, db: DB, enabled: list[str], dry: bool,
     `allow_publish=False` (HOLD_UNSHIPPED) skips jobs that would go live; drafts still run, and so does a dry-run of
     a publish-gated item, since a dry-run never submits."""
     for it in db.items("ready"):
+        batch = db.batch(it["batch_id"])
+        if batch is not None and batch["status"] == "regroup":
+            continue            # the owner is fixing this batch's photos ([Wrong photos]): not until the fix
         gate = loads(it["gate"]) or {}
         renders = loads(it["renders"]) or {}
         for mp in enabled:

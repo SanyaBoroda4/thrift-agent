@@ -47,8 +47,8 @@ Defaults for the first weeks of live posting, until the eval numbers justify loo
   answer is kept. The copy never states the gender.
 - **Poshmark's own category names.** Right after extraction the department, category and subcategory are put onto the
   names the create-listing form offers (`data/poshmark_taxonomy.yaml`; Kids "Tops" becomes "Shirts & Tops",
-  "Booties" becomes "Ankle Boots & Booties"). A subcategory Poshmark doesn't have is left out with a `Note:`; a
-  department or category it doesn't have is asked like "Other".
+  "Booties" becomes "Ankle Boots & Booties"). A subcategory Poshmark doesn't have is left out (noted in the item's
+  record, not on the card); a department or category it doesn't have is asked like "Other".
 - **The only questions that reach the owner:** brand or size below 0.70, NWT without a hang-tag photo, a category
   of "Other" (or a department/category not on Poshmark's list), a possible re-share, a pair of shoes in doubt between
   brand new and worn, Girls or Boys below 0.70, and the poster's `needs_owner`. The model's own questions about
@@ -268,14 +268,21 @@ private chat with the bot it always does.
    `telegram.enabled` is on but any of the three env vars is missing.
 
 ### Flow
-- **Batch confirmation.** The worker sends the contact sheet with a summary; the owner replies to it with `ok`,
-  `12>2`, `split 7`, `merge 2 3` or `drop 7` — the same parser as `thrift confirm`. `segmentation.always_confirm`
-  stays configurable. The sheet marks the photo after each pause ("pause 2 min"); the summary lists the pauses and
-  a doubt only where the model itself was unsure of an item ("item 2: a pause (2 min) and a visual change between
-  photos 6 and 7 — two items?"): try-on photos shot at the end of the roll, or two different items shot back to back,
-  are no doubt when the model split them with confidence.
+- **The grouping is accepted automatically** (owner decision). After the split no contact sheet is sent: the
+  batch's first message is its first item. The sheet is still saved (`work/<batch>/contact_sheet.png`) and the
+  code's doubts are kept for `thrift status` ("grouping accepted with doubts"), only where the model itself was
+  unsure of an item; a retail screenshot that matches no item is left out. Only a grouping that isn't a partition
+  (a photo in no item, or in two) still sends the sheet, since taking it would lose or double a photo.
+- **[Wrong photos]** on a price card is the way back when a grouping is wrong: the batch's contact sheet, as its
+  items are now, becomes the one open message, answered with `12>2`, `split 7`, `merge 2 3`, `drop 7` or `ok`
+  (`thrift confirm <batch> "<fix>"` from the CLI). Items whose photos didn't change keep everything; changed ones are
+  rebuilt and their cards come back through the queue; new groups become items. Never for an item already on the
+  marketplace, and while the fix is pending none of the batch's items is asked about or posted.
+- **The old flow** (`segmentation.auto_confirm: false`, for testing): the worker sends the contact sheet with a
+  summary; the owner replies `ok`, `12>2`, `split 7`, `merge 2 3` or `drop 7` — the same parser as `thrift confirm`.
+  The sheet marks the photo after each pause ("pause 2 min"); the summary lists the pauses and the doubts.
 - **One message at a time.** Everything that waits for the owner is one queue across batches and items: the oldest
-  batch first — its contact sheet, then its items in photo order (each item's questions, then its price card) — then
+  batch first — its contact sheet when one is asked, then its items in photo order (each item's questions, then its price card) — then
   the next batch. Only one message is open; the next is sent when it is answered, with a one-line confirmation first
   ("✓ $28 — 3 of 10 left"). Processing runs ahead, so the next card is usually ready at once; the queue never skips
   an item still being processed. The queue lives in the DB: it survives restarts, and a restart re-sends only the

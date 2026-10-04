@@ -281,7 +281,8 @@ def test_the_card_has_the_suggestion_four_neighbours_later_and_change(env, tmp_p
     a1 = _item(db, tmp_path, facts, _batch(db, EARLY), 1, price=45)
     approve.pump(s, db)
     rows = bot.calls[-1][1]["reply_markup"]["inline_keyboard"]
-    assert [[b["text"] for b in row] for row in rows] == [["✅ $45"], ["$35", "$40", "$50", "$55"], ["Later", "Change"]]
+    assert [[b["text"] for b in row] for row in rows] == [["✅ $45"], ["$35", "$40", "$50", "$55"],
+                                                          ["Later", "Change", "Wrong photos"]]
     assert {b["callback_data"] for b in rows[1]} == {f"approve:{a1}:{p}" for p in (35, 40, 50, 55)}
 
 
@@ -308,3 +309,107 @@ def test_the_card_shows_the_kids_size_as_poshmarks_menu_does(env, tmp_path, fact
     db.set_item(iid, renders={"poshmark": render})
     approve.pump(s, db)
     assert bot.texts()[-1].splitlines()[1] == "Size 7.5 (Toddler Girl)"
+
+
+# ---------- [Wrong photos] (WO20b) ----------
+
+COLOURS = ["red", "green", "blue", "navy", "orange", "purple", "gray", "white"]
+
+
+def _split_batch(s, db, tmp_path, facts, groups, n):
+    """A batch accepted as `groups` (n photos on disk, as process_batch leaves them), its items waiting for a price."""
+    bid = db.add_batch(str(tmp_path / "share-regroup"), n)
+    all_dir = s.path("work") / bid / "all"
+    all_dir.mkdir(parents=True)
+    photos = []
+    for i in range(n):
+        Image.new("RGB", (60, 80), COLOURS[i]).save(all_dir / f"{i:03d}.jpg")
+        photos.append(str(all_dir / f"{i:03d}.jpg"))
+    db.conn.execute("UPDATE batches SET created_at=? WHERE id=?", (EARLY, bid))
+    db.set_batch(bid, status="needs_confirm", segmentation={"groups": groups, "summaries": ["x"] * len(groups),
+                                                            "photos": photos, "kinds": ["own"] * n, "pauses": [],
+                                                            "auto_accepted": True})
+    pipeline.split(s, db, bid, groups)
+    iids = [r[0] for r in db.conn.execute("SELECT id FROM items WHERE batch_id=? ORDER BY seq", (bid,))]
+    for k, iid in enumerate(iids, 1):
+        db.set_item(iid, status="awaiting_price", facts=facts().model_dump(),
+                    price={"target": 30, "list_price": 40, "source": "brand", "by_marketplace": {"poshmark": 40},
+                           "basis": "brand"},
+                    renders={"poshmark": {"marketplace": "poshmark", "title": f"Item {k}", "size": "7.5", "price": 40}},
+                    gate={"decision": "publish", "reasons": [], "questions": [], "notes": []})
+    return bid, iids
+
+
+def _photos_of(db, iid):
+    return pipeline.item_group(db.item(iid))
+
+
+def test_wrong_photos_reopens_the_batch_and_rebuilds_only_what_changed(env, tmp_path, facts):
+    s, db, bot = env
+    bid, (i1, i2, i3) = _split_batch(s, db, tmp_path, facts, [[0, 1, 2], [3, 4], [5]], 6)
+    db.set_item(i3, owner_price=30, status="ready")                       # priced already
+    assert approve.pump(s, db) == f"item {i1}"
+    assert handle_update(s, db, bot, _callback(f"regroup:{i1}")) == f"regroup {i1}: batch {bid} reopened"
+    assert ("answerCallbackQuery", {"callback_query_id": "cb", "text": "The batch's photos follow"}) in bot.calls
+    sheet = bot.calls[-1][1]                                               # the one open message now
+    assert sheet["caption"].startswith(f"Wrong photos? Batch {bid}: 6 photos -> 3 items, as they are now")
+    assert "item 2: Item 2 - photos [3, 4]" in sheet["caption"] and sheet["photo"].name == pipeline.REGROUP_SHEET
+    assert db.batch(bid)["status"] == "regroup" and approve.queue(db) == [("regroup", bid)]   # its items wait
+    assert _open(db) == ("regroup", bid)
+
+    handle_update(s, db, bot, _reply("2>2", reply_to=bot.next_id))        # photo 2 belongs to item 2
+    assert bot.texts()[-1] == "\u2713 2 items rebuilt \u2014 the cards follow"
+    assert _photos_of(db, i1) == [0, 1] and _photos_of(db, i2) == [2, 3, 4] and _photos_of(db, i3) == [5]
+    assert [db.item(i)["status"] for i in (i1, i2, i3)] == ["new", "new", "ready"]
+    assert db.item(i3)["owner_price"] == 30 and db.item(i1)["owner_price"] is None    # unchanged keeps everything
+    assert db.batch(bid)["status"] == "split" and approve.queue(db) == [(approve.NEW_ITEM, i1), (approve.NEW_ITEM, i2)]
+
+
+def test_a_photo_fix_can_split_merge_and_leave_nothing_changed(env, tmp_path, facts):
+    s, db, bot = env
+    bid, (i1, i2, i3) = _split_batch(s, db, tmp_path, facts, [[0, 1], [2, 3, 4], [5]], 6)
+    pipeline.start_regroup(s, db, i2)
+    assert pipeline.regroup(s, db, bid, "ok") == {"kept": [i1, i2, i3], "rebuilt": [], "created": [], "removed": []}
+    assert [db.item(i)["status"] for i in (i1, i2, i3)] == ["awaiting_price"] * 3      # nothing changed: as it was
+
+    pipeline.start_regroup(s, db, i2)
+    out = pipeline.regroup(s, db, bid, "split 4")                         # photo 4 is an item of its own
+    assert out["kept"] == [i1, i3] and out["rebuilt"] == [i2] and len(out["created"]) == 1
+    new = out["created"][0]
+    assert _photos_of(db, i2) == [2, 3] and _photos_of(db, new) == [4]
+    assert [db.item(i)["seq"] for i in (i1, i2, new, i3)] == [1, 2, 3, 4]  # in photo order
+
+    pipeline.start_regroup(s, db, i1)
+    pipeline.confirm(s, db, bid, "merge 2 3")                              # thrift confirm is the CLI twin
+    assert db.item(new) is None and _photos_of(db, i2) == [2, 3, 4]       # merged into the item it overlaps most
+
+
+def test_wrong_photos_never_touches_an_item_on_the_marketplace(env, tmp_path, facts):
+    s, db, bot = env
+    bid, (i1, i2, i3) = _split_batch(s, db, tmp_path, facts, [[0, 1, 2], [3, 4], [5]], 6)
+    db.set_item(i3, status="posted")
+    db.upsert_post(i3, "poshmark", status="posted", url="https://poshmark.com/listing/x-0000000000000000000000a1")
+    out = handle_update(s, db, bot, _callback(f"regroup:{i3}"))
+    assert out.startswith(f"regroup {i3}: rejected")
+    assert any("already on the marketplace (poshmark posted)" in m for m in bot.texts())
+    assert db.batch(bid)["status"] == "split"
+
+    pipeline.start_regroup(s, db, i1)                                     # the others can still be fixed...
+    with pytest.raises(ValueError, match="item 3 .* is already on the marketplace"):
+        pipeline.regroup(s, db, bid, "merge 2 3")                         # ...but never the listed one
+    assert db.batch(bid)["status"] == "regroup" and _photos_of(db, i3) == [5]
+    assert pipeline.regroup(s, db, bid, "2>2")["rebuilt"] == [i1, i2]
+    assert db.item(i3)["status"] == "posted"
+
+
+def test_the_poster_waits_while_a_batch_is_being_fixed(env, tmp_path, facts):
+    from thrift_agent.post import runner
+    s, db, bot = env
+    bid, (i1, i2) = _split_batch(s, db, tmp_path, facts, [[0, 1], [2]], 3)
+    render = {"marketplace": "poshmark", "title": "Item 2", "description": "x", "price": 40, "department": "Women",
+              "category": "Shoes", "subcategory": None, "size": "7.5", "condition": "good", "brand": "Tory Burch",
+              "colors": ["Red"], "photos": ["cover.jpg"], "sku": i2}
+    db.set_item(i2, status="ready", renders={"poshmark": render})
+    assert runner.next_job(s, db, ["poshmark"], dry=True)[0] == i2
+    pipeline.start_regroup(s, db, i1)
+    assert runner.next_job(s, db, ["poshmark"], dry=True) is None

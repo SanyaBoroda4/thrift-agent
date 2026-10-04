@@ -103,6 +103,7 @@ def process_batch(s: Settings, db: DB, bid: str) -> None:
     # Breaks in shooting, relative to this roll (own photos only: screenshots are placed by content).
     breaks = seg.pauses(kept_times, kept_kinds, cfg.get("pause_min_seconds", 30), cfg.get("pause_factor", 4))
     distances, changes, report = {}, set(), {}
+    screenshots: list[int] = []
     if len(kept) == 1:
         groups, reasons, summaries, unassigned = [[0]], [], ["single photo"], []
     else:
@@ -112,6 +113,7 @@ def process_batch(s: Settings, db: DB, bid: str) -> None:
         groups = [g.photos for g in out.groups]
         summaries = [g.summary for g in out.groups]
         unassigned = list(out.unassigned)                 # screenshots the model could not match to an item
+        screenshots = list(out.screenshots)
         reasons = seg.check(out, len(kept), cfg["min_confidence"], kinds=kept_kinds)
         distances, changes = seg.visual_changes(kept, kept_kinds, cfg.get("visual_change_min", 0.45),
                                                 cfg.get("visual_change_factor", 2.5))
@@ -129,15 +131,47 @@ def process_batch(s: Settings, db: DB, bid: str) -> None:
                                     "changes": sorted(changes), "preview_px": report.get("preview_px")},
                  reasons=reasons)
 
-    if reasons or s["segmentation"]["always_confirm"]:
+    if cfg.get("auto_confirm", True):
+        # The owner never confirms the grouping (owner decision, WO20b): it is taken as her "ok" at once and no contact
+        # sheet goes out. The doubts stay in batches.reasons (thrift status). [Wrong photos] on a price card reopens it.
+        if (accepted := accept_grouping(groups, len(kept), kept_kinds, unassigned, screenshots)) is not None:
+            groups, left_out, notes = accepted
+            segd = {**(loads(db.batch(bid)["segmentation"]) or {}), "auto_accepted": True}
+            db.set_batch(bid, segmentation=segd, reasons=reasons + notes)
+            db.log(bid, "grouping_accepted", {"reasons": reasons, "left_out": left_out})
+            split(s, db, bid, groups, dropped=left_out)
+            return
+        # Not a partition (a photo in no item, or in two): taking it as it is would lose or double a photo, so the
+        # contact sheet asks, as before.
+    if reasons or cfg["always_confirm"] or cfg.get("auto_confirm", True):
         db.set_batch(bid, status="needs_confirm")
         approve.pump(s, db)                               # the contact sheet, when it is next (one question at a time)
         return
     split(s, db, bid, groups)
 
 
+def accept_grouping(groups: list[list[int]], n: int, kinds: list[str], unassigned: list[int] | tuple[int, ...] = (),
+                    screenshots: list[int] | tuple[int, ...] = ()) -> tuple[list[list[int]], list[int], list[str]] | None:
+    """The model's grouping as the owner's "ok" (WO20b): (groups, left out, notes), or None when it can't be taken as
+    it is. A retail screenshot that matches no item (the model's `unassigned`, or a group of nothing but screenshots)
+    is left out — it isn't a photo of any item, so nothing is lost. Empty groups are dropped. Anything else must be a
+    partition of the photos: a photo of the owner's in no item, or in two, is never guessed (None: the contact sheet
+    asks)."""
+    retail = {i for i, k in enumerate(kinds) if k == "retail"} | set(screenshots)
+    groups = [list(g) for g in groups if g]
+    screens_only = [g for g in groups if all(i in retail for i in g)]
+    left_out = sorted(set(unassigned) | {i for g in screens_only for i in g})
+    groups = [g for g in groups if g not in screens_only]
+    if not groups or partition_problems(groups, n, left_out):
+        return None
+    return groups, left_out, [f"screenshot {i} matches no item: left out" for i in left_out]
+
+
 def confirm(s: Settings, db: DB, bid: str, cmd: str) -> None:
     b = db.batch(bid)
+    if b is not None and b["status"] == "regroup":         # [Wrong photos]: the fix of a batch already split
+        regroup(s, db, bid, cmd)
+        return
     if b is None or b["status"] != "needs_confirm":
         raise ValueError(f"batch {bid} isn't waiting for confirmation")
     segd = loads(b["segmentation"])
@@ -187,14 +221,7 @@ def split(s: Settings, db: DB, bid: str, groups: list[list[int]], dropped: list[
     dirs = []
     for k, g in enumerate(groups, 1):
         d = s.path("work") / bid / f"item_{k:02d}"
-        if (d / "photos").exists():                      # a previous, failed attempt: never keep its extra photos
-            shutil.rmtree(d / "photos")
-        (d / "photos").mkdir(parents=True)
-        ordered = [i for i in g if kinds[i] != "retail"] + [i for i in g if kinds[i] == "retail"]
-        for j, idx in enumerate(ordered):
-            shutil.copy2(photos[idx], d / "photos" / f"{j:02d}.jpg")
-        (d / MANIFEST).write_text(json.dumps([{"file": f"{j:02d}.jpg", "kind": kinds[idx], "src": idx}
-                                              for j, idx in enumerate(ordered)], indent=1), encoding="utf-8")
+        fill_item_dir(d, g, photos, kinds)
         dirs.append(d)
 
     with db.tx():
@@ -209,6 +236,150 @@ def split(s: Settings, db: DB, bid: str, groups: list[list[int]], dropped: list[
         notify.say(f"⚠️ Batch {bid}: the note \"{note}\" was not applied — it can't be matched to one of the "
                    f"{len(groups)} items ({', '.join(iids)}). Re-apply it with: thrift answer <item> \"{note}\"")
     archive_share(s, db, bid, Path(b["src_dir"]))
+
+
+def fill_item_dir(d: Path, group: list[int], photos: list[Path], kinds: list[str]) -> None:
+    """An item's photos/ and its manifest from the batch's photos: the owner's own first (capture order), retail
+    screenshots last. Whatever was there before is replaced (a failed attempt, or the photos before a fix)."""
+    if (d / "photos").exists():
+        shutil.rmtree(d / "photos")
+    (d / "photos").mkdir(parents=True)
+    ordered = [i for i in group if kinds[i] != "retail"] + [i for i in group if kinds[i] == "retail"]
+    for j, idx in enumerate(ordered):
+        shutil.copy2(photos[idx], d / "photos" / f"{j:02d}.jpg")
+    (d / MANIFEST).write_text(json.dumps([{"file": f"{j:02d}.jpg", "kind": kinds[idx], "src": idx}
+                                          for j, idx in enumerate(ordered)], indent=1), encoding="utf-8")
+
+
+def item_group(it) -> list[int]:
+    """The batch photos an item was made of (its manifest's `src`), in capture order."""
+    manifest = Path(it["dir"]) / MANIFEST
+    entries = json.loads(manifest.read_text(encoding="utf-8")) if manifest.exists() else []
+    return sorted(e["src"] for e in entries if "src" in e)
+
+
+def reached_site(db: DB, it) -> list[str]:
+    """Why an item counts as on the marketplace — posting, posted, drafted, a post with a URL, an unconfirmed
+    publish — in words ("poshmark posted"); empty when it never got there."""
+    posts = db.conn.execute("SELECT * FROM posts WHERE item_id=?", (it["id"],)).fetchall()
+    why = [f"{p['marketplace']}: unconfirmed publish" if unconfirmed_publish(p) else f"{p['marketplace']} {p['status']}"
+           for p in posts if p["status"] in REDO_KEEP or p["url"] or unconfirmed_publish(p)]
+    return why or ([it["status"]] if it["status"] in REDO_KEEP else [])
+
+
+REGROUP_SHEET = "regroup_sheet.png"
+
+
+def start_regroup(s: Settings, db: DB, iid: str) -> str:
+    """[Wrong photos] on an item's price card (WO20b): its batch's grouping is reopened. The batch goes to 'regroup',
+    its contact sheet as it is now (the items' photos) is drawn, and it becomes the one open message in the queue,
+    answered with the usual 12>2 / split 7 / merge 2 3 / drop 7 (or ok: nothing changes). Until then none of the
+    batch's items is asked about, processed or posted. Never for an item that is on the marketplace. Returns the
+    batch id."""
+    it = db.item(iid)
+    if it is None:
+        raise ValueError(f"unknown item {iid}")
+    if why := reached_site(db, it):
+        raise ValueError(f"item {iid} is already on the marketplace ({', '.join(why)}) — its photos can't change")
+    b = db.batch(it["batch_id"])
+    if b is None or b["status"] != "split":
+        raise ValueError(f"batch {it['batch_id']} is {b['status'] if b else 'gone'} — its photos can't be regrouped now")
+    segd = loads(b["segmentation"]) or {}
+    photos = [Path(p) for p in segd.get("photos") or []]
+    items = db.conn.execute("SELECT * FROM items WHERE batch_id=? ORDER BY seq", (b["id"],)).fetchall()
+    if not photos or not all(p.exists() for p in photos):
+        raise ValueError(f"batch {b['id']}: its photos are no longer on disk — regroup by hand")
+    breaks = {int(i): float(sec) for i, sec in segd.get("pauses") or []}
+    seg.contact_sheet(photos, [item_group(i) for i in items], s.path("work") / b["id"] / REGROUP_SHEET,
+                      kinds=segd.get("kinds"), breaks=breaks)
+    with db.tx():
+        db.set_batch(b["id"], status="regroup")
+        db.conn.execute("UPDATE outbox SET resolved_at=? WHERE ref IN (SELECT id FROM items WHERE batch_id=?) "
+                        "AND resolved_at IS NULL", (now(), b["id"]))
+        db.log(b["id"], "regroup_asked", {"item": iid})
+    return b["id"]
+
+
+def regroup(s: Settings, db: DB, bid: str, cmd: str) -> dict[str, list[str]]:
+    """The owner's fix for a reopened batch (WO20b): the correction is applied to the items' photos as they are now.
+    An item whose photos are unchanged keeps everything (its price, its place); an item whose photos changed is
+    rebuilt like `thrift redo` (same id, new photos, processed again; the owner's condition and Girls/Boys answers
+    kept, the price asked again); a new group becomes a new item; an item whose photos all went elsewhere is removed.
+    Changed items pair with the old item they share the most photos with. Refused, with nothing changed, when it
+    would change an item that is on the marketplace. "ok" changes nothing. Returns {"kept", "rebuilt", "created",
+    "removed"}: item ids."""
+    b = db.batch(bid)
+    if b is None or b["status"] != "regroup":
+        raise ValueError(f"batch {bid} isn't waiting for a photo fix")
+    segd = loads(b["segmentation"]) or {}
+    photos = [Path(p) for p in segd["photos"]]
+    n = len(photos)
+    kinds = segd.get("kinds") or ["own"] * n
+    items = db.conn.execute("SELECT * FROM items WHERE batch_id=? ORDER BY seq", (bid,)).fetchall()
+    current = [item_group(it) for it in items]
+    left_out = sorted(set(range(n)) - {i for g in current for i in g})
+    rest, drops = seg.parse_drops(cmd)
+    if bad := [i for i in drops if not 0 <= i < n]:
+        raise ValueError(f"can't drop {bad}: photos are 0..{n - 1}")
+    groups = [sorted(g) for g in seg.apply_correction([[i for i in g if i not in drops] for g in current], rest, n=n)]
+    dropped = sorted((set(left_out) - {i for g in groups for i in g}) | set(drops))
+    if problems := partition_problems(groups, n, dropped):
+        raise ValueError(f"batch {bid}: " + "; ".join(problems))
+
+    old = {frozenset(g): it for g, it in zip(current, items)}
+    kept = {k: old[frozenset(g)] for k, g in enumerate(groups) if frozenset(g) in old}
+    free = [(it, set(g)) for it, g in zip(items, current) if it["id"] not in {i["id"] for i in kept.values()}]
+    rebuilt: dict[int, object] = {}
+    for k, g in enumerate(groups):                       # a changed group: the old item it overlaps most, if any
+        if k in kept:
+            continue
+        best = max(free, key=lambda f: (len(f[1] & set(g)), -f[0]["seq"]), default=None)
+        if best is not None and best[1] & set(g):
+            rebuilt[k] = best[0]
+            free.remove(best)
+    removed = [it for it, _ in free]
+    for it in [*rebuilt.values(), *removed]:
+        if why := reached_site(db, it):
+            raise ValueError(f"item {it['seq']} ({it['id']}) is already on the marketplace ({', '.join(why)}) — its "
+                             "photos can't change; fix only the others")
+
+    round_no = int(segd.get("regroups") or 0) + 1
+    new_dirs = {}
+    for k, g in enumerate(groups):
+        if k in rebuilt:
+            fill_item_dir(Path(rebuilt[k]["dir"]), g, photos, kinds)
+        elif k not in kept:
+            new_dirs[k] = s.path("work") / bid / f"item_{k + 1:02d}_fix{round_no}"
+            fill_item_dir(new_dirs[k], g, photos, kinds)
+    out = {"kept": [], "rebuilt": [], "created": [], "removed": []}
+    with db.tx():
+        for it in removed:
+            db.conn.execute("DELETE FROM posts WHERE item_id=?", (it["id"],))
+            db.conn.execute("DELETE FROM items WHERE id=?", (it["id"],))
+            db.log(it["id"], "regroup_removed", {"batch": bid})
+            out["removed"].append(it["id"])
+        for k, g in enumerate(groups):
+            if k in kept:
+                db.set_item(kept[k]["id"], seq=k + 1)
+                out["kept"].append(kept[k]["id"])
+            elif k in rebuilt:
+                iid = rebuilt[k]["id"]
+                db.conn.execute("DELETE FROM posts WHERE item_id=?", (iid,))
+                db.set_item(iid, seq=k + 1, status="new", facts=None, price=None, renders=None, gate=None,
+                            owner_price=None, deferred_at=None, cover_hash=None)
+                db.log(iid, "regroup_rebuilt", {"batch": bid, "photos": g})
+                out["rebuilt"].append(iid)
+            else:
+                iid = db.add_item(bid, k + 1, str(new_dirs[k]))
+                db.log(iid, "item_created", {"batch": bid, "photos": g, "regroup": round_no})
+                out["created"].append(iid)
+        changed = {i for ids in (out["rebuilt"], out["removed"]) for i in ids}
+        if changed:
+            db.conn.execute(f"UPDATE outbox SET resolved_at=? WHERE ref IN ({','.join('?' * len(changed))}) "
+                            "AND resolved_at IS NULL", (now(), *changed))
+        db.set_batch(bid, status="split", segmentation={**segd, "regroups": round_no})
+        db.log(bid, "regrouped", {"cmd": cmd, **out})
+    return out
 
 
 def archive_share(s: Settings, db: DB, bid: str, src: Path) -> Path | None:
@@ -596,13 +767,12 @@ def redo_batch(s: Settings, db: DB, bid: str) -> tuple[list[str], list[str]]:
     items = db.conn.execute("SELECT * FROM items WHERE batch_id=? ORDER BY seq", (bid,)).fetchall()
     if not items:
         raise ValueError(f"batch {bid} is {b['status']} with no items — nothing to redo")
+    if b["status"] == "regroup":
+        raise ValueError(f"batch {bid} is waiting for its photo fix ([Wrong photos]) — answer that first")
     rebuilt, kept = [], []
     for it in items:
-        posts = db.conn.execute("SELECT * FROM posts WHERE item_id=?", (it["id"],)).fetchall()
-        reached = [f"{p['marketplace']}: unconfirmed publish" if unconfirmed_publish(p)
-                   else f"{p['marketplace']} {p['status']}"
-                   for p in posts if p["status"] in REDO_KEEP or p["url"] or unconfirmed_publish(p)]
-        if it["status"] in REDO_KEEP or it["status"] == "dropped" or reached:
+        reached = reached_site(db, it)
+        if reached or it["status"] == "dropped":
             kept.append(f"{it['id']} ({', '.join(reached) or it['status']})")
             continue
         with db.tx():

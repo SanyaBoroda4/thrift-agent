@@ -44,14 +44,15 @@ LOCK_KEY = "telegram_queue_lock"                     # kv: who is sending the ne
 ROUND_KEY = "telegram_round"                         # kv: items queued since the queue was last empty ("of 10")
 LOCK_TTL = 120                                       # seconds: a sender's lock older than this was abandoned (a crash)
 DEV_CHAT = "dev"                                     # outbox chat of the dev print (no bot)
-QUEUE_KINDS = ("batch", "condition", "kids", "item", "owner_q")      # outbox kinds that wait for an answer
-SENDERS = {"batch": "send_batch", "condition": "ask_condition", "kids": "ask_kids", "item": "send_item",
-           "owner_q": "send_owner_q"}
+QUEUE_KINDS = ("batch", "regroup", "condition", "kids", "item", "owner_q")     # outbox kinds that wait for an answer
+SENDERS = {"batch": "send_batch", "regroup": "send_regroup", "condition": "ask_condition", "kids": "ask_kids",
+           "item": "send_item", "owner_q": "send_owner_q"}
 NEW_BATCH, NEW_ITEM = "new_batch", "new_item"        # queue entries still being processed: the queue holds there
 OWNER_WAITING = ("awaiting_condition", "awaiting_price", "needs_info", "needs_owner")   # item waits for an answer
 QUEUED_ITEMS = ("new", *OWNER_WAITING)               # item statuses in the queue ('new': still being processed)
 WAITING_ITEM = ("awaiting_price", "needs_info")      # item statuses whose price card is the open question
 BATCH_HINT = "Reply to this message: ok | 12>2 | split 7 | merge 2 3 | drop 7"
+REGROUP_HINT = "Reply with the fix: 12>2 | split 7 | merge 2 3 | drop 7 (or ok: nothing changes)"
 ITEM_HINT = "Tap a price, type a number, or reply with an answer like 'size 8, 45'"
 HELD_HINT = " (still held as a possible re-share: reply 'different item' to list it or 'same item' to drop it)"
 CONDITION_QUESTION = "Brand new or worn? (couldn't tell from the photos)"
@@ -196,15 +197,16 @@ def queue(db: DB) -> list[tuple[str, str]]:
     # id). The insertion order keeps each batch's messages together when two batches were registered in the same
     # second (created_at has whole seconds).
     entries = []
+    kinds = {"needs_confirm": "batch", "regroup": "regroup", "new": NEW_BATCH}
     for b in db.conn.execute("SELECT rowid AS n, id, status, created_at FROM batches "
-                             "WHERE status IN ('new', 'needs_confirm')"):
-        kind = "batch" if b["status"] == "needs_confirm" else NEW_BATCH
-        entries.append(((b["created_at"], b["n"], -1, b["id"]), kind, b["id"]))
+                             "WHERE status IN ('new', 'needs_confirm', 'regroup')"):
+        entries.append(((b["created_at"], b["n"], -1, b["id"]), kinds[b["status"]], b["id"]))
     marks = ",".join("?" * len(QUEUED_ITEMS))
+    # The items of a batch whose photos are being fixed ([Wrong photos]) wait, unasked and unprocessed, until the fix.
     rows = db.conn.execute(
         "SELECT i.id, i.status, i.seq, i.gate, i.deferred_at, COALESCE(b.created_at, i.created_at) AS since, "
-        f"COALESCE(b.rowid, 0) AS n FROM items i LEFT JOIN batches b ON b.id = i.batch_id WHERE i.status IN ({marks})",
-        QUEUED_ITEMS)
+        f"COALESCE(b.rowid, 0) AS n FROM items i LEFT JOIN batches b ON b.id = i.batch_id WHERE i.status IN ({marks}) "
+        "AND COALESCE(b.status, '') != 'regroup'", QUEUED_ITEMS)
     for r in rows:
         entries.append(((r["deferred_at"] or r["since"], r["n"], r["seq"], r["id"]),
                         _item_kind(r["status"], loads(r["gate"]) or {}), r["id"]))
@@ -227,12 +229,15 @@ def next_up(db: DB) -> tuple[str, str] | None:
 
 def _waits(db: DB, kind: str, ref: str) -> bool:
     """Does the batch/item still wait for this kind of answer?"""
-    if kind == "batch":
+    if kind in ("batch", "regroup"):
         b = db.batch(ref)
-        return b is not None and b["status"] == "needs_confirm"
+        return b is not None and b["status"] == ("needs_confirm" if kind == "batch" else "regroup")
     it = db.item(ref)
     if it is None or it["status"] not in OWNER_WAITING:
         return False
+    b = db.batch(it["batch_id"])
+    if b is not None and b["status"] == "regroup":
+        return False                                  # its batch's photos are being fixed: asked again after the fix
     return _item_kind(it["status"], loads(it["gate"]) or {}) == kind
 
 
@@ -382,6 +387,36 @@ def send_batch(s: Settings, db: DB, bid: str) -> None:
     db.add_outbox(bot.chat_id, mid, "batch", bid)
 
 
+def send_regroup(s: Settings, db: DB, bid: str) -> None:
+    """[Wrong photos] (WO20b): the batch's contact sheet as its items are now, the items listed, and the usual fixes.
+    Records the outbox row (kind regroup). Without a bot: print (dev)."""
+    b = db.batch(bid)
+    if b is None:
+        raise ValueError(f"unknown batch {bid}")
+    items = db.conn.execute("SELECT * FROM items WHERE batch_id=? ORDER BY seq", (bid,)).fetchall()
+    groups = [pipeline.item_group(it) for it in items]
+    n = len((loads(b["segmentation"]) or {}).get("photos") or [])
+    lines = [f"Wrong photos? Batch {bid}: {n} photos -> {len(items)} items, as they are now"]
+    lines += [f"item {it['seq']}: {_title(it, it['id'])[:60]} - photos {g}" for it, g in zip(items, groups)]
+    if left_out := sorted(set(range(n)) - {i for g in groups for i in g}):
+        lines.append(f"left out: {left_out}")
+    lines.append(REGROUP_HINT)
+    caption = "\n".join(lines)
+    sheet = s.path("work") / bid / pipeline.REGROUP_SHEET
+    bot = bot_for(s)
+    if bot is None:
+        notify.photo(sheet, f"{caption}\n(thrift confirm {bid} <fix>)")
+        return
+    if sheet.is_file() and len(caption) <= MAX_CAPTION:
+        mid = bot.send_photo(sheet, caption)
+    elif sheet.is_file():
+        db.add_outbox(bot.chat_id, bot.send_photo(sheet, lines[0]), "regroup", bid)
+        mid = bot.send_message(caption)
+    else:
+        mid = bot.send_message(caption)
+    db.add_outbox(bot.chat_id, mid, "regroup", bid)
+
+
 def _ev(facts: dict, name: str) -> str | None:
     ev = facts.get(name)
     return (ev or {}).get("value") if isinstance(ev, dict) else None
@@ -459,13 +494,15 @@ def price_options(price: int, floor: int = 20, step: int = 5) -> list[int]:
 
 
 def item_buttons(iid: str, price: int | None, floor: int = 20, step: int = 5) -> list[list[dict]]:
-    """[✅ $X] / four nearby prices / [Later] [Change]. Every price button sets that price (approve:<item>:<amount>)."""
+    """[✅ $X] / four nearby prices / [Later] [Change] [Wrong photos]. Every price button sets that price
+    (approve:<item>:<amount>); [Wrong photos] reopens the batch's grouping (regroup:<item>, WO20b)."""
     rows = []
     if price:
         rows.append([{"text": f"✅ ${price}", "callback_data": f"approve:{iid}:{price}"}])
         if options := price_options(price, floor, step):
             rows.append([{"text": f"${p}", "callback_data": f"approve:{iid}:{p}"} for p in options])
-    rows.append([{"text": "Later", "callback_data": f"later:{iid}"}, {"text": "Change", "callback_data": f"change:{iid}"}])
+    rows.append([{"text": "Later", "callback_data": f"later:{iid}"}, {"text": "Change", "callback_data": f"change:{iid}"},
+                 {"text": "Wrong photos", "callback_data": f"regroup:{iid}"}])
     return rows
 
 
@@ -596,6 +633,8 @@ def _route(s: Settings, db: DB, bot: Bot, update: dict) -> str:
     kind, ref = row["kind"], row["ref"]
     if kind == "batch":
         return _reply_batch(s, db, bot, ref, text, mid)
+    if kind == "regroup":
+        return _reply_regroup(s, db, bot, ref, text, mid)
     if kind == "item":
         return _reply_item(s, db, bot, ref, text, mid)
     if kind == "owner_q":
@@ -699,6 +738,15 @@ def _handle_callback(s: Settings, db: DB, bot: Bot, cq: dict) -> str:
         result = _set_kids(s, db, bot, parts[1], parts[2], src_mid)
         bot.answer_callback(cid, parts[2].title() if "rejected" not in result else "Could not set it")
         return result
+    if parts[0] == "regroup" and len(parts) == 2:
+        try:
+            bid = pipeline.start_regroup(s, db, parts[1])
+        except ValueError as e:
+            bot.answer_callback(cid, "Can't change its photos")
+            bot.send_message(str(e), reply_to=src_mid)
+            return f"regroup {parts[1]}: rejected: {e}"
+        bot.answer_callback(cid, "The batch's photos follow")
+        return f"regroup {parts[1]}: batch {bid} reopened"
     if parts[0] == "change" and len(parts) == 2:
         iid = parts[1]
         mid = bot.send_message(f"Reply to this message with the price for {iid} (or just type it).", reply_to=src_mid)
@@ -722,6 +770,24 @@ def _reply_batch(s: Settings, db: DB, bot: Bot, bid: str, text: str, mid: int | 
     n = db.conn.execute("SELECT COUNT(*) FROM items WHERE batch_id=?", (bid,)).fetchone()[0]
     bot.send_message(f"✓ {n} item{'s' if n != 1 else ''} — the cards follow one at a time", reply_to=mid)
     return f"batch {bid}: confirmed {text!r}"
+
+
+def _reply_regroup(s: Settings, db: DB, bot: Bot, bid: str, text: str, mid: int | None) -> str:
+    if not text:
+        bot.send_message(REGROUP_HINT, reply_to=mid)
+        return f"regroup {bid}: empty reply"
+    try:
+        out = pipeline.regroup(s, db, bid, text)
+    except ValueError as e:
+        bot.send_message(str(e), reply_to=mid)
+        return f"regroup {bid}: rejected {text!r}: {e}"
+    db.outbox_resolve("regroup", bid)
+    changed = len(out["rebuilt"]) + len(out["created"])
+    bot.send_message("\u2713 no change \u2014 the cards follow" if not changed and not out["removed"] else
+                     f"\u2713 {changed} item{'s' if changed != 1 else ''} rebuilt"
+                     + (f", {len(out['removed'])} removed" if out["removed"] else "") + " \u2014 the cards follow",
+                     reply_to=mid)
+    return f"regroup {bid}: {text!r} -> " + ", ".join(f"{k} {len(v)}" for k, v in out.items())
 
 
 def _reply_item(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int | None) -> str:

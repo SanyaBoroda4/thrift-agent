@@ -191,7 +191,8 @@ def confirm(batch_id: str, cmd: str = typer.Argument("ok")) -> None:
     s, db = settings(), _db()
     pipeline.confirm(s, db, batch_id, cmd)
     print(f"[green]split[/] {batch_id}")
-    db.outbox_resolve("batch", batch_id)                          # the Telegram copy of this question is answered
+    for kind in ("batch", "regroup"):                             # the Telegram copy of this question is answered
+        db.outbox_resolve(kind, batch_id)
     approve.announce(s, f"batch {batch_id}: confirmed from the CLI ({cmd})")
     _tick_unless_worker(s, db)
     approve.pump(s, db)                                           # the next question, if one is ready
@@ -438,6 +439,15 @@ def status() -> None:
         print(f"[yellow]waiting for the worker[/] {b['id']}  (thrift run splits it within ~15 s)")
     for b in db.batches("needs_confirm"):
         print(f"[yellow]awaiting confirm[/] {b['id']}  →  thrift confirm {b['id']} ok")
+    for b in db.batches("regroup"):
+        print(f"[yellow]wrong photos[/] {b['id']}  →  thrift confirm {b['id']} \"<fix>\"  (12>2 | split 7 | merge 2 3 | "
+              f"drop 7 | ok)")
+    # Groupings taken without the owner (segmentation.auto_confirm, WO20b) that the code had doubts about: kept here,
+    # never sent. [Wrong photos] on a card (or thrift confirm while it is reopened) fixes one.
+    for b in db.conn.execute("SELECT * FROM batches WHERE status='split' AND reasons IS NOT NULL AND reasons != '[]' "
+                             "ORDER BY created_at DESC LIMIT 5"):
+        if (loads(b["segmentation"]) or {}).get("auto_accepted"):
+            print(f"[dim]grouping accepted with doubts[/] {b['id']}: " + escape("; ".join(loads(b["reasons"]))))
     for b in db.batches("failed"):
         err = pipeline.last_error(db, b["id"])
         print(f"[red]failed batch[/] {b['id']}  →  thrift requeue {b['id']}"
