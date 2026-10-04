@@ -53,7 +53,8 @@ iCloud Posh/inbox/<ts>/ (+ _done) ─► register batch ─► prep (HEIC→JPEG
      not sent; the doubts stay in `thrift status`; a grouping that isn't a partition still asks with the sheet)
      ([Wrong photos] on a price card reopens it: the sheet as the open message, 12>2|split 7|merge 2 3|drop 7|ok,
       only the items whose photos changed are rebuilt; never for an item on the marketplace)
-  ─► items ─► extract Facts (evidence per field) ─► price (brand_tiers.yaml) ─► copy (both marketplaces)
+  ─► items ─► extract Facts (evidence per field) ─► labels read closely (premium details, WO26)
+  ─► price (brand_tiers.yaml, × one premium factor) ─► copy (both marketplaces)
   ─► verify (LLM strip unsupported claims) + lint (deterministic) ─► gate: publish | draft | needs_info
   ─► (shoes in doubt, brand new vs worn: awaiting_condition ─► "Brand new or worn?" [NWT] [Like New] [Good] ─►
       reprocessed with the answer)
@@ -309,6 +310,9 @@ The owner shares retailer screenshots (product page with price, style name, colo
   left empty, the copy names no brand (prompt rule; `verify.lint` flags a brand of the price table in a listing whose
   facts have none). The card stays open for its price; a listing that named the model's unsure guess is rewritten first
   (reprocessed). "no brand, 25" sets the price too.
+- **Premium details (WO26, owner rule):** stated exactly, ONLY what a label or the photos show — see "Premium details".
+  The retail price line is "Original retail $128." (was "Retail $128."), from a retailer screenshot, a seller note or
+  a price printed on a hang tag in the seller's own photo.
 - **Line breaks are line breaks (WO24):** a break the model writes as the two characters backslash + n (live: the
   verifier's rewrite, in two listings, which also counted as "rewrote without reporting a claim") is made a real one by
   `copy.clean` / `copy.unescape_breaks`, ignored by `changed_fields`, and mended in stored listings by `relist`
@@ -468,6 +472,43 @@ day: Kids Shirts & Tops / Bottoms / Dresses — Girls 2T-5T, 4, 5, 6, 6X, 7, 8, 
 is settled (derived, 0.95) — no question — and the description
 gets "Label size: 4 ans / 104 cm." (`copy.ensure_label_size`). A bare "4" is not mapped (4T or kids 4?): the label photos
 are read once more for the units (`cover.read_size_label`), else it is asked as before.
+
+## Premium details (WO26)
+Owner rule: premium details are selling points, stated exactly — but ONLY when a label or the photos show them (the WO4
+no-hallucination rule stays).
+- **The labels read closely** (`brain/labels.py`, `models.labels` = Opus 5.5, one call an item that has label or tag
+  photos): the label/tag photos at `images.label_long_edge` (2048, the full work size; any orientation), the detail
+  photos at the usual size. Out: `facts.premium` — composition exact ([{fiber, pct, part}], one entry per fiber in
+  English: "100% SILK / 100% SOIE / 100% SEDA" is silk 100), made_in, a premium line / sub-label, vintage only with a
+  concrete cue (union label, old tag, single stitch, Big E, a dated care tag) and the era when clear, collab / limited
+  edition / sample, technical (Gore-Tex, waterproof, down fill, Primaloft, UPF), construction (fully lined, silk lining,
+  hand-knit, handmade, beading, Goodyear welt; never a negative), a retail price printed on an attached hang tag —
+  every value with its photos; `premium.merge` keeps only values a photo of this item shows. The main fabric's
+  composition becomes `facts.material` (the materials rule's evidence); the hang tag's price the retail price when no
+  screenshot gave one. A failed read is logged and retried by `recover`; no label photo = an empty read.
+- **Config** (`config/premium.yaml`, editable; `private/premium.yaml` replaces it): premium fibers (silk, cashmere,
+  merino, wool, alpaca, mohair, camel, angora, linen, genuine leather / suede, shearling, down, organic / Pima / Supima
+  cotton) with the title's word; "Made in" countries worth saying, as "what a label prints → what the listing says"
+  (Italy, France, Japan, USA, UK incl. England / Scotland / Wales, Portugal, Spain) — **any other country (China,
+  Bangladesh, Vietnam…) is never mentioned**; premium lines (J.Crew Collection, Purple Label, BR Heritage, Levi's Made &
+  Crafted, Zara Studio / Limited Edition, We The Free, Maeve, Pilcro); the price multipliers.
+- **Title** (`premium.title_with_feature`, after the copy and `ensure_set_title`): Brand → the ONE strongest feature →
+  item → color → US size. Strongest: a premium fiber from 90% of the main fabric ("100% Silk" at 100, else "Cashmere")
+  > a premium line (after the brand: "J.Crew Collection …") > "Vintage" with its era ("Vintage 90s") > "Made in Italy"
+  > a collab > a premium blend 50–89% ("Silk Blend"). Its weaker wording elsewhere goes ("White Silk Pants" → "100% Silk
+  White Pants"). Over 80 characters (`premium.fit_title`): the words just before the size go first, then backwards — a
+  detail, a hanging connector — never the brand, the feature, the US size, the set phrase, the item's last two type
+  words or its colours. Idempotent.
+- **Description** (`premium.ensure_feature_lines`, both marketplaces): every confirmed feature in a plain line of its
+  own, before the condition line — "Material: 100% silk." (every fiber of the main fabric), "Lining: 100% silk." (a
+  premium lining), "Made in Italy.", "J.Crew Collection.", "Vintage 90s.", "H&M x Erdem.", "Gore-Tex, waterproof.",
+  "Fully lined." — then the condition line, then "Original retail $128.". The copy writer never sees `premium`: code
+  states it, so it's never doubled or embellished.
+- **Price** (`premium.price_factor` → `price(…, premium=)`): the suggestion × ONE multiplier, the largest that applies
+  (fiber 1.3, blend 1.1, line 1.2, vintage 1.2 — never stacked); never a seller-note price, never the owner's price.
+- **Existing items:** `thrift recover` reads the labels once for an item without `facts.premium` (`--recheck` reads
+  again), applies the title and description rules and the Original Price (`relist`), reprices a suggestion the owner
+  hasn't approved, and compares the card as in WO24; its output line gives the new title and what the labels gave.
 
 ## Sizes (WO25)
 `sizes.poshmark_size` puts the item's size on Poshmark's own menus (the catalog): the size the poster selects is exactly

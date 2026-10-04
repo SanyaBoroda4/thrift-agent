@@ -1,0 +1,75 @@
+# Premium details (WO26): selling points stated exactly in the title and the description — ONLY when a label or the
+# photos show them (brain/labels.py reads the labels; brain/premium.py words them). Edit freely; a private/premium.yaml
+# replaces this file.
+
+# Premium fibers: the label's fiber (in English) -> how the title says it. From 90% of the main fabric the title says
+# the fiber ("Cashmere"; "100% Silk" at 100%), from 50% "<fiber> Blend"; the description always gives the exact
+# composition ("Material: 70% wool, 30% cashmere.").
+fibers:
+  silk: Silk
+  cashmere: Cashmere
+  merino: Merino Wool
+  lambswool: Lambswool
+  wool: Wool
+  alpaca: Alpaca
+  mohair: Mohair
+  camel: Camel Hair
+  angora: Angora
+  linen: Linen
+  genuine leather: Genuine Leather
+  leather: Genuine Leather
+  suede: Suede
+  shearling: Shearling
+  down: Down
+  organic cotton: Organic Cotton
+  supima cotton: Supima Cotton
+  pima cotton: Pima Cotton
+
+# Countries worth "Made in …" (title and description): what a label prints -> what the listing says. Any country not
+# here — China, Bangladesh, Vietnam, India, Cambodia, Indonesia, Turkey… — is never mentioned.
+made_in:
+  Italy: Italy
+  Italia: Italy
+  France: France
+  Japan: Japan
+  USA: USA
+  U.S.A.: USA
+  US: USA
+  United States: USA
+  United States of America: USA
+  America: USA
+  UK: UK
+  U.K.: UK
+  United Kingdom: UK
+  Great Britain: UK
+  Britain: UK
+  England: England
+  Scotland: Scotland
+  Wales: Wales
+  Portugal: Portugal
+  Spain: Spain
+  España: Spain
+
+# Premium lines and sub-labels, as the label prints them (with or without the brand): the title says the line after
+# the brand ("J.Crew Collection …", "Ralph Lauren Purple Label …").
+lines:
+  - J.Crew Collection
+  - Purple Label
+  - Banana Republic Heritage
+  - BR Heritage
+  - Levi's Made & Crafted
+  - Made & Crafted
+  - Zara Studio
+  - Zara Limited Edition
+  - We The Free
+  - Maeve
+  - Pilcro
+
+# The suggested price, multiplied ONCE by the largest of these that applies (never stacked): a premium fiber at 90% or
+# more of the main fabric, a premium blend (50-89%), a premium line, confirmed vintage. The owner's price is never
+# touched.
+multipliers:
+  fiber: 1.3
+  blend: 1.1
+  line: 1.2
+  vintage: 1.2

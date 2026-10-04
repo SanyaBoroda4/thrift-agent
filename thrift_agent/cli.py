@@ -318,6 +318,8 @@ def recover(ref: str, recheck: bool = typer.Option(
               f"{escape(str(out.get('subcategory') or '-'))} was {escape(str(b['category']))} › "
               f"{escape(str(b.get('subcategory') or '-'))}; size {out['size']} was {b['size']}; questions: "
               f"{escape('; '.join(out['questions'])) or 'none'}; {out['status']}; {card}")
+        if out.get("features") is not None:                      # WO26: what the labels gave, and the title now
+            print(f"    title: {escape(str(out.get('title')))} | {escape(out['features'])}")
     if not done and len(ids) == 1:
         raise typer.Exit(1)
     approve.pump(s, db)                                           # a card that changed comes again, one at a time
@@ -339,6 +341,8 @@ def reprocess(item_id: str) -> None:
             "unchanged": "card unchanged (not sent again)"}.get(out.get("card"), "no card")
     print(f"[green]reprocessed[/] {item_id}: {escape(str(out.get('title')))}; {escape(str(out.get('category')))}; "
           f"{out['status']}; {card}")
+    if out.get("features") is not None:
+        print(f"    {escape(out['features'])}")
     approve.pump(s, db)
 
 

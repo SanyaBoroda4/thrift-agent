@@ -16,7 +16,7 @@ TEXT_FIELDS = ("poshmark_title", "poshmark_description", "depop_description")
 # kids_gender is the model's best guess for Poshmark's size tab, not evidence: the copy never states it. The flaws and
 # the condition evidence are what the photos show: the copy never describes them (the owner's condition rule, below).
 VIEW_EXCLUDE = {"cover_photo", "cover_upright", "photo_order", "photo_roles", "questions", "kids_gender",
-                "kids_gender_confidence", "category_confidence", "category_alternatives",
+                "kids_gender_confidence", "category_confidence", "category_alternatives", "premium",
                 "flaws", "condition_evidence", "condition_alternative", "hang_tag_photo", "unworn", "box_photo"}
 TAG_LINE = re.compile(r"(?m)^[ \t]*(#\w+[ \t]*)+\r?$")   # a line that is nothing but hashtags
 TRAILING_TAGS = re.compile(r"(\s*#\w+)+\s*$")           # hashtags tacked onto the end of the last sentence
@@ -81,7 +81,7 @@ POSHMARK
   2) Then the condition: condition_line from the facts, verbatim, as its own line ("New with tags." / "New in box." /
      "New without tags." / for every used item "Gently pre-loved, please see photos for condition."). A fit line may go before it
      ("Size 38 EU, fits US 7.5-8.").
-  3) If retail_price is known, the description ends with "Retail $<price>." as its own last line
+  3) If retail_price is known, the description ends with "Original retail $<price>." as its own last line
      (after the condition line).
   4) Then the footer if one is given. No keyword stuffing, no emojis.
 - Style tags: up to 3 from POSHMARK STYLE TAGS below, spelled as listed, or none. A material tag (Leather, Suede,
@@ -236,13 +236,14 @@ def clean(out: CopyOut) -> CopyOut:
 
 
 def ensure_retail_line(description: str, facts: Facts) -> str:
-    """The Poshmark description ends with "Retail $<price>." when the facts know the retail price and the copy
-    doesn't already say it ("Retail $128", "Retails for $128" anywhere in the text is left alone)."""
+    """The Poshmark description ends with "Original retail $<price>." (WO26; was "Retail $…") when the facts know the
+    retail price — a retailer screenshot, a seller note, a hang tag in the photos — and the copy doesn't already say it
+    ("Retail $128", "Retails for $128" anywhere in the text is left alone)."""
     m = re.search(r"\d+(?:\.\d+)?", (facts.retail_price.value or "").replace(",", ""))
     text = description.rstrip()
     if not m or re.search(r"\bretail\w*[^\n$]{0,10}\$", text, re.I):
         return description
-    return f"{text}\nRetail ${int(float(m.group()))}."
+    return f"{text}\nOriginal retail ${int(float(m.group()))}."
 
 
 def ensure_label_size(description: str, facts: Facts) -> str:
@@ -279,7 +280,8 @@ def condition_wording(text: str, condition: str) -> str:
             body = body.replace(mark, CONDITION_LINE)
         else:
             rows = body.rstrip().split("\n")
-            at = len(rows) - 1 if re.match(r"\s*retail\b", rows[-1], re.I) and len(rows) > 1 else len(rows)
+            at = (len(rows) - 1 if re.match(r"\s*(?:original\s+)?retail\b", rows[-1], re.I) and len(rows) > 1
+                  else len(rows))
             body = "\n".join(rows[:at] + [CONDITION_LINE] + rows[at:])
     body = re.sub(r"[ \t]+\n", "\n", body.replace(mark, "")).replace(" \n", "\n")
     return re.sub(r"\n{3,}", "\n\n", body).strip()

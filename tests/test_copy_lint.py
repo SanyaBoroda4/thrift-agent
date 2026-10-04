@@ -373,12 +373,12 @@ def test_lint_style_name_must_be_in_title(facts):
 
 def test_ensure_retail_line(facts):
     priced = facts(retail_price=ev("128"))
-    assert ensure_retail_line("Classic flats.\n\nWorn once.  \n", priced) == "Classic flats.\n\nWorn once.\nRetail $128."
+    assert ensure_retail_line("Classic flats.\n\nWorn once.  \n", priced) == "Classic flats.\n\nWorn once.\nOriginal retail $128."
     assert ensure_retail_line("Classic flats. Retail $128.", priced) == "Classic flats. Retail $128."
     assert ensure_retail_line("Classic flats. retails for $128", priced) == "Classic flats. retails for $128"
     assert ensure_retail_line("Classic flats.", facts()) == "Classic flats."
     assert ensure_retail_line("Classic flats.", facts(retail_price=ev("n/a"))) == "Classic flats."
-    assert ensure_retail_line("Classic flats.", facts(retail_price=ev("$1,299.00"))) == "Classic flats.\nRetail $1299."
+    assert ensure_retail_line("Classic flats.", facts(retail_price=ev("$1,299.00"))) == "Classic flats.\nOriginal retail $1299."
 
 
 def test_title_shows_the_us_size_only(facts):

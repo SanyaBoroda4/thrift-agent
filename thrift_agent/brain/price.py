@@ -87,7 +87,10 @@ def note_floor(note: str | None) -> int | None:
     return None
 
 
-def price(facts: Facts, tiers: dict | None, cfg: dict, note: str | None = None) -> PriceResult:
+def price(facts: Facts, tiers: dict | None, cfg: dict, note: str | None = None,
+          premium: tuple[float, str | None] = (1.0, None)) -> PriceResult:
+    """`premium`: (multiplier, why) from brain/premium.price_factor (WO26) — a premium fiber, line or confirmed vintage,
+    the largest one only — applied once to the suggestion; never to a price the seller's note gives."""
     # An empty YAML section ("aliases:" with nothing under it) loads as None, and an empty file as None overall.
     tiers = tiers or {}
     brands = {_norm_key(k): v for k, v in (tiers.get("brands") or {}).items()}
@@ -128,6 +131,8 @@ def price(facts: Facts, tiers: dict | None, cfg: dict, note: str | None = None) 
         target, source, matched = cfg.get("default_target", DEFAULT_TARGET), "default", "(no brand or category price)"
 
     cond = cfg["condition_multiplier"][facts.condition]
-    list_price = nice_round(target * cond * cfg["list_markup"], cfg["round_to"])
-    basis = f"{source} {matched}: target ${target} × {facts.condition} {cond} × markup {cfg['list_markup']}"
+    factor, why = premium
+    list_price = nice_round(target * cond * factor * cfg["list_markup"], cfg["round_to"])
+    basis = (f"{source} {matched}: target ${target} × {facts.condition} {cond}"
+             + (f" × {why} {factor}" if factor != 1 else "") + f" × markup {cfg['list_markup']}")
     return finish(list_price, target, source, basis)

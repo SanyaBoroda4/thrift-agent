@@ -21,6 +21,7 @@ models:
   cover: claude-opus-5-5       # which photo shows the front: one comparison of the item-alone photos (WO23).
                                # Opus: the live floral skirt 3 of 3 runs right, Sonnet 2 of 3 (~$0.03 an item)
   upright: claude-sonnet-5     # the cover turned four ways, pick the upright one: same answer twice on 10 live items
+  labels: claude-opus-5-5      # the labels and tags read closely for premium details (WO26): one call an item with labels
 
 images:
   work_long_edge: 2048
@@ -29,6 +30,7 @@ images:
   thumb_fallback_long_edge: 384    # ... sent instead when the request would be too large (or the API says 413)
   cover_size: [1200, 1600] # width, height: 3:4 portrait, the frame of Poshmark's cover crop (padded, never cropped)
   cover_check_long_edge: 1024     # the front check's photos: readable, side by side (WO23)
+  label_long_edge: 2048           # label and tag photos for the label read (WO26): the full work size, small print legible
   dedupe_hamming: 4        # consecutive photos closer than this are treated as duplicates
 
 inbox:

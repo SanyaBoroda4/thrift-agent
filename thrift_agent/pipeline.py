@@ -14,7 +14,7 @@ from pathlib import Path
 import imagehash
 
 from thrift_agent import approve, notify
-from thrift_agent.brain import copy as copywriter, cover as cover_brain, sizes, taxonomy
+from thrift_agent.brain import copy as copywriter, cover as cover_brain, labels, premium, sizes, taxonomy
 from thrift_agent.brain.extract import extract, strip_screenshot_evidence
 from thrift_agent.brain.gate import OTHER_CATEGORY_QUESTION, GateResult, evaluate
 from thrift_agent.brain.price import price
@@ -22,7 +22,7 @@ from thrift_agent.brain.verify import fit_style_tags, lint, verify
 from thrift_agent.config import Settings, load_yaml
 from thrift_agent.db import DB, loads, now
 from thrift_agent.ingest import prep, segment as seg
-from thrift_agent.schema import ITEM_ALONE, CopyOut, Ev, Facts, FrontOut, PriceResult, Render
+from thrift_agent.schema import ITEM_ALONE, CopyOut, Ev, Facts, FrontOut, Premium, PriceResult, Render
 
 MAX_SEGMENT_PHOTOS = 90        # the Messages API takes at most 100 image blocks per request; keep headroom
 ANSWERABLE = ("needs_info", "ready", "failed", "new", "awaiting_price", "needs_owner",   # a note resets these to 'new'
@@ -623,6 +623,7 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
         facts.condition_evidence.source = "photo"
     if facts.brand.source == "owner":
         facts.brand.source = "note"
+    facts = facts.model_copy(update={"premium": None})   # the close label read below sets it, never the extraction
     facts = apply_owner_answers(it, facts)               # the owner's category, "no brand"
     # Shoes, in doubt between brand new and worn: the owner is asked before the price (WO18) — on the model's own
     # reading, before the settles below merge its two grades. Once answered, the answer is the condition.
@@ -642,13 +643,14 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
     if cover is not None:
         upright = upright_view(s, db, iid, photos[cover], upright)   # turned upright: four pictures, pick one
         facts = facts.model_copy(update={"cover_photo": cover, "cover_upright": upright})
+    facts = premium.merge(facts, label_view(s, db, iid, photos, facts, kinds), len(photos))   # the labels (WO26)
     shown = listing_photos(s, facts, len(photos), kinds)  # every flaw photo in the listing
     # The card shows only what needs the owner (WO20): these warnings and the allowed questions; the rest (an unsure
     # grade, a subcategory left out) is kept in the item's record as info.
     notes += flaw_notes(facts, shown) + ([cover_note] if cover_note else [])
     info = list(fit_notes)
-    tiers = load_yaml("brand_tiers.yaml")
-    pr = price(facts, tiers, s["pricing"], it["note"])
+    tiers, pcfg = load_yaml("brand_tiers.yaml"), premium.config()
+    pr = price(facts, tiers, s["pricing"], it["note"], premium.price_factor(facts, pcfg))
     enabled = [mp for mp, m in s["marketplaces"].items() if m.get("enabled")]
     if it["owner_price"]:
         pr = owner_priced(pr, int(it["owner_price"]), enabled)   # approved earlier; a reprocessing never asks again
@@ -660,6 +662,9 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
         depop_hashtags=draft.depop_hashtags))
     final = copywriter.condition_rule(final, facts)      # wear is shown in the photos, never put in words
     final.poshmark_title = copywriter.ensure_set_title(final.poshmark_title, facts)   # "… 2-Piece Set size M"
+    final.poshmark_title = premium.title_with_feature(final.poshmark_title, facts, pcfg)   # "Vince 100% Silk …" (WO26)
+    final.poshmark_description = premium.ensure_feature_lines(final.poshmark_description, facts, pcfg)
+    final.depop_description = premium.ensure_feature_lines(final.depop_description, facts, pcfg)
     final.poshmark_description = copywriter.ensure_retail_line(final.poshmark_description, facts)
     final.poshmark_description = copywriter.ensure_label_size(final.poshmark_description, facts)   # "104 cm / 4 ans"
     final.depop_description = copywriter.ensure_label_size(final.depop_description, facts)
@@ -796,6 +801,24 @@ def front_view(s: Settings, db: DB, iid: str, photos: list[Path], facts: Facts, 
         return None
 
 
+def label_view(s: Settings, db: DB, iid: str, photos: list[Path], facts: Facts, kinds: list[str]) -> Premium | None:
+    """The item's labels read closely (brain/labels.py, WO26): its label and tag photos at images.label_long_edge, its
+    detail photos at the usual size. An empty read when it has no label photo (nothing to read); None when the call
+    fails (logged; recover reads them again)."""
+    roles = {r.photo: r.role for r in facts.photo_roles if 0 <= r.photo < len(photos)}
+    own = [i for i in range(len(photos)) if kinds[i] != "retail"]
+    tags = [(i, photos[i]) for i in own if roles.get(i) in ("label", "tag")]
+    if not tags:
+        return Premium()
+    details = [(i, photos[i]) for i in own if roles.get(i) == "detail"][:3]
+    try:
+        return labels.read_labels(tags, details, s["models"].get("labels") or s["models"]["extract"],
+                                  int(s["images"].get("label_long_edge", 2048)), int(s["images"]["llm_long_edge"]))
+    except Exception as e:  # noqa: BLE001
+        db.log(iid, "label_read_failed", f"{type(e).__name__}: {e}")
+        return None
+
+
 def upright_view(s: Settings, db: DB, iid: str, photo: Path, fallback: int) -> int:
     """The turn that puts the cover upright, from the four-turn check (brain/cover.py); `fallback` (the front check's
     reading) when that call fails — logged."""
@@ -810,8 +833,9 @@ def upright_view(s: Settings, db: DB, iid: str, photo: Path, fallback: int) -> i
 def relist(s: Settings, it, facts: Facts, renders: dict) -> dict:
     """The renders with the listing's photos, cover and form fields recomputed from `facts` — no model call: the
     cover file (turned upright), the photo order, category / subcategory / size (with Poshmark's menu value, WO25), the
-    brand and the label line; a line break the model wrote as backslash + n is made a line break (WO24). Titles, tags and
-    prices stay as they are."""
+    brand and the label line; a line break the model wrote as backslash + n is made a line break (WO24); the premium
+    details the labels gave (WO26): the title's strongest feature, the description's feature lines, "Original retail
+    $…" and the Original Price. Tags and prices stay as they are; the title changes only by its feature."""
     d = Path(it["dir"])
     photos = sorted((d / "photos").glob("*.jpg"))
     kinds = photo_kinds_of(d, photos)
@@ -821,15 +845,20 @@ def relist(s: Settings, it, facts: Facts, renders: dict) -> dict:
     turn = facts.cover_upright if order[0] == facts.cover_photo else 0
     cover = prep.portrait_cover(photos[order[0]], d / "cover.jpg", width, height, rotate=turn)
     tab, value = sizes.poshmark_size(facts) or (None, None)
+    pcfg = premium.config()
     out = {}
     for mp, r in renders.items():
         limit = int((s["marketplaces"].get(mp) or {}).get("max_photos", len(photos)))
         shown = fit_photos(order, flawed, limit)
+        text = premium.ensure_feature_lines(copywriter.unescape_breaks(r.get("description") or ""), facts, pcfg)
+        if mp == "poshmark":
+            text = copywriter.ensure_retail_line(text, facts)
         out[mp] = {**r, "photos": [str(cover)] + [str(photos[i]) for i in shown[1:]], "category": facts.category,
                    "subcategory": facts.subcategory, "size": sizes.size_label(facts), "size_tab": tab,
                    "size_value": value, "brand": facts.brand.value,
-                   "description": copywriter.ensure_label_size(copywriter.unescape_breaks(r.get("description") or ""),
-                                                               facts)}
+                   "title": premium.title_with_feature(r.get("title") or "", facts, pcfg),
+                   "original_price": _dollars(facts.retail_price.value) or r.get("original_price"),
+                   "description": copywriter.ensure_label_size(text, facts)}
     return out
 
 
@@ -923,7 +952,15 @@ def recover_item(s: Settings, db: DB, iid: str, recheck: bool = False) -> dict:
         else:
             upright = facts.cover_upright                    # the same photo, turned upright before: kept
         facts = facts.model_copy(update={"cover_photo": cover, "cover_upright": upright})
+    if facts.premium is None or recheck:                 # the labels, read closely once (WO26)
+        facts = premium.merge(facts, label_view(s, db, iid, photos, facts, kinds), len(photos))
     renders = relist(s, it, facts, loads(it["renders"]))
+    if not it["owner_price"]:                            # a suggestion, not the owner's price: the premium factor too
+        pr = price(facts, load_yaml("brand_tiers.yaml"), s["pricing"], it["note"],
+                   premium.price_factor(facts, premium.config()))
+        renders = {mp: {**r, "price": pr.by_marketplace.get(mp, pr.list_price or r.get("price"))}
+                   for mp, r in renders.items()}
+        it = {**dict(it), "price": json.dumps(pr.model_dump())}
     notes = [x for x in (loads(it["gate"]) or {}).get("notes") or []
              if x != NO_FRONT_COVER and not x.startswith("every photo shows a flaw")]
     doc, status = _regate(s, it, facts, renders, photos, kinds, notes + ([cover_note] if cover_note else []))
@@ -936,7 +973,7 @@ def recover_item(s: Settings, db: DB, iid: str, recheck: bool = False) -> dict:
             # An answer came in while this ran (the worker's Telegram thread): writing now would put back what was
             # read before it. Nothing is changed; the next run starts from the answer.
             raise ValueError(f"item {iid} changed while it was being recovered (an answer came in) — run it again")
-        db.set_item(iid, facts=facts.model_dump(), renders=renders, gate=doc, status=status,
+        db.set_item(iid, facts=facts.model_dump(), renders=renders, gate=doc, status=status, price=loads(it["price"]),
                     views=check.model_dump() if check else it["views"], cover_hash=prep.cover_hash(photos[facts.cover_photo])
                     if 0 <= facts.cover_photo < len(photos) else it["cover_hash"])
         waiting = _open_cards(db, iid)
@@ -954,7 +991,8 @@ def recover_item(s: Settings, db: DB, iid: str, recheck: bool = False) -> dict:
     return {"item": iid, "cover": after["cover"], "role": roles.get(after["cover"], "?"),
             "view": views.get(after["cover"], "-"), "upright": facts.cover_upright, "category": facts.category,
             "subcategory": facts.subcategory, "size": facts.size_us.value, "questions": questions, "status": status,
-            "card": card, "before": before}
+            "card": card, "before": before, "title": (renders.get("poshmark") or {}).get("title"),
+            "features": premium.summary(facts, premium.config())}
 
 
 def _regate(s: Settings, it, facts: Facts, renders: dict, photos: list[Path], kinds: list[str],
@@ -1088,7 +1126,7 @@ def reprocess(s: Settings, db: DB, iid: str) -> dict:
     after = db.item(iid)
     facts = loads(after["facts"]) or {}
     posh = (loads(after["renders"]) or {}).get("poshmark") or {}
-    return {**out, "title": posh.get("title"),
+    return {**out, "title": posh.get("title"), "features": premium.summary(Facts.model_validate(facts), premium.config()),
             "category": taxonomy.path_label({"category": facts.get("category"), "subcategory": facts.get("subcategory")})}
 
 

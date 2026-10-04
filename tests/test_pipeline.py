@@ -468,7 +468,7 @@ def test_retail_screenshots_are_detected_assigned_by_content_and_rendered_last(t
     assert any("(retail screenshot)" in t for t in seen["extract"])
     assert r["photos"][0].endswith("cover.jpg") and Path(r["photos"][-1]).name == "02.jpg"   # never the cover, always last
     assert r["original_price"] == 128
-    assert r["description"].rstrip().endswith("Retail $128.")
+    assert r["description"].rstrip().endswith("\nOriginal retail $128.")              # WO26 wording
     assert loads(it["facts"])["size_us"]["value"] is None            # a screenshot is not size evidence
     assert it["status"] == "awaiting_price" and any("size unclear" in x for x in loads(it["gate"])["reasons"])
 

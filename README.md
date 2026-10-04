@@ -63,6 +63,11 @@ Defaults for the first weeks of live posting, until the eval numbers justify loo
   have) is one message with 1-3 real paths as buttons, e.g. [Skirts › Skirt Sets] [Shorts]; typed answers still work.
   The brand question has a [No brand] button: Poshmark's brand field stays empty (the form marks it optional) and the
   copy names no brand.
+- **Premium details (WO26).** The labels are read closely (composition, made in, premium line, vintage cues, collab,
+  technical, construction, a hang tag's price): the title says the ONE strongest one right after the brand ("100% Silk",
+  "J.Crew Collection", "Vintage 90s", "Made in Italy"), the description every one ("Material: 100% silk.", "Made in
+  Italy.", "Fully lined.", "Original retail $128."), and the suggested price gets one premium multiplier — only what a
+  label or a photo shows; China and the like are never mentioned (`config/premium.yaml`).
 - **Sizes from Poshmark's catalog (WO25).** `data/poshmark_catalog.json` holds every category's size menu per tab
   (Standard / Plus / Petite / Juniors / Maternity, Big & Tall, Baby / Girls / Boys); the size the poster selects is
   exactly one of those values ("Waist 32", "MP", "7.5 (Toddler Girl)", "3 Months"), and a size no menu has is asked.

@@ -101,6 +101,42 @@ class PhotoRole(BaseModel):
                                             "person (try-on, mirror); box = box or packaging; other")
 
 
+class Fiber(BaseModel):
+    """One fiber of the composition label, exactly as printed (WO26)."""
+    fiber: str = Field(description="In English, lower case: silk, cashmere, merino wool, cotton, polyester…")
+    pct: int = Field(ge=1, le=100, description="The percentage printed for it")
+    part: Literal["main", "lining", "trim", "fill"] = Field("main", description="main = the shell / body fabric")
+    photos: list[int] = Field(default_factory=list, description="The label photo(s) that show it")
+
+
+class Feature(BaseModel):
+    """A detail a label prints or the photos plainly show (WO26), with the photos that show it."""
+    text: str = Field(description="Short, as printed or plainly seen: 'Gore-Tex', 'fully lined', 'hand-beaded'")
+    photos: list[int] = Field(default_factory=list)
+
+
+class Premium(BaseModel):
+    """The labels and tags read closely (WO26, brain/labels.py): premium details stated exactly in the listing — only
+    what a label prints or the photos plainly show, each with the photos that show it."""
+    composition: list[Fiber] = Field(default_factory=list, description="The fiber content exactly as printed, one "
+                                     "entry per fiber and part ('100% SILK / 100% SOIE / 100% SEDA' is silk 100)")
+    made_in: Ev = Field(default_factory=Ev, description="The country of manufacture as printed: 'Italy'")
+    line: Ev = Field(default_factory=Ev, description="A premium line or sub-label printed besides the brand: "
+                                                     "'Collection', 'Purple Label', 'Made & Crafted', 'We The Free'")
+    vintage: Ev = Field(default_factory=Ev, description="Only with a concrete cue (vintage_cues): the era when clear "
+                                                        "('1990s'), else 'vintage'")
+    vintage_cues: list[Feature] = Field(default_factory=list, description="union label, old tag style, single-stitch "
+                                        "hem, Levi's Big E red tab, a date printed on the care tag")
+    collab: Ev = Field(default_factory=Ev, description="A collaboration ('x Erdem'), 'Limited Edition' or 'Sample' as "
+                                                       "printed")
+    technical: list[Feature] = Field(default_factory=list, description="As printed: Gore-Tex, waterproof, down fill "
+                                     "(% or fill power), Primaloft, UPF 50+")
+    construction: list[Feature] = Field(default_factory=list, description="Fully lined, silk lining, hand-knit, "
+                                        "handmade, hand-beaded or embroidered, Goodyear welt: printed or plainly seen")
+    retail_price: Ev = Field(default_factory=Ev, description="A price printed on an attached hang tag in the seller's "
+                                                             "own photo, digits only")
+
+
 class CategoryPath(BaseModel):
     """A place in Poshmark's category tree: "Skirts › Skirt Sets" (WO25)."""
     department: Literal["Women", "Men", "Kids", "Home"] | None = Field(None, description="Only when it differs from "
@@ -179,6 +215,7 @@ class Facts(BaseModel):
     photo_order: list[int] = Field(description="All photo indices: cover, back/sides, details, labels, flaws, worn")
     questions: list[str] = Field(default_factory=list,
                                  description="What the seller must answer because a photo can't settle it")
+    premium: Premium | None = Field(None, description="Leave null: set by code from a close read of the labels")
 
 
 class PriceResult(BaseModel):
