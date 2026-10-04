@@ -18,6 +18,7 @@ models:
   extract: claude-sonnet-5
   copy: claude-sonnet-5
   verify: claude-haiku-4-5-20251001
+  cover: claude-sonnet-5       # which photo shows the front: one comparison of the item-alone photos (WO23)
 
 images:
   work_long_edge: 2048
@@ -25,6 +26,7 @@ images:
   thumb_long_edge: 768             # segmentation previews (WO17: 384 -> 768: fabric, prints, labels)
   thumb_fallback_long_edge: 384    # ... sent instead when the request would be too large (or the API says 413)
   cover_size: [1200, 1600] # width, height: 3:4 portrait, the frame of Poshmark's cover crop (padded, never cropped)
+  cover_check_long_edge: 1024     # the front check's photos: readable, side by side (WO23)
   dedupe_hamming: 4        # consecutive photos closer than this are treated as duplicates
 
 inbox:

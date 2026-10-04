@@ -286,6 +286,38 @@ def kids(item_id: str, choice: str = typer.Argument(..., metavar="girls|boys")) 
 
 
 @app.command()
+def recover(ref: str) -> None:
+    """Recompute ONLY the cover (which photo shows the front, turned upright), the photo order, the category and the
+    size of an item — or of every item of a batch (b_...) — that is not on the marketplace. Price, approved price,
+    condition and Girls/Boys answers and the listing text stay; nothing settled is asked again (WO23).
+    e.g.  thrift recover b_...  |  thrift recover i_..."""
+    s, db = settings(), _db()
+    if ref.startswith("b_"):
+        if db.batch(ref) is None:
+            print(f"[red]unknown batch[/] {ref}")
+            raise typer.Exit(1)
+        ids = [r[0] for r in db.conn.execute("SELECT id FROM items WHERE batch_id=? ORDER BY seq", (ref,))]
+    else:
+        ids = [ref]
+    done = 0
+    for iid in ids:
+        try:
+            out = pipeline.recover_item(s, db, iid)
+        except ValueError as e:
+            print(f"[yellow]left as it is[/] {iid}: {escape(str(e))}")
+            continue
+        done += 1
+        b = out["before"]
+        print(f"[green]recovered[/] {iid}: cover #{out['cover']} ({out['role']}, front check: {out['view']}, turned "
+              f"{out['upright']}°) was #{b['cover']}; category {escape(out['category'])} was {escape(str(b['category']))}; "
+              f"size {out['size']} was {b['size']}; questions: {escape('; '.join(out['questions'])) or 'none'}; "
+              f"{out['status']}")
+    if not done and len(ids) == 1:
+        raise typer.Exit(1)
+    approve.pump(s, db)                                           # a card that changed comes again, one at a time
+
+
+@app.command()
 def redo(batch_id: str) -> None:
     """Rebuild a batch's items from the grouping already confirmed (no new contact sheet): every item that never
     reached the site goes through the pipeline again — new cover, new price, a new card in the queue — and its

@@ -96,3 +96,49 @@ def title_size(facts: Facts) -> str | None:
         return f"size {facts.size_us.value}" if facts.size_us.value else None
     _, segment, n = parts
     return f"{segment} size {n}"
+
+
+# ---- kids clothing: the label's height or age -> Poshmark's size (WO23) ----
+# European kids labels give the child's height ("104 cm", "Gr. 104") and/or the age ("4 ans", "4A", "5-6 Y"). The
+# sizes are the labels of Poshmark's Kids size menus as its public Kids size filter lists them (read 2026-10-04 for
+# Shirts & Tops): Baby "Newborn", "0-3 Months", "3 Months" … "24 Months"; Girls and Boys "2T"-"5T", then "6", "7", "8",
+# "10", "12", "14", "16" (no 9, 11, 13: those go up to the next size, so it fits). The form's kids clothing menus
+# themselves are UNVERIFIED (CLAUDE.md); these labels are what it is expected to offer.
+KIDS_BY_CM = ((50, "Newborn"), (56, "0-3 Months"), (62, "3 Months"), (68, "6 Months"), (74, "9 Months"),
+              (80, "12 Months"), (86, "18 Months"), (92, "2T"), (98, "3T"), (104, "4T"), (110, "5T"), (116, "6"),
+              (122, "7"), (128, "8"), (134, "10"), (140, "10"), (146, "12"), (152, "12"), (158, "14"), (164, "14"),
+              (170, "16"), (176, "16"))
+KIDS_BY_YEARS = {1: "12 Months", 2: "2T", 3: "3T", 4: "4T", 5: "5T", 6: "6", 7: "7", 8: "8", 9: "10", 10: "10",
+                 11: "12", 12: "12", 13: "14", 14: "14", 15: "16", 16: "16"}
+KIDS_BY_MONTHS = ((3, "3 Months"), (6, "6 Months"), (9, "9 Months"), (12, "12 Months"), (18, "18 Months"),
+                  (24, "24 Months"))
+_KCM = re.compile(r"(?<![\d.])(\d{2,3})\s*cm\b", re.I)
+_KGR = re.compile(r"\b(?:gr\.?|größe|taille|talla)\s*(\d{2,3})\b", re.I)          # "Gr. 104"
+_KBARE = re.compile(r"^\s*(\d{2,3})\s*$")                                          # "104" alone: a height
+_KYEARS = re.compile(r"(?<![\d.])(\d{1,2})(?:\s*[-/]\s*(\d{1,2}))?\s*(?:ans?|years?|yrs?|jahre|años|anni|y|a|j)\b",
+                     re.I)
+_KMONTHS = re.compile(r"(?<![\d.])(\d{1,2})(?:\s*[-/]\s*(\d{1,2}))?\s*(?:mois|months?|mos?|m|monate|meses)\b", re.I)
+
+
+def _by_cm(cm: int) -> str | None:
+    if not KIDS_BY_CM[0][0] - 3 <= cm <= KIDS_BY_CM[-1][0] + 3:
+        return None
+    return min(KIDS_BY_CM, key=lambda row: (abs(row[0] - cm), -row[0]))[1]      # nearest step; a tie goes up
+
+
+def kids_clothing_size(printed: str | None) -> str | None:
+    """Poshmark's kids clothing size from a label that gives the height (cm) or the age (years, months); None when it
+    gives neither — a bare "4" stays a question (4T or kids 4?). The height wins over the age when both are printed.
+    An age range ("5-6 Y") takes its upper end."""
+    text = (printed or "").strip()
+    if not text:
+        return None
+    if m := (_KCM.search(text) or _KGR.search(text) or _KBARE.match(text)):
+        if (size := _by_cm(int(m.group(1)))) is not None:
+            return size
+    if m := _KYEARS.search(text):
+        return KIDS_BY_YEARS.get(int(m.group(2) or m.group(1)))
+    if m := _KMONTHS.search(text):
+        months = int(m.group(2) or m.group(1))
+        return next((label for limit, label in KIDS_BY_MONTHS if months <= limit), None)
+    return None

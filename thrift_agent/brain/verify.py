@@ -147,7 +147,8 @@ def _found(pattern: re.Pattern, text: str) -> list[str]:
 def lint(facts: Facts, copy: CopyOut, photos: list[int] | None = None) -> list[str]:
     """The deterministic checks on finished copy. `photos` are the photo indices the listing shows, cover first
     (pipeline.listing_photos): a flaw counts as disclosed when the description carries the condition line and one of
-    the flaw's photos is in the listing, not as the cover (the owner's condition rule)."""
+    the flaw's photos is in the listing — the cover included: the front stays the cover even when a flaw shows on it
+    (WO23), and that photo shows the flaw."""
     problems: list[str] = []
     t, d, dd = copy.poshmark_title, copy.poshmark_description, copy.depop_description
     everything = f"{t}\n{d}\n{dd}\n{' '.join(copy.poshmark_style_tags)}"
@@ -236,7 +237,7 @@ def lint(facts: Facts, copy: CopyOut, photos: list[int] | None = None) -> list[s
             if not HAS_CONDITION_LINE.search(text):
                 problems.append(f"facts list flaws but the {marketplace} description lacks the condition line")
         if photos is not None:
-            shown = set(photos[1:])                    # the cover never counts: a flaw photo is never the cover
+            shown = set(photos)                        # the cover too: a front with a small flaw stays the cover
             unshown = [f.description for f in facts.flaws if f.photos and not shown & set(f.photos)]
             if unshown:
                 problems.append(f"flaw photos not in the listing: {'; '.join(unshown)}")

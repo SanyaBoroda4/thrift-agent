@@ -107,8 +107,9 @@ same item). Nothing publishes without price approval.
    - **Condition wording (owner rule, WO16).** Wear and flaws are never put in words — no dirt, dirty, stain, scuff,
      worn, wear and tear, fraying, pilling, hole, tear, smell… in the title, the descriptions or the tags. A used item
      (like_new, excellent, good, fair) says ONE neutral line, "Gently pre-loved, please see photos for condition.", and
-     is never "no flaws", "like new" or "excellent". Every flaw has a photo that is in the listing, never the cover
-     (`pipeline.photo_order` / `fit_photos`); a flaw without a photo is a warning on the price card. The copy
+     is never "no flaws", "like new" or "excellent". Every flaw has a photo that is in the listing (`fit_photos`); a
+     flaw close-up is never the cover, but the FRONT stays the cover even when a small flaw shows on it (WO23: the first
+     photo is the front, and that photo discloses the flaw); a flaw without a photo is a warning on the price card. The copy
      writer never sees the flaws or the condition evidence; `copy.condition_rule` runs after the verifier (drops a
      sentence with wear words, puts the line in) and `verify.lint` checks the result (wear words, used-item claims,
      the line and the flaw photos).
@@ -220,6 +221,10 @@ Without `private/`, the code falls back to `config/*.example.yaml` and `data/sty
 `thrift init | run | process <dir> | confirm <batch> <cmd> | answer <item> "<note>" | price <item> <amount>`
 `thrift condition <item> nwt|like_new|good` (the CLI twin of the shoe question's buttons)
 `thrift kids <item> girls|boys` (the twin of [Girls] [Boys]) | `thrift redo <batch>` (rebuild a batch's unposted items)
+`thrift recover <item|batch>` (WO23): recompute ONLY the cover (the front check, upright), the photo order, the category
+and the size of items not on the marketplace — price, approved price, condition and Girls/Boys answers and the copy
+stay; a question the new category/size settles goes, an item then waiting only for a price it has is ready; a waiting
+card is sent again. One front-check call per item (plus a label re-read for a kids label read without units).
 `thrift requeue <item> [marketplace] | requeue <batch> | mark-posted <item> <marketplace> <url> | status | show <item>`
 `thrift poster [--once] [--dry-run] [--stage form|review] [--publish-first <item>] [--allow-dev-browser]`
 `thrift login --site poshmark | telegram setup|test | harvest | build-style | eval`
@@ -273,13 +278,29 @@ The owner shares retailer screenshots (product page with price, style name, colo
   style_tags`, recorded 2026-09-30), spelled Poshmark's way, at most 3. The copy prompt lists them; `fit_style_tags`
   drops anything else before lint, including a material tag (Leather, Suede, Wool, …) that `facts.material` doesn't
   back — tags are optional, so an unusable one is left out, never a question or a draft.
-- **The cover is the front of the item (owner rule, WO20):** the item alone, its front, flat lay or on a hanger, on a
-  clean background — never the back, never worn / try-on / mirror, never a label, tag, flaw, box or screenshot. The
-  model names every photo's role (`facts.photo_roles`: front, back, side, detail, label, tag, flaw, worn, box, other)
-  and picks `cover_photo` by that rule; code checks it (`pipeline.choose_cover`): only a photo of the item alone
-  (front, else side, else back; the model's pick first among equals), never a flaw photo or a screenshot. No front
-  photo → the best item-alone photo and the card says "cover: no front flat-lay photo". The rest of the photo order is
-  the model's (screenshots last). Facts from before WO20 (no roles) keep the model's pick.
+- **The cover is the FRONT of the item (owner rule, absolute — WO20, WO23):** the item alone, its front, flat lay or on
+  a hanger, clean background — never the back, never worn / try-on / mirror, never a label, tag, flaw close-up, box or
+  screenshot. A garment photographed sideways or upside down is still a valid front flat lay; a front that shows a
+  small flaw stays the cover (WO23: that rule had made the live Lacoste tee's plain back the cover).
+  1. The extraction names every photo's role (`facts.photo_roles`: front, back, side, detail, label, tag, flaw, worn,
+     box, other).
+  2. **The front check** (`brain/cover.py`, `models.cover`, one call): the item-alone photos (front/side/back), side by
+     side in shooting order at `images.cover_check_long_edge`, ONE question — which shows the front? — with per photo
+     the side, the design detail (none/some/strong) and the clockwise turn that puts it upright. Cues: print, graphic,
+     text, logo, buttons, zip, pockets, the lower neckline = front; a plain side when another photo shows a print =
+     back; pants: back pockets / yoke = back; shoes: the side profile is a front; equal → more design detail. Stored in
+     `items.views`.
+  3. **Code check** (`pipeline.choose_cover`): a photo called the back is never the cover while another candidate
+     isn't; a plain photo never while another candidate shows design. "cover: no front flat-lay photo" only when no
+     item-alone photo could be the front (backs only, or none). The decision is `facts.cover_photo` +
+     `facts.cover_upright`; `photo_order` trusts it (the card, the renders and the poster all use it).
+  4. **Upright:** the cover is turned by that exact quarter turn before the 3:4 padding (`prep.portrait_cover`), never
+     cropped. EXIF orientation is applied to every photo at prep (`prep.normalize`), before any model sees it.
+  5. **"cover N"** — a reply to the card, or typed while it is open (no button): photo N of the item (its photos in
+     shooting order, from 0) becomes the cover (`items.owner_cover`, kept through reprocessing) and the card is sent
+     again. Never for an item on the marketplace.
+
+  Facts from before WO20 (no roles) keep the model's pick and the old rule (no flaw photo as cover).
 - **The cover is 3:4 portrait** (`images.cover_size: [1200, 1600]`), padded with the photo's own edge colour, never
   cropped: the frame of Poshmark's cover dialog, so its default crop takes the whole picture. The re-share check keeps
   hashing the square cover the photo would have made (`prep.cover_hash`), so it compares with older items bit for
@@ -390,6 +411,20 @@ The owner shares retailer screenshots (product page with price, style name, colo
   (`HOLD_UNSHIPPED`), local HTTP API over Tailscale, daily read-only order-status sync.
 - **M5 Depop** adapter.
 - **M6 sold-comps pricing** — tune `private/brand_tiers.yaml` from new sales.
+
+## Kids clothing sizes (WO23)
+A kids label that gives the child's height ("104 cm", "Gr. 104", "104") or age ("4 ans", "4A", "5-6 Y", "18 mois") is
+Poshmark's size by a fixed table (`brain/sizes.kids_clothing_size`): 92 → 2T, 98 → 3T, 104 → 4T, 110 → 5T, 116 → 6,
+122 → 7, 128 → 8, 134/140 → 10, 146/152 → 12, 158/164 → 14, 170/176 → 16; babies 50 → Newborn, 56 → 0-3 Months, 62 →
+3 Months … 86 → 18 Months; ages the same way (9 → 10, 11 → 12: no 9/11/13 on Poshmark, so up). The labels are Poshmark's
+own, from its public Kids size filter (Shirts & Tops, read 2026-10-04: Girls 2T-5T, 4, 5, 6, 6X, 7, 8, 10, 12, 14, 16,
+XS-XXL; Boys the same plus 7X, 18, 20; Baby Preemie … 24 Months); the form's kids clothing menus themselves stay
+UNVERIFIED. When the table maps the label, the size is settled (derived, 0.95) — no question — and the description
+gets "Label size: 4 ans / 104 cm." (`copy.ensure_label_size`). A bare "4" is not mapped (4T or kids 4?): the label photos
+are read once more for the units (`cover.read_size_label`), else it is asked as before.
+A department is never a category (WO23; live: category "Kids", subcategory "Shirts & Tops"): `taxonomy.fit` takes the
+subcategory, else the item type's noun ("graphic tee" → Shirts & Tops, "ankle boots" → Shoes), else asks with a real
+example; the extraction prompt says so too.
 
 ## Model calls
 Every call goes through `brain/llm.ask`: one tool, the answer validated by pydantic (one repair round). A forced

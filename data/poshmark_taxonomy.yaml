@@ -138,6 +138,17 @@ aliases:
       Sweatshirts & Hoodies: Tops
       Hoodies: Tops
       Outerwear: Jackets & Coats
+      Boots: Shoes
+      Booties: Shoes
+      Sneakers: Shoes
+      Sandals: Shoes
+      Heels: Shoes
+      Flats: Shoes
+      Loafers: Shoes
+      Pumps: Shoes
+      Mules: Shoes
+      Clogs: Shoes
+      Slippers: Shoes
     Kids:
       Tops: Shirts & Tops
       Shirts: Shirts & Tops
@@ -163,6 +174,14 @@ aliases:
       Bodysuits: One Pieces
       Onesies: One Pieces
       Sets: Matching Sets
+      Boots: Shoes
+      Booties: Shoes
+      Sneakers: Shoes
+      Sandals: Shoes
+      Flats: Shoes
+      Loafers: Shoes
+      Clogs: Shoes
+      Slippers: Shoes
   subcategories:
     Women/Shoes:
       Booties: Ankle Boots & Booties

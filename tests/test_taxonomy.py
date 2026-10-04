@@ -64,7 +64,7 @@ def test_a_category_or_department_poshmark_does_not_have_is_a_question(facts):
                          "reply e.g. 'category Tops'"] and f.category == "Gadgets"
     _, _, questions = taxonomy.fit(facts(department="Kids", category="Gadgets"))
     assert questions == ["category 'Gadgets' is not one of Poshmark's Kids categories — "
-                         "reply e.g. 'category Accessories'"]
+                         "reply e.g. 'category Shirts & Tops'"]                      # a useful example (WO23)
     _, _, questions = taxonomy.fit(facts(department="Unisex", category="Shoes"))
     assert questions == ["Poshmark has no Unisex department — reply 'department Women' or 'department Men'"]
 
@@ -90,3 +90,37 @@ def test_poshmarks_curated_style_tags():
                            ("Stripe", "Stripes"), ("CASUAL", "Casual"), ("cruelty free", "Cruelty-Free")):
         assert taxonomy.style_tag(said) == poshmark, said
     assert taxonomy.style_tag("boho") is None and taxonomy.style_tag("Classic") is None and taxonomy.style_tag(" ") is None
+
+
+def _departments():
+    return list(taxonomy.load()["departments"])
+
+
+@pytest.mark.parametrize("department", _departments())
+def test_a_department_is_never_the_category(facts, department):
+    """WO23, live: category "Kids", subcategory "Shirts & Tops" — the model put the department one level down. Whatever
+    the department, its name in the category slot is replaced by the real category: the subcategory it gave, else the
+    item type's noun; else the question names a real example."""
+    categories = list(taxonomy.load()["departments"][department].get("categories") or {})
+    real = categories[0]
+    f, _, questions = taxonomy.fit(facts(department=department, category=department, subcategory=real))
+    assert f.category == real and f.subcategory is None and questions == []
+    for slot in (department.lower(), department.upper(), "Kids", "Women"):
+        f, _, _ = taxonomy.fit(facts(department=department, category=slot, subcategory=real))
+        assert f.category not in taxonomy.DEPARTMENT_WORDS, (department, slot)
+
+
+@pytest.mark.parametrize("department,item_type,category", [
+    ("Kids", "graphic tee", "Shirts & Tops"), ("Kids", "denim jacket", "Jackets & Coats"),
+    ("Kids", "light-up sneakers", "Shoes"), ("Women", "wrap midi dress", "Dresses"),
+    ("Women", "suede ankle boots", "Shoes"), ("Women", "crossbody bag", "Bags"),
+])
+def test_the_item_type_names_the_category_when_the_department_took_its_place(facts, department, item_type, category):
+    f, _, questions = taxonomy.fit(facts(department=department, category=department, subcategory=None,
+                                         item_type=item_type))
+    assert f.category == category and questions == []
+
+
+def test_a_department_with_nothing_to_go_on_is_still_a_question_with_a_real_example(facts):
+    f, _, questions = taxonomy.fit(facts(department="Kids", category="Kids", subcategory=None, item_type="thing"))
+    assert questions == ["category 'Kids' is not one of Poshmark's Kids categories — reply e.g. 'category Shirts & Tops'"]

@@ -70,6 +70,10 @@ def fake_ask(facts_factory, audit: VerifyOut | None = None):
             return audit or VerifyOut(poshmark_title="Tory Burch Red Ballet Flats size 7.5",
                                       poshmark_description="Red flats.\nCondition: excellent, light sole wear.",
                                       depop_description="red tory burch flats")
+        if out.__name__ == "FrontOut":                     # the front check (WO23): no opinion, the roles decide
+            return out(views=[], front=-1)
+        if out.__name__ == "SizeLabel":
+            return out(printed=None)
         raise AssertionError(out)
     return ask
 
@@ -889,14 +893,16 @@ def test_the_listing_keeps_only_poshmarks_curated_style_tags(tmp_path, monkeypat
 
 # ---------------------------------------------------------------- WO16: the owner's condition rule, photos
 
-def test_a_flaw_photo_is_never_the_cover(facts):
+def test_facts_from_before_the_photo_roles_keep_the_old_flaw_rule(facts):
+    """Facts without photo_roles (before WO20): a photo that shows a flaw is not the cover when a clean one exists.
+    With roles the front is the cover even when a flaw shows on it (WO23, test_front_cover.py)."""
     from thrift_agent.schema import Flaw
     f = facts(cover_photo=3, photo_order=[3, 0, 1, 2, 4], flaws=[Flaw(description="scuff", photos=[3, 4])])
     assert pipeline.photo_order(f, 5) == [0, 3, 1, 2, 4]              # the first clean photo goes first
     assert pipeline.photo_order(facts(cover_photo=3, photo_order=[3, 0, 1, 2, 4]), 5)[0] == 3   # no flaw: as chosen
     every = facts(cover_photo=0, photo_order=[0, 1], flaws=[Flaw(description="hole", photos=[0, 1])])
     assert pipeline.photo_order(every, 2)[0] == 0                     # nothing clean to swap in
-    assert pipeline.flaw_notes(every, [0, 1]) == ["every photo shows a flaw, so the cover does too"]
+    assert pipeline.flaw_notes(every, [0, 1]) == []                  # no note: the cover shows it, that is fine
 
 
 def test_flaw_photos_survive_the_photo_limit_and_a_flaw_without_one_is_a_note(facts):
@@ -1268,8 +1274,8 @@ def _roles(*roles):
     (("tag", "box", "front"), 0, None, [], 2, None),
     (("front", "front"), 1, None, [], 1, None),                       # among fronts, the model's own pick
     (("front", "front"), 0, ["retail", "own"], [], 1, None),          # a screenshot never
-    (("front", "front"), 0, None, [0], 1, None),                      # a photo that shows a flaw never
-    (("worn", "back", "label", "side"), 0, None, [], 3, "nf"),        # no front: the item alone, a side before the back
+    (("front", "front"), 0, None, [0], 0, None),                      # a front that shows a flaw stays (WO23)
+    (("worn", "back", "label", "side"), 0, None, [], 3, None),        # a shoe's side profile: a fine cover (WO23)
     (("worn", "back", "label"), 0, None, [], 1, "nf"),
     (("worn", "label"), 0, None, [], 0, "nf"),                        # nothing of the item alone: the model's pick, told
     ((), 2, None, [], 2, None),                                       # facts from before WO20: the model's pick
@@ -1279,14 +1285,20 @@ def test_the_cover_is_the_front_of_the_item_alone(facts, roles, model_cover, kin
     kinds = kinds + ["own"] * (n - len(kinds)) if kinds else None
     f = facts(photo_roles=_roles(*roles), cover_photo=model_cover, photo_order=list(range(n)),
               flaws=[{"description": "small hole", "photos": flawed}] if flawed else [])
-    assert pipeline.choose_cover(f, n, kinds)[1] == (pipeline.NO_FRONT_COVER if note else None)
+    pick, upright, said = pipeline.choose_cover(f, n, kinds)
+    assert said == (pipeline.NO_FRONT_COVER if note else None) and upright == 0
+    if pick is not None:                                              # what process_item records
+        f = f.model_copy(update={"cover_photo": pick})
     order = pipeline.photo_order(f, n, kinds)
     assert order[0] == cover and sorted(order) == list(range(n))
 
 
 def test_the_rest_of_the_photo_order_stays_and_screenshots_stay_last(facts):
     f = facts(photo_roles=_roles("back", "front", "worn", "front", "label"), cover_photo=0, photo_order=[0, 2, 4, 1, 3])
-    assert pipeline.photo_order(f, 5, ["own", "own", "own", "retail", "own"]) == [1, 0, 2, 4, 3]
+    kinds = ["own", "own", "own", "retail", "own"]
+    pick, _, _ = pipeline.choose_cover(f, 5, kinds)
+    assert pick == 1                                                  # the model's back pick is not the cover
+    assert pipeline.photo_order(f.model_copy(update={"cover_photo": pick}), 5, kinds) == [1, 0, 2, 4, 3]
 
 
 def test_no_front_photo_is_said_on_the_card(tmp_path, monkeypatch, facts, owner_messages):

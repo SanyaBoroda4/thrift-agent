@@ -20,7 +20,9 @@ Rules:
 - A label that prints several size systems (US 7.5 / EU 38 / UK 5) is ONE size — report size_printed
   as printed and derive size_us; it is not a conflict.
 - department and category come from evidence (labels, the retailer page, sizing), never from a default.
-  Use the real Poshmark category and subcategory, spelled as in the lists below — never 'Other'.
+  Use the real Poshmark category and subcategory, spelled as in the lists below — never 'Other'. The category is
+  never a department name: a kids tee is department Kids, category "Shirts & Tops".
+- size_printed: copy the size label exactly, every system and unit on it ("4 ans / 104 cm", "4A", "EU 38 / US 7.5").
 - Kids items: kids_gender = girls | boys | unisex, your best reading of the item itself (style, colour, the box
   or label, a retailer page), with kids_gender_confidence (0..1). It picks Poshmark's Girls or Boys size list; when
   you are less than 0.70 sure, the owner is asked. Adults: null.
@@ -50,8 +52,9 @@ Rules:
 - photo_roles: one entry for EVERY photo (see the role list). front vs back is a visual judgement: the front carries
   the print or graphic, the buttons or zip, the neckline's lower dip, the logo; the plain side is the back.
 - cover_photo = the item ALONE, its FRONT, flat lay or on a hanger, on a clean background — the photo a buyer clicks.
-  Never the back, never worn / try-on / mirror, never a label, tag, flaw, box or screenshot. photo_order = every
-  index: cover, back/sides, details, labels, flaws, worn.
+  A garment photographed sideways or upside down is still a valid front flat lay. A front view that also shows a small
+  flaw is still the cover. Never the back, never worn / try-on / mirror, never a label, tag, flaw close-up, box or
+  screenshot. photo_order = every index: cover, back/sides, details, labels, flaws, worn.
 - questions = only what a photo truly can't settle (e.g. "size tag unreadable — what size?")."""
 
 

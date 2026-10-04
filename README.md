@@ -35,12 +35,20 @@ Defaults for the first weeks of live posting, until the eval numbers justify loo
   (a material tag such as Leather only when a label backs it); anything else is left out. The cover is 3:4 portrait,
   1200x1600, padded with the photo's own edge colour and never cropped, which is the frame of Poshmark's cover crop,
   so its default crop keeps the whole picture.
-- **The cover is the front of the item** (owner rule). The item alone, its front, flat lay or on a hanger, on a clean
-  background — never the back, a try-on or mirror photo, a label, a tag, a flaw, a box or a screenshot. The model names
-  each photo's role (front, back, side, detail, label, tag, flaw, worn, box) and picks the cover by that rule; code
-  checks it and only ever takes a photo of the item alone (front, else side, else back). Without a front photo the best
-  photo of the item alone is the cover and the price card says "cover: no front flat-lay photo". The rest of the photo
-  order stays as the model set it, retail screenshots last.
+- **The cover is the front of the item** (owner rule, absolute). The item alone, its front, flat lay or on a hanger,
+  on a clean background — never the back, a try-on or mirror photo, a label, a tag, a flaw close-up, a box or a
+  screenshot. A front lying sideways or upside down still counts (the cover is turned upright for the listing, never
+  cropped), and so does a front with a small flaw on it. Front vs back is one comparison: the model sees all the photos
+  of the item alone side by side and says which shows the front (print, logo, buttons, zip, pockets, the lower
+  neckline); code then makes sure a back or a plain side is never the cover while a front or a printed side exists.
+  "cover: no front flat-lay photo" appears only when there really is none. The rest of the photo order stays as the
+  model set it, retail screenshots last.
+- **"cover 2"** — reply that to a price card, or type it while the card is open: photo 2 of that item (its photos in
+  shooting order, counted from 0) becomes the cover and the card comes again. There is no button for it on purpose.
+- **Kids clothing sizes from the label.** A label with the height or the age ("4 ans / 104 cm", "110 cm", "4A",
+  "5-6 Y") is turned into Poshmark's size by a fixed table (104 cm → 4T, 116 cm → 6, 128 cm → 8 …) and is never a
+  question; the label as printed goes into the description too ("Label size: 4 ans / 104 cm."). A department is never
+  the category: a kids tee is Kids › Shirts & Tops.
 - **Kids gender.** The model reads `kids_gender` (girls / boys / unisex) from the item itself, with how sure it is; it
   picks Poshmark's Girls or Boys size list. At 0.70 or more it is used silently; below that (or unisex, or unread) the
   owner gets "Girls or Boys?" with [Girls] [Boys] before the price card (CLI: `thrift kids <item> girls|boys`); the
@@ -119,7 +127,7 @@ Over SSH Claude deploys and checks status and logs after every work order, and m
 ## Commands
 ```
 thrift init | run | process <dir> | confirm <batch> <cmd> | answer <item> "<note>" | price <item> <amount>
-thrift condition <item> nwt|like_new|good | kids <item> girls|boys | redo <batch>
+thrift condition <item> nwt|like_new|good | kids <item> girls|boys | redo <batch> | recover <item|batch>
 thrift requeue <item> [marketplace] | requeue <batch> | mark-posted <item> <marketplace> <url> | status | show <item>
 thrift poster [--once] [--dry-run] [--stage form|review] [--publish-first <item>] [--allow-dev-browser]
 thrift login --site poshmark | telegram setup|test | harvest | build-style | eval
@@ -136,6 +144,9 @@ thrift login --site poshmark | telegram setup|test | harvest | build-style | eva
   its old Telegram messages are closed. The approved price is asked again; the owner's condition and Girls/Boys
   answers are kept. Items that are posting, posted, drafted, an unconfirmed publish, or dropped as a re-share are left
   as they are and listed. `thrift status` also shows the Telegram queue: the open question and what comes next.
+- **`thrift recover <item|batch>`** recomputes only the cover (front, upright), the photo order, the category and the
+  size of items that aren't on the marketplace; prices, approved prices, condition and Girls/Boys answers and the text
+  stay, and nothing settled is asked again. A card still waiting is sent again with the new cover.
 - **`thrift telegram setup | test`** — `setup` prints the chat ids and user ids seen in the bot's recent updates so
   the owner can fill `TELEGRAM_CHAT_ID` and `TELEGRAM_ALLOWED_USER_IDS`; `test` sends a test message. See
   "Telegram approval (M3)".

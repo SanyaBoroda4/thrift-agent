@@ -252,11 +252,12 @@ def test_lint_banned_phrases_in_hashtags_and_style_tags(facts):
 
 
 def test_a_flaw_is_disclosed_by_the_condition_line_and_its_photo_in_the_listing(facts):
-    """The owner's rule: one neutral line, and the flaw's photo in the listing (not as the cover) — never words."""
+    """The owner's rule: one neutral line, and the flaw's photo in the listing — never words. The cover counts too
+    (WO23): the front stays the cover even when a flaw shows on it."""
     assert lint(facts(flaws=SCUFF), co(), photos=[0, 1, 4]) == []
     assert lint(facts(flaws=SCUFF), co(depop_description="cute red flats, super comfy, chic"), photos=[0, 4]) == \
         ["facts list flaws but the depop description lacks the condition line"]
-    assert lint(facts(flaws=SCUFF), co(), photos=[4, 0, 1]) == ["flaw photos not in the listing: scuff on left toe"]
+    assert lint(facts(flaws=SCUFF), co(), photos=[4, 0, 1]) == []                    # its photo is the cover: shown
     assert lint(facts(flaws=SCUFF), co(), photos=[0, 1, 2]) == ["flaw photos not in the listing: scuff on left toe"]
     assert lint(facts(flaws=[Flaw(description="small hole (seller note)")]), co(), photos=[0]) == []   # a Note instead
     assert lint(facts(flaws=SCUFF), co()) == []                          # no photo list given: the line alone

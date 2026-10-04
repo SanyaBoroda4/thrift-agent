@@ -72,6 +72,8 @@ _BARE = re.compile(rf"(?<![\w.$/-])({_NUM})(?![\w/-]|\.\d)")
 _SIZE_BEFORE = re.compile(r"\b(?:size|sz|eu|us|uk|toddler|kids?|y|c|cm|in|inch)\s*[:=#]?\s*$", re.I)
 _UNIT_AFTER = re.compile(r"\s*(?:cm|mm|in|inch|inches|us|uk|eu|y|t|m|w)\b", re.I)
 # A message that is nothing but a price: "28", "$28", "28.00", "28 dollars" (typed without a reply, WO20).
+# "cover 2": photo 2 of the item becomes its cover (WO23; a reply to the card, or typed while it is open).
+COVER_CMD = re.compile(r"^\s*cover\s*#?\s*(\d{1,2})\s*$", re.I)
 _PLAIN_PRICE = re.compile(r"^\s*\$?\s*(\d{1,5}(?:\.\d{1,2})?)\s*(?:\$|usd|dollars?|bucks)?\s*$", re.I)
 
 _warned_no_users = False
@@ -656,9 +658,15 @@ def _route(s: Settings, db: DB, bot: Bot, update: dict) -> str:
 
 
 def _typed(s: Settings, db: DB, bot: Bot, text: str, mid: int | None) -> str:
-    """A message that replies to nothing. A plain number is the price of the open card (WO20); anything else is the
-    owners' own chat and is ignored. A typed number under the floor is not taken (a stray "2" in the chat must not
-    price an item at $2): a reply to the card, or `thrift price`, sets it."""
+    """A message that replies to nothing. A plain number is the price of the open card (WO20), "cover 2" its cover
+    (WO23); anything else is the owners' own chat and is ignored. A typed number under the floor is not taken (a stray
+    "2" in the chat must not price an item at $2): a reply to the card, or `thrift price`, sets it."""
+    if m := COVER_CMD.match(text or ""):
+        row = open_message(db)
+        if row is None or row["kind"] != "item":
+            bot.send_message("No price card is open", reply_to=mid)
+            return f"typed {text!r}: no price card open"
+        return _set_cover(s, db, bot, row["ref"], int(m[1]), mid)
     amount = plain_price(text)
     if amount is None:
         return "ignored: not a reply to the bot"
@@ -793,7 +801,29 @@ def _reply_regroup(s: Settings, db: DB, bot: Bot, bid: str, text: str, mid: int 
     return f"regroup {bid}: {text!r} -> " + ", ".join(f"{k} {len(v)}" for k, v in out.items())
 
 
+def _set_cover(s: Settings, db: DB, bot: Bot, iid: str, n: int, reply_to: int | None) -> str:
+    """The owner's "cover N": the item's listing is rebuilt with photo N first; a card still waiting is sent again
+    (the queue re-sends it with the new cover), an item already priced shows its new cover in the reply."""
+    try:
+        status = pipeline.set_cover(s, db, iid, n)
+    except ValueError as e:
+        bot.send_message(str(e), reply_to=reply_to)
+        return f"cover {iid}: rejected {n}: {e}"
+    if status in WAITING_ITEM:
+        db.outbox_resolve("item", iid)
+        bot.send_message(f"\u2713 cover: photo {n} \u2014 the card follows", reply_to=reply_to)
+    else:
+        cover = Path(db.item(iid)["dir"]) / "cover.jpg"
+        if cover.is_file():
+            bot.send_photo(cover, f"\u2713 cover: photo {n}")
+        else:
+            bot.send_message(f"\u2713 cover: photo {n}", reply_to=reply_to)
+    return f"cover {iid}: photo {n} ({status})"
+
+
 def _reply_item(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int | None) -> str:
+    if m := COVER_CMD.match(text or ""):
+        return _set_cover(s, db, bot, iid, int(m[1]), mid)
     price, note = parse_reply(text)
     if price is None and note is None:
         bot.send_message(ITEM_HINT, reply_to=mid)

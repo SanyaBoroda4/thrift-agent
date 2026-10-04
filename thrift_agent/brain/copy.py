@@ -7,7 +7,7 @@ import re
 import yaml
 
 from thrift_agent.brain import llm, taxonomy
-from thrift_agent.brain.sizes import size_label, title_size
+from thrift_agent.brain.sizes import kids_clothing_size, size_label, title_size
 from thrift_agent.config import style_dir
 from thrift_agent.schema import CopyOut, Ev, Facts, VerifyOut
 
@@ -15,7 +15,8 @@ TITLE_MAX, DEPOP_MAX = 80, 1000
 TEXT_FIELDS = ("poshmark_title", "poshmark_description", "depop_description")
 # kids_gender is the model's best guess for Poshmark's size tab, not evidence: the copy never states it. The flaws and
 # the condition evidence are what the photos show: the copy never describes them (the owner's condition rule, below).
-VIEW_EXCLUDE = {"cover_photo", "photo_order", "photo_roles", "questions", "kids_gender", "kids_gender_confidence",
+VIEW_EXCLUDE = {"cover_photo", "cover_upright", "photo_order", "photo_roles", "questions", "kids_gender",
+                "kids_gender_confidence",
                 "flaws", "condition_evidence", "condition_alternative", "hang_tag_photo", "unworn", "box_photo"}
 TAG_LINE = re.compile(r"(?m)^[ \t]*(#\w+[ \t]*)+\r?$")   # a line that is nothing but hashtags
 TRAILING_TAGS = re.compile(r"(\s*#\w+)+\s*$")           # hashtags tacked onto the end of the last sentence
@@ -207,6 +208,17 @@ def ensure_retail_line(description: str, facts: Facts) -> str:
     if not m or re.search(r"\bretail\w*[^\n$]{0,10}\$", text, re.I):
         return description
     return f"{text}\nRetail ${int(float(m.group()))}."
+
+
+def ensure_label_size(description: str, facts: Facts) -> str:
+    """A kids size settled from the label's height or age (WO23): the label as printed goes in the description too,
+    "Label size: 4 ans / 104 cm." — the buyer sees the US size on the listing and what the garment itself says.
+    Nothing when the description already quotes the label, or the size didn't come from the table."""
+    printed = (facts.size_printed.value or "").strip()
+    if (facts.department != "Kids" or facts.category.strip().lower() == "shoes" or not printed
+            or kids_clothing_size(printed) is None or printed.lower() in description.lower()):
+        return description
+    return f"{description.rstrip()}\nLabel size: {printed}."
 
 
 def condition_wording(text: str, condition: str) -> str:

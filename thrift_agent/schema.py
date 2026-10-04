@@ -48,6 +48,27 @@ class Flaw(BaseModel):
     photos: list[int] = Field(default_factory=list)
 
 
+class View(BaseModel):
+    """One photo in the front/back comparison (brain/cover.py, WO23)."""
+    photo: int
+    view: Literal["front", "back", "side", "unclear"] = Field(description="Which side of the item this photo shows")
+    design: Literal["none", "some", "strong"] = Field("none", description="How much design detail it shows: a print, "
+                                                                          "graphic, text, logo, buttons, zip, pockets")
+    upright: Literal[0, 90, 180, 270] = Field(0, description="Clockwise degrees that would put the item upright: "
+                                                             "collar, neckline or waistband at the top; shoes sole "
+                                                             "down. 0 when it already is")
+
+
+class FrontOut(BaseModel):
+    views: list[View] = Field(description="Every photo you were shown, once")
+    front: int = Field(description="The number of the photo that shows the FRONT of the item")
+
+
+class SizeLabel(BaseModel):
+    printed: str | None = Field(None, description="The size exactly as printed, every system and unit on the label "
+                                                  "(e.g. '4 ans / 104 cm', '4A', 'EU 38 / US 7.5'); null if unreadable")
+
+
 class PhotoRole(BaseModel):
     photo: int
     role: PhotoRoleName = Field(description="front = the item alone from the front (print, buttons, neckline; shoes: "
@@ -69,13 +90,16 @@ class Facts(BaseModel):
                                                                        "(0..1); below 0.70 the owner is asked")
     category: str = Field(description="The real Poshmark category, from evidence (labels, retailer page, sizing): "
                                       "Shoes, Dresses, Tops, Sweaters, Jackets & Coats, Swim, Skirts, Shorts, "
-                                      "Pants & Jumpsuits, Jeans, Bags, Accessories, Intimates & Sleepwear… Never 'Other'")
+                                      "Pants & Jumpsuits, Jeans, Bags, Accessories, Intimates & Sleepwear… (Kids: "
+                                      "Shirts & Tops, Bottoms, Dresses, Shoes…). Never 'Other', never a department "
+                                      "(Women, Men, Kids, Home)")
     subcategory: str | None = Field(None, description="The real Poshmark subcategory, e.g. Ankle Boots & Booties, "
                                                       "Flats & Loafers, Maxi. Never 'Other'")
     brand: Ev
     style_name: Ev = Field(default_factory=Ev, description="Model/style name if printed on a label or shown on a "
                                                            "retail screenshot, e.g. 'Gizeh', 'Arizona'")
-    size_printed: Ev = Field(description="Size exactly as printed on the label/insole")
+    size_printed: Ev = Field(description="Size exactly as printed on the label/insole, every system and unit "
+                                         "('4 ans / 104 cm', '4A', 'EU 38 / US 7.5', 'M')")
     size_us: Ev = Field(description="US size. For EU shoe sizes use source=derived")
     size_eu: Ev = Field(default_factory=Ev)
     colors: list[Color] = Field(description="1-2 main colors from the palette")
@@ -107,8 +131,11 @@ class Facts(BaseModel):
     features: list[str] = Field(default_factory=list, description="Visible details: lining, hardware, heel height…")
     photo_roles: list[PhotoRole] = Field(default_factory=list, description="One entry per photo: what it shows")
     cover_photo: int = Field(description="The cover: the item alone, its FRONT, flat lay or on a hanger, clean "
-                                         "background. Never the back, never worn/try-on/mirror, never a label, tag, "
-                                         "flaw or screenshot")
+                                         "background — also when it lies sideways or upside down in the photo. Never "
+                                         "the back, never worn/try-on/mirror, never a label, tag, flaw close-up or "
+                                         "screenshot")
+    cover_upright: int = Field(0, description="Leave 0: set by code from the front check (clockwise degrees that turn "
+                                              "the cover upright)")
     photo_order: list[int] = Field(description="All photo indices: cover, back/sides, details, labels, flaws, worn")
     questions: list[str] = Field(default_factory=list,
                                  description="What the seller must answer because a photo can't settle it")

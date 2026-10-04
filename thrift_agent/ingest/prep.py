@@ -126,12 +126,18 @@ def square_cover(src: Path, dst: Path, size: int) -> Path:
         return _save_jpeg(_square(im).resize((size, size), Image.Resampling.LANCZOS), dst)
 
 
-def portrait_cover(src: Path, dst: Path, width: int = 1200, height: int = 1600) -> Path:
+_CLOCKWISE = {90: Image.Transpose.ROTATE_270, 180: Image.Transpose.ROTATE_180, 270: Image.Transpose.ROTATE_90}
+
+
+def portrait_cover(src: Path, dst: Path, width: int = 1200, height: int = 1600, rotate: int = 0) -> Path:
     """The listing cover: padded (never cropped) to width:height — 3:4 portrait, the frame of Poshmark's cover dialog,
     so its default crop takes the whole picture — with the colour of the edges that grow (top and bottom for a photo
-    wider than 3:4, left and right for a taller one). A 3:4 phone photo is only resized."""
+    wider than 3:4, left and right for a taller one). A 3:4 phone photo is only resized. `rotate`: clockwise degrees
+    (90, 180, 270) that put an item lying sideways or upside down upright first (WO23) — an exact quarter turn."""
     with Image.open(src) as im:
         im = im.convert("RGB")
+        if rotate % 360:
+            im = im.transpose(_CLOCKWISE[rotate % 360])
         w, h = im.size
         if w * height > h * width:                     # wider than width:height: taller canvas
             size, rows = (w, round(w * height / width)), True

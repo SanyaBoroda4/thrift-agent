@@ -57,6 +57,25 @@ def other_names(department: str, category: str) -> tuple[str, ...]:
     return tuple(word for word, target in table.items() if _key(target) == _key(category))
 
 
+DEPARTMENT_WORDS = ("Women", "Men", "Kids", "Home", "Unisex", "Baby", "Boys", "Girls", "Pets", "Electronics")
+
+
+def _from_words(text: str | None, department: str, categories) -> str | None:
+    """Poshmark's category named by a word or two of `text` ("graphic tee" -> Shirts & Tops), by name or alias."""
+    words = re.findall(r"[a-z]+", (text or "").lower())
+    for size in (2, 1):
+        for k in range(len(words) - size, -1, -1):              # the noun comes last: "denim jacket" -> jacket
+            phrase = " ".join(words[k:k + size])
+            for form in (phrase, phrase + "s", phrase.rstrip("s")):
+                if found := _find(form, categories) or _alias("categories", department, form, categories):
+                    return found
+    return None
+
+
+def _example(categories) -> str:
+    return next((c for c in categories if "top" in c.lower()), next(iter(categories), "Other"))
+
+
 def fit(facts: Facts) -> tuple[Facts, list[str], list[str]]:
     """(facts on Poshmark's names, notes for the owner, questions for the owner).
 
@@ -69,15 +88,21 @@ def fit(facts: Facts) -> tuple[Facts, list[str], list[str]]:
         return facts, [], [f"Poshmark has no {facts.department} department — reply 'department Women' or "
                             "'department Men'"]
     categories = dept.get("categories") or {}
+    sub, notes = facts.subcategory, []
+    if _key(facts.category) in {_key(d) for d in (*DEPARTMENT_WORDS, *departments)}:
+        # A department is never a category (WO23; live: category "Kids", subcategory "Shirts & Tops" — the model put
+        # the department one level down). The real category is the subcategory it gave, else the item type's noun.
+        if found := (_find(sub or "", categories) or _alias("categories", facts.department, sub or "", categories)):
+            facts, sub = facts.model_copy(update={"category": found}), None
+        elif found := _from_words(facts.item_type, facts.department, categories):
+            facts = facts.model_copy(update={"category": found})
     category = _find(facts.category, categories) or _alias("categories", facts.department, facts.category, categories)
     if category is None:
         if not dept.get("verified"):
             return facts, [], []                      # an unconfirmed list: the poster asks if the form lacks it
-        example = "Tops" if "Tops" in categories else next(iter(categories), "Other")
         return facts, [], [f"category '{facts.category}' is not one of Poshmark's {facts.department} categories — "
-                            f"reply e.g. 'category {example}'"]
+                            f"reply e.g. 'category {_example(categories)}'"]
     subs = categories.get(category)
-    sub, notes = facts.subcategory, []
     if sub and subs:
         found = _find(sub, subs) or _alias("subcategories", f"{facts.department}/{category}", sub, subs)
         if found is None:

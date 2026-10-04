@@ -13,7 +13,7 @@ from pathlib import Path
 import imagehash
 
 from thrift_agent import approve, notify
-from thrift_agent.brain import copy as copywriter, sizes, taxonomy
+from thrift_agent.brain import copy as copywriter, cover as cover_brain, sizes, taxonomy
 from thrift_agent.brain.extract import extract, strip_screenshot_evidence
 from thrift_agent.brain.gate import GateResult, evaluate
 from thrift_agent.brain.price import price
@@ -21,7 +21,7 @@ from thrift_agent.brain.verify import fit_style_tags, lint, verify
 from thrift_agent.config import Settings, load_yaml
 from thrift_agent.db import DB, loads, now
 from thrift_agent.ingest import prep, segment as seg
-from thrift_agent.schema import ITEM_ALONE, CopyOut, Ev, Facts, PriceResult, Render
+from thrift_agent.schema import ITEM_ALONE, CopyOut, Ev, Facts, FrontOut, PriceResult, Render
 
 MAX_SEGMENT_PHOTOS = 90        # the Messages API takes at most 100 image blocks per request; keep headroom
 ANSWERABLE = ("needs_info", "ready", "failed", "new", "awaiting_price", "needs_owner",   # a note resets these to 'new'
@@ -561,9 +561,13 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
     if it["owner_kids_gender"]:                          # the owner's [Girls]/[Boys]: never asked again
         facts = facts.model_copy(update={"kids_gender": it["owner_kids_gender"], "kids_gender_confidence": 1.0})
     facts, fit_notes, fit_questions = taxonomy.fit(facts)   # Poshmark's own category names (Kids Tops -> Shirts & Tops)
+    facts = settle_kids_size(s, facts, photos)            # a kids label's cm or age -> Poshmark's size, no question
     ask_kids = kids_question(facts)                      # Girls or Boys, below 0.70 sure: a question before the price
-    shown = listing_photos(s, facts, len(photos), kinds)  # flaw photos in, never the cover: the condition rule
-    _, cover_note = choose_cover(facts, len(photos), kinds)
+    check = front_view(s, db, iid, photos, facts, kinds)  # which photo shows the front: a comparison (WO23)
+    cover, upright, cover_note = choose_cover(facts, len(photos), kinds, check, it["owner_cover"])
+    if cover is not None:
+        facts = facts.model_copy(update={"cover_photo": cover, "cover_upright": upright})
+    shown = listing_photos(s, facts, len(photos), kinds)  # every flaw photo in the listing
     # The card shows only what needs the owner (WO20): these warnings and the allowed questions; the rest (an unsure
     # grade, a subcategory left out) is kept in the item's record as info.
     notes += flaw_notes(facts, shown) + ([cover_note] if cover_note else [])
@@ -580,6 +584,8 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
         depop_hashtags=draft.depop_hashtags))
     final = copywriter.condition_rule(final, facts)      # wear is shown in the photos, never put in words
     final.poshmark_description = copywriter.ensure_retail_line(final.poshmark_description, facts)
+    final.poshmark_description = copywriter.ensure_label_size(final.poshmark_description, facts)   # "104 cm / 4 ans"
+    final.depop_description = copywriter.ensure_label_size(final.depop_description, facts)
     final.poshmark_style_tags = fit_style_tags(final.poshmark_style_tags, facts)   # Poshmark's curated tags only
     problems = lint(facts, final, shown)
     if not audit.unsupported:
@@ -624,8 +630,10 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
     status = ("awaiting_condition" if ask_condition
               else "awaiting_price" if unresolved or not it["owner_price"] or ask_kids else "ready")
     db.set_item(iid, status=status, facts=facts.model_dump(), price=pr.model_dump(),
-                renders={k: v.model_dump() for k, v in renders.items()}, gate=gate_doc, cover_hash=cover_hash)
-    db.log(iid, "item_processed", {"decision": gate.decision, "reasons": gate.reasons, "status": status})
+                renders={k: v.model_dump() for k, v in renders.items()}, gate=gate_doc, cover_hash=cover_hash,
+                views=check.model_dump() if check else None)
+    db.log(iid, "item_processed", {"decision": gate.decision, "reasons": gate.reasons, "status": status,
+                                   "cover": facts.cover_photo, "upright": facts.cover_upright})
 
     if status in ("awaiting_condition", "awaiting_price"):
         approve.pump(s, db)                              # ONE open question at a time: sent now if it is next
@@ -633,6 +641,164 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
         first = next(iter(renders.values()), None)
         title = first.title if first else final.poshmark_title
         notify.say(f"Queued as draft ({iid}): {title} \u2014 ${pr.list_price}\n- " + "\n- ".join(gate.reasons))
+
+
+def settle_kids_size(s: Settings, facts: Facts, photos: list[Path] | None = None) -> Facts:
+    """Kids clothing (WO23): a label that gives the child's height or age is Poshmark's size by a fixed table
+    (sizes.kids_clothing_size: 104 cm -> 4T, 116 cm -> 6, "4 ans" -> 4T …) — settled, never a question. When the
+    model read only a bare number ("4") and would be unsure, the label photos are read again, once, for the units."""
+    if facts.department != "Kids" or facts.category.strip().lower() == "shoes":
+        return facts
+    printed = facts.size_printed.value
+    size = sizes.kids_clothing_size(printed)
+    if (size is None and photos and facts.size_printed.photos and facts.size_us.confidence < s["gate"]["min_confidence"]
+            ["size"]):
+        label = [photos[i] for i in facts.size_printed.photos if 0 <= i < len(photos)]
+        try:
+            again = cover_brain.read_size_label(label, s["models"].get("cover") or s["models"]["extract"],
+                                                int(s["images"].get("cover_check_long_edge", 1024)))
+        except Exception:  # noqa: BLE001 - a second look is a bonus: without it the size is simply asked
+            again = None
+        if again and (size := sizes.kids_clothing_size(again)) is not None:
+            printed = again
+    if size is None:
+        return facts
+    ev = Ev(value=size, photos=facts.size_printed.photos, source="derived", confidence=0.95)
+    label = facts.size_printed.model_copy(update={"value": printed})
+    return facts.model_copy(update={"size_us": ev, "size_printed": label})
+
+
+def front_view(s: Settings, db: DB, iid: str, photos: list[Path], facts: Facts, kinds: list[str]) -> FrontOut | None:
+    """The front check (brain/cover.py) on the item's photos of the item alone; None without such photos, or when
+    the call fails (the cover then follows the extraction's roles, and the failure is logged)."""
+    cands = cover_candidates(facts, len(photos), kinds)
+    if not cands:
+        return None
+    try:
+        return cover_brain.front_check([(i, photos[i]) for i in sorted(cands)],    # in shooting order: no bias
+                                       s["models"].get("cover") or s["models"]["extract"],
+                                       int(s["images"].get("cover_check_long_edge", 1024)))
+    except Exception as e:  # noqa: BLE001
+        db.log(iid, "front_check_failed", f"{type(e).__name__}: {e}")
+        return None
+
+
+def relist(s: Settings, it, facts: Facts, renders: dict) -> dict:
+    """The renders with the listing's photos, cover and form fields recomputed from `facts` — no model call: the
+    cover file (turned upright), the photo order, category / subcategory / size and the label line. Titles, tags and
+    prices stay as they are."""
+    d = Path(it["dir"])
+    photos = sorted((d / "photos").glob("*.jpg"))
+    kinds = photo_kinds_of(d, photos)
+    order = photo_order(facts, len(photos), kinds)
+    flawed = flaw_photos(facts, len(photos))
+    width, height = prep.cover_dims(s["images"]["cover_size"])
+    turn = facts.cover_upright if order[0] == facts.cover_photo else 0
+    cover = prep.portrait_cover(photos[order[0]], d / "cover.jpg", width, height, rotate=turn)
+    out = {}
+    for mp, r in renders.items():
+        limit = int((s["marketplaces"].get(mp) or {}).get("max_photos", len(photos)))
+        shown = fit_photos(order, flawed, limit)
+        out[mp] = {**r, "photos": [str(cover)] + [str(photos[i]) for i in shown[1:]], "category": facts.category,
+                   "subcategory": facts.subcategory, "size": sizes.size_label(facts),
+                   "description": copywriter.ensure_label_size(r.get("description") or "", facts)}
+    return out
+
+
+def set_cover(s: Settings, db: DB, iid: str, n: int) -> str:
+    """The owner's "cover N" (WO23): photo N of the item (its photos in shooting order, from 0) becomes the cover — kept
+    through any later reprocessing (items.owner_cover). The listing is rebuilt at once, no model call. Never for an
+    item that is on the marketplace. Returns the item's status."""
+    it = db.item(iid)
+    if it is None:
+        raise ValueError(f"unknown item {iid}")
+    if why := reached_site(db, it):
+        raise ValueError(f"item {iid} is already on the marketplace ({', '.join(why)}) — change its cover there")
+    if not it["facts"] or not it["renders"]:
+        raise ValueError(f"item {iid} is {it['status']} — it has no listing yet")
+    count = len(list((Path(it["dir"]) / "photos").glob("*.jpg")))
+    if not 0 <= n < count:
+        raise ValueError(f"item {iid} has photos 0..{count - 1} — no photo {n}")
+    facts = Facts.model_validate(loads(it["facts"]))
+    views = FrontOut.model_validate(loads(it["views"])) if it["views"] else None
+    _, upright, _ = choose_cover(facts, count, None, views, owner=n)
+    facts = facts.model_copy(update={"cover_photo": n, "cover_upright": upright})
+    gate = loads(it["gate"]) or {}
+    gate["notes"] = [x for x in gate.get("notes") or [] if x != NO_FRONT_COVER]
+    with db.tx():
+        db.set_item(iid, owner_cover=n, facts=facts.model_dump(), renders=relist(s, it, facts, loads(it["renders"])),
+                    gate=gate)
+        db.log(iid, "cover_set", {"photo": n})
+    return it["status"]
+
+
+RECOVERABLE = ("awaiting_condition", "awaiting_price", "needs_info", "ready", "needs_owner")
+
+
+def recover_item(s: Settings, db: DB, iid: str) -> dict:
+    """WO23: recompute ONLY the cover (the front check, upright), the photo order, the category and the size of an
+    item that is not on the marketplace — the price, the owner's approved price, condition and Girls/Boys answers and
+    the copy stay. Nothing settled is asked again: a question that the new category or size settles goes; an item that
+    then waits only for a price it already has is ready. Returns what it found ({"cover", "role", "upright", ...})."""
+    it = db.item(iid)
+    if it is None:
+        raise ValueError(f"unknown item {iid}")
+    if why := reached_site(db, it):
+        raise ValueError(f"item {iid} is on the marketplace ({', '.join(why)}) — left as it is")
+    if it["status"] not in RECOVERABLE or not it["facts"] or not it["renders"]:
+        raise ValueError(f"item {iid} is {it['status']} — nothing to recover")
+    d = Path(it["dir"])
+    photos = sorted((d / "photos").glob("*.jpg"))
+    kinds = photo_kinds_of(d, photos)
+    facts = Facts.model_validate(loads(it["facts"]))
+    before = {"cover": photo_order(facts, len(photos), kinds)[0], "category": facts.category,
+              "size": facts.size_us.value}
+    facts, fit_notes, fit_questions = taxonomy.fit(facts)
+    facts = settle_kids_size(s, facts, photos)
+    check = front_view(s, db, iid, photos, facts, kinds)
+    cover, upright, cover_note = choose_cover(facts, len(photos), kinds, check, it["owner_cover"])
+    if cover is not None:
+        facts = facts.model_copy(update={"cover_photo": cover, "cover_upright": upright})
+    renders = relist(s, it, facts, loads(it["renders"]))
+    pr = PriceResult.model_validate(loads(it["price"]))
+    posh = renders.get("poshmark") or next(iter(renders.values()))
+    depop = renders.get("depop") or posh
+    copy = CopyOut(poshmark_title=posh["title"], poshmark_description=posh["description"],
+                   poshmark_style_tags=posh.get("tags") or [], depop_description=depop["description"],
+                   depop_hashtags=(depop.get("tags") or []) if "depop" in renders else ["x"] * 5)
+    shown = listing_photos(s, facts, len(photos), kinds)
+    record = json.loads((d / "item.json").read_text(encoding="utf-8")) if (d / "item.json").exists() else {}
+    gate = evaluate(facts, pr, lint(facts, copy, shown), len(record.get("unsupported_removed") or []), s["gate"],
+                    s["pricing"])
+    doc = loads(it["gate"]) or {}
+    twin = next((q for q in doc.get("questions") or [] if q.startswith("looks like item")), None) \
+        if doc.get("hold") else None
+    questions = ([twin] if twin else []) + fit_questions + gate.questions + \
+        [q for q in doc.get("questions") or [] if q == NWT_QUESTION]
+    decision = "needs_info" if twin or fit_questions or gate.decision == "needs_info" else gate.decision
+    notes = [x for x in doc.get("notes") or [] if x != NO_FRONT_COVER and not x.startswith("every photo shows a flaw")]
+    doc.update(decision=decision, reasons=([twin] if twin else []) + fit_questions + gate.reasons,
+               questions=questions, notes=notes + ([cover_note] if cover_note else []),
+               info=list(fit_notes) + gate.notes, ask_kids=kids_question(facts))
+    status = it["status"]
+    if status in ("awaiting_price", "needs_info") and it["owner_price"] and decision != "needs_info" \
+            and not doc.get("ask_kids") and not doc.get("hold"):
+        status = "ready"                                     # its only question is settled now; the price it has
+    with db.tx():
+        db.set_item(iid, facts=facts.model_dump(), renders=renders, gate=doc, status=status,
+                    views=check.model_dump() if check else it["views"], cover_hash=prep.cover_hash(photos[facts.cover_photo])
+                    if 0 <= facts.cover_photo < len(photos) else it["cover_hash"])
+        if status in ("awaiting_price", "needs_info", "awaiting_condition"):
+            # its card comes again, with the new cover and only what is still open (the queue re-sends it)
+            db.conn.execute("UPDATE outbox SET resolved_at=? WHERE ref=? AND resolved_at IS NULL", (now(), iid))
+        after = {"cover": photo_order(facts, len(photos), kinds)[0], "category": facts.category,
+                 "size": facts.size_us.value}
+        db.log(iid, "recovered", {"before": before, "after": after, "upright": facts.cover_upright, "status": status})
+    roles = {r.photo: r.role for r in facts.photo_roles}
+    views = {v.photo: v.view for v in (check.views if check else [])}
+    return {"item": iid, "cover": after["cover"], "role": roles.get(after["cover"], "?"),
+            "view": views.get(after["cover"], "-"), "upright": facts.cover_upright, "category": facts.category,
+            "size": facts.size_us.value, "questions": questions, "status": status, "before": before}
 
 
 def requeue(s: Settings, db: DB, iid: str, marketplace: str | None = None) -> list[str]:
@@ -876,29 +1042,70 @@ def flaw_photos(facts: Facts, n: int) -> set[int]:
 NO_FRONT_COVER = "cover: no front flat-lay photo"
 
 
-def choose_cover(facts: Facts, n: int, kinds: list[str] | None = None) -> tuple[int | None, str | None]:
-    """The cover (owner rule, WO20): the item alone, its front, flat lay or on a hanger — by the model's photo_roles,
-    checked here: only a photo of the item alone (front, else side, else back; the model's own pick first among
-    equals), never worn / a label / a tag / a flaw / a box / a screenshot. (photo, note for the card): the note says
-    "cover: no front flat-lay photo" when no front shot exists; (None, …) leaves the cover to photo_order's older
-    rules — no roles at all (older facts), or no photo of the item alone."""
+DESIGN = {"none": 0, "some": 1, "strong": 2}
+
+
+def cover_candidates(facts: Facts, n: int, kinds: list[str] | None = None) -> list[int]:
+    """The photos that may be the cover: the item alone (front, side or back by the model's photo_roles), never a
+    screenshot, a worn / mirror photo, a label, a tag, a flaw close-up or a box; the model's own cover pick first, then
+    its order. A full view cited for a flaw is NOT left out (WO23): the front stays the cover even when a small stain
+    shows on it — the owner's rule, the first photo is the front — and the flaw is disclosed by that very photo."""
     kinds = kinds or ["own"] * n
     roles = {r.photo: r.role for r in facts.photo_roles if 0 <= r.photo < n}
-    if not roles:
-        return None, None
-    flawed = flaw_photos(facts, n)
     preferred = list(dict.fromkeys(i for i in [facts.cover_photo, *facts.photo_order, *range(n)] if 0 <= i < n))
-    alone = [i for i in preferred if kinds[i] != "retail" and i not in flawed]
-    for role in ITEM_ALONE:                                   # front, then side, then back
-        if (pick := next((i for i in alone if roles.get(i) == role), None)) is not None:
-            return pick, None if role == "front" else NO_FRONT_COVER
-    return None, NO_FRONT_COVER
+    return [i for i in preferred if kinds[i] != "retail" and roles.get(i) in ITEM_ALONE]
+
+
+def choose_cover(facts: Facts, n: int, kinds: list[str] | None = None, check: FrontOut | None = None,
+                 owner: int | None = None) -> tuple[int | None, int, str | None]:
+    """(cover, clockwise turn that puts it upright, note for the card) — the owner rule (absolute, WO23): the first
+    photo of every listing is the FRONT of the item, alone, flat lay or hanger.
+
+    The owner's "cover N" wins. Else the front check (brain/cover.py: the item-alone photos compared side by side),
+    checked here: a photo the check calls the back is never the cover while another candidate isn't, and a plain photo
+    never while another candidate shows design (a print, logo, buttons… — the owner's cue for the front). Without a
+    check: the extraction's roles, front, else side (a shoe's profile is a fine cover), else back. The note "cover: no
+    front flat-lay photo" only when no candidate could be the front (backs only, or no photo of the item alone).
+    (None, 0, None): no photo roles at all — facts from before WO20 keep the model's pick."""
+    kinds = kinds or ["own"] * n
+    views = {v.photo: v for v in (check.views if check else []) if 0 <= v.photo < n}
+
+    def turn(i: int) -> int:
+        return views[i].upright if i in views else 0
+
+    if owner is not None and 0 <= owner < n:
+        return owner, turn(owner), None
+    roles = {r.photo: r.role for r in facts.photo_roles if 0 <= r.photo < n}
+    if not roles:
+        return None, 0, None
+    cands = cover_candidates(facts, n, kinds)
+    if not cands:
+        return None, 0, NO_FRONT_COVER
+
+    def back(i: int) -> bool:
+        return views[i].view == "back" if i in views else roles.get(i) == "back"
+
+    def rank(i: int) -> tuple:
+        is_front = views[i].view == "front" if i in views else roles.get(i) == "front"
+        return is_front, DESIGN.get(views[i].design, 0) if i in views else 0, -cands.index(i)
+
+    pick = check.front if check is not None and check.front in cands else None
+    for role in ("front", "side", "back"):
+        if pick is None:
+            pick = next((i for i in cands if roles.get(i) == role), None)
+    if back(pick) and (others := [i for i in cands if not back(i)]):
+        pick = max(others, key=rank)                          # a back is never the cover while a front side exists
+    designed = [i for i in cands if i in views and DESIGN.get(views[i].design, 0) > 0]
+    if pick in views and DESIGN.get(views[pick].design, 0) == 0 and designed:
+        pick = max(designed, key=rank)                        # the printed side is the front (the owner's cue)
+        return pick, turn(pick), None
+    return pick, turn(pick), NO_FRONT_COVER if back(pick) else None
 
 
 def photo_order(facts: Facts, n: int, kinds: list[str] | None = None) -> list[int]:
-    """The listing's photo order: the cover first (choose_cover), then the model's order, every photo once; retail
-    screenshots last and never the cover; a photo that shows a flaw never the cover either (the first clean own photo
-    is, when there is one)."""
+    """The listing's photo order: the cover first — facts.cover_photo, which choose_cover settled (WO23) — then the
+    model's order, every photo once; retail screenshots last and never the cover. Facts from before WO20 (no photo
+    roles) keep their older rule: a photo that shows a flaw is not the cover when a clean own photo exists."""
     kinds = kinds or ["own"] * n
     order = [i for i in facts.photo_order if 0 <= i < n]
     if 0 <= facts.cover_photo < n:
@@ -906,13 +1113,11 @@ def photo_order(facts: Facts, n: int, kinds: list[str] | None = None) -> list[in
     order = list(dict.fromkeys(order + list(range(n))))         # cover first, then the model's order, no repeats
     own = [i for i in order if kinds[i] != "retail"]
     order = (own + [i for i in order if kinds[i] == "retail"]) if own else order   # screenshots last, never the cover
-    flawed = flaw_photos(facts, n)
-    clean = [i for i in own if i not in flawed]
-    cover, _ = choose_cover(facts, n, kinds)
-    if cover is None and order and order[0] in flawed and clean:
-        cover = clean[0]
-    if cover is not None and order[0] != cover:
-        order = [cover] + [i for i in order if i != cover]
+    if not facts.photo_roles:
+        flawed = flaw_photos(facts, n)
+        clean = [i for i in own if i not in flawed]
+        if order and order[0] in flawed and clean:
+            order = [clean[0]] + [i for i in order if i != clean[0]]
     return order
 
 
@@ -936,13 +1141,10 @@ def listing_photos(s: Settings, facts: Facts, n: int, kinds: list[str] | None = 
 
 
 def flaw_notes(facts: Facts, photos: list[int]) -> list[str]:
-    """For the approval message: a flaw no photo shows isn't in the listing at all, and a cover that shows a flaw
-    means every own photo does. Told, never asked."""
-    notes = [f"flaw without a photo, so the listing doesn't show it: {f.description}" for f in facts.flaws
-             if not f.photos]
-    if photos and photos[0] in flaw_photos(facts, max(photos) + 1):
-        notes.append("every photo shows a flaw, so the cover does too")
-    return notes
+    """For the approval message: a flaw no photo shows isn't in the listing at all. Told, never asked. (The front may
+    be the cover with a flaw on it, WO23: that photo discloses it.)"""
+    return [f"flaw without a photo, so the listing doesn't show it: {f.description}" for f in facts.flaws
+            if not f.photos]
 
 
 def build_renders(s: Settings, iid: str, d: Path, photos: list[Path], facts: Facts, c: CopyOut,
@@ -950,7 +1152,8 @@ def build_renders(s: Settings, iid: str, d: Path, photos: list[Path], facts: Fac
     order = photo_order(facts, len(photos), kinds)
     flawed = flaw_photos(facts, len(photos))
     width, height = prep.cover_dims(s["images"]["cover_size"])
-    cover = prep.portrait_cover(photos[order[0]], d / "cover.jpg", width, height)   # 3:4: Poshmark's cover frame
+    turn = facts.cover_upright if order[0] == facts.cover_photo else 0       # upright: a front laid sideways (WO23)
+    cover = prep.portrait_cover(photos[order[0]], d / "cover.jpg", width, height, rotate=turn)   # 3:4, never cropped
 
     def paths(limit: int) -> list[str]:                # this marketplace's photos: flaw photos are never cut
         shown = fit_photos(order, flawed, limit)
