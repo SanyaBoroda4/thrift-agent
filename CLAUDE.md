@@ -9,7 +9,31 @@ taps Share → "New item", and gets a Telegram ping when it's listed or when som
 - **MacBook (prod)** — MacBook Pro 13" M2, 8 GB, macOS 27 Golden Gate, Python 3.14 (python.org), bash shell, no Homebrew. Runs `thrift run` (worker) and `thrift poster` (Chrome) as launchd agents.
   The poster's Chrome profile is created and logged in *on the Mac only* (cookies are keychain-bound).
 - **iPhone (dedicated)** — same Apple ID as the Mac; saves photos to iCloud Drive `Posh/inbox/<ts>/`.
-- Deploy: `git push` from PyCharm → `deploy\deploy.ps1` (ssh, pull, test, restart services).
+- Deploy: `git push` from PyCharm → `deploy\deploy.ps1` (over SSH: pull, private pull, `mac_setup.sh` + tests,
+  restart the worker service, show status + log). See "Mac over SSH".
+
+## Mac over SSH (WO21)
+- The PC reaches the Mac with an SSH key, no password: `ssh tatiana_sorokina@192.168.68.57` (MacBook-Pro-5.local;
+  its host key is known under the IP). Repo `~/thrift-agent`, venv `.venv`, logs `~/thrift/logs`, DB `~/thrift/var`.
+- `deploy\deploy.ps1` (`-MacHost` to override, `-NoPush`): `git push`, then on the Mac `deploy/mac_deploy.sh`: `git
+  pull`, `git -C private pull`, `bash deploy/mac_setup.sh` (venv, folders, the tests, the launchd files), the WORKER
+  (re)started as the launchd service, then `services.sh status`, `thrift status` and the worker log's last 30 lines. A
+  failed setup or test run rolls the Mac back to the commit before the pull; any failure (incl. a worker that isn't
+  running afterwards) exits non-zero.
+- `bash deploy/services.sh start|stop|restart worker|poster`, `stop all`, `status`, `logs [worker|poster] [lines]`.
+  The worker runs as the launchd service (`com.thriftagent.worker`, KeepAlive). **The poster service stays off** until
+  the owner turns publishing on (the two keys, unchanged); deploy never starts it, and there is no bare
+  `start`/`restart` that would.
+- **One worker, ever:** `thrift run` holds `worker.lock` next to the DB (an OS lock, dropped when the process ends; the
+  holder is in `worker.lock.pid`); a second one exits at once with "another worker is already running (pid …)".
+  `services.sh start worker` refuses while a `thrift run` runs outside launchd (a Terminal window). Two workers would
+  take each other's Telegram updates.
+- **After every work order** Claude deploys to the Mac itself, checks `services.sh status`, `thrift status` and the
+  logs, and puts the result in the report.
+- **Allowed over SSH without asking:** the deploy, status, logs, `thrift requeue`, `thrift redo`, the tests,
+  read-only commands, `thrift telegram test`. **Never over SSH:** `thrift poster --publish-first`, starting the poster
+  or anything else that publishes or touches the live Poshmark account (`thrift login`, `thrift poster`),
+  `thrift mark-posted`, deleting data, changing `config/settings.local.yaml` or `.env` — those are the owner's.
 
 ## Flow
 ```

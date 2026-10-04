@@ -15,7 +15,7 @@ from rich import print
 from rich.markup import escape
 from rich.table import Table
 
-from thrift_agent import approve, config, notify, pipeline
+from thrift_agent import approve, config, notify, pipeline, runlock
 from thrift_agent.config import settings
 from thrift_agent.db import DB, loads
 
@@ -30,6 +30,7 @@ def _startup() -> None:
     os.environ cold and report the token missing although .env had it. Exported variables still win (no override)."""
     load_dotenv(config.ENV_FILE)
 RESEND_CHECK_SECONDS = 3600      # how often the worker looks for batches/items waiting longer than resend_after_hours
+WORKER_LOCK = "worker.lock"      # next to the DB: one `thrift run` per machine (runlock)
 
 
 def _db() -> DB:
@@ -150,7 +151,13 @@ def _telegram_loop(s, bot) -> None:
 @app.command()
 def run(interval: int = 15) -> None:
     """Watch the inbox, process batches/items and talk to the owner on Telegram, forever (the worker service)."""
-    s, db = settings(), _db()
+    s = settings()
+    try:
+        lock = runlock.hold(s.path("db").parent / WORKER_LOCK)   # one worker: two would split the Telegram updates
+    except runlock.AlreadyRunning as e:
+        print(f"[red]not started[/]: {escape(str(e))}")
+        raise typer.Exit(1) from None
+    db = _db()
     s.ensure_dirs()
     if s.is_prod:
         notify.check(s)                                   # a silent Telegram is not an option on the Mac
@@ -161,7 +168,7 @@ def run(interval: int = 15) -> None:
         approve.resend_pending(s, db, force=True)        # only the open question; Telegram keeps updates 24 h
         telegram = threading.Thread(target=_telegram_loop, args=(s, bot), name="telegram", daemon=True)
         telegram.start()
-    while True:
+    while lock:                                           # the lock is held for as long as this loop runs
         if telegram is not None and not telegram.is_alive():
             raise SystemExit("the Telegram thread stopped — exiting so launchd restarts the worker")
         _worker_iteration(s, db, interval)
@@ -309,13 +316,14 @@ def telegram_setup() -> None:
 
 
 @telegram_app.command("test")
-def telegram_test() -> None:
+def telegram_test(text: str = typer.Option("thrift-agent: test message — the bot can reach this chat.", "--text",
+                                           help="What to send, e.g. --text 'worker started over SSH'")) -> None:
     """Send a test message to TELEGRAM_CHAT_ID with the configured bot."""
     bot = approve.bot_for(settings())
     if bot is None:
         raise typer.BadParameter("Telegram is not configured: telegram.enabled plus TELEGRAM_BOT_TOKEN, "
                                  f"TELEGRAM_CHAT_ID and TELEGRAM_ALLOWED_USER_IDS in {config.ENV_FILE}")
-    mid = bot.send_message("thrift-agent: test message — the bot can reach this chat.")
+    mid = bot.send_message(text)
     print(f"[green]sent[/] message {mid} to chat {bot.chat_id}")
 
 

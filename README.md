@@ -89,13 +89,28 @@ git clone git@github.com:SanyaBoroda4/thrift-agent.git ~/thrift-agent && cd ~/th
 bash deploy/mac_setup.sh
 ```
 Then: `.env`, `config/settings.local.yaml` (`machine_role: prod`), `thrift login --site poshmark`, the first manual
-dry-runs (see "Poshmark poster (M2)"), and start the two launchd services (worker + poster) for the dry-run week:
+dry-runs (see "Poshmark poster (M2)"), and start the worker as a launchd service:
 ```bash
-bash deploy/services.sh start      # also: stop | restart | status
+bash deploy/services.sh start worker     # also: stop|restart worker|poster, stop all, status, logs [worker|poster] [n]
 ```
-`thrift login` needs the poster's Chrome profile to itself: `bash deploy/services.sh stop` first, `start` afterwards.
-Deploy updates from Windows with `deploy\deploy.ps1` (pull, test, `services.sh restart`; a red test rolls the Mac back
-to the previous commit).
+The poster service stays off until the owner turns publishing on (`poster.dry_run: false` and
+`poster.autopublish_confirmed: true`). `thrift login` needs the poster's Chrome profile to itself:
+`bash deploy/services.sh stop poster` first.
+
+### Deploy over SSH
+The PC reaches the Mac with an SSH key (no password): `ssh tatiana_sorokina@192.168.68.57`. From Windows:
+```powershell
+.\deploy\deploy.ps1          # -MacHost user@host to override, -NoPush to skip the git push
+```
+It pushes, then on the Mac (`deploy/mac_deploy.sh`) pulls the code and `private/`, runs `deploy/mac_setup.sh` (venv,
+folders, the tests, the launchd files), restarts the **worker** service, and shows the services' status, `thrift
+status` and the last 30 lines of the worker log. A red test rolls the Mac back to the commit before the pull; any
+failure exits non-zero. Only one worker can run: `thrift run` holds a lock next to the DB and a second one refuses
+to start ("another worker is already running (pid …)"); `services.sh start worker` refuses while a `thrift run` runs
+in a Terminal window. Two workers would take each other's Telegram updates.
+Over SSH Claude deploys and checks status and logs after every work order, and may run status, logs, `requeue`,
+`redo` and the tests; never `poster --publish-first`, the poster or anything that touches the live Poshmark account,
+`mark-posted`, deleting data, or changes to `settings.local.yaml` / `.env`.
 
 ## Commands
 ```

@@ -1,21 +1,19 @@
-# From the Windows PC: push, then pull + test + restart on the Mac.
-#   .\deploy\deploy.ps1 -MacHost thrift-mac.local
-# The remote command is one bash && chain, so a failing step stops everything after it. A red test suite rolls
-# the checkout back to the pre-pull commit (ORIG_HEAD) so the next launchd restart never runs untested code.
-# PowerShell 5.1: no && / || at the PowerShell level; they only exist inside the ssh'd bash string.
-param([string]$MacHost = "thrift-mac.local", [switch]$NoRestart)
+# From the Windows PC: push, then deploy on the Mac over SSH (key, no password).
+#   .\deploy\deploy.ps1                                   # the Mac at tatiana_sorokina@192.168.68.57
+#   .\deploy\deploy.ps1 -MacHost tatiana_sorokina@MacBook-Pro-5.local
+# On the Mac (deploy/mac_deploy.sh, after `git pull`): private/ pull, deploy/mac_setup.sh (venv, folders, tests,
+# launchd files), the WORKER restarted as the launchd service, then services status, `thrift status` and the last 30
+# lines of the worker log. A failed setup or test run rolls the Mac back to the commit before the pull. The poster
+# service is never started (it stays off until the owner turns publishing on). Exits non-zero on any failure.
+# PowerShell 5.1: no && / || at the PowerShell level, and no double quotes inside the remote command (5.1 does not
+# escape them for native commands); the single-quoted string reaches the Mac's bash as it is.
+param([string]$MacHost = "tatiana_sorokina@192.168.68.57", [switch]$NoPush)
 $ErrorActionPreference = "Stop"
 
-git push
-if ($LASTEXITCODE -ne 0) { throw "git push failed - nothing deployed" }
-
-# Restart through deploy/services.sh: kickstart on a label that was never bootstrapped fails, and the script says so.
-$restart = if ($NoRestart) { "" } else { 'bash deploy/services.sh restart &&' }
-# private/ is its own repo on the Mac; pull it too when it is there (brand tiers, style examples, notes).
-$pullPrivate = '( [ ! -d private/.git ] || git -C private pull --ff-only ) &&'
-# Braces keep the rollback scoped to the test step: bash gives && and || equal precedence, so an unbraced
-# `... && pytest || rollback` would also roll back after a failed pull. `exit 1` ends the remote shell.
-# No double quotes inside the remote command: PowerShell 5.1 does not escape them for native commands.
-$runTests = '{ .venv/bin/python -m pytest -q || { echo tests failed, rolling back to the previous commit; git reset --hard ORIG_HEAD && .venv/bin/pip install -q -e . ; exit 1; }; }'
-ssh $MacHost "cd ~/thrift-agent && git pull --ff-only && $pullPrivate .venv/bin/pip install -q -e . && $runTests && $restart echo deployed"
-if ($LASTEXITCODE -ne 0) { throw "deploy failed on $MacHost (see output above)" }
+if (-not $NoPush) {
+    git push
+    if ($LASTEXITCODE -ne 0) { Write-Error "git push failed - nothing deployed"; exit 1 }
+}
+ssh -o BatchMode=yes -o ConnectTimeout=15 $MacHost 'cd ~/thrift-agent && before=$(git rev-parse HEAD) && git pull --ff-only && bash deploy/mac_deploy.sh $before'
+if ($LASTEXITCODE -ne 0) { Write-Error "deploy failed on $MacHost (exit $LASTEXITCODE, see the output above)"; exit 1 }
+Write-Output "deployed to $MacHost"
