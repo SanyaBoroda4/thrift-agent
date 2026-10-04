@@ -241,7 +241,7 @@ def _waits(db: DB, kind: str, ref: str) -> bool:
     return _item_kind(it["status"], loads(it["gate"]) or {}) == kind
 
 
-def open_message(db: DB):
+def open_message(db: DB, settle: bool = True):
     """The one message that waits for the owner's answer (an outbox row), or None: the newest unresolved queue message
     whose batch/item still waits for that answer. Every other unresolved queue message is resolved on the way —
     answered elsewhere (a CLI command, a button on an older copy), moved on (reprocessing, dropped), or superseded (a
@@ -255,8 +255,11 @@ def open_message(db: DB):
             continue                                  # the same question: a re-send, or the "Change" prompt
         if found is None and _waits(db, r["kind"], r["ref"]):
             found = r
+            if not settle:
+                break                                 # a look only (thrift status): nothing is closed
             continue
-        db.outbox_resolve(r["kind"], r["ref"])
+        if settle:
+            db.outbox_resolve(r["kind"], r["ref"])
     return found
 
 

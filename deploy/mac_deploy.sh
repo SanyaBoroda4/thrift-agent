@@ -11,7 +11,14 @@ before="${1:-}"
 
 echo "== code $(git log --oneline -1)"
 if [ -d private/.git ]; then
-  git -C private pull --ff-only
+  if [ -f .private.bundle ]; then
+    # deploy.ps1 ships the PC's private repo as a bundle (an SSH session can't use the keychain's GitHub credential).
+    # Fast-forward only: private commits made on the Mac and not on the PC stop the deploy rather than vanish.
+    git -C private pull --ff-only ../.private.bundle main
+    rm -f .private.bundle
+  else
+    git -C private pull --ff-only
+  fi
   echo "== private $(git -C private log --oneline -1)"
 fi
 

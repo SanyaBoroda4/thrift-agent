@@ -5,6 +5,8 @@
 # launchd files), the WORKER restarted as the launchd service, then services status, `thrift status` and the last 30
 # lines of the worker log. A failed setup or test run rolls the Mac back to the commit before the pull. The poster
 # service is never started (it stays off until the owner turns publishing on). Exits non-zero on any failure.
+# private/ goes over the same SSH connection as a git bundle of the PC's private repo (the Mac's HTTPS credential for
+# the private GitHub repo lives in its login keychain, which an SSH session can't open); the Mac fast-forwards to it.
 # PowerShell 5.1: no && / || at the PowerShell level, and no double quotes inside the remote command (5.1 does not
 # escape them for native commands); the single-quoted string reaches the Mac's bash as it is.
 param([string]$MacHost = "tatiana_sorokina@192.168.68.57", [switch]$NoPush)
@@ -13,6 +15,13 @@ $ErrorActionPreference = "Stop"
 if (-not $NoPush) {
     git push
     if ($LASTEXITCODE -ne 0) { Write-Error "git push failed - nothing deployed"; exit 1 }
+}
+if (Test-Path private/.git) {
+    $bundle = Join-Path $env:TEMP "thrift-private.bundle"
+    git -C private bundle create $bundle main
+    if ($LASTEXITCODE -ne 0) { Write-Error "could not bundle private/ - nothing deployed"; exit 1 }
+    scp -q -o BatchMode=yes $bundle "${MacHost}:thrift-agent/.private.bundle"
+    if ($LASTEXITCODE -ne 0) { Write-Error "could not copy private/ to $MacHost - nothing deployed"; exit 1 }
 }
 ssh -o BatchMode=yes -o ConnectTimeout=15 $MacHost 'cd ~/thrift-agent && before=$(git rev-parse HEAD) && git pull --ff-only && bash deploy/mac_deploy.sh $before'
 if ($LASTEXITCODE -ne 0) { Write-Error "deploy failed on $MacHost (exit $LASTEXITCODE, see the output above)"; exit 1 }

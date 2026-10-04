@@ -470,7 +470,7 @@ def status() -> None:
     # The owner's Telegram queue (WO20): one open question at a time, the rest in order behind it.
     queue = approve.queue(db)
     if queue:
-        row = approve.open_message(db)
+        row = approve.open_message(db, settle=False)
         is_open = f"{row['kind']} {row['ref']}" if row else "nothing"
         print(f"[cyan]Telegram[/] open: {is_open}; {len(queue)} in the queue, next: "
               + ", ".join(f"{k} {r}" for k, r in queue[:4]) + (" …" if len(queue) > 4 else ""))
