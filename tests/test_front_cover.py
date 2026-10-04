@@ -356,3 +356,22 @@ def test_recover_command(tmp_path, monkeypatch):
     assert r.exit_code == 0, r.output
     assert f"recovered {ids[0]}: cover #0 (front, front check: front, turned 90°) was #3; category Shirts & Tops was Kids" in out
     assert f"left as it is {ids[1]}" in out
+
+
+def test_recover_never_writes_over_an_answer_that_came_in_meanwhile(tmp_path, facts, monkeypatch):
+    """The owner prices cards while recover runs: an answer that lands between its read and its write wins."""
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    monkeypatch.setattr(pipeline.approve, "pump", lambda *a: None)
+    iid = _processed_tee(s, db, tmp_path, facts, monkeypatch)
+
+    def check_while_the_owner_answers(photos, m, e):
+        import time
+        time.sleep(1.1)                                               # updated_at has whole seconds
+        pipeline.set_price(s, db, iid, 25)                            # the owner's price, meanwhile
+        return LACOSTE_CHECK
+    monkeypatch.setattr(pipeline.cover_brain, "front_check", check_while_the_owner_answers)
+    with pytest.raises(ValueError, match="changed while it was being recovered"):
+        pipeline.recover_item(s, db, iid)
+    it = db.item(iid)
+    assert it["status"] == "ready" and it["owner_price"] == 25 and loads(it["renders"])["poshmark"]["price"] == 25

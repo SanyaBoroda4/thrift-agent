@@ -785,6 +785,10 @@ def recover_item(s: Settings, db: DB, iid: str) -> dict:
             and not doc.get("ask_kids") and not doc.get("hold"):
         status = "ready"                                     # its only question is settled now; the price it has
     with db.tx():
+        if db.item(iid)["updated_at"] != it["updated_at"]:
+            # An answer came in while this ran (the worker's Telegram thread): writing now would put back what was
+            # read before it. Nothing is changed; the next run starts from the answer.
+            raise ValueError(f"item {iid} changed while it was being recovered (an answer came in) — run it again")
         db.set_item(iid, facts=facts.model_dump(), renders=renders, gate=doc, status=status,
                     views=check.model_dump() if check else it["views"], cover_hash=prep.cover_hash(photos[facts.cover_photo])
                     if 0 <= facts.cover_photo < len(photos) else it["cover_hash"])
