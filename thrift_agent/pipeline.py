@@ -700,8 +700,8 @@ def upright_view(s: Settings, db: DB, iid: str, photo: Path, fallback: int) -> i
 
 def relist(s: Settings, it, facts: Facts, renders: dict) -> dict:
     """The renders with the listing's photos, cover and form fields recomputed from `facts` — no model call: the
-    cover file (turned upright), the photo order, category / subcategory / size and the label line. Titles, tags and
-    prices stay as they are."""
+    cover file (turned upright), the photo order, category / subcategory / size and the label line; a line break the
+    model wrote as backslash + n is made a line break (WO24). Titles, tags and prices stay as they are."""
     d = Path(it["dir"])
     photos = sorted((d / "photos").glob("*.jpg"))
     kinds = photo_kinds_of(d, photos)
@@ -716,7 +716,8 @@ def relist(s: Settings, it, facts: Facts, renders: dict) -> dict:
         shown = fit_photos(order, flawed, limit)
         out[mp] = {**r, "photos": [str(cover)] + [str(photos[i]) for i in shown[1:]], "category": facts.category,
                    "subcategory": facts.subcategory, "size": sizes.size_label(facts),
-                   "description": copywriter.ensure_label_size(r.get("description") or "", facts)}
+                   "description": copywriter.ensure_label_size(copywriter.unescape_breaks(r.get("description") or ""),
+                                                               facts)}
     return out
 
 

@@ -148,6 +148,15 @@ def fix_decimal_commas(s: str) -> str:
     return re.sub(r"(?<=\d),(?=5\b)", ".", s)
 
 
+_ESCAPED_BREAK = re.compile(r"\\r\\n|\\n|\\r")
+
+
+def unescape_breaks(text: str) -> str:
+    """A line break the model wrote as the two characters backslash + n is a line break (WO24, live: the verifier's
+    rewrite left "…a bubble hem.\\nGently pre-loved…" in two listings); a written tab is a space."""
+    return _ESCAPED_BREAK.sub("\n", text or "").replace("\\t", " ")
+
+
 def _cut_at_word(text: str, limit: int) -> str:
     """At most `limit` chars, backed up to the last space when there is one."""
     head = text[:limit + 1]
@@ -179,6 +188,7 @@ def changed_fields(draft: CopyOut, audit: VerifyOut) -> list[str]:
     body is compared without its hashtag line, which the verifier never sees (verify() strips it)."""
 
     def norm(name: str, text: str) -> str:
+        text = unescape_breaks(text)                        # a break written as "\\n" is no rewrite
         if name == "depop_description":
             text = strip_tag_lines(text)
         return re.sub(r"\s+", " ", text).strip().casefold()
@@ -188,12 +198,12 @@ def changed_fields(draft: CopyOut, audit: VerifyOut) -> list[str]:
 
 
 def clean(out: CopyOut) -> CopyOut:
-    out.poshmark_title = clamp_title(out.poshmark_title)
-    out.poshmark_description = fix_decimal_commas(out.poshmark_description).strip()
+    out.poshmark_title = clamp_title(unescape_breaks(out.poshmark_title))
+    out.poshmark_description = fix_decimal_commas(unescape_breaks(out.poshmark_description)).strip()
     out.poshmark_style_tags = [t.strip() for t in out.poshmark_style_tags if t and t.strip()][:3]
     tags = [re.sub(r"[^\w]", "", t.lower()) for t in out.depop_hashtags]
     out.depop_hashtags = [t for t in tags if t][:5]
-    body = strip_tag_lines(fix_decimal_commas(out.depop_description))   # the model's own hashtags, wherever they are
+    body = strip_tag_lines(fix_decimal_commas(unescape_breaks(out.depop_description)))   # its hashtags, wherever
     tag_line = " ".join(f"#{t}" for t in out.depop_hashtags)
     limit = DEPOP_MAX - len(tag_line) - 2                    # body + blank line + tag line <= DEPOP_MAX
     if len(body) > limit:

@@ -364,6 +364,11 @@ def test_recover_keeps_the_stored_front_check_unless_asked_again(tmp_path, facts
     monkeypatch.setattr(pipeline.cover_brain, "front_check", lambda *a, **k: asked.append("front") or disagrees)
     monkeypatch.setattr(pipeline.cover_brain, "upright_check", lambda *a, **k: asked.append("upright") or 0)
     assert (pipeline.recover_item(s, db, iid)["cover"], asked) == (0, [])
+    renders = loads(db.item(iid)["renders"])                          # live: a break written as backslash + n
+    renders["poshmark"]["description"] = renders["poshmark"]["description"].replace("\n", "\\n")
+    db.set_item(iid, renders=renders)
+    assert pipeline.recover_item(s, db, iid)["card"] == "unchanged"   # the card never shows the description...
+    assert "\\" not in loads(db.item(iid)["renders"])["poshmark"]["description"]           # ...and it is mended
     out = pipeline.recover_item(s, db, iid, recheck=True)
     assert (out["cover"], out["upright"], asked) == (3, 0, ["front", "upright"])
     assert loads(db.item(iid)["views"])["front"] == 3                 # the new look is the stored one now

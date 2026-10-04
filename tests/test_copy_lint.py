@@ -93,6 +93,21 @@ def test_changed_fields_ignores_whitespace_case_and_tag_line():
     assert changed_fields(draft, edited) == ["poshmark_title", "depop_description"]
 
 
+def test_a_line_break_written_as_backslash_n_is_a_line_break():
+    """WO24, live: the verifier's rewrite left "…a bubble hem.\\nGently pre-loved…" — the two characters — in two
+    listings, and counted as a rewrite that reported no claim."""
+    written = "A white skirt.\\nGently pre-loved, please see photos for condition."
+    draft = clean(co(poshmark_description="A white skirt.\nGently pre-loved, please see photos for condition."))
+    audit = VerifyOut(poshmark_title=draft.poshmark_title, poshmark_description=written,
+                      depop_description=draft.depop_description)
+    assert changed_fields(draft, audit) == []                         # no rewrite
+    out = clean(co(poshmark_title="Zara Skirt\\nsize M", poshmark_description=written,
+                   depop_description="a white skirt\\r\\nsize m"))
+    assert out.poshmark_title == "Zara Skirt size M" and "\\" not in out.poshmark_description + out.depop_description
+    assert out.poshmark_description == "A white skirt.\nGently pre-loved, please see photos for condition."
+    assert out.depop_description.startswith("a white skirt\nsize m\n\n#")
+
+
 def test_facts_view_omits_null_facts(facts):
     view = facts_view(facts(material=Ev(), features=[], color_name=None))
     for absent in ("material", "features", "color_name", "style_name", "size_eu", "cover_photo", "photo_order",

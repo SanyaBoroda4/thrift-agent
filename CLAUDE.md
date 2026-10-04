@@ -290,6 +290,10 @@ The owner shares retailer screenshots (product page with price, style name, colo
   back — tags are optional, so an unusable one is left out, never a question or a draft.
 - **Two-piece sets (WO24):** two garments sold together are a "2-Piece Set" in the title ("… Corset Top & Bubble Skirt
   2-Piece Set size M"; the copy prompt). Their category is the bottom's (see Categories), never Dresses.
+- **Line breaks are line breaks (WO24):** a break the model writes as the two characters backslash + n (live: the
+  verifier's rewrite, in two listings, which also counted as "rewrote without reporting a claim") is made a real one by
+  `copy.clean` / `copy.unescape_breaks`, ignored by `changed_fields`, and mended in stored listings by `relist`
+  (`thrift recover`).
 - **The cover is the FRONT of the item (owner rule, absolute — WO20, WO23):** the item alone, its front, flat lay or on
   a hanger, clean background — never the back, never worn / try-on / mirror, never a label, tag, flaw close-up, box or
   screenshot. A garment photographed sideways or upside down is still a valid front flat lay; a front that shows a
