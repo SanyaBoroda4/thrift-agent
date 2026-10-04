@@ -24,6 +24,14 @@ taps Share → "New item", and gets a Telegram ping when it's listed or when som
   The worker runs as the launchd service (`com.thriftagent.worker`, KeepAlive). **The poster service stays off** until
   the owner turns publishing on (the two keys, unchanged); deploy never starts it, and there is no bare
   `start`/`restart` that would.
+- **Worker trouble is told once (WO22, `alerts.py`).** The iCloud inbox that can't be read — a read macOS refuses or
+  interrupts (EPERM / EACCES / EINTR: python3.14 waiting for its iCloud Drive permission), or a look at the inbox stuck
+  in that wait for 2 min (noticed by the Telegram thread) — is retried quietly; after 2 min ONE message ("⚠️ Can't
+  read the iCloud inbox. On the Mac: System Settings → Privacy & Security → Files & Folders → python3.14 → iCloud
+  Drive ON …"), nothing more until it recovers, then "✓ inbox readable again". Items already split keep being
+  processed. Any other worker error (a tick, a batch, an item) goes out once and then at most once a day per
+  identical error (item/batch ids ignored: ten items failing on one bad key are one message); every occurrence is
+  in the event log and `thrift status`.
 - **One worker, ever:** `thrift run` holds `worker.lock` next to the DB (an OS lock, dropped when the process ends; the
   holder is in `worker.lock.pid`); a second one exits at once with "another worker is already running (pid …)".
   `services.sh start worker` refuses while a `thrift run` runs outside launchd (a Terminal window). Two workers would

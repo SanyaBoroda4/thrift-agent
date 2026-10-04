@@ -15,9 +15,9 @@ from rich import print
 from rich.markup import escape
 from rich.table import Table
 
-from thrift_agent import approve, config, notify, pipeline, runlock
+from thrift_agent import alerts, approve, config, notify, pipeline, runlock
 from thrift_agent.config import settings
-from thrift_agent.db import DB, loads, now
+from thrift_agent.db import DB, loads
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 telegram_app = typer.Typer(help="Telegram bot helpers: setup (find the ids for .env) and test (send a message).")
@@ -31,7 +31,7 @@ def _startup() -> None:
     load_dotenv(config.ENV_FILE)
 RESEND_CHECK_SECONDS = 3600      # how often the worker looks for batches/items waiting longer than resend_after_hours
 WORKER_LOCK = "worker.lock"      # next to the DB: one `thrift run` per machine (runlock)
-SCAN_KEY = "worker_inbox_scan"   # kv: when the worker last finished looking at the inbox (deploy checks it moves)
+SCAN_KEY = alerts.SCAN_DONE      # kv: when the worker last finished looking at the inbox (deploy checks it moves)
 
 
 def _db() -> DB:
@@ -51,14 +51,7 @@ def _tick(s, db) -> int:
     """Register what the iPhone shared, then process every new batch and item in the owner's queue order (WO20), one
     at a time and looking again after each: the card the owner needs next is ready first, and an item sent back for
     reprocessing by an answer jumps ahead of the rest. Each is taken once per tick."""
-    n = 0
-    folders = pipeline.ready_folders(s)
-    # Proof of life for deploy/mac_deploy.sh: on the Mac a launchd process waits here, silently, until macOS's "would
-    # like to access files in your iCloud Drive" is allowed on the Mac's screen.
-    db.kv_set(SCAN_KEY, now())
-    for folder in folders:
-        if pipeline.register(s, db, folder):
-            n += 1
+    n = _scan_inbox(s, db)
     done: set[tuple[str, str]] = set()
     while job := next((j for j in approve.processing_order(db) if j not in done), None):
         done.add(job)
@@ -71,24 +64,45 @@ def _tick(s, db) -> int:
     return n
 
 
+def _scan_inbox(s, db) -> int:
+    """Register what the iPhone shared. A read of the iCloud inbox that macOS refuses or interrupts (python3.14 still
+    waiting for its iCloud Drive permission) is not an error to report each time (WO22): it is retried quietly on the
+    next tick, and the owner gets one message if it lasts (alerts.inbox_trouble). The start and the end of each look
+    are recorded: the Telegram thread notices a look stuck on the permission prompt, deploy that the worker got
+    through one. Processing of the items already split goes on either way."""
+    alerts.scan_started(db)
+    try:
+        n = sum(1 for folder in pipeline.ready_folders(s) if pipeline.register(s, db, folder))
+    except OSError as e:
+        if not alerts.inbox_unreadable(e):
+            raise
+        alerts.inbox_trouble(db, f"{type(e).__name__}: {e}")
+        return 0
+    alerts.scan_done(db)
+    alerts.inbox_ok(db)
+    return n
+
+
 def _safe_tick(s, db) -> int:
-    """One worker iteration that never kills the service: an error while scanning the inbox (iCloud evicting a
-    file mid-scan, a permissions hiccup) is logged and simply retried on the next tick."""
+    """One worker iteration that never kills the service: an error is logged, retried on the next tick, and told
+    once (then at most once a day while it keeps happening, WO22)."""
     try:
         return _tick(s, db)
     except Exception as e:  # noqa: BLE001
         db.log(None, "error", traceback.format_exc())
-        notify.say(f"❌ worker tick: {type(e).__name__}: {e}")
+        alerts.once(db, f"❌ worker tick: {type(e).__name__}: {e}")
         return 0
 
 
 def _guard(db, ref, fn, on_fail) -> None:
+    """One batch or item: a failure marks it failed and is told once a day per identical error, whichever item it
+    hits (ten items failing on one bad API key are one message; thrift status lists them all)."""
     try:
         fn()
     except Exception as e:  # noqa: BLE001
         on_fail()
         db.log(ref, "error", traceback.format_exc())
-        notify.say(f"❌ {ref}: {type(e).__name__}: {e}")
+        alerts.once(db, f"❌ {ref}: {type(e).__name__}: {e}")
 
 
 def _tick_unless_worker(s, db) -> None:
@@ -135,6 +149,8 @@ def _telegram_iteration(s, db, bot, state: dict) -> None:
     waited longer than telegram.resend_after_hours."""
     _safe_poll(s, db, bot, int(s.get("telegram.poll_timeout", 25)))
     _safe_pump(s, db)
+    if started := alerts.scan_stuck(db):                   # the main thread waits on macOS's permission prompt
+        alerts.inbox_trouble(db, f"inbox scan stuck since {started}", since=started)
     if time.monotonic() - state.get("last_resend", 0) >= RESEND_CHECK_SECONDS:
         state["last_resend"] = time.monotonic()
         try:

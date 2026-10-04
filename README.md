@@ -108,6 +108,10 @@ status` and the last 30 lines of the worker log. A red test rolls the Mac back t
 failure exits non-zero. Only one worker can run: `thrift run` holds a lock next to the DB and a second one refuses
 to start ("another worker is already running (pid …)"); `services.sh start worker` refuses while a `thrift run` runs
 in a Terminal window. Two workers would take each other's Telegram updates.
+When the worker can't read the iCloud inbox (macOS hasn't allowed python3.14 into iCloud Drive yet), it retries
+quietly and, after 2 minutes, sends ONE message saying where to allow it (System Settings → Privacy & Security → Files &
+Folders → python3.14 → iCloud Drive), then "✓ inbox readable again" once it can. Any other repeated error is sent
+once and then at most once a day.
 Over SSH Claude deploys and checks status and logs after every work order, and may run status, logs, `requeue`,
 `redo` and the tests; never `poster --publish-first`, the poster or anything that touches the live Poshmark account,
 `mark-posted`, deleting data, or changes to `settings.local.yaml` / `.env`.
