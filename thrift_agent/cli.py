@@ -324,6 +324,49 @@ def recover(ref: str, recheck: bool = typer.Option(
 
 
 @app.command()
+def reprocess(item_id: str) -> None:
+    """Send an item that waits for the owner (or is ready) through the pipeline again, in place — today's prompts and
+    copy rules (a set's "2-Piece Set"), the owner's answers kept (price, condition, Girls/Boys, cover, category, no
+    brand). Its card stays open meanwhile and is sent again only when what it shows changed (WO25). Model calls.
+    e.g.  thrift reprocess i_..."""
+    s, db = settings(), _db()
+    try:
+        out = pipeline.reprocess(s, db, item_id)
+    except ValueError as e:
+        print(f"[red]not reprocessed[/] {item_id}: {escape(str(e))}")
+        raise typer.Exit(1) from None
+    card = {"sent again": "card sent again", "changed": "card changed (goes out when its turn comes)",
+            "unchanged": "card unchanged (not sent again)"}.get(out.get("card"), "no card")
+    print(f"[green]reprocessed[/] {item_id}: {escape(str(out.get('title')))}; {escape(str(out.get('category')))}; "
+          f"{out['status']}; {card}")
+    approve.pump(s, db)
+
+
+@app.command()
+def category(item_id: str, path: str = typer.Argument(..., metavar='"<category › subcategory>"')) -> None:
+    """Answer "Which category?" (the CLI twin of its buttons): a real Poshmark path, e.g. "Skirts › Skirt Sets" or
+    "Shorts" ("Kids > Matching Sets" for another department). The model's own pick is settled at once; another path
+    reprocesses the item with it."""
+    s, db = settings(), _db()
+    it = db.item(item_id)
+    facts = pipeline.Facts.model_validate(loads(it["facts"])) if it is not None and it["facts"] else None
+    placed = pipeline.taxonomy.parse_path(path, facts) if facts else None
+    try:
+        if placed is None:
+            raise ValueError(f"no such Poshmark category: {path!r}" if facts else f"item {item_id} has no listing yet")
+        status = pipeline.set_category(s, db, item_id, placed)
+    except ValueError as e:
+        print(f"[red]not set[/] {item_id}: {escape(str(e))}")
+        raise typer.Exit(1) from None
+    db.outbox_resolve("category", item_id)
+    label = pipeline.taxonomy.path_label(placed)
+    print(f"[green]{escape(label)}[/] set for {item_id} — status {status}")
+    approve.announce(s, f"{item_id}: category {label} set from the CLI")
+    _tick_unless_worker(s, db)
+    approve.pump(s, db)
+
+
+@app.command()
 def redo(batch_id: str) -> None:
     """Rebuild a batch's items from the grouping already confirmed (no new contact sheet): every item that never
     reached the site goes through the pipeline again — new cover, new price, a new card in the queue — and its

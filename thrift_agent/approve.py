@@ -32,11 +32,12 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from thrift_agent import notify, pipeline
+from thrift_agent.brain import taxonomy
 from thrift_agent.brain.price import note_floor
 from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
 from thrift_agent.ingest import segment as seg
-from thrift_agent.schema import POSH_CONDITION, Render
+from thrift_agent.schema import POSH_CONDITION, Facts, Render
 from thrift_agent.telegram import MAX_CAPTION, Bot
 
 OFFSET_KEY = "telegram_offset"                       # kv: the last getUpdates update_id we handled
@@ -44,9 +45,9 @@ LOCK_KEY = "telegram_queue_lock"                     # kv: who is sending the ne
 ROUND_KEY = "telegram_round"                         # kv: items queued since the queue was last empty ("of 10")
 LOCK_TTL = 120                                       # seconds: a sender's lock older than this was abandoned (a crash)
 DEV_CHAT = "dev"                                     # outbox chat of the dev print (no bot)
-QUEUE_KINDS = ("batch", "regroup", "condition", "kids", "item", "owner_q")     # outbox kinds that wait for an answer
-SENDERS = {"batch": "send_batch", "regroup": "send_regroup", "condition": "ask_condition", "kids": "ask_kids",
-           "item": "send_item", "owner_q": "send_owner_q"}
+QUEUE_KINDS = ("batch", "regroup", "condition", "category", "kids", "item", "owner_q")   # kinds that wait for an answer
+SENDERS = {"batch": "send_batch", "regroup": "send_regroup", "condition": "ask_condition", "category": "ask_category",
+           "kids": "ask_kids", "item": "send_item", "owner_q": "send_owner_q"}
 NEW_BATCH, NEW_ITEM = "new_batch", "new_item"        # queue entries still being processed: the queue holds there
 OWNER_WAITING = ("awaiting_condition", "awaiting_price", "needs_info", "needs_owner")   # item waits for an answer
 QUEUED_ITEMS = ("new", *OWNER_WAITING)               # item statuses in the queue ('new': still being processed)
@@ -62,6 +63,9 @@ CONDITION_TAPPED = {"nwt": "New with tags", "like_new": "Like New (brand new, no
 KIDS_QUESTION = "Girls or Boys? (Poshmark files kids sizes under one of them)"
 KIDS_BUTTONS = (("Girls", "girls"), ("Boys", "boys"))
 KIDS_HINT = "Tap a button, or reply girls / boys"
+CATEGORY_QUESTION = "Which category? (not sure from the photos)"
+CATEGORY_HINT = "Tap a category, or reply with one, e.g. 'Shorts' or 'Skirts › Skirt Sets'"
+NO_BRAND_BUTTON = "No brand"
 
 _NUM = r"\d+(?:\.\d+)?"
 # A number that is money, whichever way the owner says it: "$85", "$ 85", "85 usd", "85 dollars", "price 85", "list: 85".
@@ -178,15 +182,15 @@ def parse_kids(text: str) -> str | None:
 # ---------- the queue (WO20) ----------
 
 def _item_kind(status: str, gate: dict) -> str:
-    """What an item in the queue waits for: being processed, the condition, Girls/Boys, its price card, or the
-    poster's question."""
+    """What an item in the queue waits for: being processed, the condition, its category (WO25), Girls/Boys, its price
+    card, or the poster's question."""
     if status == "new":
         return NEW_ITEM
     if status == "awaiting_condition":
         return "condition"
     if status == "needs_owner":
         return "owner_q"
-    return "kids" if gate.get("ask_kids") else "item"
+    return "category" if gate.get("ask_category") else "kids" if gate.get("ask_kids") else "item"
 
 
 def queue(db: DB) -> list[tuple[str, str]]:
@@ -442,7 +446,7 @@ def size_words(render: dict, facts: dict) -> str | None:
         choice = None
     if choice is None:
         return render.get("size") or _ev(facts, "size_us")
-    if choice.tab in ("Girls", "Boys", "Baby") and "(" not in choice.button:
+    if choice.tab and choice.tab != "Standard" and "(" not in choice.button:   # "6 (Boys)", "14 (Plus)", "5 (Baby)"
         return f"{choice.button} ({choice.tab})"
     return choice.button
 
@@ -489,10 +493,15 @@ def card(iid: str, it) -> tuple[str, str] | None:
     a card is sent again only when what it shows changed. Pure, like item_caption."""
     if it["status"] not in ("awaiting_condition", *WAITING_ITEM):
         return None
-    kind = _item_kind(it["status"], loads(it["gate"]) or {})
+    gate = loads(it["gate"]) or {}
+    kind = _item_kind(it["status"], gate)
     if kind == "item":
         caption, price = item_caption(iid, it)
-        return kind, f"{caption}\n${price}"
+        return kind, f"{caption}\n${price}" + (f"\n[{NO_BRAND_BUTTON}]" if asks_brand(gate) else "")
+    if kind == "category":
+        dept = (loads(it["facts"]) or {}).get("department")
+        return kind, "\n".join([_title(it, iid), CATEGORY_QUESTION,
+                                *(taxonomy.path_label(p, dept) for p in gate["ask_category"])])
     return kind, f"{_title(it, iid)}\n{CONDITION_QUESTION if kind == 'condition' else KIDS_QUESTION}"
 
 
@@ -511,14 +520,23 @@ def price_options(price: int, floor: int = 20, step: int = 5) -> list[int]:
     return sorted(out)
 
 
-def item_buttons(iid: str, price: int | None, floor: int = 20, step: int = 5) -> list[list[dict]]:
-    """[✅ $X] / four nearby prices / [Later] [Change] [Wrong photos]. Every price button sets that price
-    (approve:<item>:<amount>); [Wrong photos] reopens the batch's grouping (regroup:<item>, WO20b)."""
+def asks_brand(gate: dict) -> bool:
+    """Is the brand one of the card's questions (unreadable, or read but unsure)?"""
+    return any(q.startswith(("Brand?", "Brand:")) for q in gate.get("questions") or [])
+
+
+def item_buttons(iid: str, price: int | None, floor: int = 20, step: int = 5,
+                 no_brand: bool = False) -> list[list[dict]]:
+    """[✅ $X] / four nearby prices / [No brand] (when the brand is asked, WO25) / [Later] [Change] [Wrong photos]. Every
+    price button sets that price (approve:<item>:<amount>); [No brand] leaves Poshmark's brand empty (nobrand:<item>);
+    [Wrong photos] reopens the batch's grouping (regroup:<item>, WO20b)."""
     rows = []
     if price:
         rows.append([{"text": f"✅ ${price}", "callback_data": f"approve:{iid}:{price}"}])
         if options := price_options(price, floor, step):
             rows.append([{"text": f"${p}", "callback_data": f"approve:{iid}:{p}"} for p in options])
+    if no_brand:
+        rows.append([{"text": NO_BRAND_BUTTON, "callback_data": f"nobrand:{iid}"}])
     rows.append([{"text": "Later", "callback_data": f"later:{iid}"}, {"text": "Change", "callback_data": f"change:{iid}"},
                  {"text": "Wrong photos", "callback_data": f"regroup:{iid}"}])
     return rows
@@ -538,7 +556,7 @@ def send_item(s: Settings, db: DB, iid: str) -> None:
         notify.photo(cover, text) if cover.is_file() else notify.say(text)
         return
     floor = max(int(s["pricing"]["floor"]), note_floor(it["note"]) or 0)
-    buttons = item_buttons(iid, price, floor, int(s["pricing"]["round_to"]))
+    buttons = item_buttons(iid, price, floor, int(s["pricing"]["round_to"]), asks_brand(loads(it["gate"]) or {}))
     if cover.is_file() and len(caption) <= MAX_CAPTION:
         mid = bot.send_photo(cover, caption, buttons)
     else:
@@ -572,6 +590,24 @@ def ask_condition(s: Settings, db: DB, iid: str) -> None:
     "Brand new or worn? (couldn't tell from the photos)" [NWT] [Like New] [Good]."""
     _ask(s, db, iid, "condition", CONDITION_QUESTION, condition_buttons(iid),
          f"thrift condition {iid} nwt|like_new|good")
+
+
+def category_buttons(iid: str, options: list[dict], department: str | None) -> list[list[dict]]:
+    """One button per real Poshmark path, e.g. [Skirts › Skirt Sets] [Shorts] (cat:<item>:<n>)."""
+    return [[{"text": taxonomy.path_label(p, department), "callback_data": f"cat:{iid}:{n}"}]
+            for n, p in enumerate(options)]
+
+
+def ask_category(s: Settings, db: DB, iid: str) -> None:
+    """The model wasn't 0.70 sure of the category, or gave one Poshmark doesn't have (WO25): "Which category?" with
+    1-3 real paths as buttons, before Girls/Boys and the price card (the price and the size menu follow it)."""
+    it = db.item(iid)
+    if it is None:
+        raise ValueError(f"unknown item {iid}")
+    options = (loads(it["gate"]) or {}).get("ask_category") or []
+    dept = (loads(it["facts"]) or {}).get("department")
+    _ask(s, db, iid, "category", CATEGORY_QUESTION, category_buttons(iid, options, dept),
+         f'thrift category {iid} "<category › subcategory>"')
 
 
 def kids_buttons(iid: str) -> list[list[dict]]:
@@ -667,6 +703,8 @@ def _route(s: Settings, db: DB, bot: Bot, update: dict) -> str:
             bot.send_message(KIDS_HINT, reply_to=mid)
             return f"kids {ref}: unreadable reply {text!r}"
         return _set_kids(s, db, bot, ref, choice, mid)
+    if kind == "category":
+        return _reply_category(s, db, bot, ref, text, mid)
     return f"ignored: unknown outbox kind {kind}"
 
 
@@ -680,6 +718,11 @@ def _typed(s: Settings, db: DB, bot: Bot, text: str, mid: int | None) -> str:
             bot.send_message("No price card is open", reply_to=mid)
             return f"typed {text!r}: no price card open"
         return _set_cover(s, db, bot, row["ref"], int(m[1]), mid)
+    if pipeline.NO_BRAND_WORDS.fullmatch((text or "").strip(" .!")):
+        row = open_message(db)
+        if row is None or row["kind"] != "item":
+            return "ignored: not a reply to the bot"
+        return _set_no_brand(s, db, bot, row["ref"], mid)
     amount = plain_price(text)
     if amount is None:
         return "ignored: not a reply to the bot"
@@ -706,7 +749,8 @@ def _set_price(s: Settings, db: DB, bot: Bot, iid: str, amount: int, reply_to: i
         return f"price {iid}: rejected ${amount}: {e}"
     if status in OWNER_WAITING:                        # still open: a re-share hold, or Girls/Boys not answered yet
         gate = loads(db.item(iid)["gate"]) or {}
-        why = HELD_HINT if gate.get("hold") else " (Girls or Boys? is still open)" if gate.get("ask_kids") else ""
+        why = (HELD_HINT if gate.get("hold") else " (Which category? is still open)" if gate.get("ask_category")
+               else " (Girls or Boys? is still open)" if gate.get("ask_kids") else "")
         bot.send_message(f"✓ ${amount} recorded{why}", reply_to=reply_to)
     else:
         db.outbox_resolve("item", iid)
@@ -757,6 +801,14 @@ def _handle_callback(s: Settings, db: DB, bot: Bot, cq: dict) -> str:
     if parts[0] == "cond" and len(parts) == 3 and parts[2] in CONDITION_TAPPED:
         result = _set_condition(s, db, bot, parts[1], parts[2], src_mid)
         bot.answer_callback(cid, CONDITION_TAPPED[parts[2]] if "rejected" not in result else "Could not set it")
+        return result
+    if parts[0] == "cat" and len(parts) == 3 and parts[2].isdigit():
+        result = _set_category_option(s, db, bot, parts[1], int(parts[2]), src_mid)
+        bot.answer_callback(cid, "Got it" if "rejected" not in result else "Could not set it")
+        return result
+    if parts[0] == "nobrand" and len(parts) == 2:
+        result = _set_no_brand(s, db, bot, parts[1], src_mid)
+        bot.answer_callback(cid, NO_BRAND_BUTTON if "rejected" not in result else "Could not set it")
         return result
     if parts[0] == "kids" and len(parts) == 3 and parts[2] in ("girls", "boys"):
         result = _set_kids(s, db, bot, parts[1], parts[2], src_mid)
@@ -834,9 +886,88 @@ def _set_cover(s: Settings, db: DB, bot: Bot, iid: str, n: int, reply_to: int | 
     return f"cover {iid}: photo {n} ({status})"
 
 
+def _set_no_brand(s: Settings, db: DB, bot: Bot, iid: str, reply_to: int | None) -> str:
+    """The owner's [No brand] (WO25): Poshmark's brand stays empty and the brand question goes. A card still waiting
+    for its price stays as it is (its price buttons still work); a listing that named the model's guess is rewritten
+    first, and its card follows."""
+    try:
+        status = pipeline.set_no_brand(s, db, iid)
+    except ValueError as e:
+        bot.send_message(str(e), reply_to=reply_to)
+        return f"nobrand {iid}: rejected: {e}"
+    if status == "new":
+        db.outbox_resolve("item", iid)
+        bot.send_message("✓ No brand — rewriting the listing without one, its card follows", reply_to=reply_to)
+    elif status in OWNER_WAITING:
+        bot.send_message("✓ No brand — Poshmark's brand stays empty. Now the price, on the card above", reply_to=reply_to)
+    else:
+        db.outbox_resolve("item", iid)
+        bot.send_message(f"✓ No brand — {progress(db)}", reply_to=reply_to)
+    return f"nobrand {iid}: ({status})"
+
+
+def _set_category_option(s: Settings, db: DB, bot: Bot, iid: str, n: int, reply_to: int | None) -> str:
+    """A tap on "Which category?": option n of the item's stored options."""
+    it = db.item(iid)
+    options = ((loads(it["gate"]) or {}).get("ask_category") or []) if it else []
+    if not 0 <= n < len(options):
+        bot.send_message("That choice isn't open any more", reply_to=reply_to)
+        return f"category {iid}: rejected option {n}"
+    return _set_category(s, db, bot, iid, options[n], reply_to)
+
+
+def _set_category(s: Settings, db: DB, bot: Bot, iid: str, path: dict, reply_to: int | None) -> str:
+    try:
+        status = pipeline.set_category(s, db, iid, path)
+    except ValueError as e:
+        bot.send_message(str(e), reply_to=reply_to)
+        return f"category {iid}: rejected {path}: {e}"
+    db.outbox_resolve("category", iid)
+    label = taxonomy.path_label(path)
+    bot.send_message(f"✓ {label}" + (" — reprocessing, its card comes next" if status == "new" else
+                                     "" if status in OWNER_WAITING else f" — {progress(db)}"), reply_to=reply_to)
+    return f"category {iid}: {label} ({status})"
+
+
+def _reply_category(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int | None) -> str:
+    """A typed answer to "Which category?" (WO25): one of the options by its words or number, another real path
+    ("Shorts", "Skirts › Skirt Sets"), or anything else as a note — the item is reprocessed with it, as before."""
+    it = db.item(iid)
+    if it is None or not (text or "").strip():
+        bot.send_message(CATEGORY_HINT, reply_to=mid)
+        return f"category {iid}: empty reply"
+    options = (loads(it["gate"]) or {}).get("ask_category") or []
+    if text.strip().isdigit() and 1 <= int(text.strip()) <= len(options):
+        return _set_category(s, db, bot, iid, options[int(text.strip()) - 1], mid)
+    facts = Facts.model_validate(loads(it["facts"]))
+    if path := taxonomy.parse_path(text, facts):
+        return _set_category(s, db, bot, iid, path, mid)
+    try:
+        pipeline.answer(s, db, iid, text)
+    except ValueError as e:
+        bot.send_message(str(e), reply_to=mid)
+        return f"category {iid}: rejected {text!r}: {e}"
+    db.outbox_resolve("category", iid)
+    bot.send_message(f"✓ noted {text!r}, reprocessing", reply_to=mid)
+    return f"category {iid}: noted {text!r}"
+
+
 def _reply_item(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int | None) -> str:
     if m := COVER_CMD.match(text or ""):
         return _set_cover(s, db, bot, iid, int(m[1]), mid)
+    if pipeline.NO_BRAND_WORDS.search(text or ""):     # "no brand", "unbranded, 25": the [No brand] button (WO25)
+        price, note = parse_reply(pipeline.NO_BRAND_WORDS.sub("", text).strip(" ,.;:-!"))
+        if price is not None:
+            _set_price(s, db, bot, iid, price, mid)      # first: an approved price stays through any reprocessing
+        result = _set_no_brand(s, db, bot, iid, mid)
+        if note and "rejected" not in result:
+            try:
+                pipeline.answer(s, db, iid, note)
+                db.outbox_resolve("item", iid)
+                bot.send_message(f"✓ noted {note!r}, reprocessing", reply_to=mid)
+            except ValueError as e:
+                bot.send_message(str(e), reply_to=mid)
+        return result
     price, note = parse_reply(text)
     if price is None and note is None:
         bot.send_message(ITEM_HINT, reply_to=mid)

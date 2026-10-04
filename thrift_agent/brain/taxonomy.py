@@ -9,6 +9,7 @@ would never be grounds for a question: the poster asks (needs_owner) if the live
 """
 from __future__ import annotations
 
+import json
 import re
 from functools import lru_cache
 
@@ -18,11 +19,33 @@ from thrift_agent.config import ROOT
 from thrift_agent.schema import Facts
 
 TAXONOMY_FILE = ROOT / "data" / "poshmark_taxonomy.yaml"
+CATALOG_FILE = ROOT / "data" / "poshmark_catalog.json"
+SEP = " › "                                          # "Skirts › Skirt Sets": a category path as the owner sees it
 
 
 @lru_cache(maxsize=1)
 def load() -> dict:
     return yaml.safe_load(TAXONOMY_FILE.read_text(encoding="utf-8"))
+
+
+@lru_cache(maxsize=1)
+def catalog() -> dict:
+    """Poshmark's own catalog of the create-listing form (data/poshmark_catalog.json, read 2026-10-04): every
+    department's categories with their subcategories and the size menu of each size tab."""
+    return json.loads(CATALOG_FILE.read_text(encoding="utf-8"))
+
+
+def size_menus(department: str, category: str, subcategory: str | None = None) -> dict[str, list[str]]:
+    """{tab: [size, ...]}: the size menu of each tab the form shows for this category, in the form's order (Women Tops:
+    Standard, Plus, Petite, Juniors, Maternity; Men: Standard, Big & Tall; Kids: Baby, Girls, Boys; Women Shoes:
+    Standard only), or {} when the catalog has none. The children the catalog flattened under Women's Global &
+    Traditional Wear (Kurtas, Sarees…) carry their own menus."""
+    cats = ((catalog().get("departments") or {}).get(department) or {}).get("categories") or {}
+    found = _find(category, cats) if category else None
+    menus = (cats.get(found) or {}).get("size_sets") if found else None
+    if not menus and subcategory and (child := _find(subcategory, cats)):
+        menus = cats[child].get("size_sets")
+    return {tab: list(sizes) for tab, sizes in (menus or {}).items() if sizes}
 
 
 def _key(name: str) -> str:
@@ -158,6 +181,68 @@ def fit(facts: Facts) -> tuple[Facts, list[str], list[str]]:
         sub = found
     return facts.model_copy(update={"category": category, "subcategory": sub}), notes, []
 
+
+
+# ---- "Which category?" (WO25): real paths for the owner's buttons ----
+
+def place(facts: Facts, department: str | None, category: str, subcategory: str | None = None) -> dict | None:
+    """{"department", "category", "subcategory"} on Poshmark's names (fit() on this item with these names), or None
+    when Poshmark has no such department or category. A subcategory it doesn't have is left out, as fit() does."""
+    f, _, questions = fit(facts.model_copy(update={"department": department or facts.department, "category": category,
+                                                   "subcategory": subcategory}))
+    categories = (load()["departments"].get(f.department) or {}).get("categories") or {}
+    if questions or f.category not in categories or _key(f.category) == "other":     # "Other" is never an answer
+        return None
+    return {"department": f.department, "category": f.category, "subcategory": f.subcategory}
+
+
+def path_label(path: dict, department: str | None = None) -> str:
+    """ "Skirts › Skirt Sets", "Shorts"; "Kids › Matching Sets" when the path's department isn't `department`."""
+    head = [path["department"]] if department and path.get("department") not in (None, department) else []
+    return SEP.join([*head, path["category"], *([path["subcategory"]] if path.get("subcategory") else [])])
+
+
+def _all_parents(name: str, categories) -> list[tuple[str, str]]:
+    """Every (category, subcategory) that has `name` as a subcategory — whole names first, as in _parent."""
+    for match in (_whole, _part):
+        if hits := [(c, sub) for c, subs in categories.items() for sub in match(name, subs)]:
+            return hits
+    return []
+
+
+def category_options(facts: Facts, limit: int = 3) -> list[dict]:
+    """Up to `limit` real Poshmark paths to offer the owner (WO25): the model's own pick when Poshmark has it, the
+    alternatives it weighed, then every category that has its word as a subcategory ("Maxi": Dresses, Skirts)."""
+    out: list[dict] = []
+
+    def add(path: dict | None) -> None:
+        if path and path not in out:
+            out.append(path)
+
+    add(place(facts, facts.department, facts.category, facts.subcategory))
+    for alt in facts.category_alternatives:
+        add(place(facts, alt.department, alt.category, alt.subcategory))
+    categories = (load()["departments"].get(facts.department) or {}).get("categories") or {}
+    for word in (facts.category, facts.subcategory):
+        for category, sub in _all_parents(word, categories) if word and word.strip() else []:
+            add({"department": facts.department, "category": category, "subcategory": sub})
+    return out[:limit]
+
+
+_PATH_SPLIT = re.compile(r"\s*(?:›|>|/)\s*")
+
+
+def parse_path(text: str, facts: Facts) -> dict | None:
+    """The owner's typed category on Poshmark's names — "Shorts", "skirt sets", "category Skirts › Skirt Sets",
+    "Kids > Matching Sets" — or None."""
+    body = re.sub(r"^\s*(?:category|cat)\b\s*[:=]?\s*", "", text or "", flags=re.I).strip(" .")
+    parts = [x for x in _PATH_SPLIT.split(body) if x.strip()]
+    department = None
+    if len(parts) > 1 and (dept := _find(parts[0], load()["departments"])):
+        department, parts = dept, parts[1:]
+    if not 1 <= len(parts) <= 2:
+        return None
+    return place(facts, department, parts[0], parts[1] if len(parts) == 2 else None)
 
 def style_tags() -> list[str]:
     """Poshmark's curated style tags, as its form lists them."""

@@ -1,0 +1,4153 @@
+{
+ "source": "poshmark.com/create-listing catalogMeta (read 2026-10-04 from the logged-in listing form; nothing saved)",
+ "note": "Read from Poshmark's own catalog on the listing form. Women: the entries after 'Global & Traditional Wear' up to 'Other' (Ao Dais, Kurtas, ...) are children of Global & Traditional Wear, flattened; their size_sets are shortened to Standard. Men's Global & Traditional Wear children and Electronics size menus (all One Size) are left out. size_sets = the US size menu per size tab (e.g. Kids: Baby/Girls/Boys).",
+ "updated_at": "2026-03-04T16:54:56-08:00",
+ "departments": {
+  "Women": {
+   "slug": "Women",
+   "categories": {
+    "Accessories": {
+     "slug": "Accessories",
+     "aliases": [],
+     "subcategories": [
+      "Belts",
+      "Face Masks",
+      "Glasses",
+      "Gloves & Mittens",
+      "Hair Accessories",
+      "Hats",
+      "Hosiery & Socks",
+      "Key & Card Holders",
+      "Laptop Cases",
+      "Phone Cases",
+      "Scarves & Wraps",
+      "Sunglasses",
+      "Tablet Cases",
+      "Umbrellas",
+      "Watches"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Bags": {
+     "slug": "Bags",
+     "aliases": [
+      "Clutches & Wallets",
+      "Handbags"
+     ],
+     "subcategories": [
+      "Baby Bags",
+      "Backpacks",
+      "Clutches & Wristlets",
+      "Cosmetic Bags & Cases",
+      "Crossbody Bags",
+      "Hobos",
+      "Laptop Bags",
+      "Mini Bags",
+      "Satchels",
+      "Shoulder Bags",
+      "Totes",
+      "Travel Bags",
+      "Wallets"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Dresses": {
+     "slug": "Dresses",
+     "aliases": [
+      "Dresses & Skirts"
+     ],
+     "subcategories": [
+      "Asymmetrical",
+      "Backless",
+      "High Low",
+      "Long Sleeve",
+      "Maxi",
+      "Midi",
+      "Mini",
+      "One Shoulder",
+      "Prom",
+      "Strapless",
+      "Wedding"
+     ],
+     "size_sets": {
+      "Standard": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ],
+      "Plus": [
+       "14",
+       "14W",
+       "16",
+       "16W",
+       "18",
+       "18W",
+       "20",
+       "20W",
+       "22",
+       "22W",
+       "24",
+       "24W",
+       "26",
+       "26W",
+       "28",
+       "28W",
+       "30",
+       "30W",
+       "32",
+       "32W",
+       "XXL",
+       "XXXL",
+       "0X",
+       "1X",
+       "2X",
+       "3X",
+       "4X",
+       "5X"
+      ],
+      "Petite": [
+       "00P",
+       "0P",
+       "2P",
+       "4P",
+       "6P",
+       "8P",
+       "10P",
+       "12P",
+       "14P",
+       "16P",
+       "18P",
+       "20P",
+       "XXSP",
+       "XSP",
+       "SP",
+       "MP",
+       "LP",
+       "XLP",
+       "XXLP"
+      ],
+      "Juniors": [
+       "00",
+       "0",
+       "1",
+       "3",
+       "5",
+       "7",
+       "9",
+       "11",
+       "13",
+       "15",
+       "17",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "XXL"
+      ],
+      "Maternity": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "14",
+       "14W",
+       "16",
+       "16W",
+       "18",
+       "18W",
+       "20",
+       "20W",
+       "22",
+       "22W",
+       "24",
+       "24W",
+       "26",
+       "26W",
+       "28",
+       "28W",
+       "30",
+       "30W",
+       "32",
+       "32W",
+       "XXL",
+       "XXXL",
+       "0X",
+       "1X",
+       "2X",
+       "3X",
+       "4X",
+       "5X"
+      ]
+     }
+    },
+    "Intimates & Sleepwear": {
+     "slug": "Intimates_&_Sleepwear",
+     "aliases": [],
+     "subcategories": [
+      "Bandeaus",
+      "Bras",
+      "Chemises & Slips",
+      "Pajamas",
+      "Panties",
+      "Robes",
+      "Shapewear",
+      "Sports Bras"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "30A",
+       "30B",
+       "32AA",
+       "32A",
+       "32B",
+       "32C",
+       "32D",
+       "32E (DD)",
+       "32F (3D)",
+       "32G (4D)",
+       "32H (5D)",
+       "34AA",
+       "34A",
+       "34B",
+       "34C",
+       "34D",
+       "34E (DD)",
+       "34F (3D)",
+       "34G (4D)",
+       "34H (5D)",
+       "36AA",
+       "36A",
+       "36B",
+       "36C",
+       "36D",
+       "36E (DD)",
+       "36F (3D)",
+       "36G (4D)",
+       "36H (5D)"
+      ],
+      "Plus": [
+       "XXL",
+       "XXXL",
+       "0X",
+       "1X",
+       "2X",
+       "3X",
+       "4X",
+       "5X",
+       "38A",
+       "38B",
+       "38C",
+       "38D",
+       "38E (DD)",
+       "38F (3D)",
+       "38G (4D)",
+       "38H (5D)",
+       "40A",
+       "40B",
+       "40C",
+       "40D",
+       "40E (DD)",
+       "40F (3D)",
+       "40G (4D)",
+       "40H (5D)",
+       "42A",
+       "42B",
+       "42C",
+       "42D",
+       "42E (DD)",
+       "42F (3D)",
+       "42G (4D)",
+       "42H (5D)",
+       "44A",
+       "44B",
+       "44C",
+       "44D",
+       "44E (DD)",
+       "44F (3D)",
+       "44G (4D)",
+       "44H (5D)",
+       "46A",
+       "46B",
+       "46C",
+       "46D",
+       "46DD",
+       "46F (3D)",
+       "46G (4D)",
+       "46H (5D)",
+       "48A",
+       "48B",
+       "48C",
+       "48D",
+       "48DD",
+       "48F (3D)",
+       "48G (4D)",
+       "48H (5D)"
+      ],
+      "Maternity": [
+       "One Size",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "30A",
+       "30B",
+       "32AA",
+       "32A",
+       "32B",
+       "32C",
+       "32D",
+       "32E (DD)",
+       "32F (3D)",
+       "32G (4D)",
+       "32H (5D)",
+       "34AA",
+       "34A",
+       "34B",
+       "34C",
+       "34D",
+       "34E (DD)",
+       "34F (3D)",
+       "34G (4D)",
+       "34H (5D)",
+       "36AA",
+       "36A",
+       "36B",
+       "36C",
+       "36D",
+       "36E (DD)",
+       "36F (3D)",
+       "36G (4D)",
+       "36H (5D)",
+       "XXL",
+       "XXXL",
+       "0X",
+       "1X",
+       "2X",
+       "3X",
+       "4X",
+       "5X",
+       "38A",
+       "38B",
+       "38C",
+       "38D",
+       "38E (DD)",
+       "38F (3D)",
+       "38G (4D)",
+       "38H (5D)",
+       "40A",
+       "40B",
+       "40C",
+       "40D",
+       "40E (DD)",
+       "40F (3D)",
+       "40G (4D)",
+       "40H (5D)",
+       "42A",
+       "42B",
+       "42C",
+       "42D",
+       "42E (DD)",
+       "42F (3D)",
+       "42G (4D)",
+       "42H (5D)",
+       "44A",
+       "44B",
+       "44C",
+       "44D",
+       "44E (DD)",
+       "44F (3D)",
+       "44G (4D)",
+       "44H (5D)",
+       "46A",
+       "46B",
+       "46C",
+       "46D",
+       "46DD",
+       "46F (3D)",
+       "46G (4D)",
+       "46H (5D)",
+       "48A",
+       "48B",
+       "48C",
+       "48D",
+       "48DD",
+       "48F (3D)",
+       "48G (4D)",
+       "48H (5D)"
+      ]
+     }
+    },
+    "Jackets & Coats": {
+     "slug": "Jackets_&_Coats",
+     "aliases": [
+      "Jackets & Blazers",
+      "Outerwear"
+     ],
+     "subcategories": [
+      "Blazers & Suit Jackets",
+      "Bomber Jackets",
+      "Capes",
+      "Jean Jackets",
+      "Leather Jackets",
+      "Pea Coats",
+      "Puffers",
+      "Ski & Snow Jackets",
+      "Teddy Jackets",
+      "Trench Coats",
+      "Utility Jackets",
+      "Varsity Jackets",
+      "Vests"
+     ],
+     "size_sets": {
+      "Standard": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ],
+      "Plus": [
+       "14",
+       "14W",
+       "16",
+       "16W",
+       "18",
+       "18W",
+       "20",
+       "20W",
+       "22",
+       "22W",
+       "24",
+       "24W",
+       "26",
+       "26W",
+       "28",
+       "28W",
+       "30",
+       "30W",
+       "32",
+       "32W",
+       "XXL",
+       "XXXL",
+       "0X",
+       "1X",
+       "2X",
+       "3X",
+       "4X",
+       "5X"
+      ],
+      "Petite": [
+       "00P",
+       "0P",
+       "2P",
+       "4P",
+       "6P",
+       "8P",
+       "10P",
+       "12P",
+       "14P",
+       "16P",
+       "18P",
+       "20P",
+       "XXSP",
+       "XSP",
+       "SP",
+       "MP",
+       "LP",
+       "XLP",
+       "XXLP"
+      ],
+      "Juniors": [
+       "00",
+       "0",
+       "1",
+       "3",
+       "5",
+       "7",
+       "9",
+       "11",
+       "13",
+       "15",
+       "17",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "XXL"
+      ],
+      "Maternity": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "14",
+       "14W",
+       "16",
+       "16W",
+       "18",
+       "18W",
+       "20",
+       "20W",
+       "22",
+       "22W",
+       "24",
+       "24W",
+       "26",
+       "26W",
+       "28",
+       "28W",
+       "30",
+       "30W",
+       "32",
+       "32W",
+       "XXL",
+       "XXXL",
+       "0X",
+       "1X",
+       "2X",
+       "3X",
+       "4X",
+       "5X"
+      ]
+     }
+    },
+    "Jeans": {
+     "slug": "Jeans",
+     "aliases": [
+      "Denim"
+     ],
+     "subcategories": [
+      "Ankle & Cropped",
+      "Boot Cut",
+      "Boyfriend",
+      "Flare & Wide Leg",
+      "High Rise",
+      "Jeggings",
+      "Overalls",
+      "Skinny",
+      "Straight Leg"
+     ],
+     "size_sets": {
+      "Standard": [
+       "23",
+       "24",
+       "25",
+       "26",
+       "27",
+       "28",
+       "29",
+       "30",
+       "31",
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12"
+      ],
+      "Plus": [
+       "32",
+       "33",
+       "34",
+       "14",
+       "14W",
+       "16",
+       "16W",
+       "18",
+       "18W",
+       "20",
+       "20W",
+       "22",
+       "22W",
+       "24",
+       "24W",
+       "26",
+       "26W",
+       "28",
+       "28W",
+       "30",
+       "30W",
+       "32",
+       "32W"
+      ],
+      "Petite": [
+       "23P",
+       "24P",
+       "25P",
+       "26P",
+       "27P",
+       "28P",
+       "29P",
+       "30P",
+       "31P",
+       "32P",
+       "33P",
+       "34P",
+       "00P",
+       "0P",
+       "2P",
+       "4P",
+       "6P",
+       "8P",
+       "10P",
+       "12P",
+       "14P",
+       "16P",
+       "18P"
+      ],
+      "Juniors": [
+       "00",
+       "0",
+       "1",
+       "3",
+       "5",
+       "7",
+       "9",
+       "11",
+       "13",
+       "15",
+       "17"
+      ],
+      "Maternity": [
+       "23",
+       "24",
+       "25",
+       "26",
+       "27",
+       "28",
+       "29",
+       "30",
+       "31",
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "32",
+       "33",
+       "34",
+       "14",
+       "14W",
+       "16",
+       "16W",
+       "18",
+       "18W",
+       "20",
+       "20W",
+       "22",
+       "22W",
+       "24",
+       "24W",
+       "26",
+       "26W",
+       "28",
+       "28W",
+       "30",
+       "30W",
+       "32",
+       "32W"
+      ]
+     }
+    },
+    "Jewelry": {
+     "slug": "Jewelry",
+     "aliases": [],
+     "subcategories": [
+      "Bracelets",
+      "Brooches",
+      "Earrings",
+      "Necklaces",
+      "Rings"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Makeup": {
+     "slug": "Makeup",
+     "aliases": [],
+     "subcategories": [
+      "Blush",
+      "Bronzer & Contour",
+      "Brows",
+      "Brushes & Tools",
+      "Concealer",
+      "Eye Primer",
+      "Eyeliner",
+      "Eyeshadow",
+      "Foundation",
+      "Highlighter",
+      "Lashes",
+      "Lip Balm & Gloss",
+      "Lip Liner",
+      "Lipstick",
+      "Mascara",
+      "Nail Tools",
+      "Press-On Nails",
+      "Primer",
+      "Setting Powder & Spray"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Pants & Jumpsuits": {
+     "slug": "Pants_&_Jumpsuits",
+     "aliases": [
+      "Pants"
+     ],
+     "subcategories": [
+      "Ankle & Cropped",
+      "Boot Cut & Flare",
+      "Capris",
+      "Jumpsuits & Rompers",
+      "Leggings",
+      "Pantsuits",
+      "Skinny",
+      "Straight Leg",
+      "Track Pants & Joggers",
+      "Trousers",
+      "Wide Leg"
+     ],
+     "size_sets": {
+      "Standard": [
+       "23",
+       "24",
+       "25",
+       "26",
+       "27",
+       "28",
+       "29",
+       "30",
+       "31",
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ],
+      "Plus": [
+       "32",
+       "33",
+       "34",
+       "14",
+       "14W",
+       "16",
+       "16W",
+       "18",
+       "18W",
+       "20",
+       "20W",
+       "22",
+       "22W",
+       "24",
+       "24W",
+       "26",
+       "26W",
+       "28",
+       "28W",
+       "30",
+       "30W",
+       "32",
+       "32W",
+       "XXL",
+       "XXXL",
+       "0X",
+       "1X",
+       "2X",
+       "3X",
+       "4X",
+       "5X"
+      ],
+      "Petite": [
+       "23P",
+       "24P",
+       "25P",
+       "26P",
+       "27P",
+       "28P",
+       "29P",
+       "30P",
+       "31P",
+       "32P",
+       "33P",
+       "34P",
+       "00P",
+       "0P",
+       "2P",
+       "4P",
+       "6P",
+       "8P",
+       "10P",
+       "12P",
+       "14P",
+       "16P",
+       "18P",
+       "20P",
+       "XXSP",
+       "XSP",
+       "SP",
+       "MP",
+       "LP",
+       "XLP"
+      ],
+      "Juniors": [
+       "00",
+       "0",
+       "1",
+       "3",
+       "5",
+       "7",
+       "9",
+       "11",
+       "13",
+       "15",
+       "17",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "XXL"
+      ],
+      "Maternity": [
+       "23",
+       "24",
+       "25",
+       "26",
+       "27",
+       "28",
+       "29",
+       "30",
+       "31",
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "32",
+       "33",
+       "34",
+       "14",
+       "14W",
+       "16",
+       "16W",
+       "18",
+       "18W",
+       "20",
+       "20W",
+       "22",
+       "22W",
+       "24",
+       "24W",
+       "26",
+       "26W",
+       "28",
+       "28W",
+       "30",
+       "30W",
+       "32",
+       "32W",
+       "XXL",
+       "XXXL",
+       "0X",
+       "1X",
+       "2X",
+       "3X",
+       "4X",
+       "5X"
+      ]
+     }
+    },
+    "Shoes": {
+     "slug": "Shoes",
+     "aliases": [
+      "Boots"
+     ],
+     "subcategories": [
+      "Ankle Boots & Booties",
+      "Athletic Shoes",
+      "Combat & Moto Boots",
+      "Espadrilles",
+      "Flats & Loafers",
+      "Heeled Boots",
+      "Heels",
+      "Lace Up Boots",
+      "Moccasins",
+      "Mules & Clogs",
+      "Over the Knee Boots",
+      "Platforms",
+      "Sandals",
+      "Slippers",
+      "Sneakers",
+      "Wedges",
+      "Winter & Rain Boots"
+     ],
+     "size_sets": {
+      "Standard": [
+       "5",
+       "5.5",
+       "6",
+       "6.5",
+       "7",
+       "7.5",
+       "8",
+       "8.5",
+       "9",
+       "9.5",
+       "10",
+       "10.5",
+       "11",
+       "11.5",
+       "12",
+       "12.5",
+       "13"
+      ]
+     }
+    },
+    "Shorts": {
+     "slug": "Shorts",
+     "aliases": [],
+     "subcategories": [
+      "Athletic Shorts",
+      "Bermudas",
+      "Bike Shorts",
+      "Cargos",
+      "High Waist",
+      "Jean Shorts",
+      "Skorts"
+     ],
+     "size_sets": {
+      "Standard": [
+       "23",
+       "24",
+       "25",
+       "26",
+       "27",
+       "28",
+       "29",
+       "30",
+       "31",
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ],
+      "Plus": [
+       "32",
+       "33",
+       "34",
+       "14",
+       "14W",
+       "16",
+       "16W",
+       "18",
+       "18W",
+       "20",
+       "20W",
+       "22",
+       "22W",
+       "24",
+       "24W",
+       "26",
+       "26W",
+       "28",
+       "28W",
+       "30",
+       "30W",
+       "32",
+       "32W",
+       "XXL",
+       "XXXL",
+       "0X",
+       "1X",
+       "2X",
+       "3X",
+       "4X",
+       "5X"
+      ],
+      "Petite": [
+       "23P",
+       "24P",
+       "25P",
+       "26P",
+       "27P",
+       "28P",
+       "29P",
+       "30P",
+       "31P",
+       "32P",
+       "33P",
+       "34P",
+       "00P",
+       "0P",
+       "2P",
+       "4P",
+       "6P",
+       "8P",
+       "10P",
+       "12P",
+       "14P",
+       "16P",
+       "18P",
+       "20P",
+       "XXSP",
+       "XSP",
+       "SP",
+       "MP",
+       "LP",
+       "XLP",
+       "XXLP"
+      ],
+      "Juniors": [
+       "00",
+       "0",
+       "1",
+       "3",
+       "5",
+       "7",
+       "9",
+       "11",
+       "13",
+       "15",
+       "17",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "XXL"
+      ],
+      "Maternity": [
+       "23",
+       "24",
+       "25",
+       "26",
+       "27",
+       "28",
+       "29",
+       "30",
+       "31",
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "32",
+       "33",
+       "34",
+       "14",
+       "14W",
+       "16",
+       "16W",
+       "18",
+       "18W",
+       "20",
+       "20W",
+       "22",
+       "22W",
+       "24",
+       "24W",
+       "26",
+       "26W",
+       "28",
+       "28W",
+       "30",
+       "30W",
+       "32",
+       "32W",
+       "XXL",
+       "XXXL",
+       "0X",
+       "1X",
+       "2X",
+       "3X",
+       "4X",
+       "5X"
+      ]
+     }
+    },
+    "Skirts": {
+     "slug": "Skirts",
+     "aliases": [],
+     "subcategories": [
+      "A-Line or Full",
+      "Asymmetrical",
+      "Circle & Skater",
+      "High Low",
+      "Maxi",
+      "Midi",
+      "Mini",
+      "Pencil",
+      "Skirt Sets"
+     ],
+     "size_sets": {
+      "Standard": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ],
+      "Plus": [
+       "14",
+       "14W",
+       "16",
+       "16W",
+       "18",
+       "18W",
+       "20",
+       "20W",
+       "22",
+       "22W",
+       "24",
+       "24W",
+       "26",
+       "26W",
+       "28",
+       "28W",
+       "30",
+       "30W",
+       "32",
+       "32W",
+       "XXL",
+       "XXXL",
+       "0X",
+       "1X",
+       "2X",
+       "3X",
+       "4X",
+       "5X"
+      ],
+      "Petite": [
+       "00P",
+       "0P",
+       "2P",
+       "4P",
+       "6P",
+       "8P",
+       "10P",
+       "12P",
+       "14P",
+       "16P",
+       "18P",
+       "20P",
+       "XXSP",
+       "XSP",
+       "SP",
+       "MP",
+       "LP",
+       "XLP",
+       "XXLP"
+      ],
+      "Juniors": [
+       "00",
+       "0",
+       "1",
+       "3",
+       "5",
+       "7",
+       "9",
+       "11",
+       "13",
+       "15",
+       "17",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "XXL"
+      ],
+      "Maternity": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "14",
+       "14W",
+       "16",
+       "16W",
+       "18",
+       "18W",
+       "20",
+       "20W",
+       "22",
+       "22W",
+       "24",
+       "24W",
+       "26",
+       "26W",
+       "28",
+       "28W",
+       "30",
+       "30W",
+       "32",
+       "32W",
+       "XXL",
+       "XXXL",
+       "0X",
+       "1X",
+       "2X",
+       "3X",
+       "4X",
+       "5X"
+      ]
+     }
+    },
+    "Sweaters": {
+     "slug": "Sweaters",
+     "aliases": [],
+     "subcategories": [
+      "Cardigans",
+      "Cowl & Turtlenecks",
+      "Crew & Scoop Necks",
+      "Off-the-Shoulder Sweaters",
+      "Shrugs & Ponchos",
+      "V-Necks"
+     ],
+     "size_sets": {
+      "Standard": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ],
+      "Plus": [
+       "14",
+       "14W",
+       "16",
+       "16W",
+       "18",
+       "18W",
+       "20",
+       "20W",
+       "22",
+       "22W",
+       "24",
+       "24W",
+       "26",
+       "26W",
+       "28",
+       "28W",
+       "30",
+       "30W",
+       "32",
+       "32W",
+       "XXL",
+       "XXXL",
+       "0X",
+       "1X",
+       "2X",
+       "3X",
+       "4X",
+       "5X"
+      ],
+      "Petite": [
+       "00P",
+       "0P",
+       "2P",
+       "4P",
+       "6P",
+       "8P",
+       "10P",
+       "12P",
+       "14P",
+       "16P",
+       "18P",
+       "20P",
+       "XXSP",
+       "XSP",
+       "SP",
+       "MP",
+       "LP",
+       "XLP",
+       "XXLP"
+      ],
+      "Juniors": [
+       "00",
+       "0",
+       "1",
+       "3",
+       "5",
+       "7",
+       "9",
+       "11",
+       "13",
+       "15",
+       "17",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "XXL"
+      ],
+      "Maternity": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "14",
+       "14W",
+       "16",
+       "16W",
+       "18",
+       "18W",
+       "20",
+       "20W",
+       "22",
+       "22W",
+       "24",
+       "24W",
+       "26",
+       "26W",
+       "28",
+       "28W",
+       "30",
+       "30W",
+       "32",
+       "32W",
+       "XXL",
+       "XXXL",
+       "0X",
+       "1X",
+       "2X",
+       "3X",
+       "4X",
+       "5X"
+      ]
+     }
+    },
+    "Swim": {
+     "slug": "Swim",
+     "aliases": [],
+     "subcategories": [
+      "Bikinis",
+      "Coverups",
+      "One Pieces",
+      "Sarongs"
+     ],
+     "size_sets": {
+      "Standard": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ],
+      "Plus": [
+       "14",
+       "14W",
+       "16",
+       "16W",
+       "18",
+       "18W",
+       "20",
+       "20W",
+       "22",
+       "22W",
+       "24",
+       "24W",
+       "26",
+       "26W",
+       "28",
+       "28W",
+       "30",
+       "30W",
+       "32",
+       "32W",
+       "XXL",
+       "XXXL",
+       "0X",
+       "1X",
+       "2X",
+       "3X",
+       "4X",
+       "5X"
+      ],
+      "Petite": [
+       "00P",
+       "0P",
+       "2P",
+       "4P",
+       "6P",
+       "8P",
+       "10P",
+       "12P",
+       "14P",
+       "16P",
+       "18P",
+       "20P",
+       "XXSP",
+       "XSP",
+       "SP",
+       "MP",
+       "LP",
+       "XLP",
+       "XXLP"
+      ],
+      "Juniors": [
+       "00",
+       "0",
+       "1",
+       "3",
+       "5",
+       "7",
+       "9",
+       "11",
+       "13",
+       "15",
+       "17",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "XXL"
+      ],
+      "Maternity": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "14",
+       "14W",
+       "16",
+       "16W",
+       "18",
+       "18W",
+       "20",
+       "20W",
+       "22",
+       "22W",
+       "24",
+       "24W",
+       "26",
+       "26W",
+       "28",
+       "28W",
+       "30",
+       "30W",
+       "32",
+       "32W",
+       "XXL",
+       "XXXL",
+       "0X",
+       "1X",
+       "2X",
+       "3X",
+       "4X",
+       "5X"
+      ]
+     }
+    },
+    "Tops": {
+     "slug": "Tops",
+     "aliases": [],
+     "subcategories": [
+      "Blouses",
+      "Bodysuits",
+      "Button Down Shirts",
+      "Camisoles",
+      "Crop Tops",
+      "Jerseys",
+      "Muscle Tees",
+      "Sweatshirts & Hoodies",
+      "Tank Tops",
+      "Tees - Long Sleeve",
+      "Tees - Short Sleeve",
+      "Tunics"
+     ],
+     "size_sets": {
+      "Standard": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ],
+      "Plus": [
+       "14",
+       "14W",
+       "16",
+       "16W",
+       "18",
+       "18W",
+       "20",
+       "20W",
+       "22",
+       "22W",
+       "24",
+       "24W",
+       "26",
+       "26W",
+       "28",
+       "28W",
+       "30",
+       "30W",
+       "32",
+       "32W",
+       "XXL",
+       "XXXL",
+       "0X",
+       "1X",
+       "2X",
+       "3X",
+       "4X",
+       "5X"
+      ],
+      "Petite": [
+       "00P",
+       "0P",
+       "2P",
+       "4P",
+       "6P",
+       "8P",
+       "10P",
+       "12P",
+       "14P",
+       "16P",
+       "18P",
+       "20P",
+       "XXSP",
+       "XSP",
+       "SP",
+       "MP",
+       "LP",
+       "XLP",
+       "XXLP"
+      ],
+      "Juniors": [
+       "00",
+       "0",
+       "1",
+       "3",
+       "5",
+       "7",
+       "9",
+       "11",
+       "13",
+       "15",
+       "17",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "XXL"
+      ],
+      "Maternity": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "14",
+       "14W",
+       "16",
+       "16W",
+       "18",
+       "18W",
+       "20",
+       "20W",
+       "22",
+       "22W",
+       "24",
+       "24W",
+       "26",
+       "26W",
+       "28",
+       "28W",
+       "30",
+       "30W",
+       "32",
+       "32W",
+       "XXL",
+       "XXXL",
+       "0X",
+       "1X",
+       "2X",
+       "3X",
+       "4X",
+       "5X"
+      ]
+     }
+    },
+    "Skincare": {
+     "slug": "Skincare",
+     "aliases": [],
+     "subcategories": [
+      "Acne & Blemish",
+      "Cleanser & Exfoliant",
+      "Eye Cream",
+      "Makeup Remover",
+      "Mask",
+      "Moisturizer",
+      "Peel",
+      "Serum & Face Oil",
+      "Suncare",
+      "Toner",
+      "Tools"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Hair": {
+     "slug": "Hair",
+     "aliases": [],
+     "subcategories": [
+      "Color",
+      "Conditioner",
+      "Hairspray",
+      "Heat Protectant",
+      "Shampoo",
+      "Styling",
+      "Tools",
+      "Treatment & Mask",
+      "Wigs & Extensions"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Bath & Body": {
+     "slug": "Bath_&_Body",
+     "aliases": [],
+     "subcategories": [
+      "Bath Soak & Bubbles",
+      "Body Wash",
+      "Exfoliant & Scrub",
+      "Hair Removal",
+      "Hand & Foot Care",
+      "Hand Soap",
+      "Moisturizer & Body Oil",
+      "Suncare & Tanning",
+      "Tools"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Global & Traditional Wear": {
+     "subcategories": [],
+     "size_sets": {}
+    },
+    "Ao Dais": {
+     "slug": "Ao_Dais",
+     "aliases": [],
+     "subcategories": [],
+     "size_sets": {
+      "Standard": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ]
+     }
+    },
+    "Cheongsams & Qipaos": {
+     "slug": "Cheongsams_&_Qipaos",
+     "aliases": [],
+     "subcategories": [],
+     "size_sets": {
+      "Standard": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ]
+     }
+    },
+    "Dirndls": {
+     "slug": "Dirndls",
+     "aliases": [],
+     "subcategories": [],
+     "size_sets": {
+      "Standard": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ]
+     }
+    },
+    "Dupattas & Stoles": {
+     "slug": "Dupattas_&_Stoles",
+     "aliases": [],
+     "subcategories": [],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Hanboks": {
+     "slug": "Hanboks",
+     "aliases": [],
+     "subcategories": [],
+     "size_sets": {
+      "Standard": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ]
+     }
+    },
+    "Harem Pants": {
+     "slug": "Harem_Pants",
+     "aliases": [],
+     "subcategories": [],
+     "size_sets": {
+      "Standard": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ]
+     }
+    },
+    "Hijabs": {
+     "slug": "Hijabs",
+     "aliases": [],
+     "subcategories": [],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Huipils": {
+     "slug": "Huipils",
+     "aliases": [],
+     "subcategories": [],
+     "size_sets": {
+      "Standard": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ]
+     }
+    },
+    "Kaftans": {
+     "slug": "Kaftans",
+     "aliases": [],
+     "subcategories": [],
+     "size_sets": {
+      "Standard": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ]
+     }
+    },
+    "Kimonos & Yukatas": {
+     "slug": "Kimonos_&_Yukatas",
+     "aliases": [],
+     "subcategories": [],
+     "size_sets": {
+      "Standard": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ]
+     }
+    },
+    "Kurta Bottoms": {
+     "slug": "Kurta_Bottoms",
+     "aliases": [],
+     "subcategories": [],
+     "size_sets": {
+      "Standard": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ]
+     }
+    },
+    "Kurtas": {
+     "slug": "Kurtas",
+     "aliases": [],
+     "subcategories": [],
+     "size_sets": {
+      "Standard": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ]
+     }
+    },
+    "Lehengas": {
+     "slug": "Lehengas",
+     "aliases": [],
+     "subcategories": [],
+     "size_sets": {
+      "Standard": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ]
+     }
+    },
+    "Palazzo Pants": {
+     "slug": "Palazzo_Pants",
+     "aliases": [],
+     "subcategories": [],
+     "size_sets": {
+      "Standard": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ]
+     }
+    },
+    "Patiala Pants": {
+     "slug": "Patiala_Pants",
+     "aliases": [],
+     "subcategories": [],
+     "size_sets": {
+      "Standard": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ]
+     }
+    },
+    "Salwars": {
+     "slug": "Salwars",
+     "aliases": [],
+     "subcategories": [],
+     "size_sets": {
+      "Standard": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ]
+     }
+    },
+    "Saree Blouses": {
+     "slug": "Saree_Blouses",
+     "aliases": [],
+     "subcategories": [],
+     "size_sets": {
+      "Standard": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ]
+     }
+    },
+    "Sarees": {
+     "slug": "Sarees",
+     "aliases": [],
+     "subcategories": [],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Treggings": {
+     "slug": "Treggings",
+     "aliases": [],
+     "subcategories": [],
+     "size_sets": {
+      "Standard": [
+       "00",
+       "0",
+       "2",
+       "4",
+       "6",
+       "8",
+       "10",
+       "12",
+       "XXS",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ]
+     }
+    },
+    "Other": {
+     "slug": "Other",
+     "aliases": [],
+     "subcategories": [],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    }
+   }
+  },
+  "Men": {
+   "slug": "Men",
+   "categories": {
+    "Accessories": {
+     "slug": "Accessories",
+     "aliases": [],
+     "subcategories": [
+      "Belts",
+      "Cuff Links",
+      "Face Masks",
+      "Glasses",
+      "Gloves",
+      "Hats",
+      "Jewelry",
+      "Key & Card Holders",
+      "Money Clips",
+      "Phone Cases",
+      "Pocket Squares",
+      "Scarves",
+      "Sunglasses",
+      "Suspenders",
+      "Ties",
+      "Watches"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Bags": {
+     "slug": "Bags",
+     "aliases": [],
+     "subcategories": [
+      "Backpacks",
+      "Belt Bags",
+      "Briefcases",
+      "Duffel Bags",
+      "Laptop Bags",
+      "Luggage & Travel Bags",
+      "Messenger Bags",
+      "Toiletry Bags",
+      "Wallets"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Jackets & Coats": {
+     "slug": "Jackets_&_Coats",
+     "aliases": [],
+     "subcategories": [
+      "Bomber & Varsity",
+      "Lightweight & Shirt Jackets",
+      "Military & Field",
+      "Pea Coats",
+      "Performance Jackets",
+      "Puffers",
+      "Raincoats",
+      "Ski & Snowboard",
+      "Trench Coats",
+      "Vests",
+      "Windbreakers"
+     ],
+     "size_sets": {
+      "Standard": [
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ],
+      "Big & Tall": [
+       "XXL",
+       "3XL",
+       "4XL",
+       "5XL",
+       "6XL",
+       "LT",
+       "XLT",
+       "2XLT",
+       "3XLT",
+       "4XLT",
+       "5XLT",
+       "6XLT"
+      ]
+     }
+    },
+    "Jeans": {
+     "slug": "Jeans",
+     "aliases": [],
+     "subcategories": [
+      "Bootcut",
+      "Relaxed",
+      "Skinny",
+      "Slim",
+      "Slim Straight",
+      "Straight"
+     ],
+     "size_sets": {
+      "Standard": [
+       "Waist 28",
+       "Waist 29",
+       "Waist 30",
+       "Waist 31",
+       "Waist 32",
+       "Waist 33",
+       "Waist 34",
+       "Waist 35",
+       "Waist 36",
+       "Waist 37",
+       "Waist 38",
+       "Waist 39",
+       "Waist 40",
+       "Waist 41"
+      ],
+      "Big & Tall": [
+       "Waist 36",
+       "Waist 37",
+       "Waist 38",
+       "Waist 39",
+       "Waist 40",
+       "Waist 41",
+       "Waist 42",
+       "Waist 43",
+       "Waist 44",
+       "Waist 46",
+       "Waist 48",
+       "Waist 50",
+       "Waist 52",
+       "Waist 54",
+       "Waist 56",
+       "Waist 58",
+       "Waist 60"
+      ]
+     }
+    },
+    "Pants": {
+     "slug": "Pants",
+     "aliases": [],
+     "subcategories": [
+      "Cargo",
+      "Chinos & Khakis",
+      "Corduroy",
+      "Dress",
+      "Sweatpants & Joggers"
+     ],
+     "size_sets": {
+      "Standard": [
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "Waist 28",
+       "Waist 29",
+       "Waist 30",
+       "Waist 31",
+       "Waist 32",
+       "Waist 33",
+       "Waist 34",
+       "Waist 35",
+       "Waist 36",
+       "Waist 37",
+       "Waist 38",
+       "Waist 39",
+       "Waist 40",
+       "Waist 41"
+      ],
+      "Big & Tall": [
+       "Waist 36",
+       "Waist 37",
+       "Waist 38",
+       "Waist 39",
+       "Waist 40",
+       "Waist 42",
+       "Waist 43",
+       "Waist 44",
+       "Waist 46",
+       "Waist 48",
+       "Waist 50",
+       "Waist 52",
+       "Waist 54",
+       "Waist 56",
+       "Waist 58",
+       "Waist 60",
+       "XXL",
+       "3XL",
+       "4XL",
+       "5XL",
+       "6XL",
+       "LT",
+       "XLT",
+       "2XLT",
+       "3XLT",
+       "4XLT",
+       "5XLT",
+       "6XLT"
+      ]
+     }
+    },
+    "Shirts": {
+     "slug": "Shirts",
+     "aliases": [],
+     "subcategories": [
+      "Casual Button Down Shirts",
+      "Dress Shirts",
+      "Jerseys",
+      "Polos",
+      "Sweatshirts & Hoodies",
+      "Tank Tops",
+      "Tees - Long Sleeve",
+      "Tees - Short Sleeve"
+     ],
+     "size_sets": {
+      "Standard": [
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "Neck 14.5",
+       "Neck 15",
+       "Neck 15.5",
+       "Neck 16",
+       "Neck 16.5",
+       "Neck 17",
+       "Neck 17.5",
+       "Neck 18"
+      ],
+      "Big & Tall": [
+       "Neck 16.5",
+       "Neck 17",
+       "Neck 17.5",
+       "Neck 18",
+       "Neck 18.5",
+       "Neck 19",
+       "Neck 19.5",
+       "Neck 20",
+       "Neck 20.5",
+       "Neck 21",
+       "Neck 21.5",
+       "Neck 22",
+       "Neck 22.5",
+       "XXL",
+       "3XL",
+       "4XL",
+       "5XL",
+       "6XL",
+       "LT",
+       "XLT",
+       "2XLT",
+       "3XLT",
+       "4XLT",
+       "5XLT",
+       "6XLT"
+      ]
+     }
+    },
+    "Shoes": {
+     "slug": "Shoes",
+     "aliases": [],
+     "subcategories": [
+      "Athletic Shoes",
+      "Boat Shoes",
+      "Boots",
+      "Chukka Boots",
+      "Cowboy & Western Boots",
+      "Loafers & Slip-Ons",
+      "Oxfords & Derbys",
+      "Rain & Snow Boots",
+      "Sandals & Flip-Flops",
+      "Sneakers"
+     ],
+     "size_sets": {
+      "Standard": [
+       "4",
+       "4.5",
+       "5",
+       "5.5",
+       "6",
+       "6.5",
+       "7",
+       "7.5",
+       "8",
+       "8.5",
+       "9",
+       "9.5",
+       "10",
+       "10.5",
+       "11",
+       "11.5",
+       "12",
+       "12.5",
+       "13",
+       "13.5",
+       "14",
+       "14.5",
+       "15",
+       "15.5",
+       "16"
+      ]
+     }
+    },
+    "Shorts": {
+     "slug": "Shorts",
+     "aliases": [],
+     "subcategories": [
+      "Athletic",
+      "Cargo",
+      "Flat Front",
+      "Hybrids",
+      "Jean Shorts"
+     ],
+     "size_sets": {
+      "Standard": [
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "Waist 28",
+       "Waist 29",
+       "Waist 30",
+       "Waist 31",
+       "Waist 32",
+       "Waist 33",
+       "Waist 34",
+       "Waist 35",
+       "Waist 36",
+       "Waist 37",
+       "Waist 38",
+       "Waist 39",
+       "Waist 40",
+       "Waist 41"
+      ],
+      "Big & Tall": [
+       "Waist 36",
+       "Waist 37",
+       "Waist 38",
+       "Waist 39",
+       "Waist 40",
+       "Waist 42",
+       "Waist 43",
+       "Waist 44",
+       "Waist 46",
+       "Waist 48",
+       "Waist 50",
+       "Waist 52",
+       "Waist 54",
+       "Waist 56",
+       "Waist 58",
+       "Waist 60",
+       "XXL",
+       "3XL",
+       "4XL",
+       "5XL",
+       "6XL",
+       "LT",
+       "XLT",
+       "2XLT",
+       "3XLT",
+       "4XLT",
+       "5XLT",
+       "6XLT"
+      ]
+     }
+    },
+    "Suits & Blazers": {
+     "slug": "Suits_&_Blazers",
+     "aliases": [],
+     "subcategories": [
+      "Sport Coats & Blazers",
+      "Suits",
+      "Tuxedos",
+      "Vests"
+     ],
+     "size_sets": {
+      "Standard": [
+       "34S",
+       "34R",
+       "34L",
+       "35S",
+       "35R",
+       "35L",
+       "36S",
+       "36R",
+       "36L",
+       "37S",
+       "37R",
+       "37L",
+       "38S",
+       "38R",
+       "38L",
+       "39S",
+       "39R",
+       "39L",
+       "40S",
+       "40R",
+       "40L",
+       "41S",
+       "41R",
+       "41L",
+       "42S",
+       "42R",
+       "42L",
+       "43S",
+       "43R",
+       "43L",
+       "44S",
+       "44R",
+       "44L",
+       "45S",
+       "45R",
+       "45L",
+       "46S",
+       "46R",
+       "46L",
+       "47S",
+       "47R",
+       "47L",
+       "48S",
+       "48R",
+       "48L",
+       "49S",
+       "49R",
+       "49L",
+       "50S",
+       "50R",
+       "50L",
+       "51S",
+       "51R",
+       "51L",
+       "52S",
+       "52R",
+       "52L",
+       "53S",
+       "53R",
+       "53L",
+       "54S",
+       "54R",
+       "54L",
+       "55S",
+       "55R",
+       "55L",
+       "56S",
+       "56R",
+       "56L"
+      ],
+      "Big & Tall": [
+       "58S",
+       "58R",
+       "58L",
+       "60S",
+       "60R",
+       "60L"
+      ]
+     }
+    },
+    "Sweaters": {
+     "slug": "Sweaters",
+     "aliases": [],
+     "subcategories": [
+      "Cardigan",
+      "Crewneck",
+      "Turtleneck",
+      "V-Neck",
+      "Zip Up"
+     ],
+     "size_sets": {
+      "Standard": [
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ],
+      "Big & Tall": [
+       "XXL",
+       "3XL",
+       "4XL",
+       "5XL",
+       "6XL",
+       "LT",
+       "XLT",
+       "2XLT",
+       "3XLT",
+       "4XLT",
+       "5XLT",
+       "6XLT"
+      ]
+     }
+    },
+    "Swim": {
+     "slug": "Swim",
+     "aliases": [],
+     "subcategories": [
+      "Board Shorts",
+      "Hybrids",
+      "Rash Guards",
+      "Swim Trunks"
+     ],
+     "size_sets": {
+      "Standard": [
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ],
+      "Big & Tall": [
+       "XXL",
+       "3XL",
+       "4XL",
+       "5XL",
+       "6XL",
+       "LT",
+       "XLT",
+       "2XLT",
+       "3XLT",
+       "4XLT",
+       "5XLT",
+       "6XLT"
+      ]
+     }
+    },
+    "Underwear & Socks": {
+     "slug": "Underwear_&_Socks",
+     "aliases": [],
+     "subcategories": [
+      "Athletic Socks",
+      "Boxer Briefs",
+      "Boxers",
+      "Briefs",
+      "Casual Socks",
+      "Dress Socks",
+      "Undershirts"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL"
+      ],
+      "Big & Tall": [
+       "XXL",
+       "3XL",
+       "4XL",
+       "5XL",
+       "6XL",
+       "LT",
+       "XLT",
+       "2XLT",
+       "3XLT",
+       "4XLT",
+       "5XLT",
+       "6XLT"
+      ]
+     }
+    },
+    "Grooming": {
+     "slug": "Grooming",
+     "aliases": [],
+     "subcategories": [
+      "Cleanser",
+      "Grooming Tools",
+      "Hair Care",
+      "Moisturizer",
+      "Shaving",
+      "Suncare",
+      "Treatments"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Global & Traditional Wear": {
+     "subcategories": [],
+     "size_sets": {}
+    },
+    "Other": {
+     "slug": "Other",
+     "aliases": [],
+     "subcategories": [],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    }
+   }
+  },
+  "Kids": {
+   "slug": "Kids",
+   "categories": {
+    "Accessories": {
+     "slug": "Accessories",
+     "aliases": [],
+     "subcategories": [
+      "Bags",
+      "Belts",
+      "Bibs",
+      "Diaper Covers",
+      "Face Masks",
+      "Hair Accessories",
+      "Hats",
+      "Jewelry",
+      "Mittens",
+      "Socks & Tights",
+      "Sunglasses",
+      "Suspenders",
+      "Ties",
+      "Underwear",
+      "Watches"
+     ],
+     "size_sets": {
+      "Baby": [
+       "One Size"
+      ],
+      "Boys": [
+       "One Size"
+      ],
+      "Girls": [
+       "One Size"
+      ]
+     }
+    },
+    "Bottoms": {
+     "slug": "Bottoms",
+     "aliases": [],
+     "subcategories": [
+      "Casual",
+      "Formal",
+      "Jeans",
+      "Jumpsuits & Rompers",
+      "Leggings",
+      "Overalls",
+      "Shorts",
+      "Skirts",
+      "Skorts",
+      "Sweatpants & Joggers"
+     ],
+     "size_sets": {
+      "Baby": [
+       "Preemie",
+       "Newborn",
+       "0-3 Months",
+       "3-6 Months",
+       "6-9 Months",
+       "9-12 Months",
+       "12-18 Months",
+       "18-24 Months",
+       "3 Months",
+       "6 Months",
+       "9 Months",
+       "12 Months",
+       "18 Months",
+       "24 Months"
+      ],
+      "Girls": [
+       "2T",
+       "3T",
+       "4T",
+       "5T",
+       "4",
+       "5",
+       "6",
+       "6X",
+       "7",
+       "8",
+       "10",
+       "12",
+       "14",
+       "16",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "XXL"
+      ],
+      "Boys": [
+       "2T",
+       "3T",
+       "4T",
+       "5T",
+       "4",
+       "5",
+       "6",
+       "7",
+       "7X",
+       "8",
+       "10",
+       "12",
+       "14",
+       "16",
+       "18",
+       "20",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "XXL"
+      ]
+     }
+    },
+    "Dresses": {
+     "slug": "Dresses",
+     "aliases": [],
+     "subcategories": [
+      "Casual",
+      "Formal"
+     ],
+     "size_sets": {
+      "Baby": [
+       "Preemie",
+       "Newborn",
+       "0-3 Months",
+       "3-6 Months",
+       "6-9 Months",
+       "9-12 Months",
+       "12-18 Months",
+       "18-24 Months",
+       "3 Months",
+       "6 Months",
+       "9 Months",
+       "12 Months",
+       "18 Months",
+       "24 Months"
+      ],
+      "Girls": [
+       "2T",
+       "3T",
+       "4T",
+       "5T",
+       "4",
+       "5",
+       "6",
+       "6X",
+       "7",
+       "8",
+       "10",
+       "12",
+       "14",
+       "16",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "XXL"
+      ]
+     }
+    },
+    "Jackets & Coats": {
+     "slug": "Jackets_&_Coats",
+     "aliases": [],
+     "subcategories": [
+      "Blazers",
+      "Capes",
+      "Jean Jackets",
+      "Pea Coats",
+      "Puffers",
+      "Raincoats",
+      "Vests"
+     ],
+     "size_sets": {
+      "Baby": [
+       "Preemie",
+       "Newborn",
+       "0-3 Months",
+       "3-6 Months",
+       "6-9 Months",
+       "9-12 Months",
+       "12-18 Months",
+       "18-24 Months",
+       "3 Months",
+       "6 Months",
+       "9 Months",
+       "12 Months",
+       "18 Months",
+       "24 Months"
+      ],
+      "Girls": [
+       "2T",
+       "3T",
+       "4T",
+       "5T",
+       "4",
+       "5",
+       "6",
+       "6X",
+       "7",
+       "8",
+       "10",
+       "12",
+       "14",
+       "16",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "XXL"
+      ],
+      "Boys": [
+       "2T",
+       "3T",
+       "4T",
+       "5T",
+       "4",
+       "5",
+       "6",
+       "7",
+       "7X",
+       "8",
+       "10",
+       "12",
+       "14",
+       "16",
+       "18",
+       "20",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "XXL"
+      ]
+     }
+    },
+    "Matching Sets": {
+     "slug": "Matching_Sets",
+     "aliases": [],
+     "subcategories": [],
+     "size_sets": {
+      "Baby": [
+       "Preemie",
+       "Newborn",
+       "0-3 Months",
+       "3-6 Months",
+       "6-9 Months",
+       "9-12 Months",
+       "12-18 Months",
+       "18-24 Months",
+       "3 Months",
+       "6 Months",
+       "9 Months",
+       "12 Months",
+       "18 Months",
+       "24 Months"
+      ],
+      "Girls": [
+       "2T",
+       "3T",
+       "4T",
+       "5T",
+       "4",
+       "5",
+       "6",
+       "6X",
+       "7",
+       "8",
+       "10",
+       "12",
+       "14",
+       "16",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "XXL"
+      ],
+      "Boys": [
+       "2T",
+       "3T",
+       "4T",
+       "5T",
+       "4",
+       "5",
+       "6",
+       "7",
+       "7X",
+       "8",
+       "10",
+       "12",
+       "14",
+       "16",
+       "18",
+       "20",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "XXL"
+      ]
+     }
+    },
+    "One Pieces": {
+     "slug": "One_Pieces",
+     "aliases": [],
+     "subcategories": [
+      "Bodysuits",
+      "Footies"
+     ],
+     "size_sets": {
+      "Baby": [
+       "One Size",
+       "Preemie",
+       "Newborn",
+       "0-3 Months",
+       "3-6 Months",
+       "6-9 Months",
+       "9-12 Months",
+       "12-18 Months",
+       "18-24 Months",
+       "3 Months",
+       "6 Months",
+       "9 Months",
+       "12 Months",
+       "18 Months",
+       "24 Months"
+      ]
+     }
+    },
+    "Pajamas": {
+     "slug": "Pajamas",
+     "aliases": [],
+     "subcategories": [
+      "Nightgowns",
+      "Pajama Bottoms",
+      "Pajama Sets",
+      "Pajama Tops",
+      "Robes",
+      "Sleep Sacks"
+     ],
+     "size_sets": {
+      "Baby": [
+       "Preemie",
+       "Newborn",
+       "0-3 Months",
+       "3-6 Months",
+       "6-9 Months",
+       "9-12 Months",
+       "12-18 Months",
+       "18-24 Months",
+       "3 Months",
+       "6 Months",
+       "9 Months",
+       "12 Months",
+       "18 Months",
+       "24 Months"
+      ],
+      "Girls": [
+       "2T",
+       "3T",
+       "4T",
+       "5T",
+       "4",
+       "5",
+       "6",
+       "6X",
+       "7",
+       "8",
+       "10",
+       "12",
+       "14",
+       "16",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "XXL"
+      ],
+      "Boys": [
+       "2T",
+       "3T",
+       "4T",
+       "5T",
+       "4",
+       "5",
+       "6",
+       "7",
+       "7X",
+       "8",
+       "10",
+       "12",
+       "14",
+       "16",
+       "18",
+       "20",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "XXL"
+      ]
+     }
+    },
+    "Shirts & Tops": {
+     "slug": "Shirts_&_Tops",
+     "aliases": [],
+     "subcategories": [
+      "Blouses",
+      "Button Down Shirts",
+      "Camisoles",
+      "Jerseys",
+      "Polos",
+      "Sweaters",
+      "Sweatshirts & Hoodies",
+      "Tank Tops",
+      "Tees - Long Sleeve",
+      "Tees - Short Sleeve"
+     ],
+     "size_sets": {
+      "Baby": [
+       "Preemie",
+       "Newborn",
+       "0-3 Months",
+       "3-6 Months",
+       "6-9 Months",
+       "9-12 Months",
+       "12-18 Months",
+       "18-24 Months",
+       "3 Months",
+       "6 Months",
+       "9 Months",
+       "12 Months",
+       "18 Months",
+       "24 Months"
+      ],
+      "Girls": [
+       "2T",
+       "3T",
+       "4T",
+       "5T",
+       "4",
+       "5",
+       "6",
+       "6X",
+       "7",
+       "8",
+       "10",
+       "12",
+       "14",
+       "16",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "XXL"
+      ],
+      "Boys": [
+       "2T",
+       "3T",
+       "4T",
+       "5T",
+       "4",
+       "5",
+       "6",
+       "7",
+       "7X",
+       "8",
+       "10",
+       "12",
+       "14",
+       "16",
+       "18",
+       "20",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "XXL"
+      ]
+     }
+    },
+    "Shoes": {
+     "slug": "Shoes",
+     "aliases": [],
+     "subcategories": [
+      "Baby & Walker",
+      "Boots",
+      "Dress Shoes",
+      "Moccasins",
+      "Rain & Snow Boots",
+      "Sandals & Flip Flops",
+      "Slippers",
+      "Sneakers",
+      "Water Shoes"
+     ],
+     "size_sets": {
+      "Baby": [
+       "0",
+       "0.5",
+       "1",
+       "1.5",
+       "2",
+       "2.5",
+       "3",
+       "3.5",
+       "4",
+       "4.5",
+       "5",
+       "5.5",
+       "6",
+       "6.5",
+       "7"
+      ],
+      "Girls": [
+       "7.5 (Toddler Girl)",
+       "8 (Toddler Girl)",
+       "8.5 (Toddler Girl)",
+       "9 (Toddler Girl)",
+       "9.5 (Toddler Girl)",
+       "10 (Toddler Girl)",
+       "10.5 (Toddler Girl)",
+       "11 (Toddler Girl)",
+       "11.5 (Toddler Girl)",
+       "12 (Toddler Girl)",
+       "12.5 (Little Girl)",
+       "13 (Little Girl)",
+       "13.5 (Little Girl)",
+       "1 (Little Girl)",
+       "1.5 (Little Girl)",
+       "2 (Little Girl)",
+       "2.5 (Little Girl)",
+       "3 (Little Girl)",
+       "3.5 (Big Girl)",
+       "4 (Big Girl)",
+       "4.5 (Big Girl)",
+       "5 (Big Girl)",
+       "5.5 (Big Girl)",
+       "6 (Big Girl)",
+       "6.5 (Big Girl)",
+       "7 (Big Girl)"
+      ],
+      "Boys": [
+       "7.5 (Toddler Boy)",
+       "8 (Toddler Boy)",
+       "8.5 (Toddler Boy)",
+       "9 (Toddler Boy)",
+       "9.5 (Toddler Boy)",
+       "10 (Toddler Boy)",
+       "10.5 (Toddler Boy)",
+       "11 (Toddler Boy)",
+       "11.5 (Toddler Boy)",
+       "12 (Toddler Boy)",
+       "12.5 (Little Boy)",
+       "13 (Little Boy)",
+       "13.5 (Little Boy)",
+       "1 (Little Boy)",
+       "1.5 (Little Boy)",
+       "2 (Little Boy)",
+       "2.5 (Little Boy)",
+       "3 (Little Boy)",
+       "3.5 (Big Boy)",
+       "4 (Big Boy)",
+       "4.5 (Big Boy)",
+       "5 (Big Boy)",
+       "5.5 (Big Boy)",
+       "6 (Big Boy)",
+       "6.5 (Big Boy)",
+       "7 (Big Boy)"
+      ]
+     }
+    },
+    "Swim": {
+     "slug": "Swim",
+     "aliases": [],
+     "subcategories": [
+      "Bikinis",
+      "Coverups",
+      "One Piece",
+      "Rashguards",
+      "Swim Trunks"
+     ],
+     "size_sets": {
+      "Baby": [
+       "Preemie",
+       "Newborn",
+       "0-3 Months",
+       "3-6 Months",
+       "6-9 Months",
+       "9-12 Months",
+       "12-18 Months",
+       "18-24 Months",
+       "3 Months",
+       "6 Months",
+       "9 Months",
+       "12 Months",
+       "18 Months",
+       "24 Months"
+      ],
+      "Girls": [
+       "2T",
+       "3T",
+       "4T",
+       "5T",
+       "4",
+       "5",
+       "6",
+       "6X",
+       "7",
+       "8",
+       "10",
+       "12",
+       "14",
+       "16",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "XXL"
+      ],
+      "Boys": [
+       "2T",
+       "3T",
+       "4T",
+       "5T",
+       "4",
+       "5",
+       "6",
+       "7",
+       "7X",
+       "8",
+       "10",
+       "12",
+       "14",
+       "16",
+       "18",
+       "20",
+       "XS",
+       "S",
+       "M",
+       "L",
+       "XL",
+       "XXL"
+      ]
+     }
+    },
+    "Costumes": {
+     "slug": "Costumes",
+     "aliases": [],
+     "subcategories": [
+      "Dance",
+      "Halloween",
+      "Seasonal",
+      "Superhero",
+      "Theater"
+     ],
+     "size_sets": {
+      "Baby": [
+       "One Size"
+      ],
+      "Boys": [
+       "One Size"
+      ],
+      "Girls": [
+       "One Size"
+      ]
+     }
+    },
+    "Bath, Skin & Hair": {
+     "slug": "Bath,_Skin_&_Hair",
+     "aliases": [],
+     "subcategories": [
+      "Bath & Body",
+      "Hair Care",
+      "Moisturizer",
+      "Suncare",
+      "Tools"
+     ],
+     "size_sets": {
+      "Baby": [
+       "One Size"
+      ],
+      "Boys": [
+       "One Size"
+      ],
+      "Girls": [
+       "One Size"
+      ]
+     }
+    },
+    "Toys": {
+     "slug": "Toys",
+     "aliases": [],
+     "subcategories": [
+      "Action Figures & Playsets",
+      "Building Sets & Blocks",
+      "Cars & Vehicles",
+      "Dolls & Accessories",
+      "Learning Toys",
+      "Puzzles & Games",
+      "Stuffed Animals",
+      "Trading Cards"
+     ],
+     "size_sets": {
+      "Baby": [
+       "One Size"
+      ],
+      "Boys": [
+       "One Size"
+      ],
+      "Girls": [
+       "One Size"
+      ]
+     }
+    },
+    "Other": {
+     "slug": "Other",
+     "aliases": [],
+     "subcategories": [],
+     "size_sets": {
+      "Baby": [
+       "One Size"
+      ],
+      "Boys": [
+       "One Size"
+      ],
+      "Girls": [
+       "One Size"
+      ]
+     }
+    }
+   }
+  },
+  "Home": {
+   "slug": "Home",
+   "categories": {
+    "Accents": {
+     "slug": "Accents",
+     "aliases": [],
+     "subcategories": [
+      "Accent Pillows",
+      "Baskets & Bins",
+      "Candles & Holders",
+      "Coffee Table Books",
+      "Curtains & Drapes",
+      "Decor",
+      "Door Mats",
+      "Faux Florals",
+      "Furniture Covers",
+      "Lanterns",
+      "Picture Frames",
+      "Vases"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Art": {
+     "slug": "Art",
+     "aliases": [],
+     "subcategories": [
+      "Ceramics",
+      "Drawing & Illustrations",
+      "Fiber Arts",
+      "Glass Art",
+      "Mixed Media",
+      "Painting",
+      "Photography",
+      "Posters",
+      "Prints",
+      "Sculpture"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Bath": {
+     "slug": "Bath",
+     "aliases": [],
+     "subcategories": [
+      "Bath Accessories",
+      "Bath Storage",
+      "Bath Towels",
+      "Beach Towels",
+      "Hand Towels",
+      "Mats",
+      "Shower Curtains",
+      "Vanity Mirrors",
+      "Vanity Trays",
+      "Wash Cloths"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Bedding": {
+     "slug": "Bedding",
+     "aliases": [],
+     "subcategories": [
+      "Blankets & Throws",
+      "Comforters",
+      "Duvet Covers",
+      "Mattress Covers",
+      "Pillows",
+      "Quilts",
+      "Sheets"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size",
+       "Twin",
+       "Twin XL",
+       "Full",
+       "Queen",
+       "King",
+       "Cal King"
+      ]
+     }
+    },
+    "Design": {
+     "slug": "Design",
+     "aliases": [],
+     "subcategories": [
+      "Birthday Cards",
+      "Business Cards",
+      "Planners",
+      "Stamps",
+      "Stickers",
+      "Thank You Cards"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Dining": {
+     "slug": "Dining",
+     "aliases": [],
+     "subcategories": [
+      "Bar Accessories",
+      "Dinnerware",
+      "Drinkware",
+      "Flatware",
+      "Mugs",
+      "Serveware",
+      "Serving Utensils",
+      "Table Linens",
+      "Water Bottles & Thermoses"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Games": {
+     "slug": "Games",
+     "aliases": [],
+     "subcategories": [
+      "Board Games",
+      "Card Games",
+      "Outdoor Games",
+      "Puzzles"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Holiday": {
+     "slug": "Holiday",
+     "aliases": [],
+     "subcategories": [
+      "Garland",
+      "Holiday Blankets & Throws",
+      "Holiday Decor",
+      "Holiday Pillows",
+      "Ornaments",
+      "String Lights",
+      "Wreaths"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Kitchen": {
+     "slug": "Kitchen",
+     "aliases": [],
+     "subcategories": [
+      "BBQ & Grilling Tools",
+      "Bakeware",
+      "Coffee & Tea Accessories",
+      "Cookbooks",
+      "Cooking Utensils",
+      "Cookware",
+      "Food Storage",
+      "Kitchen Linens",
+      "Kitchen Tools",
+      "Knives & Cutlery"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Office": {
+     "slug": "Office",
+     "aliases": [],
+     "subcategories": [
+      "Arts & Crafts",
+      "Binders & Folders",
+      "Calendars",
+      "Labels & Label Makers",
+      "Notebooks & Journals",
+      "Pencil Cases",
+      "Planners",
+      "Shipping Supplies",
+      "Stationery"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Party Supplies": {
+     "slug": "Party_Supplies",
+     "aliases": [],
+     "subcategories": [
+      "Cake Candles",
+      "Cake Toppers",
+      "Cards & Invitations",
+      "Decorations",
+      "Disposable Tableware",
+      "Favors",
+      "Gift Wrap",
+      "Hats",
+      "Party Lights"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Storage & Organization": {
+     "slug": "Storage_&_Organization",
+     "aliases": [],
+     "subcategories": [
+      "Closet Accessories",
+      "Drawer Liners",
+      "Garment Bags",
+      "Jewelry Organizers",
+      "Makeup Organizers",
+      "Storage"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Wall Decor": {
+     "slug": "Wall_Decor",
+     "aliases": [
+      "Wall Art"
+     ],
+     "subcategories": [
+      "Art & Decals",
+      "Clocks",
+      "Display Shelves",
+      "Hooks",
+      "Mirrors",
+      "Tapestries",
+      "Wallpaper"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Other": {
+     "slug": "Other",
+     "aliases": [],
+     "subcategories": [],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    }
+   }
+  },
+  "Pets": {
+   "slug": "Pets",
+   "categories": {
+    "Dog": {
+     "slug": "Dog",
+     "aliases": [],
+     "subcategories": [
+      "Bedding & Blankets",
+      "Bowls & Feeders",
+      "Carriers & Travel",
+      "Clothing & Accessories",
+      "Collars, Leashes & Harnesses",
+      "Grooming",
+      "Housebreaking",
+      "Toys"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Cat": {
+     "slug": "Cat",
+     "aliases": [],
+     "subcategories": [
+      "Beds",
+      "Bowls & Feeders",
+      "Carriers & Travel",
+      "Clothing & Accessories",
+      "Collars, Leashes & Harnesses",
+      "Grooming",
+      "Scratchers",
+      "Toys"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Bird": {
+     "slug": "Bird",
+     "aliases": [],
+     "subcategories": [
+      "Cages & Covers",
+      "Feeders & Waterers",
+      "Perches & Swings",
+      "Toys"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Fish": {
+     "slug": "Fish",
+     "aliases": [],
+     "subcategories": [
+      "Aquarium Kits",
+      "Cleaning & Maintenance",
+      "Decor & Accessories"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Reptile": {
+     "slug": "Reptile",
+     "aliases": [],
+     "subcategories": [
+      "Cleaning & Maintenance",
+      "Habitats",
+      "Habitat Accessories",
+      "Heating & Lights"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Small Pets": {
+     "slug": "Small_Pets",
+     "aliases": [],
+     "subcategories": [
+      "Bedding",
+      "Bowls & Feeders",
+      "Cages & Habitats",
+      "Carriers",
+      "Grooming",
+      "Habitat Accessories",
+      "Toys"
+     ],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    },
+    "Other": {
+     "slug": "Other",
+     "aliases": [],
+     "subcategories": [],
+     "size_sets": {
+      "Standard": [
+       "One Size"
+      ]
+     }
+    }
+   }
+  },
+  "Electronics": {
+   "slug": "Electronics",
+   "categories": {
+    "Cameras, Photo & Video": {
+     "subcategories": [
+      "Digital Cameras",
+      "Bags & Cases",
+      "Binoculars & Scopes",
+      "Film Photography",
+      "Flashes",
+      "Lenses",
+      "Memory Cards",
+      "Simulated Cameras",
+      "Tripods & Monopods",
+      "Underwater Photography",
+      "Video",
+      "Camera Straps"
+     ]
+    },
+    "Computers, Laptops & Parts": {
+     "subcategories": [
+      "Laptops",
+      "Cables & Interconnects",
+      "Camera Privacy Covers",
+      "Computer Cable Adapters",
+      "Computer Headsets",
+      "Computer Microphones",
+      "External Components",
+      "Graphics Cards",
+      "Internal Components",
+      "Keyboards",
+      "Memory Card Readers",
+      "Mice",
+      "Mounts & Stands",
+      "Surge Protectors",
+      "Single Board Computers",
+      "USB Hubs",
+      "Webcams"
+     ]
+    },
+    "Cell Phones & Accessories": {
+     "subcategories": [
+      "Cell Phones",
+      "Holsters & Clips",
+      "Headsets",
+      "Screen Protectors",
+      "Cases",
+      "Covers",
+      "Skins & Bumpers",
+      "Chargers",
+      "Adapters",
+      "Cables"
+     ]
+    },
+    "Car Audio, Video & GPS": {
+     "subcategories": [
+      "GPS & Navigation",
+      "Amplifiers",
+      "Car Stereo Receivers",
+      "Changers",
+      "Digital Media Receivers",
+      "Equalizers",
+      "Satellite Radio",
+      "Car Headphones",
+      "In-Mirror Video",
+      "In-Visor Video",
+      "On-Dash Cameras",
+      "Overhead Video",
+      "Surround Processors",
+      "TV Tuners",
+      "Vehicle Backup Cameras"
+     ]
+    },
+    "Wearables": {
+     "subcategories": [
+      "Smartwatches",
+      "Body Mounted Cameras",
+      "Clips, Arm & Wristbands",
+      "Glasses",
+      "Rings",
+      "Smartwatch Cases",
+      "Wearables Chargers"
+     ]
+    },
+    "Tablets & Accessories": {
+     "subcategories": [
+      "Tablets",
+      "eBook Readers",
+      "Cases",
+      "Chargers",
+      "Covers",
+      "Power Adapters",
+      "Power Cables",
+      "Reading Lights",
+      "Screen Protectors",
+      "Skins",
+      "Sleeves",
+      "Stands",
+      "Tablet Keyboards"
+     ]
+    },
+    "Video Games & Consoles": {
+     "subcategories": [
+      "Consoles",
+      "Handheld Consoles",
+      "Batteries & Chargers",
+      "Cables",
+      "Controllers",
+      "Headsets",
+      "Gaming Guides",
+      "Keyboards",
+      "Digital Games",
+      "PC Games",
+      "Video Games"
+     ]
+    },
+    "VR, AR & Accessories": {
+     "subcategories": [
+      "PC & Console VR Headsets",
+      "Smartphone VR Headsets",
+      "Standalone VR Headsets",
+      "Cases, Covers & Skins",
+      "Controllers & Sensors",
+      "Parts"
+     ]
+    },
+    "Media": {
+     "subcategories": [
+      "Blank Media",
+      "CDs",
+      "DVDs & Blu-ray Discs",
+      "Media Streamers",
+      "Media Cases & Organization",
+      "Vinyl Records"
+     ]
+    },
+    "Networking": {
+     "subcategories": [
+      "Boosters & Antennas",
+      "Mobile Broadband Devices",
+      "Modems",
+      "Modem-Router Combos",
+      "Powerline Networking",
+      "USB Bluetooth Adapters",
+      "USB Wi-Fi Adapters",
+      "VoIP Home Phones",
+      "VoIP Phone Adapters",
+      "Wired Routers",
+      "Wireless Access Points",
+      "Wireless Routers"
+     ]
+    },
+    "Headphones": {
+     "subcategories": [
+      "Earbud Headphones",
+      "On-Ear Headphones",
+      "Over-Ear Headphones"
+     ]
+    },
+    "Portable Audio & Video": {
+     "subcategories": [
+      "Boomboxes",
+      "CB & Two-Way Radios",
+      "Cassette Players",
+      "Digital Voice Recorders",
+      "MP3 & MP4 Players",
+      "Microcassette Recorders",
+      "Minidisc Players",
+      "Portable & Handheld TVs",
+      "Portable CD Players",
+      "Portable DVD Players",
+      "Portable Speakers",
+      "Radios"
+     ]
+    },
+    "Other": {
+     "subcategories": []
+    }
+   }
+  }
+ }
+}

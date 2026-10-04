@@ -168,4 +168,5 @@ def test_the_prompts_say_where_a_set_a_catsuit_and_flowy_pants_go():
     assert "Skirts > Skirt Sets" in extract.SYSTEM and "never a dress" in extract.SYSTEM
     assert "Pants & Jumpsuits > Jumpsuits & Rompers" in extract.SYSTEM
     assert "unless the photos clearly show swimwear" in extract.SYSTEM
-    assert '"2-Piece Set" in the title' in copywriter.SYSTEM
+    assert '"2-Piece Set" in\n  the title' in copywriter.SYSTEM and "set_pieces" in copywriter.SYSTEM
+    assert "set_pieces" in extract.SYSTEM and "category_confidence" in extract.SYSTEM

@@ -101,6 +101,14 @@ class PhotoRole(BaseModel):
                                             "person (try-on, mirror); box = box or packaging; other")
 
 
+class CategoryPath(BaseModel):
+    """A place in Poshmark's category tree: "Skirts › Skirt Sets" (WO25)."""
+    department: Literal["Women", "Men", "Kids", "Home"] | None = Field(None, description="Only when it differs from "
+                                                                                         "the item's department")
+    category: str
+    subcategory: str | None = None
+
+
 class Facts(BaseModel):
     item_type: str = Field(description="Plain noun phrase, e.g. 'suede ankle boots', 'wrap midi dress'")
     department: Literal["Women", "Men", "Kids", "Unisex", "Home"]
@@ -117,6 +125,16 @@ class Facts(BaseModel):
                                       "(Women, Men, Kids, Home)")
     subcategory: str | None = Field(None, description="The real Poshmark subcategory, e.g. Ankle Boots & Booties, "
                                                       "Flats & Loafers, Maxi. Never 'Other'")
+    category_confidence: float | None = Field(None, ge=0, le=1, description="How sure you are of department, category "
+                                                                            "and subcategory together (0..1); below "
+                                                                            "0.70 the owner picks from your options")
+    category_alternatives: list[CategoryPath] = Field(default_factory=list, description="Only when category_confidence "
+                                                      "is below 0.70: up to 2 other real Poshmark paths you weighed, "
+                                                      "likeliest first")
+    set_pieces: int | None = Field(None, ge=2, le=4, description="2 (or 3) when the listing is separate garments sold "
+                                                                 "together as a matching set (a top with a skirt, "
+                                                                 "shorts or pants); null for one garment, a pair of "
+                                                                 "shoes, a bikini or a jewelry set")
     brand: Ev
     style_name: Ev = Field(default_factory=Ev, description="Model/style name if printed on a label or shown on a "
                                                            "retail screenshot, e.g. 'Gizeh', 'Arizona'")
@@ -196,6 +214,10 @@ class Render(BaseModel):
     subcategory: str | None
     size: str | None
     kids_gender: KidsGender | None = None   # Kids: picks Poshmark's Girls/Boys size tab (unisex -> Girls)
+    # The size exactly as Poshmark's size menu offers it, and the menu's tab (WO25, from its catalog): the poster selects
+    # this value. None on renders made before WO25, and when the size is on none of the category's menus.
+    size_tab: str | None = None
+    size_value: str | None = None
     colors: list[str]
     condition: Condition
     price: int

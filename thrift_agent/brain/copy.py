@@ -16,7 +16,7 @@ TEXT_FIELDS = ("poshmark_title", "poshmark_description", "depop_description")
 # kids_gender is the model's best guess for Poshmark's size tab, not evidence: the copy never states it. The flaws and
 # the condition evidence are what the photos show: the copy never describes them (the owner's condition rule, below).
 VIEW_EXCLUDE = {"cover_photo", "cover_upright", "photo_order", "photo_roles", "questions", "kids_gender",
-                "kids_gender_confidence",
+                "kids_gender_confidence", "category_confidence", "category_alternatives",
                 "flaws", "condition_evidence", "condition_alternative", "hang_tag_photo", "unworn", "box_photo"}
 TAG_LINE = re.compile(r"(?m)^[ \t]*(#\w+[ \t]*)+\r?$")   # a line that is nothing but hashtags
 TRAILING_TAGS = re.compile(r"(\s*#\w+)+\s*$")           # hashtags tacked onto the end of the last sentence
@@ -65,8 +65,10 @@ POSHMARK
 - Title ≤80 chars: Brand, then item type, standout detail/material, color, then "size X" (US size).
   Include the style name when known — buyers search for it (e.g. "Birkenstock Arizona ...").
   Add "New" at the start only for NWT/NWOT. Use the room — short titles don't get found.
-  Two garments sold together (a top with a skirt, shorts or pants) are a "2-Piece Set" in the title
-  ("... Corset Top & Bubble Skirt 2-Piece Set size M").
+  Two garments sold together (a top with a skirt, shorts or pants; set_pieces in the facts) are a "2-Piece Set" in
+  the title ("... Corset Top & Bubble Skirt 2-Piece Set size M"; 3 pieces: "3-Piece Set").
+  No brand in the facts (unreadable, or the owner says the item has none): the title starts with the item, and no
+  brand or designer name appears anywhere — never one guessed from the style.
   Decimal sizes use a dot (7.5), never a comma. No emojis, no ALL CAPS words except brand styling.
 - Sizes in the TITLE are US only, never EU: adults end with title_size ("size 7.5"); kids shoes use title_size
   verbatim ("Toddler size 7.5" / "Little Kid size 13" / "Big Kid size 4"), never a bare "size 7.5" and never
@@ -170,6 +172,27 @@ def clamp_title(title: str) -> str:
         return title
     return _cut_at_word(title, TITLE_MAX).rstrip(" -,|")
 
+
+
+_PIECES = re.compile(r"\b(?:\d|two|three|four)[-\s]?piece\b", re.I)
+_SIZE_TAIL = re.compile(r"\s+(?:(?:Toddler|Little Kid|Big Kid)\s+)?size\s+\S+\s*$", re.I)
+
+
+def ensure_set_title(title: str, facts: Facts) -> str:
+    """A set (facts.set_pieces, WO25) says "<n>-Piece Set" in its title: "… Bubble Skirt Set size M" becomes "… Bubble
+    Skirt 2-Piece Set size M", a title without "Set" gets the phrase before its size. Left as it is when it already says
+    so, for one garment, or when the 80 characters have no room."""
+    n = facts.set_pieces
+    if not n or _PIECES.search(title):
+        return title
+    phrase = f"{n}-Piece Set"
+    if re.search(r"\bset\b", title, re.I):
+        new = re.sub(r"\bset\b", phrase, title, count=1, flags=re.I)
+    elif m := _SIZE_TAIL.search(title):
+        new = f"{title[:m.start()]} {phrase}{title[m.start():]}"
+    else:
+        new = f"{title} {phrase}"
+    return new if len(new) <= TITLE_MAX else title
 
 def strip_tag_lines(body: str) -> str:
     """Remove hashtag-only lines anywhere in the body (plus a run of hashtags at its very end), then tidy the gaps.

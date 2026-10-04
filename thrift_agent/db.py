@@ -53,7 +53,9 @@ CREATE TABLE IF NOT EXISTS kv (
 # Columns added after the first release; applied with ALTER TABLE when an older DB is opened.
 MIGRATIONS = {"items": {"cover_hash": "TEXT", "owner_price": "INTEGER", "owner_condition": "TEXT",
                         "owner_kids_gender": "TEXT", "deferred_at": "TEXT", "owner_question": "TEXT",
-                        "owner_cover": "INTEGER", "views": "TEXT"}}
+                        "owner_cover": "INTEGER", "views": "TEXT",
+                        "owner_brand": "TEXT",           # WO25: "none" = the owner said the item has no brand
+                        "owner_category": "TEXT"}}       # WO25: {"department", "category", "subcategory"} the owner picked
 
 
 def now() -> str:

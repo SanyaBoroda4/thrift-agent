@@ -55,14 +55,18 @@ def test_kids_shoe_sizes_map_to_poshmarks_groups(ours, poshmark_group):
     (dict(department="Kids", size="EU 36 / US Big Kid 4", kids_gender="boys"),
      SizeChoice("Boys", "4 (Big Boy)", verified=True)),
     (dict(department="Kids", size="EU 22 / US Toddler 6", kids_gender="girls"),
-     SizeChoice("Baby", "6", verified=False, loose=True)),
+     SizeChoice("Baby", "6", verified=True)),                       # the catalog: the Baby tab's shoe sizes are numbers
     (dict(department="Kids", category="Dresses", size="4T", kids_gender="girls"),
-     SizeChoice("Girls", "4T", verified=False)),                                        # kids clothing: unrecorded
-    (dict(department="Kids", size="M", kids_gender="boys"), SizeChoice("Boys", "M", verified=False)),
+     SizeChoice("Girls", "4T", verified=True)),                                         # kids clothing: the catalog's
+    (dict(department="Kids", size="M", kids_gender="boys"), SizeChoice("Boys", "M", verified=True)),
     (dict(department="Kids", category="Shirts & Tops", size="6 Months", kids_gender="boys"),
-     SizeChoice("Baby", "6 Months", verified=False)),                                    # baby clothing: the Baby tab
+     SizeChoice("Baby", "6 Months", verified=True)),                                     # baby clothing: the Baby tab
     (dict(department="Kids", category="Shirts & Tops", size="Newborn", kids_gender="girls"),
-     SizeChoice("Baby", "Newborn", verified=False)),
+     SizeChoice("Baby", "Newborn", verified=True)),
+    # WO25: a Render made since carries the catalog's own value and tab — selected as it is
+    (dict(department="Men", category="Jeans", size="32", size_tab="Standard", size_value="Waist 32"),
+     SizeChoice("Standard", "Waist 32", verified=True)),
+    (dict(category="Tops", size="M", size_tab="Petite", size_value="MP"), SizeChoice("Petite", "MP", verified=True)),
 ])
 def test_size_choice(kw, choice):
     assert size_choice(render(**kw)) == choice

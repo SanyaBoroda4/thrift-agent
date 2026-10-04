@@ -59,6 +59,13 @@ Defaults for the first weeks of live posting, until the eval numbers justify loo
   Rompers" becomes Pants & Jumpsuits › Jumpsuits & Rompers). A subcategory Poshmark doesn't have is left out (noted in
   the item's record, not on the card); a department or category it doesn't have is asked like "Other". A two-piece set
   goes under its bottom (top + skirt: Skirts › Skirt Sets) and is a "2-Piece Set" in the title.
+- **"Which category?" and "No brand" (WO25).** A category the model is under 0.70 sure of (or one Poshmark doesn't
+  have) is one message with 1-3 real paths as buttons, e.g. [Skirts › Skirt Sets] [Shorts]; typed answers still work.
+  The brand question has a [No brand] button: Poshmark's brand field stays empty (the form marks it optional) and the
+  copy names no brand.
+- **Sizes from Poshmark's catalog (WO25).** `data/poshmark_catalog.json` holds every category's size menu per tab
+  (Standard / Plus / Petite / Juniors / Maternity, Big & Tall, Baby / Girls / Boys); the size the poster selects is
+  exactly one of those values ("Waist 32", "MP", "7.5 (Toddler Girl)", "3 Months"), and a size no menu has is asked.
 - **The only questions that reach the owner:** brand or size below 0.70, NWT without a hang-tag photo, a category
   of "Other" (or a department/category not on Poshmark's list), a possible re-share, a pair of shoes in doubt between
   brand new and worn, Girls or Boys below 0.70, and the poster's `needs_owner`. The model's own questions about
@@ -129,7 +136,8 @@ Over SSH Claude deploys and checks status and logs after every work order, and m
 ## Commands
 ```
 thrift init | run | process <dir> | confirm <batch> <cmd> | answer <item> "<note>" | price <item> <amount>
-thrift condition <item> nwt|like_new|good | kids <item> girls|boys | redo <batch> | recover <item|batch>
+thrift condition <item> nwt|like_new|good | kids <item> girls|boys | category <item> "<path>" | redo <batch>
+thrift recover <item|batch> [--recheck] | reprocess <item>
 thrift requeue <item> [marketplace] | requeue <batch> | mark-posted <item> <marketplace> <url> | status | show <item>
 thrift poster [--once] [--dry-run] [--stage form|review] [--publish-first <item>] [--allow-dev-browser]
 thrift login --site poshmark | telegram setup|test | harvest | build-style | eval
@@ -151,6 +159,10 @@ thrift login --site poshmark | telegram setup|test | harvest | build-style | eva
   answers and the text stay, and nothing settled is asked again. The item's stored front check is kept, so running it
   twice changes nothing (`--recheck` asks the front and upright checks again). A card still waiting is sent again only
   when what it shows changed.
+- **`thrift reprocess <item>`** sends one waiting (or ready) item through the pipeline again in place, with today's
+  prompts and copy rules and the owner's answers kept; its card stays open meanwhile and is sent again only when it
+  changed. **`thrift category <item> "Skirts › Skirt Sets"`** answers "Which category?"; **`thrift answer <item> "no
+  brand"`** is the [No brand] button.
 - **`thrift telegram setup | test`** — `setup` prints the chat ids and user ids seen in the bot's recent updates so
   the owner can fill `TELEGRAM_CHAT_ID` and `TELEGRAM_ALLOWED_USER_IDS`; `test` sends a test message. See
   "Telegram approval (M3)".

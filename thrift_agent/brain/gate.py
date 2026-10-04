@@ -18,8 +18,11 @@ class GateResult:
     questions: list[str] = field(default_factory=list)  # the `need` reasons in the owner's words, for the price card
 
 
+OTHER_CATEGORY_QUESTION = "Category? — reply e.g. 'category Tops'"
+
+
 def evaluate(facts: Facts, price: PriceResult, lint: list[str], unsupported: int, cfg: dict,
-             pricing_cfg: dict) -> GateResult:
+             pricing_cfg: dict, sized: bool = True) -> GateResult:
     """needs_info only for what the owner alone can settle: brand or size below the threshold, NWT without a hang-tag
     photo, a category of "Other" (the pipeline adds a possible re-share; the poster adds needs_owner). Nothing else is
     a question: the model's own `questions` about optional facts (material, measurements) are dropped — a missing
@@ -28,15 +31,18 @@ def evaluate(facts: Facts, price: PriceResult, lint: list[str], unsupported: int
 
     `price` and `pricing_cfg` are accepted for the caller's sake and not consulted: a brand missing from the price
     table, a category default or a price under the floor is not a question for the owner — the approval message shows
-    the price (and "no price history") and the owner settles it there."""
+    the price (and "no price history") and the owner settles it there.
+
+    WO25: the owner's "no brand" (brand source owner) settles the brand; `sized` False — a category whose every size
+    menu is "One Size" (bags, jewelry, Home) — means there is no size to ask."""
     need, soft, notes, questions = [], [], [], []
     mc = cfg["min_confidence"]
 
-    if not facts.brand.value or facts.brand.confidence < mc["brand"]:
+    if facts.brand.source != "owner" and (not facts.brand.value or facts.brand.confidence < mc["brand"]):
         need.append(f"brand unclear ({facts.brand.value}, {facts.brand.confidence:.2f})")
         questions.append(f"Brand: read as “{facts.brand.value}”, not sure — reply 'brand …' if it's wrong"
                          if facts.brand.value else "Brand? Couldn't read it — reply 'brand …'")
-    if not facts.size_us.value or facts.size_us.confidence < mc["size"]:
+    if sized and (not facts.size_us.value or facts.size_us.confidence < mc["size"]):
         need.append(f"size unclear ({facts.size_us.value}, {facts.size_us.confidence:.2f})")
         questions.append(f"Size: read as “{facts.size_us.value}”, not sure — reply 'size …' if it's wrong"
                          if facts.size_us.value else "Size? Couldn't read it — reply 'size …'")
@@ -53,7 +59,7 @@ def evaluate(facts: Facts, price: PriceResult, lint: list[str], unsupported: int
         questions.append("NWT? No photo of an attached hang tag — reply 'NWT' if the tag is attached")
     if facts.category.strip().lower() in ("", "other") or (facts.subcategory or "").strip().lower() == "other":
         need.append("category/subcategory is 'Other' — pick the real Poshmark category")
-        questions.append("Category? — reply e.g. 'category Tops'")
+        questions.append(OTHER_CATEGORY_QUESTION)
 
     soft.extend(lint)
     if unsupported:

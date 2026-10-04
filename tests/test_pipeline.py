@@ -865,11 +865,15 @@ def test_a_category_poshmark_does_not_have_is_asked_in_the_approval_message(tmp_
     pipeline.process_item(s, db, iid)
     it = db.item(iid)
     gate = loads(it["gate"])
-    assert it["status"] == "awaiting_price" and gate["decision"] == "needs_info" and owner_messages == [("item", iid)]
+    # WO25: asked with buttons, real paths only — the model's subcategory names one (Shoes › Flats & Loafers)
+    assert it["status"] == "awaiting_price" and gate["decision"] == "needs_info" and owner_messages == [("category", iid)]
     assert gate["reasons"][0] == "category 'Gadgets' is not one of Poshmark's Women categories — reply e.g. " \
                                  "'category Tops'"
-    # Like brand/size, a price alone lets the model's reading stand; the poster asks if the form lacks the name.
-    assert pipeline.set_price(s, db, iid, 60) == "ready"
+    assert gate["ask_category"] == [{"department": "Women", "category": "Shoes", "subcategory": "Flats & Loafers"}]
+    assert not any(q.startswith("category") for q in gate["questions"])        # not on the card as well
+    assert pipeline.set_price(s, db, iid, 60) == "awaiting_price"              # like Girls/Boys: answered first
+    assert pipeline.set_category(s, db, iid, gate["ask_category"][0]) == "new"   # not the model's: reprocessed
+    assert loads(db.item(iid)["owner_category"])["category"] == "Shoes" and db.item(iid)["owner_price"] == 60
 
 
 def test_the_listing_keeps_only_poshmarks_curated_style_tags(tmp_path, monkeypatch, facts, owner_messages):

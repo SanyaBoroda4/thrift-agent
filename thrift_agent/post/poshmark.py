@@ -32,7 +32,9 @@ UNVERIFIED (record on the Mac from the evidence in failed/shots):
                                 one stops the publish before the click)
   draft_saved                   where Save Draft lands
   captcha                       the wording of Poshmark's bot check
-  size_choice(): the Baby tab's labels, kids clothing tabs, Plus sizes.
+The size menus' tabs and values are Poshmark's own catalog of the form (data/poshmark_catalog.json, WO25); a size is
+selected only as a value of its tab's menu. The Brand field is optional on the form (its "Optional" label, 2026-09-30):
+an item the owner calls unbranded leaves it empty.
 submit() refuses to save a draft while draft_saved is UNVERIFIED. Publishing is decided by the caller: the poster loop
 publishes only with poster.dry_run off and poster.autopublish_confirmed on (runner.run); the supervised publish
 (`thrift poster --publish-first <item>`) sets `confirm`, so the owner types LIST at the Share Listing panel. Either way
@@ -118,10 +120,14 @@ _BABY = re.compile(r"\bMonths?\b|^(?:Newborn|Preemie)$", re.I)    # "6 Months", 
 def size_choice(r: Render) -> SizeChoice | None:
     """Which tab and which size button the Render's size is on Poshmark's size menu, or None without a size.
 
-    Adults: the Standard tab, button = the US size ("7.5", "XS", "00"); verified for Women's shoes and tops. Plus
-    sizes (1X..) go to the Plus tab (labels UNVERIFIED). Kids: the Girls or Boys tab by kids_gender (unisex or unread
-    goes under Girls; the approval message said so). Kids shoes map through KIDS_SIZE_OPTIONS, e.g.
-    "EU 24 / US Toddler 7.5" -> Girls / "7.5 (Toddler Girl)"; kids clothing tabs are UNVERIFIED."""
+    WO25: a Render made since carries the size exactly as the form's catalog spells it, with its tab (size_tab /
+    size_value, brain/sizes.poshmark_size: Women Standard / Plus / Petite / Juniors / Maternity, Men Standard / Big &
+    Tall, Kids Baby / Girls / Boys) — that value is selected, nothing else. Older Renders: adults on the Standard tab,
+    button = the US size; Plus sizes (1X..) on the Plus tab; kids on the Girls or Boys tab by kids_gender (unisex or
+    unread under Girls), kids shoes through KIDS_SIZE_OPTIONS ("EU 24 / US Toddler 7.5" -> Girls / "7.5 (Toddler
+    Girl)"), 0-7C and baby clothing on the Baby tab (the catalog's labels: "5", "3 Months")."""
+    if r.size_value:
+        return SizeChoice(r.size_tab, r.size_value, verified=True)
     size = (r.size or "").strip()
     if not size:
         return None
@@ -131,11 +137,11 @@ def size_choice(r: Render) -> SizeChoice | None:
         if m and (opt := KIDS_SIZE_OPTIONS.get(f"US {m[1]} {m[2]}")):
             group, n = opt
             if group == "Baby":
-                return SizeChoice("Baby", n, verified=False, loose=True)
+                return SizeChoice("Baby", n, verified=True)          # the catalog: the Baby tab's shoe sizes are "0".."7"
             return SizeChoice(f"{g}s", f"{n} ({group} {g})", verified=True)
         if _BABY.search(size):                       # baby clothing sizes sit on the Baby tab (Poshmark's catalog)
-            return SizeChoice("Baby", size, verified=False)
-        return SizeChoice(f"{g}s", size, verified=False)
+            return SizeChoice("Baby", size, verified=True)
+        return SizeChoice(f"{g}s", size, verified=True)
     if _PLUS.match(size):
         return SizeChoice("Plus", size.upper(), verified=False)
     return SizeChoice("Standard", size, verified=r.department == "Women" and r.category in ("Shoes", "Tops"))
@@ -514,7 +520,7 @@ class PoshmarkPoster(Poster):
             picked, tabs = await self._choose(page, SEL["size_tabs"](page), choice.tab)
             if picked:
                 await settle(page, 0.3, 0.8)
-            elif choice.verified:
+            elif choice.verified and tabs:             # no tabs at all: a category with one menu (Women's shoes)
                 raise PosterError(f"the size menu for {r.department}/{r.category} has no '{choice.tab}' tab"
                                   f"{_offer(tabs)}")
         picked, sizes = await self._choose(page, SEL["size_buttons"](page), choice.button, loose=choice.loose)

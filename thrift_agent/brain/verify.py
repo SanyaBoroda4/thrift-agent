@@ -144,14 +144,19 @@ def _found(pattern: re.Pattern, text: str) -> list[str]:
     return sorted({re.sub(r"\s+", " ", m.group(0).lower()) for m in pattern.finditer(text)})
 
 
-def lint(facts: Facts, copy: CopyOut, photos: list[int] | None = None) -> list[str]:
+def lint(facts: Facts, copy: CopyOut, photos: list[int] | None = None, brands: list[str] | tuple = ()) -> list[str]:
     """The deterministic checks on finished copy. `photos` are the photo indices the listing shows, cover first
     (pipeline.listing_photos): a flaw counts as disclosed when the description carries the condition line and one of
     the flaw's photos is in the listing — the cover included: the front stays the cover even when a flaw shows on it
-    (WO23), and that photo shows the flaw."""
+    (WO23), and that photo shows the flaw. `brands`: the brand names the price table knows — none of them may appear
+    in a listing whose facts have no brand (WO25: the copy never invents a brand)."""
     problems: list[str] = []
     t, d, dd = copy.poshmark_title, copy.poshmark_description, copy.depop_description
     everything = f"{t}\n{d}\n{dd}\n{' '.join(copy.poshmark_style_tags)}"
+    if not facts.brand.value:
+        named = next((b for b in brands if re.search(rf"(?<![\w']){re.escape(b)}(?![\w'])", everything, re.I)), None)
+        if named:
+            problems.append(f"names brand '{named}' the facts don't have")
     if len(t) > 80:
         problems.append("title over 80 chars")
     if len(dd) > 1000:

@@ -113,17 +113,19 @@ same item). Nothing publishes without price approval.
      writer never sees the flaws or the condition evidence; `copy.condition_rule` runs after the verifier (drops a
      sentence with wear words, puts the line in) and `verify.lint` checks the result (wear words, used-item claims,
      the line and the flaw photos).
-   - **The only questions.** Brand or size below 0.70, NWT without a hang-tag photo, category "Other" (or a
-     department/category not on Poshmark's list, `data/poshmark_taxonomy.yaml`), a possible re-share, a pair of shoes in
-     doubt between brand new and worn (its own message, before the price), Girls or Boys for a kids item the model is
-     under 0.70 sure of (its own message, WO20), and the poster's `needs_owner`. **Never the grouping** (owner
+   - **The only questions.** Brand or size below 0.70 (the brand question carries a [No brand] button, WO25), a size
+     none of Poshmark's size menus for the category has (WO25), NWT without a hang-tag photo, "Which category?" — the
+     model under 0.70 sure of its category, or one Poshmark doesn't have / "Other": its own message with 1-3 real paths
+     as buttons (WO25; with no real path to offer, the old typed question on the card) — a possible re-share, a pair of
+     shoes in doubt between brand new and worn (its own message, before the price), Girls or Boys for a kids item the
+     model is under 0.70 sure of (its own message, WO20), and the poster's `needs_owner`. **Never the grouping** (owner
      decision, WO20b): it is accepted without asking; [Wrong photos] on a card is the owner's way back, not a routine
      question; only a grouping that isn't a partition (a photo in no item, or in two) still sends the contact sheet,
      since taking it would lose or double a photo. The model's own `questions` about
      optional facts (material, measurements) are dropped — a missing optional fact is left out of the listing; an
      unsure condition is kept in the item's record (`gate.info`), never on the card. CLI actions (`thrift price` /
-     `answer` / `confirm` / `condition` / `kids` / `redo`) are echoed to the Telegram group and settle the pending
-     message.
+     `answer` / `confirm` / `condition` / `kids` / `category` / `redo`) are echoed to the Telegram group and settle the
+     pending message.
 3. **The model never clicks publish.** Deterministic code fills, reads back, diffs, then publishes.
    An LLM fallback (Playwright MCP) may *fill* a form when a selector breaks; code still verifies and submits.
 4. **Idempotent posting.** Row → `posting` before the form opens. A `posting` row after a crash is never
@@ -161,8 +163,12 @@ same item). Nothing publishes without price approval.
 - Poshmark's catalog (WO24): every department's categories and subcategories — Women, Kids, Men, Home — as the listing
   form's own catalog lists them (read from the logged-in form 2026-10-04; it agrees with the Women Shoes and Kids lists
   recorded live on 2026-09-29), in `data/poshmark_taxonomy.yaml`, all `verified: true`; the Women entries after
-  "Global & Traditional Wear" (Ao Dais … Treggings) are its subcategories. The raw catalog (`data/poshmark_catalog.json`,
-  with each category's size menus per tab) stays a local file, not in git.
+  "Global & Traditional Wear" (Ao Dais … Treggings) are its subcategories. The raw catalog, `data/poshmark_catalog.json`
+  (in git since WO25: Poshmark's public taxonomy), also gives each category's **size menu per tab** — Women Standard /
+  Plus / Petite / Juniors / Maternity, Men Standard / Big & Tall, Kids Baby / Girls / Boys, shoes Standard (Kids shoes
+  Baby "0"-"7", Girls / Boys "7.5 (Toddler Girl)" …) — the menus every size is checked against and selected from (see
+  "Sizes (WO25)"). And the form marks **Brand "Optional"** (the 2026-09-30 snapshot): a listing without a brand leaves
+  it empty.
 - Verified from the DOM snapshot of the first Mac dry-run (2026-09-30, WO11): the **"Select a Covershot." dialog**
   Poshmark opens after the upload (`div.image-edit-modal > [data-test=modal-container]`: one `.image-edit-modal__thumb`
   per photo, the first preselected with `svg.icon-green-checkmark`; a croppie crop frame, 3:4 portrait (viewport
@@ -211,8 +217,8 @@ same item). Nothing publishes without price approval.
 - **UNVERIFIED:** the Promote My Closet toggle's markup (`promote_toggle`: one checkbox → must be unchecked; none →
   the panel must read "Promote My Closet Off"; anything else stops before List — the first publish passed through the
   one-checkbox path); where Save Draft lands
-  (`draft_saved`); the size field and Done for adult sizes; the CAPTCHA wording; the Baby-tab size labels, kids
-  clothing and Plus size tabs; all of Depop. Record them from the evidence in
+  (`draft_saved`); the size field and Done for adult sizes (the values and tabs are the catalog's, WO25); the
+  CAPTCHA wording; all of Depop. Record them from the evidence in
   `failed/shots/` (`.png`/`.html`/`.json` per run, `<item>-review.json`, `…-after-list.*`) or with
   `playwright codegen --channel chrome https://poshmark.com/create-listing` on the Mac.
 
@@ -226,6 +232,12 @@ Without `private/`, the code falls back to `config/*.example.yaml` and `data/sty
 `thrift init | run | process <dir> | confirm <batch> <cmd> | answer <item> "<note>" | price <item> <amount>`
 `thrift condition <item> nwt|like_new|good` (the CLI twin of the shoe question's buttons)
 `thrift kids <item> girls|boys` (the twin of [Girls] [Boys]) | `thrift redo <batch>` (rebuild a batch's unposted items)
+`thrift category <item> "<category › subcategory>"` (WO25, the twin of "Which category?"; "Kids > Matching Sets" for
+another department) | `thrift answer <item> "no brand"` (the twin of [No brand])
+`thrift reprocess <item>` (WO25): an item that waits for the owner, or is ready, goes through the pipeline again IN
+PLACE — today's prompts and copy rules, the owner's answers kept (price, condition, Girls/Boys, cover, category, no
+brand). It keeps waiting meanwhile (its card stays open) and the card is sent again only when what it shows changed, as
+`recover`; an answer that lands meanwhile wins (nothing written, "run it again"). Model calls.
 `thrift recover <item|batch> [--recheck]` (WO23): recompute ONLY the cover (the front check, upright), the photo order,
 the category and the size of items not on the marketplace — price, approved price, condition and Girls/Boys answers and
 the copy stay; a question the new category/size settles goes, an item then waiting only for a price it has is ready.
@@ -288,8 +300,15 @@ The owner shares retailer screenshots (product page with price, style name, colo
   style_tags`, recorded 2026-09-30), spelled Poshmark's way, at most 3. The copy prompt lists them; `fit_style_tags`
   drops anything else before lint, including a material tag (Leather, Suede, Wool, …) that `facts.material` doesn't
   back — tags are optional, so an unusable one is left out, never a question or a draft.
-- **Two-piece sets (WO24):** two garments sold together are a "2-Piece Set" in the title ("… Corset Top & Bubble Skirt
-  2-Piece Set size M"; the copy prompt). Their category is the bottom's (see Categories), never Dresses.
+- **Two-piece sets (WO24, WO25):** two garments sold together are a "2-Piece Set" in the title ("… Corset Top & Bubble
+  Skirt 2-Piece Set size M"). The extraction reads `set_pieces` (2 or 3; never a bikini, shoes or jewelry) and
+  `copy.ensure_set_title` puts "<n>-Piece Set" in when the copy left it out (replacing "Set", else before the size; never
+  past 80 characters). Their category is the bottom's (see Categories), never Dresses.
+- **No brand (WO25):** the brand question's [No brand] (or a reply "no brand" / "unbranded", or `thrift answer <item>
+  "no brand"`) is `items.owner_brand` = "none": the brand source owner (the gate asks no more), Poshmark's brand field
+  left empty, the copy names no brand (prompt rule; `verify.lint` flags a brand of the price table in a listing whose
+  facts have none). The card stays open for its price; a listing that named the model's unsure guess is rewritten first
+  (reprocessed). "no brand, 25" sets the price too.
 - **Line breaks are line breaks (WO24):** a break the model writes as the two characters backslash + n (live: the
   verifier's rewrite, in two listings, which also counted as "rewrote without reporting a claim") is made a real one by
   `copy.clean` / `copy.unescape_breaks`, ignored by `changed_fields`, and mended in stored listings by `relist`
@@ -450,6 +469,21 @@ is settled (derived, 0.95) — no question — and the description
 gets "Label size: 4 ans / 104 cm." (`copy.ensure_label_size`). A bare "4" is not mapped (4T or kids 4?): the label photos
 are read once more for the units (`cover.read_size_label`), else it is asked as before.
 
+## Sizes (WO25)
+`sizes.poshmark_size` puts the item's size on Poshmark's own menus (the catalog): the size the poster selects is exactly
+one value of one tab's menu (`Render.size_tab` / `size_value`; `post.size_choice` takes it as it is). One-size
+categories (bags, jewelry, most accessories, Home): "One Size", and no size question (`gate.evaluate(sized=False)`).
+Kids shoes by their C/Y size: 0-7C on the Baby tab as the bare number, else Girls / Boys "7.5 (Toddler Girl)" (Toddler
+7.5-12C, Little 12.5-13.5C and 1-3Y, Big 3.5-7Y). Kids clothing on the Girls or Boys tab by kids_gender (unisex or
+unread: Girls), else the Baby tab ("3 Months", "Newborn"); a size only one gender's menu has is not moved to the other.
+Adults: the tab the label asks for first — Maternity (the item type or label says so), Petite ("8P", "M Petite"),
+Juniors ("Jrs") — then Standard, Plus, Petite, Juniors, Big & Tall in that order, the value spelled as the menu spells it
+("3XL" → "XXXL" for Women, a men's "32x30" → "Waist 32", "15.5" → "Neck 15.5", "34DD" → "34E (DD)", "8 1/2" and "8.5M" →
+"8.5"). A size read well (≥ 0.70) that no menu of the category has is a question on the card ("Size: “38” isn't on
+Poshmark's Women Shoes size list (Standard) — reply 'size …'"). The card shows the menu's words ("Waist 32", "4T (Boys)",
+"14 (Plus)"). Renders made before WO25 keep the old mapping (the Baby tab's and kids clothing labels now marked verified:
+they are the catalog's) until `recover` / `reprocess` rebuilds them.
+
 ## Categories (WO23, WO24)
 `taxonomy.fit` puts the model's department / category / subcategory on Poshmark's names right after extraction (the
 lists: `data/poshmark_taxonomy.yaml`, the form's catalog; the extraction prompt shows them all).
@@ -462,6 +496,14 @@ lists: `data/poshmark_taxonomy.yaml`, the form's catalog; the extraction prompt 
   Short Sleeve", "A-Line or Full"), when exactly one category has it — a whole name wins over another's part ("Wide
   Leg" is Pants', not Jeans' "Flare & Wide Leg"); a name two categories have ("Maxi", "Mini", "Skinny") is still asked.
   A subcategory matches one part of Poshmark's name the same way ("Jumpsuits" → "Jumpsuits & Rompers").
+- "Which category?" (WO25): the model gives `category_confidence` and, under 0.70, up to 2 `category_alternatives`.
+  Under 0.70 — or a category Poshmark doesn't have, or "Other" — `pipeline.category_question` offers 1-3 real paths
+  (`taxonomy.category_options`: the model's own pick if Poshmark has it, its alternatives, every category that has its
+  word as a subcategory; never "Other") as ONE message before Girls/Boys and the price card ([Skirts › Skirt Sets]
+  [Shorts]; `cat:<item>:<n>`). A typed reply works: a number, an option's words, any real path ("Shorts", "Pants &
+  Jumpsuits / Wide Leg"); anything else is a note, as before. The answer is `items.owner_category`, applied after every
+  extraction and passed to the model as a seller-note line. The model's own pick settles at once (no model call);
+  another path reprocesses the item (price, size menu, copy follow it). A price alone doesn't settle it (like Girls/Boys).
 - The extraction prompt (WO24): a two-piece set is never a dress — Women top + skirt = Skirts › Skirt Sets, top +
   shorts = Shorts, top + pants = Pants & Jumpsuits (the bottom decides), Kids = Matching Sets; a catsuit / jumpsuit /
   romper = Pants & Jumpsuits › Jumpsuits & Rompers (Kids: Bottoms › Jumpsuits & Rompers); pants, sheer or flowy ones too,
