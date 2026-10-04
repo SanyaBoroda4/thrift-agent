@@ -1,6 +1,7 @@
 """Orchestration: inbox folder → batch → items → facts/price/copy/gate → ready for the poster."""
 from __future__ import annotations
 
+import hashlib
 import json
 import platform
 import re
@@ -760,11 +761,30 @@ def _listed_cover(it, photos: list[Path]) -> int | str:
     return missing[0] if len(missing) == 1 else "?"
 
 
-def recover_item(s: Settings, db: DB, iid: str) -> dict:
+def _stored_check(it) -> FrontOut | None:
+    """The front check stored with the item (items.views), or None — none stored (processed before WO23) or one that
+    no longer reads."""
+    try:
+        return FrontOut.model_validate(loads(it["views"])) if it["views"] else None
+    except ValueError:
+        return None
+
+
+def _digest(path: Path) -> str | None:
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+
+
+def recover_item(s: Settings, db: DB, iid: str, recheck: bool = False) -> dict:
     """WO23: recompute ONLY the cover (the front check, upright), the photo order, the category and the size of an
     item that is not on the marketplace — the price, the owner's approved price, condition and Girls/Boys answers and
     the copy stay. Nothing settled is asked again: a question that the new category or size settles goes; an item that
-    then waits only for a price it already has is ready. Returns what it found ({"cover", "role", "upright", ...})."""
+    then waits only for a price it already has is ready.
+
+    WO24: the front check stored with the item is kept, and so is the cover's turn while the cover is the same photo —
+    run twice, recover changes nothing (a second look could swap a front for a look-alike back: live, a skirt's cover
+    went 0, 2, 0, 2 over four runs); `recheck` asks both checks again. The item's open card is sent again only when
+    what it shows changed (its text, its buttons' price, its cover picture); otherwise it stays as the owner has it.
+    Returns what it found ({"cover", "role", "upright", "card", ...})."""
     it = db.item(iid)
     if it is None:
         raise ValueError(f"unknown item {iid}")
@@ -776,13 +796,19 @@ def recover_item(s: Settings, db: DB, iid: str) -> dict:
     photos = sorted((d / "photos").glob("*.jpg"))
     kinds = photo_kinds_of(d, photos)
     facts = Facts.model_validate(loads(it["facts"]))
-    before = {"cover": _listed_cover(it, photos), "category": facts.category, "size": facts.size_us.value}
+    before = {"cover": _listed_cover(it, photos), "category": facts.category, "subcategory": facts.subcategory,
+              "size": facts.size_us.value}
+    was = (approve.card(iid, it), _digest(d / "cover.jpg"))
     facts, fit_notes, fit_questions = taxonomy.fit(facts)
     facts = settle_kids_size(s, facts, photos)
-    check = front_view(s, db, iid, photos, facts, kinds)
+    stored = None if recheck else _stored_check(it)
+    check = stored or front_view(s, db, iid, photos, facts, kinds)
     cover, upright, cover_note = choose_cover(facts, len(photos), kinds, check, it["owner_cover"])
     if cover is not None:
-        upright = upright_view(s, db, iid, photos[cover], upright)
+        if stored is None or cover != facts.cover_photo:
+            upright = upright_view(s, db, iid, photos[cover], upright)
+        else:
+            upright = facts.cover_upright                    # the same photo, turned upright before: kept
         facts = facts.model_copy(update={"cover_photo": cover, "cover_upright": upright})
     renders = relist(s, it, facts, loads(it["renders"]))
     pr = PriceResult.model_validate(loads(it["price"]))
@@ -809,6 +835,9 @@ def recover_item(s: Settings, db: DB, iid: str) -> dict:
     if status in ("awaiting_price", "needs_info") and it["owner_price"] and decision != "needs_info" \
             and not doc.get("ask_kids") and not doc.get("hold"):
         status = "ready"                                     # its only question is settled now; the price it has
+    new_card = approve.card(iid, {**dict(it), "status": status, "facts": json.dumps(facts.model_dump()),
+                                  "renders": json.dumps(renders), "gate": json.dumps(doc)})
+    changed = new_card is not None and (new_card, _digest(d / "cover.jpg")) != was
     with db.tx():
         if db.item(iid)["updated_at"] != it["updated_at"]:
             # An answer came in while this ran (the worker's Telegram thread): writing now would put back what was
@@ -817,17 +846,24 @@ def recover_item(s: Settings, db: DB, iid: str) -> dict:
         db.set_item(iid, facts=facts.model_dump(), renders=renders, gate=doc, status=status,
                     views=check.model_dump() if check else it["views"], cover_hash=prep.cover_hash(photos[facts.cover_photo])
                     if 0 <= facts.cover_photo < len(photos) else it["cover_hash"])
-        if status in ("awaiting_price", "needs_info", "awaiting_condition"):
-            # its card comes again, with the new cover and only what is still open (the queue re-sends it)
+        marks = ",".join("?" * len(approve.QUEUE_KINDS))
+        waiting = db.conn.execute(f"SELECT COUNT(*) FROM outbox WHERE ref=? AND resolved_at IS NULL AND kind IN ({marks})",
+                                  (iid, *approve.QUEUE_KINDS)).fetchone()[0]
+        if changed and waiting:
+            # the owner's card shows something else now: closed, so the queue sends the new one (one at a time)
             db.conn.execute("UPDATE outbox SET resolved_at=? WHERE ref=? AND resolved_at IS NULL", (now(), iid))
+        card = (None if new_card is None else "sent again" if changed and waiting else "changed" if changed
+                else "unchanged")
         after = {"cover": photo_order(facts, len(photos), kinds)[0], "category": facts.category,
-                 "size": facts.size_us.value}
-        db.log(iid, "recovered", {"before": before, "after": after, "upright": facts.cover_upright, "status": status})
+                 "subcategory": facts.subcategory, "size": facts.size_us.value}
+        db.log(iid, "recovered", {"before": before, "after": after, "upright": facts.cover_upright, "status": status,
+                                  "card": card})
     roles = {r.photo: r.role for r in facts.photo_roles}
     views = {v.photo: v.view for v in (check.views if check else [])}
     return {"item": iid, "cover": after["cover"], "role": roles.get(after["cover"], "?"),
             "view": views.get(after["cover"], "-"), "upright": facts.cover_upright, "category": facts.category,
-            "size": facts.size_us.value, "questions": questions, "status": status, "before": before}
+            "subcategory": facts.subcategory, "size": facts.size_us.value, "questions": questions, "status": status,
+            "card": card, "before": before}
 
 
 def requeue(s: Settings, db: DB, iid: str, marketplace: str | None = None) -> list[str]:

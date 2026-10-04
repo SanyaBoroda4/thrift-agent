@@ -170,14 +170,19 @@ def test_the_worker_processes_in_the_queues_order(env, tmp_path, facts, monkeypa
 
 # ---------- a restart ----------
 
-def test_a_restart_sends_again_only_the_open_message(env, tmp_path, facts):
+def test_a_restart_sends_again_only_the_open_message_and_only_once_it_is_old(env, tmp_path, facts):
+    """WO24, live: every deploy restarts the worker, and each restart sent the open card again. A restart repeats only
+    a card that waited past telegram.resend_after_hours (the Mac slept) — and only that one."""
     s, db, bot = env
     a = _batch(db, EARLY)
     a1 = _item(db, tmp_path, facts, a, 1, title="Tee A1")
     _item(db, tmp_path, facts, a, 2, title="Tee A2")
     assert approve.pump(s, db) == f"item {a1}"
     bot.calls.clear()
-    assert resend_pending(s, db, force=True) == [a1]                       # the worker starts again
+    assert resend_pending(s, db) == [] and bot.calls == []                 # a deploy right after: nothing repeated
+    old = (datetime.now(timezone.utc) - timedelta(hours=7)).isoformat(timespec="seconds")
+    db.conn.execute("UPDATE outbox SET sent_at=?", (old,))
+    assert resend_pending(s, db) == [a1]                                   # the worker starts after a long sleep
     assert bot.questions() == ["Tee A1"]                                   # only the open card, not A2
     assert approve.pump(s, db) is None                                     # A2 still waits for the answer
     handle_update(s, db, bot, _callback(f"approve:{a1}:40", mid=bot.next_id))
@@ -187,7 +192,7 @@ def test_a_restart_sends_again_only_the_open_message(env, tmp_path, facts):
 def test_after_a_restart_with_nothing_open_the_queue_goes_on(env, tmp_path, facts):
     s, db, bot = env
     a1 = _item(db, tmp_path, facts, _batch(db, EARLY), 1, title="Tee A1")
-    assert resend_pending(s, db, force=True) == []                         # nothing to send again...
+    assert resend_pending(s, db) == []                                     # nothing to send again...
     assert bot.questions() == ["Tee A1"] and _open(db) == ("item", a1)    # ...the first message goes out
 
 

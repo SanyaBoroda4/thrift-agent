@@ -143,7 +143,7 @@ def test_worker_and_telegram_iterations(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_safe_tick", lambda s, db: seen.append("tick"))
     monkeypatch.setattr(cli.approve, "pump", lambda s, db: seen.append("pump"))
     monkeypatch.setattr(cli.approve, "poll_once", lambda s, db, bot, timeout: seen.append(("poll", timeout)) or 0)
-    monkeypatch.setattr(cli.approve, "resend_pending", lambda s, db, force=False: seen.append("resend") or [])
+    monkeypatch.setattr(cli.approve, "resend_pending", lambda s, db: seen.append("resend") or [])
     monkeypatch.setattr(cli.time, "sleep", lambda n: seen.append(("sleep", n)))
     cli._worker_iteration(s, db, interval=7)
     assert seen == ["tick", "pump", ("sleep", 7)]
@@ -163,7 +163,7 @@ def test_the_worker_exits_when_the_telegram_thread_dies(monkeypatch, tmp_path):
     s = _settings(tmp_path, "dev")
     monkeypatch.setattr(cli, "settings", lambda: s)
     monkeypatch.setattr(cli.approve, "bot_for", lambda s: _FakeBot())
-    monkeypatch.setattr(cli.approve, "resend_pending", lambda s, db, force=False: [])
+    monkeypatch.setattr(cli.approve, "resend_pending", lambda s, db: [])
     monkeypatch.setattr(cli, "_telegram_loop", lambda s, bot: None)          # returns at once: the thread is gone
     monkeypatch.setattr(cli, "_worker_iteration", lambda s, db, interval: cli.time.sleep(0.05))
     r = CliRunner().invoke(cli.app, ["run"])

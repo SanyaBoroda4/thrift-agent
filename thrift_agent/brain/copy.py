@@ -65,6 +65,8 @@ POSHMARK
 - Title ≤80 chars: Brand, then item type, standout detail/material, color, then "size X" (US size).
   Include the style name when known — buyers search for it (e.g. "Birkenstock Arizona ...").
   Add "New" at the start only for NWT/NWOT. Use the room — short titles don't get found.
+  Two garments sold together (a top with a skirt, shorts or pants) are a "2-Piece Set" in the title
+  ("... Corset Top & Bubble Skirt 2-Piece Set size M").
   Decimal sizes use a dot (7.5), never a comma. No emojis, no ALL CAPS words except brand styling.
 - Sizes in the TITLE are US only, never EU: adults end with title_size ("size 7.5"); kids shoes use title_size
   verbatim ("Toddler size 7.5" / "Little Kid size 13" / "Big Kid size 4"), never a bare "size 7.5" and never

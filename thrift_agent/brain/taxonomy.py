@@ -1,10 +1,11 @@
 """Poshmark's category tree (data/poshmark_taxonomy.yaml): the names the create-listing form offers.
 
 fit() puts the model's department, category and subcategory onto those names right after extraction (Kids "Tops" is
-Poshmark's "Shirts & Tops"), so the poster never meets a name the form doesn't have. What it can't place is a question
-for the owner (a department or category Poshmark doesn't have) or a note (a subcategory, which Poshmark treats as
-optional: it is left out and noted in the item's record). Lists marked unverified (Men, Home) are never grounds for a
-question: the poster asks (needs_owner) if the live form turns out not to have the name.
+Poshmark's "Shirts & Tops"; "Jumpsuits & Rompers" given as the category is Pants & Jumpsuits > Jumpsuits & Rompers), so
+the poster never meets a name the form doesn't have. What it can't place is a question for the owner (a department or
+category Poshmark doesn't have) or a note (a subcategory, which Poshmark treats as optional: it is left out and noted in
+the item's record). Since WO24 every department's lists are the form's own catalog (verified); a list marked unverified
+would never be grounds for a question: the poster asks (needs_owner) if the live form turns out not to have the name.
 """
 from __future__ import annotations
 
@@ -72,6 +73,42 @@ def _from_words(text: str | None, department: str, categories) -> str | None:
     return None
 
 
+_PARTS = re.compile(r"\s*&\s*|\s+-\s+|\s+or\s+")       # "Sweatshirts & Hoodies", "Tees - Short Sleeve", "A-Line or Full"
+
+
+def _whole(name: str, subs) -> list[str]:
+    return [s for s in subs or [] if _find(name, [s])]
+
+
+def _part(name: str, subs) -> list[str]:
+    """The subcategories one part of whose name is `name` ("Hoodies": "Sweatshirts & Hoodies")."""
+    return [s for s in subs or [] if any(_find(name, [part]) for part in _PARTS.split(s) if part.strip())]
+
+
+def _matches(name: str, subs) -> list[str]:
+    """The subcategories that are `name`: by the whole name, else by one part of a two-part name ("Hoodies" is
+    "Sweatshirts & Hoodies", "Jumpsuits" is "Jumpsuits & Rompers")."""
+    return _whole(name, subs) or _part(name, subs)
+
+
+def _parent(name: str, categories) -> tuple[str, str | None] | None:
+    """(category, subcategory) when `name` is a subcategory of exactly one category here (WO24, live: the model put
+    "Jumpsuits & Rompers", Poshmark's subcategory of Pants & Jumpsuits, in the category slot; Men's hoodies are Shirts >
+    Sweatshirts & Hoodies). A whole name wins over a part of another's ("Wide Leg" is Pants' own, not Jeans' "Flare &
+    Wide Leg"). Several subcategories of that one category match ("Tees"): the category, no subcategory. None when no
+    category or several match ("Maxi" is both a dress and a skirt)."""
+    if not name or not name.strip():
+        return None
+    hits = {}
+    for match in (_whole, _part):
+        if hits := {category: found for category, subs in categories.items() if (found := match(name, subs))}:
+            break
+    if len(hits) != 1:
+        return None
+    (category, subs), = hits.items()
+    return category, subs[0] if len(subs) == 1 else None
+
+
 def _example(categories) -> str:
     return next((c for c in categories if "top" in c.lower()), next(iter(categories), "Other"))
 
@@ -92,11 +129,19 @@ def fit(facts: Facts) -> tuple[Facts, list[str], list[str]]:
     if _key(facts.category) in {_key(d) for d in (*DEPARTMENT_WORDS, *departments)}:
         # A department is never a category (WO23; live: category "Kids", subcategory "Shirts & Tops" — the model put
         # the department one level down). The real category is the subcategory it gave, else the item type's noun.
-        if found := (_find(sub or "", categories) or _alias("categories", facts.department, sub or "", categories)):
+        if found := _find(sub or "", categories):
+            facts, sub = facts.model_copy(update={"category": found}), None
+        elif lifted := _parent(sub or "", categories):          # "Sneakers": Shoes, and the subcategory kept
+            facts, sub = facts.model_copy(update={"category": lifted[0]}), lifted[1]
+        elif found := _alias("categories", facts.department, sub or "", categories):
             facts, sub = facts.model_copy(update={"category": found}), None
         elif found := _from_words(facts.item_type, facts.department, categories):
             facts = facts.model_copy(update={"category": found})
-    category = _find(facts.category, categories) or _alias("categories", facts.department, facts.category, categories)
+    category = _find(facts.category, categories)
+    if category is None and (lifted := _parent(facts.category, categories)):
+        category, sub = lifted[0], lifted[1] or sub             # Poshmark's subcategory, given as the category
+    if category is None:
+        category = _alias("categories", facts.department, facts.category, categories)
     if category is None:
         if not dept.get("verified"):
             return facts, [], []                      # an unconfirmed list: the poster asks if the form lacks it
@@ -104,7 +149,9 @@ def fit(facts: Facts) -> tuple[Facts, list[str], list[str]]:
                             f"reply e.g. 'category {_example(categories)}'"]
     subs = categories.get(category)
     if sub and subs:
-        found = _find(sub, subs) or _alias("subcategories", f"{facts.department}/{category}", sub, subs)
+        one = _matches(sub, subs)
+        found = (one[0] if len(one) == 1 else None) or _alias("subcategories", f"{facts.department}/{category}", sub,
+                                                               subs)
         if found is None:
             notes.append(f"subcategory '{sub}' is not in Poshmark's {facts.department} {category} list: listed "
                          f"without one; reply e.g. 'subcategory {subs[0]}' to set it")

@@ -158,6 +158,11 @@ same item). Nothing publishes without price approval.
   selected); brand suggestions; colour tiles;
   the Listing Price dialog (inputs, Smart Sell checkbox, Done); Next / Save Draft / Discard by `data-et-name`; the Women
   and Kids category lists with their Shoes subcategories (`data/poshmark_taxonomy.yaml`).
+- Poshmark's catalog (WO24): every department's categories and subcategories — Women, Kids, Men, Home — as the listing
+  form's own catalog lists them (read from the logged-in form 2026-10-04; it agrees with the Women Shoes and Kids lists
+  recorded live on 2026-09-29), in `data/poshmark_taxonomy.yaml`, all `verified: true`; the Women entries after
+  "Global & Traditional Wear" (Ao Dais … Treggings) are its subcategories. The raw catalog (`data/poshmark_catalog.json`,
+  with each category's size menus per tab) stays a local file, not in git.
 - Verified from the DOM snapshot of the first Mac dry-run (2026-09-30, WO11): the **"Select a Covershot." dialog**
   Poshmark opens after the upload (`div.image-edit-modal > [data-test=modal-container]`: one `.image-edit-modal__thumb`
   per photo, the first preselected with `svg.icon-green-checkmark`; a croppie crop frame, 3:4 portrait (viewport
@@ -207,7 +212,7 @@ same item). Nothing publishes without price approval.
   the panel must read "Promote My Closet Off"; anything else stops before List — the first publish passed through the
   one-checkbox path); where Save Draft lands
   (`draft_saved`); the size field and Done for adult sizes; the CAPTCHA wording; the Baby-tab size labels, kids
-  clothing and Plus size tabs; the Men/Home category lists; all of Depop. Record them from the evidence in
+  clothing and Plus size tabs; all of Depop. Record them from the evidence in
   `failed/shots/` (`.png`/`.html`/`.json` per run, `<item>-review.json`, `…-after-list.*`) or with
   `playwright codegen --channel chrome https://poshmark.com/create-listing` on the Mac.
 
@@ -221,10 +226,15 @@ Without `private/`, the code falls back to `config/*.example.yaml` and `data/sty
 `thrift init | run | process <dir> | confirm <batch> <cmd> | answer <item> "<note>" | price <item> <amount>`
 `thrift condition <item> nwt|like_new|good` (the CLI twin of the shoe question's buttons)
 `thrift kids <item> girls|boys` (the twin of [Girls] [Boys]) | `thrift redo <batch>` (rebuild a batch's unposted items)
-`thrift recover <item|batch>` (WO23): recompute ONLY the cover (the front check, upright), the photo order, the category
-and the size of items not on the marketplace — price, approved price, condition and Girls/Boys answers and the copy
-stay; a question the new category/size settles goes, an item then waiting only for a price it has is ready; a waiting
-card is sent again. One front-check call per item (plus a label re-read for a kids label read without units).
+`thrift recover <item|batch> [--recheck]` (WO23): recompute ONLY the cover (the front check, upright), the photo order,
+the category and the size of items not on the marketplace — price, approved price, condition and Girls/Boys answers and
+the copy stay; a question the new category/size settles goes, an item then waiting only for a price it has is ready.
+WO24: the front check stored with the item is kept (and the cover's turn while the cover is the same photo), so a second
+run changes nothing — live, a second look swapped a skirt's cover between two look-alike sides on every run; `--recheck`
+asks both checks again (model calls; for an item processed before WO23, with none stored, they are asked anyway). The
+item's open card is sent again only when what it shows changed (text, price, cover picture: `approve.card` + the
+cover's hash, before vs after); otherwise it stays as the owner has it. The line printed says which ("card sent again"
+/ "card changed (goes out when its turn comes)" / "card unchanged (not sent again)").
 `thrift requeue <item> [marketplace] | requeue <batch> | mark-posted <item> <marketplace> <url> | status | show <item>`
 `thrift poster [--once] [--dry-run] [--stage form|review] [--publish-first <item>] [--allow-dev-browser]`
 `thrift login --site poshmark | telegram setup|test | harvest | build-style | eval`
@@ -278,6 +288,8 @@ The owner shares retailer screenshots (product page with price, style name, colo
   style_tags`, recorded 2026-09-30), spelled Poshmark's way, at most 3. The copy prompt lists them; `fit_style_tags`
   drops anything else before lint, including a material tag (Leather, Suede, Wool, …) that `facts.material` doesn't
   back — tags are optional, so an unusable one is left out, never a question or a draft.
+- **Two-piece sets (WO24):** two garments sold together are a "2-Piece Set" in the title ("… Corset Top & Bubble Skirt
+  2-Piece Set size M"; the copy prompt). Their category is the bottom's (see Categories), never Dresses.
 - **The cover is the FRONT of the item (owner rule, absolute — WO20, WO23):** the item alone, its front, flat lay or on
   a hanger, clean background — never the back, never worn / try-on / mirror, never a label, tag, flaw close-up, box or
   screenshot. A garment photographed sideways or upside down is still a valid front flat lay; a front that shows a
@@ -373,8 +385,10 @@ The owner shares retailer screenshots (product page with price, style name, colo
 - `needs_owner`: the poster's question (brand missing from Poshmark's list, ambiguous category), kept with the item
   (`items.owner_question`) and asked in its turn; other items continue; the reply is attached and the item
   reprocessed.
-- Re-send: on worker start, and about hourly once it has waited longer than `telegram.resend_after_hours` (default 6),
-  the open message — only that one — is sent again (Telegram keeps updates 24 h; the Mac sleeps).
+- Re-send: once the open message — only that one — has waited longer than `telegram.resend_after_hours` (default 6),
+  it is sent again; checked when the worker starts and about hourly (Telegram keeps updates 24 h; the Mac sleeps). A
+  restart — every deploy — never repeats a card sent less than that ago (WO24: it used to, at every start; one skirt's
+  card went out 13 times in a day between deploys and `thrift recover` runs).
 - Settings: `telegram.enabled`, `telegram.resend_after_hours`, `telegram.poll_timeout`. On prod, `thrift run` and
   `thrift poster` refuse to start when `telegram.enabled` but any of the three env vars is missing.
 
@@ -404,6 +418,8 @@ The owner shares retailer screenshots (product page with price, style name, colo
   Done (WO16): the first live listing (supervised); `listing_url` pinned from its evidence; the closet polled after
   List (`created_listing_id`, title AND slug, ≤ 90 s); `thrift mark-posted`; the owner's condition-wording rule;
   `poster.autopublish_confirmed` as the second key for the poster loop.
+  Done (WO24): every department's categories and subcategories from the form's catalog; a subcategory given as the
+  category put under its category.
   Left: where Save Draft lands (`draft_saved`); the Promote toggle's markup; a week of dry-runs, then the two keys.
 - **M3 Telegram approval flow — done (v1):** long polling in the worker, one approval message per item
   ([Approve $P] [Change], questions folded in), `needs_owner` for the poster's own questions, re-send of pending
@@ -429,9 +445,23 @@ day: Kids Shirts & Tops / Bottoms / Dresses — Girls 2T-5T, 4, 5, 6, 6X, 7, 8, 
 is settled (derived, 0.95) — no question — and the description
 gets "Label size: 4 ans / 104 cm." (`copy.ensure_label_size`). A bare "4" is not mapped (4T or kids 4?): the label photos
 are read once more for the units (`cover.read_size_label`), else it is asked as before.
-A department is never a category (WO23; live: category "Kids", subcategory "Shirts & Tops"): `taxonomy.fit` takes the
-subcategory, else the item type's noun ("graphic tee" → Shirts & Tops, "ankle boots" → Shoes), else asks with a real
-example; the extraction prompt says so too.
+
+## Categories (WO23, WO24)
+`taxonomy.fit` puts the model's department / category / subcategory on Poshmark's names right after extraction (the
+lists: `data/poshmark_taxonomy.yaml`, the form's catalog; the extraction prompt shows them all).
+- A department is never a category (WO23; live: category "Kids", subcategory "Shirts & Tops"): `fit` takes the
+  subcategory, else the item type's noun ("graphic tee" → Shirts & Tops, "ankle boots" → Shoes), else asks with a real
+  example; the extraction prompt says so too.
+- A subcategory given as the category is put under its category (WO24; live: category "Jumpsuits & Rompers" was asked
+  as "not one of Poshmark's Women categories" → Pants & Jumpsuits › Jumpsuits & Rompers, no question): its whole name,
+  else one part of a two-part name ("Hoodies" → Men Shirts › Sweatshirts & Hoodies; "Sweatshirts & Hoodies", "Tees -
+  Short Sleeve", "A-Line or Full"), when exactly one category has it — a whole name wins over another's part ("Wide
+  Leg" is Pants', not Jeans' "Flare & Wide Leg"); a name two categories have ("Maxi", "Mini", "Skinny") is still asked.
+  A subcategory matches one part of Poshmark's name the same way ("Jumpsuits" → "Jumpsuits & Rompers").
+- The extraction prompt (WO24): a two-piece set is never a dress — Women top + skirt = Skirts › Skirt Sets, top +
+  shorts = Shorts, top + pants = Pants & Jumpsuits (the bottom decides), Kids = Matching Sets; a catsuit / jumpsuit /
+  romper = Pants & Jumpsuits › Jumpsuits & Rompers (Kids: Bottoms › Jumpsuits & Rompers); pants, sheer or flowy ones too,
+  are Pants & Jumpsuits (wide-leg = Wide Leg) unless the photos clearly show swimwear (then Swim › Coverups).
 
 ## Model calls
 Every call goes through `brain/llm.ask`: one tool, the answer validated by pydantic (one repair round). A forced

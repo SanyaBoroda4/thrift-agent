@@ -186,7 +186,7 @@ def run(interval: int = 15) -> None:
     print(f"worker watching {s.path('inbox')}" + (" — Telegram on" if bot else " — Telegram off (dev: messages print)"))
     telegram = None
     if bot:
-        approve.resend_pending(s, db, force=True)        # only the open question; Telegram keeps updates 24 h
+        approve.resend_pending(s, db)                    # the open question only if it is old: never at each deploy
         telegram = threading.Thread(target=_telegram_loop, args=(s, bot), name="telegram", daemon=True)
         telegram.start()
     while lock:                                           # the lock is held for as long as this loop runs
@@ -286,11 +286,14 @@ def kids(item_id: str, choice: str = typer.Argument(..., metavar="girls|boys")) 
 
 
 @app.command()
-def recover(ref: str) -> None:
+def recover(ref: str, recheck: bool = typer.Option(
+        False, "--recheck", help="ask the front check and the upright check again (model calls) instead of keeping "
+                                 "the item's stored ones")) -> None:
     """Recompute ONLY the cover (which photo shows the front, turned upright), the photo order, the category and the
     size of an item — or of every item of a batch (b_...) — that is not on the marketplace. Price, approved price,
-    condition and Girls/Boys answers and the listing text stay; nothing settled is asked again (WO23).
-    e.g.  thrift recover b_...  |  thrift recover i_..."""
+    condition and Girls/Boys answers and the listing text stay; nothing settled is asked again (WO23). The item's
+    stored front check is kept (run twice, nothing changes; --recheck asks it again), and a waiting card is sent
+    again only when what it shows changed (WO24).  e.g.  thrift recover b_...  |  thrift recover i_..."""
     s, db = settings(), _db()
     if ref.startswith("b_"):
         if db.batch(ref) is None:
@@ -302,16 +305,19 @@ def recover(ref: str) -> None:
     done = 0
     for iid in ids:
         try:
-            out = pipeline.recover_item(s, db, iid)
+            out = pipeline.recover_item(s, db, iid, recheck=recheck)
         except ValueError as e:
             print(f"[yellow]left as it is[/] {iid}: {escape(str(e))}")
             continue
         done += 1
         b = out["before"]
+        card = {"sent again": "card sent again", "changed": "card changed (goes out when its turn comes)",
+                "unchanged": "card unchanged (not sent again)"}.get(out.get("card"), "no card")
         print(f"[green]recovered[/] {iid}: cover #{out['cover']} ({out['role']}, front check: {out['view']}, turned "
-              f"{out['upright']}°) was #{b['cover']}; category {escape(out['category'])} was {escape(str(b['category']))}; "
-              f"size {out['size']} was {b['size']}; questions: {escape('; '.join(out['questions'])) or 'none'}; "
-              f"{out['status']}")
+              f"{out['upright']}°) was #{b['cover']}; category {escape(out['category'])} › "
+              f"{escape(str(out.get('subcategory') or '-'))} was {escape(str(b['category']))} › "
+              f"{escape(str(b.get('subcategory') or '-'))}; size {out['size']} was {b['size']}; questions: "
+              f"{escape('; '.join(out['questions'])) or 'none'}; {out['status']}; {card}")
     if not done and len(ids) == 1:
         raise typer.Exit(1)
     approve.pump(s, db)                                           # a card that changed comes again, one at a time

@@ -22,6 +22,10 @@ Rules:
 - department and category come from evidence (labels, the retailer page, sizing), never from a default.
   Use the real Poshmark category and subcategory, spelled as in the lists below — never 'Other'. The category is
   never a department name: a kids tee is department Kids, category "Shirts & Tops".
+  A set of two garments sold together is never a dress: Women top + skirt = Skirts > Skirt Sets, top + shorts = Shorts,
+  top + pants = Pants & Jumpsuits (the bottom decides); Kids = Matching Sets. A one-piece catsuit, jumpsuit or romper =
+  Pants & Jumpsuits > Jumpsuits & Rompers (Kids: Bottoms > Jumpsuits & Rompers). Pants, sheer or flowy ones too, are
+  Pants & Jumpsuits (wide-leg = Wide Leg) unless the photos clearly show swimwear (then Swim > Coverups).
 - size_printed: copy the size label exactly, every system and unit on it ("4 ans / 104 cm", "4A", "EU 38 / US 7.5").
 - Kids items: kids_gender = girls | boys | unisex, your best reading of the item itself (style, colour, the box
   or label, a retailer page), with kids_gender_confidence (0..1). It picks Poshmark's Girls or Boys size list; when

@@ -469,7 +469,8 @@ def test_resend_pending_resends_only_the_open_message(env, tmp_path, facts):
     assert [r["message_id"] for r in _outbox(db, fresh)] == [13, 14]              # the old copy stays, closed
     bot.calls.clear()
     assert resend_pending(s, db) == [] and bot.calls == []                        # the open one is recent now
-    assert resend_pending(s, db, force=True) == [fresh]                          # the worker starts again
+    _age(db, 14, hours=7)
+    assert resend_pending(s, db) == [fresh]                                       # old again: sent again
 
 
 def test_resend_pending_uses_the_configured_timeout_and_clock(env, monkeypatch):
@@ -488,7 +489,7 @@ def test_resend_pending_without_bot_does_nothing(tmp_path):
     bid = _batch(s, db)
     db.add_outbox(CHAT, 11, "batch", bid)
     _age(db, 11, hours=9)
-    assert resend_pending(s, db, force=True) == []
+    assert resend_pending(s, db) == []
     assert _outbox(db, bid)[0]["resolved_at"] is None
 
 
@@ -574,10 +575,10 @@ def test_a_pending_question_is_sent_again_after_a_restart_and_dropped_once_answe
     iid = _waiting_shoe(db, tmp_path, facts)
     approve.ask_condition(s, db, iid)
     _age(db, bot.next_id, hours=9)                                                       # the Mac slept overnight
-    assert resend_pending(s, db, force=True) == [iid]                                   # the worker starts again
+    assert resend_pending(s, db) == [iid]                                               # the worker starts again
     assert len(bot.sent("sendPhoto")) == 2 and len(db.outbox_pending()) == 1           # the new message is the one
     db.set_item(iid, status="awaiting_price")                                            # answered elsewhere
-    assert resend_pending(s, db, force=True) == []                                      # nothing to send again...
+    assert resend_pending(s, db) == []                                                  # nothing to send again...
     assert [(r["kind"], r["ref"]) for r in db.outbox_pending()] == [("item", iid)]       # ...the next one goes out
 
 

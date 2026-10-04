@@ -1,116 +1,587 @@
 # Poshmark's create-listing category tree: the names the form offers, spelled as the form shows them.
 #
-# verified: true  = the category list was read off the live form (https://poshmark.com/create-listing, 2026-09-29).
-# verified: false = UNVERIFIED placeholder (Men, Home): record it on the Mac. The poster asks the owner (needs_owner)
-#                   when the form doesn't offer a name.
-# A category's value is its subcategory list, or ~ when the list is not recorded yet.
+# verified: true  = the lists are the form's own (https://poshmark.com/create-listing): since WO24 every department,
+#                   from the form's catalog read 2026-10-04 (the Women Shoes and Kids lists, read off the live form on
+#                   2026-09-29, agree with it).
+# verified: false = an UNVERIFIED placeholder (none left): never grounds for a question; the poster asks the owner
+#                   (needs_owner) when the form doesn't offer a name.
+# A category's value is its subcategory list, or ~ when it has none.
 #
 # thrift_agent/brain/taxonomy.py puts the model's department/category/subcategory onto these names right after
 # extraction; the extraction prompt shows the same lists.
 
 departments:
+  # Categories and subcategories as Poshmark's listing form offers them: its catalog, read from the form on
+  # 2026-10-04 (WO24; it agreed exactly with the Women Shoes and Kids lists recorded live on 2026-09-29).
   Women:
     verified: true
     categories:
-      Accessories: ~
-      Bags: ~
-      Dresses: ~
-      Intimates & Sleepwear: ~
-      Jackets & Coats: ~
-      Jeans: ~
-      Jewelry: ~
-      Makeup: ~
-      Pants & Jumpsuits: ~
-      Shoes:                          # verified 2026-09-29
-        - Ankle Boots & Booties
-        - Athletic Shoes
-        - Combat & Moto Boots
-        - Espadrilles
-        - Flats & Loafers
-        - Heeled Boots
-        - Heels
-        - Lace Up Boots
-        - Moccasins
-        - Mules & Clogs
-        - Over the Knee Boots
-        - Platforms
-        - Sandals
-        - Slippers
-        - Sneakers
-        - Wedges
-        - Winter & Rain Boots
-      Shorts: ~
-      Skirts: ~
-      Sweaters: ~
-      Swim: ~
-      Tops: ~
-      Skincare: ~
-      Hair: ~
-      Bath & Body: ~
-      Global & Traditional Wear: ~
-      Other: ~
-
+      "Accessories":
+        - "Belts"
+        - "Face Masks"
+        - "Glasses"
+        - "Gloves & Mittens"
+        - "Hair Accessories"
+        - "Hats"
+        - "Hosiery & Socks"
+        - "Key & Card Holders"
+        - "Laptop Cases"
+        - "Phone Cases"
+        - "Scarves & Wraps"
+        - "Sunglasses"
+        - "Tablet Cases"
+        - "Umbrellas"
+        - "Watches"
+      "Bags":
+        - "Baby Bags"
+        - "Backpacks"
+        - "Clutches & Wristlets"
+        - "Cosmetic Bags & Cases"
+        - "Crossbody Bags"
+        - "Hobos"
+        - "Laptop Bags"
+        - "Mini Bags"
+        - "Satchels"
+        - "Shoulder Bags"
+        - "Totes"
+        - "Travel Bags"
+        - "Wallets"
+      "Dresses":
+        - "Asymmetrical"
+        - "Backless"
+        - "High Low"
+        - "Long Sleeve"
+        - "Maxi"
+        - "Midi"
+        - "Mini"
+        - "One Shoulder"
+        - "Prom"
+        - "Strapless"
+        - "Wedding"
+      "Intimates & Sleepwear":
+        - "Bandeaus"
+        - "Bras"
+        - "Chemises & Slips"
+        - "Pajamas"
+        - "Panties"
+        - "Robes"
+        - "Shapewear"
+        - "Sports Bras"
+      "Jackets & Coats":
+        - "Blazers & Suit Jackets"
+        - "Bomber Jackets"
+        - "Capes"
+        - "Jean Jackets"
+        - "Leather Jackets"
+        - "Pea Coats"
+        - "Puffers"
+        - "Ski & Snow Jackets"
+        - "Teddy Jackets"
+        - "Trench Coats"
+        - "Utility Jackets"
+        - "Varsity Jackets"
+        - "Vests"
+      "Jeans":
+        - "Ankle & Cropped"
+        - "Boot Cut"
+        - "Boyfriend"
+        - "Flare & Wide Leg"
+        - "High Rise"
+        - "Jeggings"
+        - "Overalls"
+        - "Skinny"
+        - "Straight Leg"
+      "Jewelry":
+        - "Bracelets"
+        - "Brooches"
+        - "Earrings"
+        - "Necklaces"
+        - "Rings"
+      "Makeup":
+        - "Blush"
+        - "Bronzer & Contour"
+        - "Brows"
+        - "Brushes & Tools"
+        - "Concealer"
+        - "Eye Primer"
+        - "Eyeliner"
+        - "Eyeshadow"
+        - "Foundation"
+        - "Highlighter"
+        - "Lashes"
+        - "Lip Balm & Gloss"
+        - "Lip Liner"
+        - "Lipstick"
+        - "Mascara"
+        - "Nail Tools"
+        - "Press-On Nails"
+        - "Primer"
+        - "Setting Powder & Spray"
+      "Pants & Jumpsuits":
+        - "Ankle & Cropped"
+        - "Boot Cut & Flare"
+        - "Capris"
+        - "Jumpsuits & Rompers"
+        - "Leggings"
+        - "Pantsuits"
+        - "Skinny"
+        - "Straight Leg"
+        - "Track Pants & Joggers"
+        - "Trousers"
+        - "Wide Leg"
+      "Shoes":
+        - "Ankle Boots & Booties"
+        - "Athletic Shoes"
+        - "Combat & Moto Boots"
+        - "Espadrilles"
+        - "Flats & Loafers"
+        - "Heeled Boots"
+        - "Heels"
+        - "Lace Up Boots"
+        - "Moccasins"
+        - "Mules & Clogs"
+        - "Over the Knee Boots"
+        - "Platforms"
+        - "Sandals"
+        - "Slippers"
+        - "Sneakers"
+        - "Wedges"
+        - "Winter & Rain Boots"
+      "Shorts":
+        - "Athletic Shorts"
+        - "Bermudas"
+        - "Bike Shorts"
+        - "Cargos"
+        - "High Waist"
+        - "Jean Shorts"
+        - "Skorts"
+      "Skirts":
+        - "A-Line or Full"
+        - "Asymmetrical"
+        - "Circle & Skater"
+        - "High Low"
+        - "Maxi"
+        - "Midi"
+        - "Mini"
+        - "Pencil"
+        - "Skirt Sets"
+      "Sweaters":
+        - "Cardigans"
+        - "Cowl & Turtlenecks"
+        - "Crew & Scoop Necks"
+        - "Off-the-Shoulder Sweaters"
+        - "Shrugs & Ponchos"
+        - "V-Necks"
+      "Swim":
+        - "Bikinis"
+        - "Coverups"
+        - "One Pieces"
+        - "Sarongs"
+      "Tops":
+        - "Blouses"
+        - "Bodysuits"
+        - "Button Down Shirts"
+        - "Camisoles"
+        - "Crop Tops"
+        - "Jerseys"
+        - "Muscle Tees"
+        - "Sweatshirts & Hoodies"
+        - "Tank Tops"
+        - "Tees - Long Sleeve"
+        - "Tees - Short Sleeve"
+        - "Tunics"
+      "Skincare":
+        - "Acne & Blemish"
+        - "Cleanser & Exfoliant"
+        - "Eye Cream"
+        - "Makeup Remover"
+        - "Mask"
+        - "Moisturizer"
+        - "Peel"
+        - "Serum & Face Oil"
+        - "Suncare"
+        - "Toner"
+        - "Tools"
+      "Hair":
+        - "Color"
+        - "Conditioner"
+        - "Hairspray"
+        - "Heat Protectant"
+        - "Shampoo"
+        - "Styling"
+        - "Tools"
+        - "Treatment & Mask"
+        - "Wigs & Extensions"
+      "Bath & Body":
+        - "Bath Soak & Bubbles"
+        - "Body Wash"
+        - "Exfoliant & Scrub"
+        - "Hair Removal"
+        - "Hand & Foot Care"
+        - "Hand Soap"
+        - "Moisturizer & Body Oil"
+        - "Suncare & Tanning"
+        - "Tools"
+      "Global & Traditional Wear":
+        - "Ao Dais"
+        - "Cheongsams & Qipaos"
+        - "Dirndls"
+        - "Dupattas & Stoles"
+        - "Hanboks"
+        - "Harem Pants"
+        - "Hijabs"
+        - "Huipils"
+        - "Kaftans"
+        - "Kimonos & Yukatas"
+        - "Kurta Bottoms"
+        - "Kurtas"
+        - "Lehengas"
+        - "Palazzo Pants"
+        - "Patiala Pants"
+        - "Salwars"
+        - "Saree Blouses"
+        - "Sarees"
+        - "Treggings"
+      "Other": ~
   Kids:
     verified: true
     categories:
-      Accessories: ~
-      Bottoms: ~
-      Dresses: ~
-      Jackets & Coats: ~
-      Matching Sets: ~
-      One Pieces: ~
-      Pajamas: ~
-      Shirts & Tops: ~
-      Shoes:                          # verified 2026-09-29
-        - Baby & Walker
-        - Boots
-        - Dress Shoes
-        - Moccasins
-        - Rain & Snow Boots
-        - Sandals & Flip Flops
-        - Slippers
-        - Sneakers
-        - Water Shoes
-      Swim: ~
-      Costumes: ~
-      Bath, Skin & Hair: ~
-      Toys: ~
-      Other: ~
-
+      "Accessories":
+        - "Bags"
+        - "Belts"
+        - "Bibs"
+        - "Diaper Covers"
+        - "Face Masks"
+        - "Hair Accessories"
+        - "Hats"
+        - "Jewelry"
+        - "Mittens"
+        - "Socks & Tights"
+        - "Sunglasses"
+        - "Suspenders"
+        - "Ties"
+        - "Underwear"
+        - "Watches"
+      "Bottoms":
+        - "Casual"
+        - "Formal"
+        - "Jeans"
+        - "Jumpsuits & Rompers"
+        - "Leggings"
+        - "Overalls"
+        - "Shorts"
+        - "Skirts"
+        - "Skorts"
+        - "Sweatpants & Joggers"
+      "Dresses":
+        - "Casual"
+        - "Formal"
+      "Jackets & Coats":
+        - "Blazers"
+        - "Capes"
+        - "Jean Jackets"
+        - "Pea Coats"
+        - "Puffers"
+        - "Raincoats"
+        - "Vests"
+      "Matching Sets": ~
+      "One Pieces":
+        - "Bodysuits"
+        - "Footies"
+      "Pajamas":
+        - "Nightgowns"
+        - "Pajama Bottoms"
+        - "Pajama Sets"
+        - "Pajama Tops"
+        - "Robes"
+        - "Sleep Sacks"
+      "Shirts & Tops":
+        - "Blouses"
+        - "Button Down Shirts"
+        - "Camisoles"
+        - "Jerseys"
+        - "Polos"
+        - "Sweaters"
+        - "Sweatshirts & Hoodies"
+        - "Tank Tops"
+        - "Tees - Long Sleeve"
+        - "Tees - Short Sleeve"
+      "Shoes":
+        - "Baby & Walker"
+        - "Boots"
+        - "Dress Shoes"
+        - "Moccasins"
+        - "Rain & Snow Boots"
+        - "Sandals & Flip Flops"
+        - "Slippers"
+        - "Sneakers"
+        - "Water Shoes"
+      "Swim":
+        - "Bikinis"
+        - "Coverups"
+        - "One Piece"
+        - "Rashguards"
+        - "Swim Trunks"
+      "Costumes":
+        - "Dance"
+        - "Halloween"
+        - "Seasonal"
+        - "Superhero"
+        - "Theater"
+      "Bath, Skin & Hair":
+        - "Bath & Body"
+        - "Hair Care"
+        - "Moisturizer"
+        - "Suncare"
+        - "Tools"
+      "Toys":
+        - "Action Figures & Playsets"
+        - "Building Sets & Blocks"
+        - "Cars & Vehicles"
+        - "Dolls & Accessories"
+        - "Learning Toys"
+        - "Puzzles & Games"
+        - "Stuffed Animals"
+        - "Trading Cards"
+      "Other": ~
   Men:
-    verified: false                   # UNVERIFIED placeholder
+    verified: true
     categories:
-      Accessories: ~
-      Bags: ~
-      Jackets & Coats: ~
-      Jeans: ~
-      Pants: ~
-      Shirts: ~
-      Shoes: ~
-      Shorts: ~
-      Suits & Blazers: ~
-      Sweaters: ~
-      Swim: ~
-      Underwear & Socks: ~
-      Grooming: ~
-      Global & Traditional Wear: ~
-      Other: ~
-
+      "Accessories":
+        - "Belts"
+        - "Cuff Links"
+        - "Face Masks"
+        - "Glasses"
+        - "Gloves"
+        - "Hats"
+        - "Jewelry"
+        - "Key & Card Holders"
+        - "Money Clips"
+        - "Phone Cases"
+        - "Pocket Squares"
+        - "Scarves"
+        - "Sunglasses"
+        - "Suspenders"
+        - "Ties"
+        - "Watches"
+      "Bags":
+        - "Backpacks"
+        - "Belt Bags"
+        - "Briefcases"
+        - "Duffel Bags"
+        - "Laptop Bags"
+        - "Luggage & Travel Bags"
+        - "Messenger Bags"
+        - "Toiletry Bags"
+        - "Wallets"
+      "Jackets & Coats":
+        - "Bomber & Varsity"
+        - "Lightweight & Shirt Jackets"
+        - "Military & Field"
+        - "Pea Coats"
+        - "Performance Jackets"
+        - "Puffers"
+        - "Raincoats"
+        - "Ski & Snowboard"
+        - "Trench Coats"
+        - "Vests"
+        - "Windbreakers"
+      "Jeans":
+        - "Bootcut"
+        - "Relaxed"
+        - "Skinny"
+        - "Slim"
+        - "Slim Straight"
+        - "Straight"
+      "Pants":
+        - "Cargo"
+        - "Chinos & Khakis"
+        - "Corduroy"
+        - "Dress"
+        - "Sweatpants & Joggers"
+      "Shirts":
+        - "Casual Button Down Shirts"
+        - "Dress Shirts"
+        - "Jerseys"
+        - "Polos"
+        - "Sweatshirts & Hoodies"
+        - "Tank Tops"
+        - "Tees - Long Sleeve"
+        - "Tees - Short Sleeve"
+      "Shoes":
+        - "Athletic Shoes"
+        - "Boat Shoes"
+        - "Boots"
+        - "Chukka Boots"
+        - "Cowboy & Western Boots"
+        - "Loafers & Slip-Ons"
+        - "Oxfords & Derbys"
+        - "Rain & Snow Boots"
+        - "Sandals & Flip-Flops"
+        - "Sneakers"
+      "Shorts":
+        - "Athletic"
+        - "Cargo"
+        - "Flat Front"
+        - "Hybrids"
+        - "Jean Shorts"
+      "Suits & Blazers":
+        - "Sport Coats & Blazers"
+        - "Suits"
+        - "Tuxedos"
+        - "Vests"
+      "Sweaters":
+        - "Cardigan"
+        - "Crewneck"
+        - "Turtleneck"
+        - "V-Neck"
+        - "Zip Up"
+      "Swim":
+        - "Board Shorts"
+        - "Hybrids"
+        - "Rash Guards"
+        - "Swim Trunks"
+      "Underwear & Socks":
+        - "Athletic Socks"
+        - "Boxer Briefs"
+        - "Boxers"
+        - "Briefs"
+        - "Casual Socks"
+        - "Dress Socks"
+        - "Undershirts"
+      "Grooming":
+        - "Cleanser"
+        - "Grooming Tools"
+        - "Hair Care"
+        - "Moisturizer"
+        - "Shaving"
+        - "Suncare"
+        - "Treatments"
+      "Global & Traditional Wear": ~
+      "Other": ~
   Home:
-    verified: false                   # UNVERIFIED placeholder
+    verified: true
     categories:
-      Accents: ~
-      Art: ~
-      Bath: ~
-      Bedding: ~
-      Dining: ~
-      Holiday: ~
-      Kitchen: ~
-      Office: ~
-      Party Supplies: ~
-      Storage & Organization: ~
-      Wall Decor: ~
-      Other: ~
+      "Accents":
+        - "Accent Pillows"
+        - "Baskets & Bins"
+        - "Candles & Holders"
+        - "Coffee Table Books"
+        - "Curtains & Drapes"
+        - "Decor"
+        - "Door Mats"
+        - "Faux Florals"
+        - "Furniture Covers"
+        - "Lanterns"
+        - "Picture Frames"
+        - "Vases"
+      "Art":
+        - "Ceramics"
+        - "Drawing & Illustrations"
+        - "Fiber Arts"
+        - "Glass Art"
+        - "Mixed Media"
+        - "Painting"
+        - "Photography"
+        - "Posters"
+        - "Prints"
+        - "Sculpture"
+      "Bath":
+        - "Bath Accessories"
+        - "Bath Storage"
+        - "Bath Towels"
+        - "Beach Towels"
+        - "Hand Towels"
+        - "Mats"
+        - "Shower Curtains"
+        - "Vanity Mirrors"
+        - "Vanity Trays"
+        - "Wash Cloths"
+      "Bedding":
+        - "Blankets & Throws"
+        - "Comforters"
+        - "Duvet Covers"
+        - "Mattress Covers"
+        - "Pillows"
+        - "Quilts"
+        - "Sheets"
+      "Design":
+        - "Birthday Cards"
+        - "Business Cards"
+        - "Planners"
+        - "Stamps"
+        - "Stickers"
+        - "Thank You Cards"
+      "Dining":
+        - "Bar Accessories"
+        - "Dinnerware"
+        - "Drinkware"
+        - "Flatware"
+        - "Mugs"
+        - "Serveware"
+        - "Serving Utensils"
+        - "Table Linens"
+        - "Water Bottles & Thermoses"
+      "Games":
+        - "Board Games"
+        - "Card Games"
+        - "Outdoor Games"
+        - "Puzzles"
+      "Holiday":
+        - "Garland"
+        - "Holiday Blankets & Throws"
+        - "Holiday Decor"
+        - "Holiday Pillows"
+        - "Ornaments"
+        - "String Lights"
+        - "Wreaths"
+      "Kitchen":
+        - "BBQ & Grilling Tools"
+        - "Bakeware"
+        - "Coffee & Tea Accessories"
+        - "Cookbooks"
+        - "Cooking Utensils"
+        - "Cookware"
+        - "Food Storage"
+        - "Kitchen Linens"
+        - "Kitchen Tools"
+        - "Knives & Cutlery"
+      "Office":
+        - "Arts & Crafts"
+        - "Binders & Folders"
+        - "Calendars"
+        - "Labels & Label Makers"
+        - "Notebooks & Journals"
+        - "Pencil Cases"
+        - "Planners"
+        - "Shipping Supplies"
+        - "Stationery"
+      "Party Supplies":
+        - "Cake Candles"
+        - "Cake Toppers"
+        - "Cards & Invitations"
+        - "Decorations"
+        - "Disposable Tableware"
+        - "Favors"
+        - "Gift Wrap"
+        - "Hats"
+        - "Party Lights"
+      "Storage & Organization":
+        - "Closet Accessories"
+        - "Drawer Liners"
+        - "Garment Bags"
+        - "Jewelry Organizers"
+        - "Makeup Organizers"
+        - "Storage"
+      "Wall Decor":
+        - "Art & Decals"
+        - "Clocks"
+        - "Display Shelves"
+        - "Hooks"
+        - "Mirrors"
+        - "Tapestries"
+        - "Wallpaper"
+      "Other": ~
 
 # The model's word -> Poshmark's name. Only unambiguous renames; anything else is left for the owner.
 # Matching ignores case, punctuation, "and" vs "&" and a plural s/es ("Dress" finds "Dresses").
@@ -138,6 +609,9 @@ aliases:
       Sweatshirts & Hoodies: Tops
       Hoodies: Tops
       Outerwear: Jackets & Coats
+      Clutches & Wallets: Bags                # Poshmark's own aliases (the form's catalog, 2026-10-04)
+      Jackets & Blazers: Jackets & Coats
+      Denim: Jeans
       Boots: Shoes
       Booties: Shoes
       Sneakers: Shoes
@@ -182,6 +656,8 @@ aliases:
       Loafers: Shoes
       Clogs: Shoes
       Slippers: Shoes
+    Home:
+      Wall Art: Wall Decor                    # Poshmark's own alias (the form's catalog, 2026-10-04)
   subcategories:
     Women/Shoes:
       Booties: Ankle Boots & Booties

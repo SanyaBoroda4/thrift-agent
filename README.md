@@ -54,9 +54,11 @@ Defaults for the first weeks of live posting, until the eval numbers justify loo
   owner gets "Girls or Boys?" with [Girls] [Boys] before the price card (CLI: `thrift kids <item> girls|boys`); the
   answer is kept. The copy never states the gender.
 - **Poshmark's own category names.** Right after extraction the department, category and subcategory are put onto the
-  names the create-listing form offers (`data/poshmark_taxonomy.yaml`; Kids "Tops" becomes "Shirts & Tops",
-  "Booties" becomes "Ankle Boots & Booties"). A subcategory Poshmark doesn't have is left out (noted in the item's
-  record, not on the card); a department or category it doesn't have is asked like "Other".
+  names the create-listing form offers (`data/poshmark_taxonomy.yaml`, every department from the form's own catalog;
+  Kids "Tops" becomes "Shirts & Tops", "Booties" becomes "Ankle Boots & Booties", a category given as "Jumpsuits &
+  Rompers" becomes Pants & Jumpsuits › Jumpsuits & Rompers). A subcategory Poshmark doesn't have is left out (noted in
+  the item's record, not on the card); a department or category it doesn't have is asked like "Other". A two-piece set
+  goes under its bottom (top + skirt: Skirts › Skirt Sets) and is a "2-Piece Set" in the title.
 - **The only questions that reach the owner:** brand or size below 0.70, NWT without a hang-tag photo, a category
   of "Other" (or a department/category not on Poshmark's list), a possible re-share, a pair of shoes in doubt between
   brand new and worn, Girls or Boys below 0.70, and the poster's `needs_owner`. The model's own questions about
@@ -144,9 +146,11 @@ thrift login --site poshmark | telegram setup|test | harvest | build-style | eva
   its old Telegram messages are closed. The approved price is asked again; the owner's condition and Girls/Boys
   answers are kept. Items that are posting, posted, drafted, an unconfirmed publish, or dropped as a re-share are left
   as they are and listed. `thrift status` also shows the Telegram queue: the open question and what comes next.
-- **`thrift recover <item|batch>`** recomputes only the cover (front, upright), the photo order, the category and the
-  size of items that aren't on the marketplace; prices, approved prices, condition and Girls/Boys answers and the text
-  stay, and nothing settled is asked again. A card still waiting is sent again with the new cover.
+- **`thrift recover <item|batch> [--recheck]`** recomputes only the cover (front, upright), the photo order, the
+  category and the size of items that aren't on the marketplace; prices, approved prices, condition and Girls/Boys
+  answers and the text stay, and nothing settled is asked again. The item's stored front check is kept, so running it
+  twice changes nothing (`--recheck` asks the front and upright checks again). A card still waiting is sent again only
+  when what it shows changed.
 - **`thrift telegram setup | test`** — `setup` prints the chat ids and user ids seen in the bot's recent updates so
   the owner can fill `TELEGRAM_CHAT_ID` and `TELEGRAM_ALLOWED_USER_IDS`; `test` sends a test message. See
   "Telegram approval (M3)".
@@ -336,9 +340,9 @@ private chat with the bot it always does.
 - **`needs_owner`.** The poster may ask its own question when it is stuck on a field only the owner can answer (a
   brand, category or size missing from Poshmark's lists); it is asked in its turn. The item waits in `needs_owner`
   while the others continue; the reply is attached to the item and it is reprocessed.
-- **Re-send after sleep.** On worker start, and about every hour once it has waited longer than
-  `telegram.resend_after_hours`, the open message is sent again — Telegram keeps updates for only 24 h and the Mac
-  may have been asleep.
+- **Re-send after sleep.** Once the open message has waited longer than `telegram.resend_after_hours`, it is sent
+  again (checked when the worker starts and about every hour) — Telegram keeps updates for only 24 h and the Mac may
+  have been asleep. A restart (every deploy) never repeats a card the owner has just been sent.
 - **CLI equivalents** keep working: `thrift confirm`, `thrift answer`, `thrift price <item> <amount>`, `thrift
   condition`, `thrift kids`.
 

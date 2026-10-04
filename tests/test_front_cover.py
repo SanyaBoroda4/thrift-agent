@@ -324,18 +324,49 @@ def test_recover_fixes_cover_category_and_size_and_keeps_price_and_answers(tmp_p
     assert [Path(p).name for p in posh["photos"]] == ["cover.jpg", "01.jpg", "02.jpg", "03.jpg"]
 
 
-def test_recover_sends_a_waiting_card_again_and_leaves_a_listed_item_alone(tmp_path, facts, monkeypatch):
+def test_recover_sends_a_waiting_card_again_only_when_it_changed(tmp_path, facts, monkeypatch):
+    """WO24, live: every recover run sent the open card again, changed or not (one skirt's card, 13 times in a day).
+    The card stays as the owner has it unless what it shows changed — here the question the department-as-category
+    asked, which recover settles."""
     s = _settings(tmp_path)
     db = DB(s.path("db"))
     monkeypatch.setattr(pipeline.approve, "pump", lambda *a: None)
     iid = _processed_tee(s, db, tmp_path, facts, monkeypatch)
     db.add_outbox("-100", 7, "item", iid)
-    monkeypatch.setattr(pipeline.cover_brain, "front_check", lambda photos, m, e, worn=(): LACOSTE_CHECK)
-    assert pipeline.recover_item(s, db, iid)["status"] == "awaiting_price"   # no price yet: its card comes again
-    assert db.outbox_pending() == []
+    asked = []
+    monkeypatch.setattr(pipeline.cover_brain, "front_check", lambda *a, **k: asked.append("front") or LACOSTE_CHECK)
+    monkeypatch.setattr(pipeline.cover_brain, "upright_check", lambda *a, **k: asked.append("upright") or 90)
+    out = pipeline.recover_item(s, db, iid)
+    assert (out["status"], out["card"], asked) == ("awaiting_price", "unchanged", [])    # no model call, no new card
+    assert [r["message_id"] for r in db.outbox_pending()] == [7]
+    assert pipeline.recover_item(s, db, iid)["card"] == "unchanged" and len(db.outbox_pending()) == 1   # nor twice
+    it = db.item(iid)                                      # the item as WO20 left it: the department as the category
+    question = "category 'Kids' is not one of Poshmark's Kids categories — reply e.g. 'category Shirts & Tops'"
+    db.set_item(iid, facts={**loads(it["facts"]), "category": "Kids", "subcategory": "Shirts & Tops"},
+                gate={**loads(it["gate"]), "decision": "needs_info", "questions": [question]})
+    out = pipeline.recover_item(s, db, iid)
+    assert (out["category"], out["questions"], out["card"]) == ("Shirts & Tops", [], "sent again")
+    assert db.outbox_pending() == []                                  # closed: the queue sends the new card
     db.set_item(iid, status="posted")
     with pytest.raises(ValueError, match="nothing to recover|on the marketplace"):
         pipeline.recover_item(s, db, iid)
+
+
+def test_recover_keeps_the_stored_front_check_unless_asked_again(tmp_path, facts, monkeypatch):
+    """WO24, live: a second look swapped a skirt's cover between two look-alike sides (0, 2, 0, 2 over four runs). The
+    check stored with the item is kept; --recheck asks again and turns the new cover upright."""
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    monkeypatch.setattr(pipeline.approve, "pump", lambda *a: None)
+    iid = _processed_tee(s, db, tmp_path, facts, monkeypatch)
+    disagrees = check(3, (0, "back", "none", 0), (3, "front", "strong", 0))
+    asked = []
+    monkeypatch.setattr(pipeline.cover_brain, "front_check", lambda *a, **k: asked.append("front") or disagrees)
+    monkeypatch.setattr(pipeline.cover_brain, "upright_check", lambda *a, **k: asked.append("upright") or 0)
+    assert (pipeline.recover_item(s, db, iid)["cover"], asked) == (0, [])
+    out = pipeline.recover_item(s, db, iid, recheck=True)
+    assert (out["cover"], out["upright"], asked) == (3, 0, ["front", "upright"])
+    assert loads(db.item(iid)["views"])["front"] == 3                 # the new look is the stored one now
 
 
 def test_recover_command(tmp_path, monkeypatch):
@@ -350,17 +381,25 @@ def test_recover_command(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_db", lambda: db)
     monkeypatch.setattr(cli.approve, "pump", lambda *a: None)
 
-    def recover(s_, db_, iid):
+    seen = []
+
+    def recover(s_, db_, iid, recheck=False):
+        seen.append(recheck)
         if iid == ids[1]:
             raise ValueError(f"item {iid} is on the marketplace (poshmark posted) — left as it is")
-        return {"cover": 0, "role": "front", "view": "front", "upright": 90, "category": "Shirts & Tops", "size": "4T",
-                "questions": [], "status": "ready", "before": {"cover": 3, "category": "Kids", "size": "4T"}}
+        return {"cover": 0, "role": "front", "view": "front", "upright": 90, "category": "Shirts & Tops",
+                "subcategory": "Tees - Short Sleeve", "size": "4T", "questions": [], "status": "awaiting_price",
+                "card": "sent again", "before": {"cover": 3, "category": "Kids", "subcategory": "Shirts & Tops",
+                                                 "size": "4T"}}
     monkeypatch.setattr(cli.pipeline, "recover_item", recover)
     r = CliRunner().invoke(cli.app, ["recover", bid], terminal_width=200)
     out = " ".join(r.output.split())
     assert r.exit_code == 0, r.output
-    assert f"recovered {ids[0]}: cover #0 (front, front check: front, turned 90°) was #3; category Shirts & Tops was Kids" in out
-    assert f"left as it is {ids[1]}" in out
+    assert (f"recovered {ids[0]}: cover #0 (front, front check: front, turned 90°) was #3; category Shirts & Tops › "
+            "Tees - Short Sleeve was Kids › Shirts & Tops; size 4T was 4T; questions: none; awaiting_price; card sent "
+            "again") in out
+    assert f"left as it is {ids[1]}" in out and seen == [False, False]
+    assert CliRunner().invoke(cli.app, ["recover", ids[0], "--recheck"]).exit_code == 0 and seen[-1] is True
 
 
 def test_recover_never_writes_over_an_answer_that_came_in_meanwhile(tmp_path, facts, monkeypatch):
@@ -377,7 +416,7 @@ def test_recover_never_writes_over_an_answer_that_came_in_meanwhile(tmp_path, fa
         return LACOSTE_CHECK
     monkeypatch.setattr(pipeline.cover_brain, "front_check", check_while_the_owner_answers)
     with pytest.raises(ValueError, match="changed while it was being recovered"):
-        pipeline.recover_item(s, db, iid)
+        pipeline.recover_item(s, db, iid, recheck=True)               # a model call: the time the answer lands in
     it = db.item(iid)
     assert it["status"] == "ready" and it["owner_price"] == 25 and loads(it["renders"])["poshmark"]["price"] == 25
 

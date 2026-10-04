@@ -483,6 +483,19 @@ def item_caption(iid: str, it) -> tuple[str, int | None]:
     return "\n".join(lines), price
 
 
+def card(iid: str, it) -> tuple[str, str] | None:
+    """(kind, text) of the question the item puts to the owner now — its price card (caption and price), Girls/Boys or
+    "Brand new or worn?" — or None when it waits for none of them. `thrift recover` compares it before and after (WO24):
+    a card is sent again only when what it shows changed. Pure, like item_caption."""
+    if it["status"] not in ("awaiting_condition", *WAITING_ITEM):
+        return None
+    kind = _item_kind(it["status"], loads(it["gate"]) or {})
+    if kind == "item":
+        caption, price = item_caption(iid, it)
+        return kind, f"{caption}\n${price}"
+    return kind, f"{_title(it, iid)}\n{CONDITION_QUESTION if kind == 'condition' else KIDS_QUESTION}"
+
+
 def price_options(price: int, floor: int = 20, step: int = 5) -> list[int]:
     """Four round prices near the suggestion, for one-tap buttons (WO20): two below and two above it — $5 apart under
     $100, $10 up to $250, $25 above — each rounded to `step`, never under the floor and never the suggestion itself;
@@ -901,11 +914,12 @@ def poll_once(s: Settings, db: DB, bot: Bot, timeout: int) -> int:
     return n
 
 
-def resend_pending(s: Settings, db: DB, force: bool = False) -> list[str]:
+def resend_pending(s: Settings, db: DB) -> list[str]:
     """Send the open message again — only that one (WO20) — once it has waited longer than
-    telegram.resend_after_hours, or at once with force=True (the worker starts: whatever waited over a sleep). The
-    copy above keeps working (its buttons, replies to it). With nothing open, the next message goes out instead, so
-    a restart never stalls the queue. Returns the refs re-sent."""
+    telegram.resend_after_hours (the Mac slept; Telegram keeps the owner's replies 24 h). The worker runs this when it
+    starts too, with the same rule: a restart — every deploy — never repeats a card the owner has just been sent
+    (WO24; it used to, each time). The copy above keeps working (its buttons, replies to it). With nothing open, the
+    next message goes out instead, so a restart never stalls the queue. Returns the refs re-sent."""
     if bot_for(s) is None or db.conn.in_transaction:
         return []
     token = _lock(db)
@@ -919,7 +933,7 @@ def resend_pending(s: Settings, db: DB, force: bool = False) -> list[str]:
                 _send(s, db, *head)
             return []
         hours = float(s.get("telegram.resend_after_hours", 6) or 0)
-        if not force and row["sent_at"] >= (_now() - timedelta(hours=hours)).isoformat(timespec="seconds"):
+        if row["sent_at"] >= (_now() - timedelta(hours=hours)).isoformat(timespec="seconds"):
             return []
         db.outbox_resolve(row["kind"], row["ref"])
         _send(s, db, row["kind"], row["ref"])
