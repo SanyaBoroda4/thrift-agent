@@ -417,9 +417,11 @@ A kids label that gives the child's height ("104 cm", "Gr. 104", "104") or age (
 Poshmark's size by a fixed table (`brain/sizes.kids_clothing_size`): 92 → 2T, 98 → 3T, 104 → 4T, 110 → 5T, 116 → 6,
 122 → 7, 128 → 8, 134/140 → 10, 146/152 → 12, 158/164 → 14, 170/176 → 16; babies 50 → Newborn, 56 → 0-3 Months, 62 →
 3 Months … 86 → 18 Months; ages the same way (9 → 10, 11 → 12: no 9/11/13 on Poshmark, so up). The labels are Poshmark's
-own, from its public Kids size filter (Shirts & Tops, read 2026-10-04: Girls 2T-5T, 4, 5, 6, 6X, 7, 8, 10, 12, 14, 16,
-XS-XXL; Boys the same plus 7X, 18, 20; Baby Preemie … 24 Months); the form's kids clothing menus themselves stay
-UNVERIFIED. When the table maps the label, the size is settled (derived, 0.95) — no question — and the description
+own: its public Kids size filter (Shirts & Tops, read 2026-10-04) and the catalog of its listing form (read the same
+day: Kids Shirts & Tops / Bottoms / Dresses — Girls 2T-5T, 4, 5, 6, 6X, 7, 8, 10, 12, 14, 16, XS-XXL; Boys the same plus
+7X, 18, 20; Baby Preemie, Newborn, 0-3 … 18-24 Months, 3 … 24 Months) agree. A baby size goes on the form's Baby tab
+(`size_choice`); the size buttons themselves are still to be seen in a dry-run. When the table maps the label, the size
+is settled (derived, 0.95) — no question — and the description
 gets "Label size: 4 ans / 104 cm." (`copy.ensure_label_size`). A bare "4" is not mapped (4T or kids 4?): the label photos
 are read once more for the units (`cover.read_size_label`), else it is asked as before.
 A department is never a category (WO23; live: category "Kids", subcategory "Shirts & Tops"): `taxonomy.fit` takes the

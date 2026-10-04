@@ -59,6 +59,10 @@ def test_kids_shoe_sizes_map_to_poshmarks_groups(ours, poshmark_group):
     (dict(department="Kids", category="Dresses", size="4T", kids_gender="girls"),
      SizeChoice("Girls", "4T", verified=False)),                                        # kids clothing: unrecorded
     (dict(department="Kids", size="M", kids_gender="boys"), SizeChoice("Boys", "M", verified=False)),
+    (dict(department="Kids", category="Shirts & Tops", size="6 Months", kids_gender="boys"),
+     SizeChoice("Baby", "6 Months", verified=False)),                                    # baby clothing: the Baby tab
+    (dict(department="Kids", category="Shirts & Tops", size="Newborn", kids_gender="girls"),
+     SizeChoice("Baby", "Newborn", verified=False)),
 ])
 def test_size_choice(kw, choice):
     assert size_choice(render(**kw)) == choice

@@ -112,6 +112,7 @@ class SizeChoice:
 
 _KIDS_LABEL = re.compile(r"\bUS (Toddler|Little Kid|Big Kid) (\d{1,2}(?:\.5)?)$")
 _PLUS = re.compile(r"^[0-6]X$", re.I)
+_BABY = re.compile(r"\bMonths?\b|^(?:Newborn|Preemie)$", re.I)    # "6 Months", "0-3 Months": the Baby tab (WO23)
 
 
 def size_choice(r: Render) -> SizeChoice | None:
@@ -132,6 +133,8 @@ def size_choice(r: Render) -> SizeChoice | None:
             if group == "Baby":
                 return SizeChoice("Baby", n, verified=False, loose=True)
             return SizeChoice(f"{g}s", f"{n} ({group} {g})", verified=True)
+        if _BABY.search(size):                       # baby clothing sizes sit on the Baby tab (Poshmark's catalog)
+            return SizeChoice("Baby", size, verified=False)
         return SizeChoice(f"{g}s", size, verified=False)
     if _PLUS.match(size):
         return SizeChoice("Plus", size.upper(), verified=False)
