@@ -174,9 +174,11 @@ Without `private/`, the code falls back to `config/*.example.yaml` and `data/sty
 ## Commands
 `thrift init | run | process <dir> | confirm <batch> <cmd> | answer <item> "<note>" | price <item> <amount>`
 `thrift condition <item> nwt|like_new|good` (the CLI twin of the shoe question's buttons)
-`thrift requeue <item> [marketplace] | mark-posted <item> <marketplace> <url> | status | show <item>`
+`thrift requeue <item> [marketplace] | requeue <batch> | mark-posted <item> <marketplace> <url> | status | show <item>`
 `thrift poster [--once] [--dry-run] [--stage form|review] [--publish-first <item>] [--allow-dev-browser]`
 `thrift login --site poshmark | telegram setup|test | harvest | build-style | eval`
+`thrift requeue b_…` sends a failed batch back to the worker (failed batches are never retried on their own);
+`thrift status` lists the open batches (waiting for the worker, the contact sheet, or failed with their error).
 `thrift requeue` also takes back an item the poster parked in `needs_owner` as it is (no reprocessing, the question
 closed) — the retry after a poster fix. `confirm`, `answer` and `price` are the CLI twins of the Telegram replies;
 `telegram setup` prints the chat/user ids seen in recent updates, `telegram test` sends a test message.
@@ -297,6 +299,14 @@ The owner shares retailer screenshots (product page with price, style name, colo
   (`HOLD_UNSHIPPED`), local HTTP API over Tailscale, daily read-only order-status sync.
 - **M5 Depop** adapter.
 - **M6 sold-comps pricing** — tune `private/brand_tiers.yaml` from new sales.
+
+## Model calls
+Every call goes through `brain/llm.ask`: one tool, the answer validated by pydantic (one repair round). A forced
+`tool_choice` (`tool`) is used where the model takes it; Claude Opus 5.5, Sonnet 5.5, Fable 5.1 and Mythos 5.1 answer it
+with a 400 (docs: Define tools > Forcing tool use), so they — and any model whose 400 says the same, remembered for
+the process — get `tool_choice` auto (one call at most), an explicit instruction, and one reminder (WO19). Strict
+tools / structured outputs are not used: our schemas use `minimum`/`maximum`/`minLength` and more than 24 optional
+fields, which they reject. `tests/test_llm.py` has a fake client that answers forced tool use like the API.
 
 ## Style
 Python 3.11+, pydantic v2, pathlib everywhere (Windows + macOS). Pure functions for anything testable

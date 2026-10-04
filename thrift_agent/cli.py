@@ -11,6 +11,7 @@ from pathlib import Path
 import typer
 from dotenv import load_dotenv
 from rich import print
+from rich.markup import escape
 from rich.table import Table
 
 from thrift_agent import approve, config, notify, pipeline
@@ -241,9 +242,18 @@ def telegram_test() -> None:
 @app.command()
 def requeue(item_id: str, marketplace: str = typer.Argument(None)) -> None:
     """Queue a failed or dry-run post again, or an item the poster parked with a question, as it is (only rows with
-    NO listing URL: anything that reached the site is reconciled by hand, never re-posted).
-    e.g.  thrift requeue i_...  |  thrift requeue i_... poshmark"""
+    NO listing URL: anything that reached the site is reconciled by hand, never re-posted). A failed batch (b_...)
+    goes back to the worker, which splits it again on its next tick.
+    e.g.  thrift requeue i_...  |  thrift requeue i_... poshmark  |  thrift requeue b_..."""
     s, db = settings(), _db()
+    if item_id.startswith("b_"):
+        try:
+            pipeline.requeue_batch(s, db, item_id)
+        except ValueError as e:
+            print(f"[red]not queued[/] {item_id}: {e}")
+            raise typer.Exit(1) from None
+        print(f"[green]queued[/] batch {item_id} — the worker (thrift run) splits it again within ~15 s")
+        return
     done = pipeline.requeue(s, db, item_id, marketplace)
     print(f"[green]queued[/] {item_id}: {', '.join(done)}")
 
@@ -337,8 +347,22 @@ def status() -> None:
         t.add_row(row["id"], row["status"], title[:50], str(pr.get("list_price") or ""),
                   gate.get("decision", ""), posts)
     print(t)
+    # Shares that haven't become items: waiting for the worker, waiting for the contact-sheet answer, or failed.
+    open_batches = db.conn.execute("SELECT * FROM batches WHERE status IN ('new', 'needs_confirm', 'failed') "
+                                   "ORDER BY created_at DESC LIMIT 20").fetchall()
+    if open_batches:
+        bt = Table("batch", "status", "photos", "shared")
+        for b in open_batches:
+            bt.add_row(b["id"], b["status"], str(b["n_photos"] or ""), b["created_at"][:16].replace("T", " "))
+        print(bt)
+    for b in db.batches("new"):
+        print(f"[yellow]waiting for the worker[/] {b['id']}  (thrift run splits it within ~15 s)")
     for b in db.batches("needs_confirm"):
         print(f"[yellow]awaiting confirm[/] {b['id']}  →  thrift confirm {b['id']} ok")
+    for b in db.batches("failed"):
+        err = pipeline.last_error(db, b["id"])
+        print(f"[red]failed batch[/] {b['id']}  →  thrift requeue {b['id']}"
+              + (f"\n    {escape(err[:200])}" if err else ""))
     for it in db.items("awaiting_condition"):
         print(f"[yellow]brand new or worn?[/] {it['id']}  →  thrift condition {it['id']} nwt|like_new|good")
     for it in db.items("awaiting_price"):

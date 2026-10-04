@@ -93,10 +93,13 @@ to the previous commit).
 ```
 thrift init | run | process <dir> | confirm <batch> <cmd> | answer <item> "<note>" | price <item> <amount>
 thrift condition <item> nwt|like_new|good
-thrift requeue <item> [marketplace] | mark-posted <item> <marketplace> <url> | status | show <item>
+thrift requeue <item> [marketplace] | requeue <batch> | mark-posted <item> <marketplace> <url> | status | show <item>
 thrift poster [--once] [--dry-run] [--stage form|review] [--publish-first <item>] [--allow-dev-browser]
 thrift login --site poshmark | telegram setup|test | harvest | build-style | eval
 ```
+- **`thrift requeue b_…`** sends a failed batch (e.g. an API error during the split) back to the worker, which
+  splits it again within ~15 s; a failed batch is never retried on its own. `thrift status` lists the open
+  batches under the items: waiting for the worker, waiting for the contact sheet, or failed with the error.
 - **`thrift price <item> <amount>`** approves an item's price from the command line — the same effect as replying
   to the Telegram approval message (source `owner`, item becomes `ready`). `thrift confirm` and `thrift answer` are
   the CLI twins of the batch-confirmation reply and of answering a question.

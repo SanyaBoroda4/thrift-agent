@@ -355,3 +355,30 @@ def test_condition_is_the_cli_twin_of_the_buttons(monkeypatch):
     assert resolved == [("condition", "i_261003_abc123")] and "Like New (brand new, no tags)" in said[0]
     r = CliRunner().invoke(cli.app, ["condition", "i_261003_abc123", "fair"])
     assert r.exit_code == 1 and "not set" in r.output and "Traceback" not in r.output
+
+
+
+def test_requeue_sends_a_failed_batch_back_and_status_lists_the_batches(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+    from thrift_agent.db import DB
+    db = DB(tmp_path / "state.db")
+    share = tmp_path / "inbox" / "2026-10-03_1500"
+    share.mkdir(parents=True)
+    failed = db.add_batch(str(share), 12)
+    db.set_batch(failed, status="failed")
+    db.log(failed, "error", "Traceback ...\nanthropic.BadRequestError: Error code: 400 - tool_choice not supported")
+    waiting = db.add_batch(str(tmp_path / "inbox" / "other"), 5)
+    db.set_batch(waiting, status="needs_confirm")
+    monkeypatch.setattr(cli, "_db", lambda: db)
+
+    raw = CliRunner().invoke(cli.app, ["status"], terminal_width=200).output
+    out = " ".join("".join(" " if "─" <= ch <= "╿" else ch for ch in raw).split())   # no table borders
+    assert f"{failed} failed 12" in out and f"{waiting} needs_confirm 5" in out
+    assert f"failed batch {failed} → thrift requeue {failed} anthropic.BadRequestError: Error code: 400" in out
+    assert f"awaiting confirm {waiting} → thrift confirm {waiting} ok" in out
+
+    r = CliRunner().invoke(cli.app, ["requeue", failed])
+    assert r.exit_code == 0 and db.batch(failed)["status"] == "new", r.output
+    assert "splits it again" in " ".join(r.output.split())
+    r = CliRunner().invoke(cli.app, ["requeue", waiting])
+    assert r.exit_code == 1 and "only a failed batch" in " ".join(r.output.split()) and "Traceback" not in r.output

@@ -1062,3 +1062,75 @@ def test_a_screenshot_is_no_proof_of_an_unworn_pair_or_its_box(facts):
                                         box_photo=4), retail={4})
     assert f.unworn.value is None and f.box_photo is None
     assert "unworn" in SYSTEM and "box_photo" in SYSTEM
+
+
+
+# ---------------------------------------------------------------- WO19: a failed batch, back to the worker
+
+FORCED_400 = 'tool_choice: type "tool" and "any" are not supported for this model.'
+
+
+def _api_like(groups):
+    """The Messages API as claude-opus-5-5 answers it: a forced tool_choice is a 400 (the Mac's failure, WO19);
+    tool_choice auto gets the report_groups call. (A copy of test_llm's fake: test modules don't import each other.)"""
+    import httpx
+    from types import SimpleNamespace
+    from anthropic import BadRequestError
+    calls = []
+
+    def create(**kw):
+        calls.append(kw)
+        if kw["model"].startswith("claude-opus-5-5") and kw["tool_choice"]["type"] in ("tool", "any"):
+            req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+            body = {"type": "error", "error": {"type": "invalid_request_error", "message": FORCED_400}}
+            raise BadRequestError(FORCED_400, response=httpx.Response(400, request=req, json=body), body=body)
+        block = SimpleNamespace(type="tool_use", name="report_groups", id="toolu_1", input={"groups": groups})
+        return SimpleNamespace(content=[block], stop_reason="tool_use")
+    return SimpleNamespace(messages=SimpleNamespace(create=create)), calls
+
+
+def test_a_batch_that_failed_on_the_tool_choice_400_is_requeued_and_split(tmp_path, monkeypatch, owner_messages):
+    from thrift_agent.brain import llm
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    share = s.path("inbox") / "2026-10-03_1500"
+    t0 = datetime(2026, 10, 3, 15, 0)
+    for i, colour in enumerate(["red", "blue"]):
+        _own_photo(share / f"IMG_{i:04d}.jpg", colour, t0 + timedelta(seconds=10 * i), i)
+    (share / "_done").touch()
+    _settle(share)
+    [folder] = pipeline.ready_folders(s)
+    bid = pipeline.register(s, db, folder)
+    db.set_batch(bid, status="failed")                    # what the worker did with the 400 before the fix
+    db.log(bid, "error", "Traceback (most recent call last):\n  ...\nanthropic.BadRequestError: Error code: 400 - "
+                         + FORCED_400)
+    assert pipeline.last_error(db, bid) == "anthropic.BadRequestError: Error code: 400 - " + FORCED_400
+
+    assert pipeline.requeue_batch(s, db, bid) == "new" and [b["id"] for b in db.batches("new")] == [bid]
+    groups = [{"photos": [0], "summary": "red top", "full_item_photos": [0], "confidence": 0.95},
+              {"photos": [1], "summary": "blue top", "full_item_photos": [1], "confidence": 0.95}]
+    c, calls = _api_like(groups)
+    monkeypatch.setattr(llm, "client", lambda: c)
+    pipeline.process_batch(s, db, bid)                     # what the worker does with a 'new' batch
+    assert db.batch(bid)["status"] == "needs_confirm" and ("batch", bid) in owner_messages
+    assert loads(db.batch(bid)["segmentation"])["groups"] == [[0], [1]]
+    assert [k["model"] for k in calls] == ["claude-opus-5-5"] and calls[0]["tool_choice"]["type"] == "auto"
+
+
+def test_requeue_batch_takes_only_a_failed_batch_whose_photos_are_still_there(tmp_path):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    with pytest.raises(ValueError, match="unknown batch b_nope"):
+        pipeline.requeue_batch(s, db, "b_nope")
+    share = _jpg(s.path("inbox") / "share" / "a.jpg").parent
+    bid = db.add_batch(str(share), 1)
+    with pytest.raises(ValueError, match="is new — only a failed batch can be requeued"):
+        pipeline.requeue_batch(s, db, bid)
+    db.set_batch(bid, status="failed")
+    gone = db.add_batch(str(tmp_path / "moved-away"), 1)
+    db.set_batch(gone, status="failed")
+    with pytest.raises(ValueError, match="its share folder is gone"):
+        pipeline.requeue_batch(s, db, gone)
+    assert pipeline.last_error(db, bid) is None
+    assert pipeline.requeue_batch(s, db, bid) == "new"
+    assert "requeued" in [e["kind"] for e in db.conn.execute("SELECT kind FROM events WHERE ref=?", (bid,))]

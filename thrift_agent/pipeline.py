@@ -511,6 +511,34 @@ def set_price(s: Settings, db: DB, iid: str, amount: int) -> str:
     return status
 
 
+def requeue_batch(s: Settings, db: DB, bid: str) -> str:
+    """A batch that failed (an API error, a model change gone wrong) goes back to 'new': the worker processes it again
+    on its next tick, from the same share folder. Only a failed batch, and only while its share folder is still there
+    (a failed batch is never archived). Returns 'new'."""
+    b = db.batch(bid)
+    if b is None:
+        raise ValueError(f"unknown batch {bid}")
+    if b["status"] != "failed":
+        raise ValueError(f"batch {bid} is {b['status']} — only a failed batch can be requeued")
+    if not Path(b["src_dir"]).is_dir():
+        raise ValueError(f"batch {bid}: its share folder is gone ({b['src_dir']}) — share the photos again")
+    with db.tx():
+        db.set_batch(bid, status="new", reasons=None)
+        db.log(bid, "requeued", {"from": "failed"})
+    return "new"
+
+
+def last_error(db: DB, ref: str) -> str | None:
+    """The last line of the latest error logged for a batch or item (the exception, e.g. "BadRequestError: ...")."""
+    row = db.conn.execute("SELECT detail FROM events WHERE ref=? AND kind='error' ORDER BY ts DESC, rowid DESC "
+                          "LIMIT 1", (ref,)).fetchone()
+    if row is None or not row["detail"]:
+        return None
+    detail = json.loads(row["detail"]) if row["detail"].startswith('"') else row["detail"]
+    lines = [line.strip() for line in str(detail).splitlines() if line.strip()]
+    return lines[-1] if lines else None
+
+
 def owner_choice(choice: str) -> str | None:
     """"NWT" / "like new" / "like-new" / "Good" -> the OWNER_CONDITIONS key, or None."""
     key = (choice or "").strip().lower().replace(" ", "_").replace("-", "_")
