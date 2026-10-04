@@ -1109,10 +1109,10 @@ def choose_cover(facts: Facts, n: int, kinds: list[str] | None = None, check: Fr
             pick = next((i for i in cands if roles.get(i) == role), None)
     if back(pick) and (others := [i for i in cands if not back(i)]):
         pick = max(others, key=rank)                          # a back is never the cover while a front side exists
-    designed = [i for i in cands if i in views and DESIGN.get(views[i].design, 0) > 0]
+    designed = [i for i in cands if i in views and DESIGN.get(views[i].design, 0) > 0 and not back(i)]
     if pick in views and DESIGN.get(views[pick].design, 0) == 0 and designed:
         pick = max(designed, key=rank)                        # the printed side is the front (the owner's cue)
-        return pick, turn(pick), None
+        return pick, turn(pick), None                         # ...never one the check itself calls the back
     return pick, turn(pick), NO_FRONT_COVER if back(pick) else None
 
 

@@ -52,7 +52,7 @@ def front_check(photos: list[tuple[int, Path]], model: str, long_edge: int,
         content.append(llm.image(p, long_edge))
     content.append(llm.text("Which 'item alone' photo shows the front of the item?"))
     return llm.ask(model, SYSTEM, content, FrontOut, "report_front", "Report which photo shows the front",
-                   max_tokens=800)
+                   max_tokens=800, temperature=0)                # a reading, not prose: the same answer every time
 
 
 def read_size_label(photos: list[Path], model: str, long_edge: int) -> str | None:
@@ -63,5 +63,5 @@ def read_size_label(photos: list[Path], model: str, long_edge: int) -> str | Non
         content.append(llm.image(p, long_edge))
     content.append(llm.text("What size is printed on this label, exactly as printed?"))
     out = llm.ask(model, LABEL_SYSTEM, content, SizeLabel, "report_size_label", "Report the printed size",
-                  max_tokens=300)
+                  max_tokens=300, temperature=0)
     return (out.printed or "").strip() or None

@@ -59,7 +59,8 @@ def test_the_lacoste_case_the_sideways_printed_front_not_the_plain_back(facts):
     (("front", "back"), check(1, (0, "back", "none", 0), (1, "front", "none", 0)), 1, None),          # a plain dress
     (("side", "back", "detail"), check(0, (0, "side", "some", 0), (1, "back", "none", 0)), 0, None),  # shoes: profile
     (("worn", "front", "back"), check(0, (1, "front", "some", 0), (2, "back", "none", 0)), 1, None),  # a try-on never
-    (("front", "back"), check(0, (0, "front", "none", 0), (1, "back", "strong", 0)), 1, None),        # printed side
+    (("front", "back"), check(0, (0, "unclear", "none", 0), (1, "front", "strong", 0)), 1, None),     # printed side
+    (("front", "back"), check(0, (0, "front", "none", 0), (1, "back", "strong", 0)), 0, None),        # ...not a back
     (("front", "back"), check(0, (0, "front", "some", 90), (1, "back", "some", 90)), 0, None),        # live skirt:
     # the same print on both sides and a centre-back zip — no design swap, the front decides
     (("back", "worn", "label"), check(0, (0, "back", "none", 0)), 0, "nf"),                           # only a back
@@ -402,3 +403,11 @@ def test_worn_photos_go_along_as_a_reference_never_as_a_candidate(tmp_path, fact
     out = pipeline.front_view(s, db, "i_x", photos, skirt, ["own"] * 5)
     assert seen == {"alone": [0, 2], "worn": [4]} and out.front == 0
     assert pipeline.choose_cover(skirt, 5, None, out) == (0, 90, None)
+
+
+def test_the_design_swap_never_picks_a_photo_the_check_calls_the_back(facts):
+    """Live: denim shorts, a plain front and a back with a logo patch — the printed-side rule must not hand the cover
+    to the back."""
+    shorts = facts(photo_roles=roles("front", "label", "label", "back"), cover_photo=0, photo_order=[0, 1, 2, 3])
+    found = check(0, (0, "front", "none", 0), (3, "back", "some", 0))
+    assert pipeline.choose_cover(shorts, 4, None, found) == (0, 0, None)
