@@ -10,7 +10,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from thrift_agent.brain import llm
-from thrift_agent.schema import FrontOut, SizeLabel
+from PIL import Image
+
+from thrift_agent.schema import FrontOut, SizeLabel, UprightOut
 
 SYSTEM = """You compare photos of ONE item (a garment, a pair of shoes, a bag, ...) to find the photo that shows its \
 FRONT: the listing's cover.
@@ -52,7 +54,34 @@ def front_check(photos: list[tuple[int, Path]], model: str, long_edge: int,
         content.append(llm.image(p, long_edge))
     content.append(llm.text("Which 'item alone' photo shows the front of the item?"))
     return llm.ask(model, SYSTEM, content, FrontOut, "report_front", "Report which photo shows the front",
-                   max_tokens=800, temperature=0)                # a reading, not prose: the same answer every time
+                   max_tokens=800)
+
+
+UPRIGHT_SYSTEM = """You see the same photo four times, turned four ways: A, B, C and D. Which one shows the item \
+UPRIGHT, the way it is worn or used — a garment with its collar, neckline or waistband at the top and its hem at the \
+bottom; shoes standing on their soles; a bag with its handles or opening at the top? Answer the letter."""
+TURNS = {"A": 0, "B": 90, "C": 180, "D": 270}                # clockwise degrees each picture was turned
+
+
+def upright_check(photo: Path, model: str, long_edge: int = 512) -> int:
+    """The clockwise turn (0, 90, 180, 270) that puts the item in `photo` upright: the photo shown turned all four
+    ways, the model picks the upright picture (WO23 — a choice between pictures is far steadier than naming where a
+    collar lies; live, that reading varied from run to run). One small call."""
+    content: list[dict] = []
+    with Image.open(photo) as im:
+        im = im.convert("RGB")
+        im.thumbnail((long_edge, long_edge))
+        for letter, turn in TURNS.items():
+            turned = im.rotate(-turn, expand=True) if turn else im
+            path = photo.parent / f".upright_{letter}.jpg"
+            turned.save(path, "JPEG", quality=85)
+            content.append(llm.text(f"Picture {letter}"))
+            content.append(llm.image(path, long_edge))
+            path.unlink(missing_ok=True)
+    content.append(llm.text("Which picture shows the item upright?"))
+    out = llm.ask(model, UPRIGHT_SYSTEM, content, UprightOut, "report_upright", "Report the upright picture",
+                  max_tokens=200)
+    return TURNS[out.upright]
 
 
 def read_size_label(photos: list[Path], model: str, long_edge: int) -> str | None:
@@ -63,5 +92,5 @@ def read_size_label(photos: list[Path], model: str, long_edge: int) -> str | Non
         content.append(llm.image(p, long_edge))
     content.append(llm.text("What size is printed on this label, exactly as printed?"))
     out = llm.ask(model, LABEL_SYSTEM, content, SizeLabel, "report_size_label", "Report the printed size",
-                  max_tokens=300, temperature=0)
+                  max_tokens=300)
     return (out.printed or "").strip() or None

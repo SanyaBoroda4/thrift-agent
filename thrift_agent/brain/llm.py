@@ -23,7 +23,6 @@ MAX_TOKENS_CAP = 16000      # the one retry after a cut-off response doubles max
 # the same way is remembered for the rest of the process (_REJECTS_FORCED) and switched over at once.
 NO_FORCED_TOOL_CHOICE = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-mythos-5-1")
 _REJECTS_FORCED: set[str] = set()
-_NO_TEMPERATURE: set[str] = set()      # models whose API refused a temperature (400): asked again without, remembered
 CALL_THE_TOOL = "Answer only by calling the {tool} tool, once, with the complete result. Write nothing outside the call."
 REMINDER = "You answered without calling {tool}. Call the {tool} tool now, once, with your complete answer."
 
@@ -61,13 +60,8 @@ def _rejects_forced(e: Exception) -> bool:
     return getattr(e, "status_code", None) == 400 and "tool_choice" in message and "not supported" in message
 
 
-def _rejects_temperature(e: Exception) -> bool:
-    message = str(getattr(e, "message", "") or e)
-    return getattr(e, "status_code", None) == 400 and "temperature" in message
-
-
 def ask(model: str, system: str, content: list[dict], out: type[T], tool: str, description: str,
-        max_tokens: int = 4096, retries: int = 3, temperature: float | None = None) -> T:
+        max_tokens: int = 4096, retries: int = 3) -> T:
     """One tool call, validated into `out`.
 
     The call is forced (tool_choice {"type": "tool"}) on models that take it. Claude Opus 5.5, Sonnet 5.5, Fable 5.1
@@ -79,10 +73,7 @@ def ask(model: str, system: str, content: list[dict], out: type[T], tool: str, d
     before the tool call (stop_reason == "max_tokens", or no call at all on a forced model) is retried ONCE with
     max_tokens doubled, capped at MAX_TOKENS_CAP. A response that fails pydantic validation (a colour outside the
     palette, a confidence of 1.2, a bad enum) is sent back to the model ONCE as an error tool_result so it can correct
-    the call, instead of failing the whole item.
-
-    `temperature` (e.g. 0 for a yes/no reading like the front check, WO23): sent when given; a model whose API refuses
-    it is asked again without and remembered."""
+    the call, instead of failing the whole item."""
     tools = [{"name": tool, "description": description, "input_schema": tool_schema(out)}]
     messages: list[dict] = [{"role": "user", "content": content}]
     forced = forces_tool_choice(model)
@@ -90,19 +81,15 @@ def ask(model: str, system: str, content: list[dict], out: type[T], tool: str, d
     while True:
         choice = {"type": "tool", "name": tool} if forced else {"type": "auto", "disable_parallel_tool_use": True}
         prompt = system if forced else f"{system}\n\n{CALL_THE_TOOL.format(tool=tool)}"
-        sampling = {"temperature": temperature} if temperature is not None and model not in _NO_TEMPERATURE else {}
         try:
             resp = client().messages.create(
                 model=model, max_tokens=max_tokens, system=prompt, tools=tools, tool_choice=choice,
-                messages=messages, **sampling,
+                messages=messages,
             )
         except (APIConnectionError, APIStatusError) as e:   # APITimeoutError is an APIConnectionError
             if forced and _rejects_forced(e):              # not for this model: the same request, tool_choice auto
                 _REJECTS_FORCED.add(model)
                 forced = False
-                continue
-            if sampling and _rejects_temperature(e):       # this model takes no temperature: the same, without
-                _NO_TEMPERATURE.add(model)
                 continue
             api_attempts += 1
             transient = isinstance(e, APIConnectionError) or e.status_code in RETRY_STATUS

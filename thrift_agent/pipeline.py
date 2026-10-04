@@ -566,6 +566,7 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
     check = front_view(s, db, iid, photos, facts, kinds)  # which photo shows the front: a comparison (WO23)
     cover, upright, cover_note = choose_cover(facts, len(photos), kinds, check, it["owner_cover"])
     if cover is not None:
+        upright = upright_view(s, db, iid, photos[cover], upright)   # turned upright: four pictures, pick one
         facts = facts.model_copy(update={"cover_photo": cover, "cover_upright": upright})
     shown = listing_photos(s, facts, len(photos), kinds)  # every flaw photo in the listing
     # The card shows only what needs the owner (WO20): these warnings and the allowed questions; the rest (an unsure
@@ -685,6 +686,16 @@ def front_view(s: Settings, db: DB, iid: str, photos: list[Path], facts: Facts, 
         return None
 
 
+def upright_view(s: Settings, db: DB, iid: str, photo: Path, fallback: int) -> int:
+    """The turn that puts the cover upright, from the four-turn check (brain/cover.py); `fallback` (the front check's
+    reading) when that call fails — logged."""
+    try:
+        return cover_brain.upright_check(photo, s["models"].get("cover") or s["models"]["extract"])
+    except Exception as e:  # noqa: BLE001
+        db.log(iid, "upright_check_failed", f"{type(e).__name__}: {e}")
+        return fallback
+
+
 def relist(s: Settings, it, facts: Facts, renders: dict) -> dict:
     """The renders with the listing's photos, cover and form fields recomputed from `facts` — no model call: the
     cover file (turned upright), the photo order, category / subcategory / size and the label line. Titles, tags and
@@ -724,6 +735,8 @@ def set_cover(s: Settings, db: DB, iid: str, n: int) -> str:
     facts = Facts.model_validate(loads(it["facts"]))
     views = FrontOut.model_validate(loads(it["views"])) if it["views"] else None
     _, upright, _ = choose_cover(facts, count, None, views, owner=n)
+    photos = sorted((Path(it["dir"]) / "photos").glob("*.jpg"))
+    upright = upright_view(s, db, iid, photos[n], upright)              # the owner's photo, turned upright too
     facts = facts.model_copy(update={"cover_photo": n, "cover_upright": upright})
     gate = loads(it["gate"]) or {}
     gate["notes"] = [x for x in gate.get("notes") or [] if x != NO_FRONT_COVER]
@@ -768,6 +781,7 @@ def recover_item(s: Settings, db: DB, iid: str) -> dict:
     check = front_view(s, db, iid, photos, facts, kinds)
     cover, upright, cover_note = choose_cover(facts, len(photos), kinds, check, it["owner_cover"])
     if cover is not None:
+        upright = upright_view(s, db, iid, photos[cover], upright)
         facts = facts.model_copy(update={"cover_photo": cover, "cover_upright": upright})
     renders = relist(s, it, facts, loads(it["renders"]))
     pr = PriceResult.model_validate(loads(it["price"]))

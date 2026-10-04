@@ -74,6 +74,8 @@ def fake_ask(facts_factory, audit: VerifyOut | None = None):
             return out(views=[], front=-1)
         if out.__name__ == "SizeLabel":
             return out(printed=None)
+        if out.__name__ == "UprightOut":                   # the cover is upright as shot
+            return out(upright="A")
         raise AssertionError(out)
     return ask
 

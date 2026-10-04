@@ -231,21 +231,3 @@ def test_segmentation_on_claude_opus_5_5_parses_like_any_other(monkeypatch, tmp_
     out = segment.segment(photos, "claude-opus-5-5", 64)
     assert [g.photos for g in out.groups] == [[0], [1]] and calls[0]["tool_choice"]["type"] == "auto"
 
-
-def test_a_temperature_is_sent_when_asked_and_dropped_for_a_model_that_refuses_it(monkeypatch):
-    """WO23: the front check reads at temperature 0 (the live tee's turn came back differently run to run). A model
-    whose API refuses the parameter is asked the same again without it, and remembered."""
-    msg = "temperature: this model does not support the temperature parameter"
-    body = {"type": "error", "error": {"type": "invalid_request_error", "message": msg}}
-    refused = BadRequestError(msg, response=httpx.Response(400, request=REQ, json=body), body=body)
-    c, calls = fake_client([resp(block({"tags": [], "n": 0})), refused, resp(block({"tags": [], "n": 1})),
-                            resp(block({"tags": [], "n": 1}))])
-    monkeypatch.setattr(llm, "client", lambda: c)
-    llm._NO_TEMPERATURE.clear()
-    assert llm.ask("m", "sys", [llm.text("hi")], Out, "t", "desc", temperature=0).n == 0
-    assert calls[0]["temperature"] == 0
-    assert llm.ask("other", "sys", [llm.text("hi")], Out, "t", "desc", temperature=0).n == 1
-    assert calls[1]["temperature"] == 0 and "temperature" not in calls[2]            # refused, then without it
-    llm.ask("other", "sys", [llm.text("hi")], Out, "t", "desc", temperature=0)
-    assert "temperature" not in calls[3]                                                  # remembered
-    llm._NO_TEMPERATURE.clear()

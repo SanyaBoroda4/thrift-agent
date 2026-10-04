@@ -82,6 +82,10 @@ class FrontOut(BaseModel):
     front: int = Field(description="The number of the photo that shows the FRONT of the item")
 
 
+class UprightOut(BaseModel):
+    upright: Literal["A", "B", "C", "D"] = Field(description="The letter of the picture that shows the item upright")
+
+
 class SizeLabel(BaseModel):
     printed: str | None = Field(None, description="The size exactly as printed, every system and unit on the label "
                                                   "(e.g. '4 ans / 104 cm', '4A', 'EU 38 / US 7.5'); null if unreadable")

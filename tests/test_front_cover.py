@@ -182,6 +182,8 @@ def _ask(facts, front=LACOSTE_CHECK, copy_text="Lacoste kids graphic tee in heat
             return tee(facts)
         if out.__name__ == "FrontOut":
             return front
+        if out.__name__ == "UprightOut":                              # the tee's front lies with the collar left
+            return out(upright="B")
         if out is CopyOut:
             return CopyOut(poshmark_title="Lacoste Kids Graphic Tee Heather Gray size 4T",
                            poshmark_description=copy_text + "\nGently pre-loved, please see photos for condition.",
@@ -411,3 +413,33 @@ def test_the_design_swap_never_picks_a_photo_the_check_calls_the_back(facts):
     shorts = facts(photo_roles=roles("front", "label", "label", "back"), cover_photo=0, photo_order=[0, 1, 2, 3])
     found = check(0, (0, "front", "none", 0), (3, "back", "some", 0))
     assert pipeline.choose_cover(shorts, 4, None, found) == (0, 0, None)
+
+
+def test_the_upright_check_shows_four_turns_and_maps_the_letter(tmp_path, monkeypatch):
+    """WO23: the cover photo turned four ways, the model picks the upright picture (steadier than naming where a collar
+    lies — live, that reading changed run to run). B is the photo turned 90° clockwise."""
+    from thrift_agent.brain import cover as cover_brain
+    from thrift_agent.schema import UprightOut
+    seen = {}
+
+    def ask(model, system, content, out, tool, description, **kw):
+        seen["labels"] = [c["text"] for c in content if c["type"] == "text"]
+        seen["images"] = sum(1 for c in content if c["type"] == "image")
+        return UprightOut(upright="B")
+    monkeypatch.setattr(cover_brain.llm, "ask", ask)
+    assert cover_brain.upright_check(_sideways_front(tmp_path / "00.jpg"), "m") == 90
+    assert seen["images"] == 4 and seen["labels"][:4] == ["Picture A", "Picture B", "Picture C", "Picture D"]
+    assert not list(tmp_path.glob(".upright_*"))                      # its scratch pictures are gone
+
+
+def test_the_cover_turn_comes_from_the_upright_check_with_the_comparison_as_fallback(tmp_path, facts, monkeypatch):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    monkeypatch.setattr(pipeline.cover_brain, "upright_check", lambda photo, model: 270)
+    assert pipeline.upright_view(s, db, "i_x", tmp_path / "00.jpg", 90) == 270
+
+    def fails(photo, model):
+        raise RuntimeError("overloaded")
+    monkeypatch.setattr(pipeline.cover_brain, "upright_check", fails)
+    assert pipeline.upright_view(s, db, "i_x", tmp_path / "00.jpg", 90) == 90      # the comparison's reading
+    assert db.conn.execute("SELECT COUNT(*) FROM events WHERE kind='upright_check_failed'").fetchone()[0] == 1
