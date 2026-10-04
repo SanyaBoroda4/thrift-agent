@@ -285,17 +285,22 @@ The owner shares retailer screenshots (product page with price, style name, colo
   1. The extraction names every photo's role (`facts.photo_roles`: front, back, side, detail, label, tag, flaw, worn,
      box, other).
   2. **The front check** (`brain/cover.py`, `models.cover`, one call): the item-alone photos (front/side/back), side by
-     side in shooting order at `images.cover_check_long_edge`, ONE question — which shows the front? — with per photo
-     the side, the design detail (none/some/strong) and the clockwise turn that puts it upright. Cues: print, graphic,
-     text, logo, buttons, zip, pockets, the lower neckline = front; a plain side when another photo shows a print =
-     back; pants: back pockets / yoke = back; shoes: the side profile is a front; equal → more design detail. Stored in
-     `items.views`.
+     side in shooting order at `images.cover_check_long_edge`, with the try-on / mirror photos as a labelled reference
+     for how the front looks when worn (never a candidate), ONE question — which shows the front? — with per photo the
+     side, the printed design (none/some/strong) and where the item's top lies. Cues: print, graphic, text, logo,
+     buttons, pockets, the lower neckline = front; a fly zip = front, but a zip down the middle of a skirt or dress =
+     back (live: a floral skirt); a plain side when another photo shows a print = back; pants: back pockets / yoke =
+     back; shoes: the side profile is a front; equal → more printed design. Stored in `items.views`.
   3. **Code check** (`pipeline.choose_cover`): a photo called the back is never the cover while another candidate
-     isn't; a plain photo never while another candidate shows design. "cover: no front flat-lay photo" only when no
-     item-alone photo could be the front (backs only, or none). The decision is `facts.cover_photo` +
-     `facts.cover_upright`; `photo_order` trusts it (the card, the renders and the poster all use it).
-  4. **Upright:** the cover is turned by that exact quarter turn before the 3:4 padding (`prep.portrait_cover`), never
-     cropped. EXIF orientation is applied to every photo at prep (`prep.normalize`), before any model sees it.
+     isn't; a plain photo never while another candidate (not called the back — jeans carry a logo patch there) shows
+     printed design. "cover: no front flat-lay photo" only when no item-alone photo could be the front (backs only, or
+     none). The decision is `facts.cover_photo` + `facts.cover_upright`; `photo_order` trusts it (the card, the renders
+     and the poster all use it).
+  4. **Upright** (`cover.upright_check`, one small call): the cover photo shown turned four ways, the model picks the
+     upright picture — steadier than naming where a collar lies, which varied from run to run live (probed: the same
+     answer twice on all ten live items). The cover is turned by that exact quarter turn before the 3:4 padding
+     (`prep.portrait_cover`), never cropped; if the call fails, the comparison's reading. EXIF orientation is applied
+     to every photo at prep (`prep.normalize`), before any model sees it.
   5. **"cover N"** — a reply to the card, or typed while it is open (no button): photo N of the item (its photos in
      shooting order, from 0) becomes the cover (`items.owner_cover`, kept through reprocessing) and the card is sent
      again. Never for an item on the marketplace.
