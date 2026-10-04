@@ -17,7 +17,7 @@ from rich.table import Table
 
 from thrift_agent import approve, config, notify, pipeline, runlock
 from thrift_agent.config import settings
-from thrift_agent.db import DB, loads
+from thrift_agent.db import DB, loads, now
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 telegram_app = typer.Typer(help="Telegram bot helpers: setup (find the ids for .env) and test (send a message).")
@@ -31,6 +31,7 @@ def _startup() -> None:
     load_dotenv(config.ENV_FILE)
 RESEND_CHECK_SECONDS = 3600      # how often the worker looks for batches/items waiting longer than resend_after_hours
 WORKER_LOCK = "worker.lock"      # next to the DB: one `thrift run` per machine (runlock)
+SCAN_KEY = "worker_inbox_scan"   # kv: when the worker last finished looking at the inbox (deploy checks it moves)
 
 
 def _db() -> DB:
@@ -51,7 +52,11 @@ def _tick(s, db) -> int:
     at a time and looking again after each: the card the owner needs next is ready first, and an item sent back for
     reprocessing by an answer jumps ahead of the rest. Each is taken once per tick."""
     n = 0
-    for folder in pipeline.ready_folders(s):
+    folders = pipeline.ready_folders(s)
+    # Proof of life for deploy/mac_deploy.sh: on the Mac a launchd process waits here, silently, until macOS's "would
+    # like to access files in your iCloud Drive" is allowed on the Mac's screen.
+    db.kv_set(SCAN_KEY, now())
+    for folder in folders:
         if pipeline.register(s, db, folder):
             n += 1
     done: set[tuple[str, str]] = set()
@@ -474,6 +479,7 @@ def status() -> None:
         is_open = f"{row['kind']} {row['ref']}" if row else "nothing"
         print(f"[cyan]Telegram[/] open: {is_open}; {len(queue)} in the queue, next: "
               + ", ".join(f"{k} {r}" for k, r in queue[:4]) + (" …" if len(queue) > 4 else ""))
+    print(f"worker inbox scan: {db.kv_get(SCAN_KEY) or 'never'}")
 
 
 @app.command()

@@ -31,14 +31,27 @@ if ! THRIFT_DEPLOY=1 bash deploy/mac_setup.sh; then
   exit 1
 fi
 
+scan() { .venv/bin/thrift status 2>/dev/null | sed -n 's/^worker inbox scan: //p'; }
+last_scan="$(scan)"
 bash deploy/services.sh restart worker
-sleep 10                                  # let it start: a worker that exits at once shows in status and its log
+# A worker that started and then waits (silently) is no deploy either: wait for its first pass over the inbox.
+scanned=""
+for _ in $(seq 1 12); do
+  sleep 5
+  now_scan="$(scan)"
+  if [ -n "$now_scan" ] && [ "$now_scan" != never ] && [ "$now_scan" != "$last_scan" ]; then scanned=yes; break; fi
+done
 bash deploy/services.sh status
 echo "== thrift status"
 .venv/bin/thrift status
 bash deploy/services.sh logs worker 30
 if ! launchctl print "gui/$(id -u)/com.thriftagent.worker" 2>/dev/null | grep -q "state = running"; then
   echo "== the worker is not running: see the log above" >&2
+  exit 1
+fi
+if [ -z "$scanned" ]; then
+  echo "== the worker runs but hasn't finished a pass over the inbox in 60 s. If the Mac's screen shows" >&2
+  echo "   \"python3.14 would like to access files in your iCloud Drive\", click Allow there (once)." >&2
   exit 1
 fi
 echo "== deployed"

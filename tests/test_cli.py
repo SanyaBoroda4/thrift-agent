@@ -441,3 +441,18 @@ def test_kids_is_the_cli_twin_of_the_girls_boys_buttons(monkeypatch, tmp_path):
     monkeypatch.setattr(approve, "pump", lambda s, db: None)
     r = CliRunner().invoke(cli.app, ["kids", "i_1", "Boys"])
     assert r.exit_code == 0 and calls == [("i_1", "Boys")] and resolved == [("kids", "i_1")] and "ready" in r.output
+
+
+def test_the_worker_records_each_inbox_scan_and_status_shows_it(monkeypatch, tmp_path):
+    """deploy/mac_deploy.sh waits for this to move after a restart: on the Mac a launchd worker can wait silently on
+    macOS's iCloud Drive permission (WO21)."""
+    from typer.testing import CliRunner
+    s = _settings(tmp_path, "dev")
+    db = DB(s.path("db"))
+    monkeypatch.setattr(cli.pipeline, "ready_folders", lambda _s: [])
+    monkeypatch.setattr(cli, "_db", lambda: db)
+    r = CliRunner().invoke(cli.app, ["status"], terminal_width=200)
+    assert "worker inbox scan: never" in r.output
+    cli._tick(s, db)
+    stamp = db.kv_get(cli.SCAN_KEY)
+    assert stamp and f"worker inbox scan: {stamp}" in CliRunner().invoke(cli.app, ["status"], terminal_width=200).output
