@@ -54,6 +54,7 @@ gate:
 
 pricing:
   floor: 20
+  default_target: 15       # target sale price when neither the brand nor a category table has one: never no price
   list_markup: 1.35        # most resale sales close via offers — list above the target sale price
   round_to: 5
   condition_multiplier:
@@ -79,6 +80,8 @@ poster:
   dry_run_stage: form      # form = fill, read back, screenshot, leave via Discard | review = also press Next, record
                            # the page after it (failed/shots/<item>-review.json), back out, Discard. Never publishes.
   max_consecutive_failures: 3   # after this many failed items in a row the poster writes PAUSE and stops (stop, don't guess)
+  notify_dry_runs: false   # a Telegram photo for every successful dry-run; off: the owner's chat carries the questions
+                           # (one at a time, WO20), failures and live listings. The evidence is in failed/shots/ either way.
 
 marketplaces:
   poshmark:

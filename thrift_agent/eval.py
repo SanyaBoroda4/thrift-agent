@@ -50,7 +50,8 @@ def run_case(s: Settings, case: Path) -> dict:
     result = {"case": case.name, "segmentation_ok": got_groups == want_groups,
               "groups": {"want": want_groups, "got": got_groups},
               "flags": seg.check(out, len(kept), cfg["min_confidence"])
-              + seg.timing_check(got_groups, None, breaks, seg.visual_changes(kept)[1]), "fields": {}}
+              + seg.timing_check(got_groups, None, breaks, seg.visual_changes(kept)[1],
+                                 [g.confidence for g in out.groups], cfg["min_confidence"]), "fields": {}}
 
     # Extraction is scored on the TRUE groups so one segmentation miss doesn't hide extraction quality.
     for k, item in enumerate(exp["items"]):

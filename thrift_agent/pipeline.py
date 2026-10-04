@@ -19,9 +19,9 @@ from thrift_agent.brain.gate import GateResult, evaluate
 from thrift_agent.brain.price import price
 from thrift_agent.brain.verify import fit_style_tags, lint, verify
 from thrift_agent.config import Settings, load_yaml
-from thrift_agent.db import DB, loads
+from thrift_agent.db import DB, loads, now
 from thrift_agent.ingest import prep, segment as seg
-from thrift_agent.schema import CopyOut, Ev, Facts, PriceResult, Render
+from thrift_agent.schema import ITEM_ALONE, CopyOut, Ev, Facts, PriceResult, Render
 
 MAX_SEGMENT_PHOTOS = 90        # the Messages API takes at most 100 image blocks per request; keep headroom
 ANSWERABLE = ("needs_info", "ready", "failed", "new", "awaiting_price", "needs_owner",   # a note resets these to 'new'
@@ -115,7 +115,9 @@ def process_batch(s: Settings, db: DB, bid: str) -> None:
         reasons = seg.check(out, len(kept), cfg["min_confidence"], kinds=kept_kinds)
         distances, changes = seg.visual_changes(kept, kept_kinds, cfg.get("visual_change_min", 0.45),
                                                 cfg.get("visual_change_factor", 2.5))
-        reasons += seg.timing_check(groups, kept_kinds, breaks, changes)   # a pause AND a change inside, neither between
+        # a pause AND a colour change inside an item, neither between two — only where the model was unsure (WO20)
+        reasons += seg.timing_check(groups, kept_kinds, breaks, changes, [g.confidence for g in out.groups],
+                                    cfg["min_confidence"])
 
     seg.contact_sheet(kept, groups, work / "contact_sheet.png", kinds=kept_kinds, breaks=breaks)   # approve.send_batch
     db.set_batch(bid, segmentation={"groups": groups, "summaries": summaries, "photos": [str(p) for p in kept],
@@ -129,7 +131,7 @@ def process_batch(s: Settings, db: DB, bid: str) -> None:
 
     if reasons or s["segmentation"]["always_confirm"]:
         db.set_batch(bid, status="needs_confirm")
-        approve.send_batch(s, db, bid)                    # contact sheet + summary; the owner replies ok / 12>2 / ...
+        approve.pump(s, db)                               # the contact sheet, when it is next (one question at a time)
         return
     split(s, db, bid, groups)
 
@@ -292,10 +294,10 @@ def settle_nwt(facts: Facts, note: str | None) -> tuple[Facts, list[str]]:
         ev = facts.condition_evidence.model_copy(update={"source": "note", "confidence": 1.0,
                                                         "value": facts.condition_evidence.value or "owner: NWT"})
         return facts.model_copy(update={"condition_evidence": ev}), []
-    return (facts.model_copy(update={"condition": "like_new"}),
-            ["model saw NWT but no attached hang tag: listed as like new; reply 'NWT' if the tag is attached"])
+    return (facts.model_copy(update={"condition": "like_new"}), [NWT_QUESTION])
 
 
+NWT_QUESTION = "Listed as Like New: no photo of an attached hang tag — reply 'NWT' if the tag is attached"
 GRADES_UP = ("good", "excellent", "like_new")      # torn between two of these: the higher (the owner's rule, WO17)
 WELL_WORN = "looked well-worn — listed as Good; check before approving"
 
@@ -353,12 +355,17 @@ def apply_owner_condition(facts: Facts, condition: str) -> Facts:
     return facts.model_copy(update={"condition": condition, "condition_alternative": None, "condition_evidence": ev})
 
 
-def kids_gender_notes(facts: Facts) -> list[str]:
-    """Poshmark files a kids size under Girls or Boys. A kids item the model read as unisex (or couldn't read) goes
-    under Girls, and the approval message says so; never a question."""
-    if facts.department != "Kids" or not facts.size_us.value or facts.kids_gender in ("girls", "boys"):
-        return []
-    return ["listed under Girls on Poshmark (read as unisex); reply 'boys' to list it under Boys"]
+KIDS_SURE = 0.70                  # how sure of Girls/Boys the model must be to go without asking (WO20)
+KIDS_CHOICES = {"girls": "girls", "girl": "girls", "boys": "boys", "boy": "boys"}
+
+
+def kids_question(facts: Facts) -> bool:
+    """Poshmark files a kids size under Girls or Boys: the model's reading is used silently when it is at least 0.70
+    sure of one of them; below that (or unisex, or unread) the owner is asked — [Girls] [Boys], queued like the other
+    questions (WO20). Only for a kids item with a size (the form's size list is what needs it)."""
+    if facts.department != "Kids" or not facts.size_us.value:
+        return False
+    return not (facts.kids_gender in ("girls", "boys") and facts.kids_gender_confidence >= KIDS_SURE)
 
 
 def process_item(s: Settings, db: DB, iid: str) -> None:
@@ -376,14 +383,20 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
     # Shoes, in doubt between brand new and worn: the owner is asked before the price (WO18) — on the model's own
     # reading, before the settles below merge its two grades. Once answered, the answer is the condition.
     ask_condition = (not it["owner_condition"] and not it["owner_price"] and shoe_condition_doubt(facts))
-    facts, notes = settle_nwt(facts, it["note"])         # NWT needs a tag photo or the owner's word; else like new
-    facts, graded = settle_condition(facts)              # doubt -> like new; never Fair (Good, and a note)
-    notes += graded
-    if it["owner_condition"]:
-        facts, notes = apply_owner_condition(facts, it["owner_condition"]), []   # the owner's word settles it all
+    facts, nwt_questions = settle_nwt(facts, it["note"])   # NWT needs a tag photo or the owner's word; else like new
+    facts, notes = settle_condition(facts)               # doubt -> like new; never Fair (Good, and a warning)
+    if it["owner_condition"]:                            # the owner's word settles it all
+        facts, notes, nwt_questions = apply_owner_condition(facts, it["owner_condition"]), [], []
+    if it["owner_kids_gender"]:                          # the owner's [Girls]/[Boys]: never asked again
+        facts = facts.model_copy(update={"kids_gender": it["owner_kids_gender"], "kids_gender_confidence": 1.0})
     facts, fit_notes, fit_questions = taxonomy.fit(facts)   # Poshmark's own category names (Kids Tops -> Shirts & Tops)
+    ask_kids = kids_question(facts)                      # Girls or Boys, below 0.70 sure: a question before the price
     shown = listing_photos(s, facts, len(photos), kinds)  # flaw photos in, never the cover: the condition rule
-    notes += fit_notes + kids_gender_notes(facts) + flaw_notes(facts, shown)
+    _, cover_note = choose_cover(facts, len(photos), kinds)
+    # The card shows only what needs the owner (WO20): these warnings and the allowed questions; the rest (an unsure
+    # grade, a subcategory left out) is kept in the item's record as info.
+    notes += flaw_notes(facts, shown) + ([cover_note] if cover_note else [])
+    info = list(fit_notes)
     pr = price(facts, load_yaml("brand_tiers.yaml"), s["pricing"], it["note"])
     enabled = [mp for mp, m in s["marketplaces"].items() if m.get("enabled")]
     if it["owner_price"]:
@@ -404,18 +417,20 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
         problems += [f"verifier rewrote {f} without reporting a claim" for f in copywriter.changed_fields(draft, audit)]
     gate = evaluate(facts, pr, problems, len(audit.unsupported), s["gate"], s["pricing"])
 
+    questions = fit_questions + gate.questions + nwt_questions
     if fit_questions:                                    # a department/category Poshmark doesn't have: like "Other"
-        gate = GateResult("needs_info", fit_questions + gate.reasons, gate.notes)
+        gate = GateResult("needs_info", fit_questions + gate.reasons, gate.notes, gate.questions)
 
     renders = build_renders(s, iid, d, photos, facts, final, pr, kinds)
     cover_src = photos[photo_order(facts, len(photos), kinds)[0]]
     cover_hash, twin = duplicate_check(s, db, iid, cover_src, it["note"])
     if twin:
-        gate = GateResult("needs_info", [twin] + gate.reasons, gate.notes)
+        gate = GateResult("needs_info", [twin] + gate.reasons, gate.notes, gate.questions)
+        questions = [twin] + questions
     # `hold` marks a question a price alone must not settle: set_price() keeps a held item waiting until the owner
     # answers it ("different item" lists it, "same item" drops it). `notes` are told to the owner but need no answer.
-    gate_doc = {"decision": gate.decision, "reasons": gate.reasons, "notes": notes + gate.notes,
-                "hold": "reshare" if twin else None}
+    gate_doc = {"decision": gate.decision, "reasons": gate.reasons, "questions": questions, "notes": notes,
+                "info": info + gate.notes, "hold": "reshare" if twin else None, "ask_kids": ask_kids}
     (d / "item.json").write_text(json.dumps({
         "facts": facts.model_dump(), "price": pr.model_dump(),
         "renders": {k: v.model_dump() for k, v in renders.items()},
@@ -426,16 +441,23 @@ def process_item(s: Settings, db: DB, iid: str) -> None:
     # re-share) ride along in the same message; an item the owner already priced comes back only while something
     # is still unresolved.
     unresolved = gate.decision == "needs_info"
+    latest = db.item(iid)
+    if latest["updated_at"] != it["updated_at"] and latest["status"] == "new":
+        # An answer arrived while the item was being processed (the worker's Telegram thread: a note, a condition; or
+        # `thrift redo`): this result is already out of date. The item stays 'new' and is processed again with it.
+        db.log(iid, "item_processed_stale", {"would_be": gate.decision})
+        return
+    # Whatever was asked about this item before is out of date now (a new card, a new question): closed, so the
+    # queue sends the new one rather than waiting on the old (WO20).
+    db.conn.execute("UPDATE outbox SET resolved_at=? WHERE ref=? AND resolved_at IS NULL", (now(), iid))
     status = ("awaiting_condition" if ask_condition
-              else "awaiting_price" if unresolved or not it["owner_price"] else "ready")
+              else "awaiting_price" if unresolved or not it["owner_price"] or ask_kids else "ready")
     db.set_item(iid, status=status, facts=facts.model_dump(), price=pr.model_dump(),
                 renders={k: v.model_dump() for k, v in renders.items()}, gate=gate_doc, cover_hash=cover_hash)
     db.log(iid, "item_processed", {"decision": gate.decision, "reasons": gate.reasons, "status": status})
 
-    if status == "awaiting_condition":
-        approve.ask_condition(s, db, iid)                # "Brand new or worn?" [NWT] [Like New] [Good], then the price
-    elif status == "awaiting_price":
-        approve.send_item(s, db, iid)
+    if status in ("awaiting_condition", "awaiting_price"):
+        approve.pump(s, db)                              # ONE open question at a time: sent now if it is next
     elif gate.decision == "draft":
         first = next(iter(renders.values()), None)
         title = first.title if first else final.poshmark_title
@@ -503,12 +525,97 @@ def set_price(s: Settings, db: DB, iid: str, amount: int) -> str:
     pr = loads(it["price"]) or {}
     pr.update(list_price=amount, source="owner", basis=f"owner price ${amount}",
               by_marketplace={mp: amount for mp in renders} or pr.get("by_marketplace", {}))
-    held = (loads(it["gate"]) or {}).get("hold")           # a re-share question: the price alone does not release it
-    status = "ready" if it["status"] == "awaiting_price" and not held else it["status"]
+    gate = loads(it["gate"]) or {}
+    # A re-share question is never settled by the price alone; nor is Girls/Boys (its own question, asked first).
+    waiting_only_for_the_price = it["status"] == "awaiting_price" and not gate.get("hold") and not gate.get("ask_kids")
+    status = "ready" if waiting_only_for_the_price else it["status"]
     with db.tx():
         db.set_item(iid, owner_price=amount, price=pr, renders=renders, status=status)
         db.log(iid, "price_set", {"amount": amount, "status": status})
     return status
+
+
+def set_kids_gender(s: Settings, db: DB, iid: str, choice: str) -> str:
+    """The owner's [Girls] / [Boys] for a kids item (WO20): which of Poshmark's size lists the size is picked from.
+    Stored as items.owner_kids_gender (a reprocessing keeps it) and written into the facts and the renders at once —
+    nothing else depends on it, so no reprocessing. An item that was only waiting for this and already has its price
+    becomes ready. Returns the resulting status."""
+    gender = KIDS_CHOICES.get((choice or "").strip().lower())
+    if gender is None:
+        raise ValueError(f"kids gender must be girls or boys, got {choice!r}")
+    it = db.item(iid)
+    if it is None:
+        raise ValueError(f"unknown item {iid}")
+    if it["status"] not in PRICEABLE:
+        raise ValueError(f"item {iid} is {it['status']} — Girls/Boys can't be changed now")
+    facts = loads(it["facts"]) or {}
+    facts.update(kids_gender=gender, kids_gender_confidence=1.0)
+    renders = loads(it["renders"]) or {}
+    for r in renders.values():
+        if "kids_gender" in r:
+            r["kids_gender"] = gender
+    gate = {**(loads(it["gate"]) or {}), "ask_kids": False}
+    waiting_only_for_this = (it["status"] == "awaiting_price" and it["owner_price"] and not gate.get("hold")
+                             and gate.get("decision") != "needs_info")
+    status = "ready" if waiting_only_for_this else it["status"]
+    with db.tx():
+        db.set_item(iid, owner_kids_gender=gender, facts=facts, renders=renders, gate=gate, status=status)
+        db.log(iid, "kids_gender_set", {"kids_gender": gender, "status": status})
+    return status
+
+
+def defer_item(s: Settings, db: DB, iid: str) -> None:
+    """[Later] on a price card: the item goes to the end of the owner's queue (WO20), behind everything else."""
+    it = db.item(iid)
+    if it is None:
+        raise ValueError(f"unknown item {iid}")
+    if it["status"] not in ("awaiting_price", "needs_info"):
+        raise ValueError(f"item {iid} is {it['status']} — no price card to put off")
+    db.set_item(iid, deferred_at=datetime.now(timezone.utc).isoformat(timespec="microseconds"))
+    db.log(iid, "deferred", {"status": it["status"]})
+
+
+REDO_KEEP = ("posting", "posted", "drafted")      # item and post statuses that reached the site: never rebuilt
+
+
+def unconfirmed_publish(post) -> bool:
+    """A publish that may have gone live although its address was never found (thrift mark-posted settles it)."""
+    return (post["last_error"] or "").startswith("unconfirmed publish: ")
+
+
+def redo_batch(s: Settings, db: DB, bid: str) -> tuple[list[str], list[str]]:
+    """Rebuild a split batch's items that never reached the site (WO20): each goes back to 'new' with its photos and
+    its notes, from the grouping already confirmed (no new contact sheet), and is processed again — new cover, new
+    price, a new card in the queue. Its suggested and approved price, its dry-run post rows and its Telegram messages
+    are dropped; the owner's answers about the item itself (condition, Girls/Boys) are kept. An item that is posting,
+    posted, drafted, or has a post that reached the site or may have (a URL, an unconfirmed publish) is left alone,
+    and so is one the owner dropped as a re-share. Returns (rebuilt, kept): kept as "<item> (<why>)"."""
+    b = db.batch(bid)
+    if b is None:
+        raise ValueError(f"unknown batch {bid}")
+    items = db.conn.execute("SELECT * FROM items WHERE batch_id=? ORDER BY seq", (bid,)).fetchall()
+    if not items:
+        raise ValueError(f"batch {bid} is {b['status']} with no items — nothing to redo")
+    rebuilt, kept = [], []
+    for it in items:
+        posts = db.conn.execute("SELECT * FROM posts WHERE item_id=?", (it["id"],)).fetchall()
+        reached = [f"{p['marketplace']}: unconfirmed publish" if unconfirmed_publish(p)
+                   else f"{p['marketplace']} {p['status']}"
+                   for p in posts if p["status"] in REDO_KEEP or p["url"] or unconfirmed_publish(p)]
+        if it["status"] in REDO_KEEP or it["status"] == "dropped" or reached:
+            kept.append(f"{it['id']} ({', '.join(reached) or it['status']})")
+            continue
+        with db.tx():
+            db.conn.execute("DELETE FROM posts WHERE item_id=?", (it["id"],))
+            db.conn.execute("UPDATE outbox SET resolved_at=? WHERE ref=? AND resolved_at IS NULL",
+                            (datetime.now(timezone.utc).isoformat(timespec="seconds"), it["id"]))
+            db.set_item(it["id"], status="new", facts=None, price=None, renders=None, gate=None, owner_price=None,
+                        deferred_at=None, cover_hash=None)
+            db.log(it["id"], "redo", {"batch": bid, "from": it["status"]})
+        rebuilt.append(it["id"])
+    if not rebuilt:
+        raise ValueError(f"batch {bid}: every item reached the site ({', '.join(kept)}) — nothing to redo")
+    return rebuilt, kept
 
 
 def requeue_batch(s: Settings, db: DB, bid: str) -> str:
@@ -596,10 +703,32 @@ def flaw_photos(facts: Facts, n: int) -> set[int]:
     return {i for f in facts.flaws for i in f.photos if 0 <= i < n}
 
 
+NO_FRONT_COVER = "cover: no front flat-lay photo"
+
+
+def choose_cover(facts: Facts, n: int, kinds: list[str] | None = None) -> tuple[int | None, str | None]:
+    """The cover (owner rule, WO20): the item alone, its front, flat lay or on a hanger — by the model's photo_roles,
+    checked here: only a photo of the item alone (front, else side, else back; the model's own pick first among
+    equals), never worn / a label / a tag / a flaw / a box / a screenshot. (photo, note for the card): the note says
+    "cover: no front flat-lay photo" when no front shot exists; (None, …) leaves the cover to photo_order's older
+    rules — no roles at all (older facts), or no photo of the item alone."""
+    kinds = kinds or ["own"] * n
+    roles = {r.photo: r.role for r in facts.photo_roles if 0 <= r.photo < n}
+    if not roles:
+        return None, None
+    flawed = flaw_photos(facts, n)
+    preferred = list(dict.fromkeys(i for i in [facts.cover_photo, *facts.photo_order, *range(n)] if 0 <= i < n))
+    alone = [i for i in preferred if kinds[i] != "retail" and i not in flawed]
+    for role in ITEM_ALONE:                                   # front, then side, then back
+        if (pick := next((i for i in alone if roles.get(i) == role), None)) is not None:
+            return pick, None if role == "front" else NO_FRONT_COVER
+    return None, NO_FRONT_COVER
+
+
 def photo_order(facts: Facts, n: int, kinds: list[str] | None = None) -> list[int]:
-    """The listing's photo order: the cover first, then the model's order, every photo once; retail screenshots last
-    and never the cover; a photo that shows a flaw never the cover either (the first clean own photo is, when there
-    is one)."""
+    """The listing's photo order: the cover first (choose_cover), then the model's order, every photo once; retail
+    screenshots last and never the cover; a photo that shows a flaw never the cover either (the first clean own photo
+    is, when there is one)."""
     kinds = kinds or ["own"] * n
     order = [i for i in facts.photo_order if 0 <= i < n]
     if 0 <= facts.cover_photo < n:
@@ -609,8 +738,11 @@ def photo_order(facts: Facts, n: int, kinds: list[str] | None = None) -> list[in
     order = (own + [i for i in order if kinds[i] == "retail"]) if own else order   # screenshots last, never the cover
     flawed = flaw_photos(facts, n)
     clean = [i for i in own if i not in flawed]
-    if order and order[0] in flawed and clean:
-        order = [clean[0]] + [i for i in order if i != clean[0]]
+    cover, _ = choose_cover(facts, n, kinds)
+    if cover is None and order and order[0] in flawed and clean:
+        cover = clean[0]
+    if cover is not None and order[0] != cover:
+        order = [cover] + [i for i in order if i != cover]
     return order
 
 

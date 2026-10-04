@@ -124,32 +124,50 @@ class _FakeBot:
 
 
 def test_price_command_sets_the_owner_price(monkeypatch):
-    calls = []
+    calls, pumped = [], []
     from types import SimpleNamespace
     monkeypatch.setattr(cli.pipeline, "set_price", lambda s, db, iid, amount: calls.append((iid, amount)) or "ready")
     monkeypatch.setattr(cli, "_db", lambda: SimpleNamespace(outbox_resolve=lambda kind, ref: None))
+    monkeypatch.setattr(cli.approve, "pump", lambda s, db: pumped.append(1))
     r = CliRunner().invoke(cli.app, ["price", "i_1", "85"])
     assert r.exit_code == 0 and calls == [("i_1", 85)] and "$85" in r.output and "ready" in r.output
+    assert pumped == [1]                                              # the next card goes out (one at a time)
 
 
-def test_worker_iteration_polls_telegram_when_configured(monkeypatch, tmp_path):
+def test_worker_and_telegram_iterations(monkeypatch, tmp_path):
+    """WO20: the main thread processes and sends the next question; the Telegram thread polls (answers send the next
+    one at once, while items are still being processed) and re-sends the open question once it is old."""
     s = _settings(tmp_path, "dev")
     db = DB(s.path("db"))
     seen = []
     monkeypatch.setattr(cli, "_safe_tick", lambda s, db: seen.append("tick"))
+    monkeypatch.setattr(cli.approve, "pump", lambda s, db: seen.append("pump"))
     monkeypatch.setattr(cli.approve, "poll_once", lambda s, db, bot, timeout: seen.append(("poll", timeout)) or 0)
     monkeypatch.setattr(cli.approve, "resend_pending", lambda s, db, force=False: seen.append("resend") or [])
     monkeypatch.setattr(cli.time, "sleep", lambda n: seen.append(("sleep", n)))
+    cli._worker_iteration(s, db, interval=7)
+    assert seen == ["tick", "pump", ("sleep", 7)]
+    seen.clear()
     due = cli.time.monotonic() - cli.RESEND_CHECK_SECONDS - 1         # over an hour ago: the resend check is due
     state = {"last_resend": due}                                      # (not 0: a fresh CI runner's clock is small)
-    cli._worker_iteration(s, db, _FakeBot(), interval=15, state=state)
-    assert seen == ["tick", ("poll", 15), "resend"] and state["last_resend"] > due
+    s.data["telegram"] = {**s.data.get("telegram", {}), "poll_timeout": 15}      # a copy: settings() is shared
+    cli._telegram_iteration(s, db, _FakeBot(), state)
+    assert seen == [("poll", 15), "pump", "resend"] and state["last_resend"] > due
     seen.clear()
-    cli._worker_iteration(s, db, _FakeBot(), interval=15, state=state)
-    assert seen == ["tick", ("poll", 15)]                             # not due again yet
-    seen.clear()
-    cli._worker_iteration(s, db, None, interval=7, state=state)      # Telegram off: plain sleep, no polling
-    assert seen == ["tick", ("sleep", 7)]
+    cli._telegram_iteration(s, db, _FakeBot(), state)
+    assert seen == [("poll", 15), "pump"]                             # not due again yet
+
+
+def test_the_worker_exits_when_the_telegram_thread_dies(monkeypatch, tmp_path):
+    """launchd (KeepAlive) restarts the worker: never a worker that processes but no longer hears the owner."""
+    s = _settings(tmp_path, "dev")
+    monkeypatch.setattr(cli, "settings", lambda: s)
+    monkeypatch.setattr(cli.approve, "bot_for", lambda s: _FakeBot())
+    monkeypatch.setattr(cli.approve, "resend_pending", lambda s, db, force=False: [])
+    monkeypatch.setattr(cli, "_telegram_loop", lambda s, bot: None)          # returns at once: the thread is gone
+    monkeypatch.setattr(cli, "_worker_iteration", lambda s, db, interval: cli.time.sleep(0.05))
+    r = CliRunner().invoke(cli.app, ["run"])
+    assert r.exit_code != 0 and "Telegram thread stopped" in str(r.exception or r.output)
 
 
 def test_worker_poll_errors_do_not_kill_the_worker(monkeypatch, tmp_path):
@@ -350,6 +368,8 @@ def test_condition_is_the_cli_twin_of_the_buttons(monkeypatch):
     monkeypatch.setattr(cli, "_db", lambda: Outbox())
     monkeypatch.setattr(pipeline, "set_condition", set_condition)
     monkeypatch.setattr(approve, "announce", lambda s, text: said.append(text) or True)
+    monkeypatch.setattr(approve, "pump", lambda s, db: None)
+    monkeypatch.setattr(cli, "_tick_unless_worker", lambda s, db: None)
     r = CliRunner().invoke(cli.app, ["condition", "i_261003_abc123", "like_new"])
     assert r.exit_code == 0 and calls == [("i_261003_abc123", "like_new")], r.output
     assert resolved == [("condition", "i_261003_abc123")] and "Like New (brand new, no tags)" in said[0]
@@ -376,9 +396,44 @@ def test_requeue_sends_a_failed_batch_back_and_status_lists_the_batches(tmp_path
     assert f"{failed} failed 12" in out and f"{waiting} needs_confirm 5" in out
     assert f"failed batch {failed} → thrift requeue {failed} anthropic.BadRequestError: Error code: 400" in out
     assert f"awaiting confirm {waiting} → thrift confirm {waiting} ok" in out
+    assert f"Telegram open: nothing; 1 in the queue, next: batch {waiting}" in out       # the owner's queue (WO20)
 
     r = CliRunner().invoke(cli.app, ["requeue", failed])
     assert r.exit_code == 0 and db.batch(failed)["status"] == "new", r.output
     assert "splits it again" in " ".join(r.output.split())
     r = CliRunner().invoke(cli.app, ["requeue", waiting])
     assert r.exit_code == 1 and "only a failed batch" in " ".join(r.output.split()) and "Traceback" not in r.output
+
+
+def test_redo_rebuilds_and_lists_what_it_left_alone(monkeypatch, tmp_path):
+    from thrift_agent import approve, pipeline
+    calls, said, pumped = [], [], []
+    monkeypatch.setattr(cli, "settings", lambda: _settings(tmp_path, "prod"))
+    monkeypatch.setattr(pipeline, "redo_batch",
+                        lambda s, db, bid: calls.append(bid) or (["i_1", "i_2"], ["i_3 (poshmark posted)"]))
+    monkeypatch.setattr(approve, "announce", lambda s, text: said.append(text) or True)
+    monkeypatch.setattr(approve, "pump", lambda s, db: pumped.append(1))
+    r = CliRunner().invoke(cli.app, ["redo", "b_261003_x"])
+    assert r.exit_code == 0 and calls == ["b_261003_x"], r.output
+    assert "rebuilding 2 items of b_261003_x: i_1, i_2" in r.output and "left as it is i_3 (poshmark posted)" in r.output
+    assert "the worker will pick it up" in r.output                       # prod: the worker processes, not the CLI
+    assert said == ["batch b_261003_x: 2 items rebuilt from the CLI — new cards follow, one at a time"] and pumped
+
+    def refuse(s, db, bid):
+        raise ValueError("every item reached the site (i_3 (posted))")
+    monkeypatch.setattr(pipeline, "redo_batch", refuse)
+    r = CliRunner().invoke(cli.app, ["redo", "b_261003_x"])
+    assert r.exit_code == 1 and "not rebuilt" in r.output and "Traceback" not in r.output
+
+
+def test_kids_is_the_cli_twin_of_the_girls_boys_buttons(monkeypatch, tmp_path):
+    from thrift_agent import approve, pipeline
+    calls, resolved = [], []
+    db = DB(tmp_path / "state.db")
+    monkeypatch.setattr(cli, "_db", lambda: db)
+    monkeypatch.setattr(db, "outbox_resolve", lambda kind, ref: resolved.append((kind, ref)))
+    monkeypatch.setattr(pipeline, "set_kids_gender", lambda s, db, iid, choice: calls.append((iid, choice)) or "ready")
+    monkeypatch.setattr(approve, "announce", lambda s, text: True)
+    monkeypatch.setattr(approve, "pump", lambda s, db: None)
+    r = CliRunner().invoke(cli.app, ["kids", "i_1", "Boys"])
+    assert r.exit_code == 0 and calls == [("i_1", "Boys")] and resolved == [("kids", "i_1")] and "ready" in r.output

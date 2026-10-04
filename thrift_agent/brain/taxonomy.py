@@ -49,6 +49,14 @@ def _alias(kind: str, scope: str, name: str, choices) -> str | None:
     return None
 
 
+def other_names(department: str, category: str) -> tuple[str, ...]:
+    """The other words for a Poshmark category in this department, from aliases.categories — the price table may file
+    Poshmark's Kids "Shirts & Tops" under "Tops" — in the file's order, which lists the general word first ("Tops"
+    before "Sweaters"), so a kids tee is never priced as a sweater."""
+    table = ((load().get("aliases") or {}).get("categories") or {}).get(department) or {}
+    return tuple(word for word, target in table.items() if _key(target) == _key(category))
+
+
 def fit(facts: Facts) -> tuple[Facts, list[str], list[str]]:
     """(facts on Poshmark's names, notes for the owner, questions for the owner).
 

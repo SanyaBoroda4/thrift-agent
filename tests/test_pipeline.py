@@ -32,13 +32,23 @@ def _changed_fields_stub(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def owner_messages(monkeypatch):
-    """Owner messages (Telegram, or the dev print) are recorded here instead of sent: ("batch"|"item"|"owner_q", ref)."""
+    """Owner messages (Telegram, or the dev print) are recorded here instead of sent: (kind, ref), kind = batch |
+    condition | kids | item | owner_q. The queue still decides what goes out: one open message at a time (WO20)."""
     sent = []
-    monkeypatch.setattr(pipeline.approve, "send_batch", lambda s, db, bid: sent.append(("batch", bid)))
-    monkeypatch.setattr(pipeline.approve, "send_item", lambda s, db, iid: sent.append(("item", iid)))
-    monkeypatch.setattr(pipeline.approve, "ask_owner", lambda s, db, iid, q: sent.append(("owner_q", iid, q)))
-    monkeypatch.setattr(pipeline.approve, "ask_condition", lambda s, db, iid: sent.append(("condition", iid)))
+    for kind, name in approve_senders().items():
+        monkeypatch.setattr(pipeline.approve, name, lambda s, db, ref, kind=kind: sent.append((kind, ref)))
     return sent
+
+
+def approve_senders() -> dict[str, str]:
+    return dict(pipeline.approve.SENDERS)
+
+
+def _split(db, src: str, n: int) -> str:
+    """A batch the owner already confirmed (its items exist only then)."""
+    bid = db.add_batch(src, n)
+    db.set_batch(bid, status="split")
+    return bid
 
 
 def fake_ask(facts_factory, audit: VerifyOut | None = None):
@@ -288,7 +298,7 @@ def test_process_batch_refuses_more_photos_than_one_model_call_takes(tmp_path, m
 
 def _new_item(s, db):
     share = _jpg(s.path("inbox") / "share" / "a.jpg").parent
-    bid = db.add_batch(str(share), 1)
+    bid = _split(db, str(share), 1)
     d = s.path("work") / bid / "item_01"
     for i, c in enumerate(["red", "darkred", "salmon"]):
         _jpg(d / "photos" / f"{i:02d}.jpg", c)
@@ -489,7 +499,7 @@ def test_reshared_item_is_held_as_a_possible_duplicate(tmp_path, monkeypatch, fa
     monkeypatch.setattr("thrift_agent.brain.llm.ask", fake_ask(facts))
     monkeypatch.setattr("thrift_agent.pipeline.load_yaml",
                         lambda name: {"brands": {"tory burch": {"target": 70}}, "aliases": {}, "category_defaults": {}})
-    bid = db.add_batch("share", 3)
+    bid = _split(db, "share", 3)
     iids = []
     for k in (1, 2):                                                       # the same three photos shared twice
         d = tmp_path / f"item_{k}"
@@ -541,7 +551,7 @@ def test_requeue_takes_back_an_item_the_poster_parked_with_a_question(tmp_path):
     poster handles it, `thrift requeue` retries the item as it is — no reprocessing — and closes the question."""
     s = _settings(tmp_path)
     db = DB(s.path("db"))
-    iid = db.add_item(db.add_batch("share", 1), 1, str(tmp_path / "item"))
+    iid = db.add_item(_split(db, "share", 1), 1, str(tmp_path / "item"))
     db.set_item(iid, status="needs_owner")
     db.upsert_post(iid, "poshmark", status="queued", last_error="needs owner: Poshmark opened a dialog ...")
     db.add_outbox("-100", 7, "owner_q", iid, text="Poshmark opened a dialog ...")
@@ -584,13 +594,15 @@ def test_open_questions_ride_with_the_price_and_come_back_until_resolved(tmp_pat
     d = tmp_path / "item"
     for i, c in enumerate(["red", "green", "blue"]):
         _jpg(d / "photos" / f"{i:02d}.jpg", c)
-    iid = db.add_item(db.add_batch("share", 3), 1, str(d))
+    iid = db.add_item(_split(db, "share", 3), 1, str(d))
 
     pipeline.process_item(s, db, iid)
     it = db.item(iid)
     assert it["status"] == "awaiting_price" and any("brand unclear" in r for r in loads(it["gate"])["reasons"])
-    assert loads(it["price"])["list_price"] is None                      # no brand, no default: asked, not blocked
+    pr = loads(it["price"])                                              # no brand, no table: still a price (WO20)
+    assert pr["source"] == "default" and pr["list_price"] == 20
     assert owner_messages.count(("item", iid)) == 1
+    assert any(q.startswith("Brand? Couldn't read it") for q in loads(it["gate"])["questions"])
 
     assert pipeline.set_price(s, db, iid, 45) == "ready"                  # the owner replied "brand Vince, 45":
     pipeline.answer(s, db, iid, "brand Vince")                            # price first, then the note
@@ -610,7 +622,7 @@ def test_open_questions_ride_with_the_price_and_come_back_until_resolved(tmp_pat
 def test_set_price_rules(tmp_path):
     s = _settings(tmp_path)
     db = DB(s.path("db"))
-    iid = db.add_item(db.add_batch("share", 1), 1, str(tmp_path / "item"))
+    iid = db.add_item(_split(db, "share", 1), 1, str(tmp_path / "item"))
     db.set_item(iid, status="awaiting_price", price={"list_price": 30, "source": "brand", "by_marketplace": {"poshmark": 30}},
                 renders={"poshmark": {"price": 30}})
     with pytest.raises(ValueError, match="unknown item"):
@@ -652,20 +664,22 @@ def test_nwt_without_tag_lists_like_new_unless_the_owner_says_nwt(tmp_path, monk
     d = tmp_path / "item"
     for i, c in enumerate(["red", "green", "blue"]):
         _jpg(d / "photos" / f"{i:02d}.jpg", c)
-    iid = db.add_item(db.add_batch("share", 3), 1, str(d))
+    iid = db.add_item(_split(db, "share", 3), 1, str(d))
 
     pipeline.process_item(s, db, iid)
     it = db.item(iid)
     gate = loads(it["gate"])
     assert loads(it["facts"])["condition"] == "like_new" and loads(it["renders"])["poshmark"]["condition"] == "like_new"
-    assert gate["decision"] == "publish" and any("listed as like new" in n for n in gate["notes"])
+    assert gate["decision"] == "publish" and gate["questions"] == [pipeline.NWT_QUESTION] and gate["notes"] == []
+    assert "Listed as Like New: no photo of an attached hang tag" in pipeline.NWT_QUESTION
     assert pipeline.set_price(s, db, iid, 90) == "ready"                  # a price alone: like new, ready
 
     pipeline.answer(s, db, iid, "NWT")                                    # the owner's word is the other proof
     pipeline.process_item(s, db, iid)
     it = db.item(iid)
     assert it["status"] == "ready" and loads(it["facts"])["condition"] == "NWT"
-    assert loads(it["facts"])["condition_evidence"]["source"] == "note" and loads(it["gate"])["notes"] == []
+    assert loads(it["facts"])["condition_evidence"]["source"] == "note"
+    assert loads(it["gate"])["notes"] == [] and loads(it["gate"])["questions"] == []
     assert loads(it["renders"])["poshmark"]["condition"] == "NWT" and loads(it["price"])["list_price"] == 90
 
 
@@ -675,7 +689,7 @@ def test_reshare_hold_needs_an_explicit_answer(tmp_path, monkeypatch, facts, own
     monkeypatch.setattr("thrift_agent.brain.llm.ask", fake_ask(facts))
     monkeypatch.setattr("thrift_agent.pipeline.load_yaml",
                         lambda name: {"brands": {"tory burch": {"target": 70}}, "aliases": {}, "category_defaults": {}})
-    bid = db.add_batch("share", 3)
+    bid = _split(db, "share", 3)
     iids = []
     for k in (1, 2, 3):                                                    # the same photos shared three times
         d = tmp_path / f"item_{k}"
@@ -710,13 +724,14 @@ def _one_item(tmp_path, db, n=3):
     d = tmp_path / "item"
     for i, c in enumerate(["red", "green", "blue"][:n]):
         _jpg(d / "photos" / f"{i:02d}.jpg", c)
-    return db.add_item(db.add_batch("share", n), 1, str(d))
+    return db.add_item(_split(db, "share", n), 1, str(d))
 
 
-def test_kids_items_get_poshmarks_category_and_the_girls_tab_note(tmp_path, monkeypatch, facts, owner_messages):
+def test_kids_items_get_poshmarks_category_and_unisex_is_a_girls_or_boys_question(tmp_path, monkeypatch, facts,
+                                                                                    owner_messages):
     s = _settings(tmp_path)
     db = DB(s.path("db"))
-    kid = dict(department="Kids", category="Tops", subcategory=None, kids_gender="unisex",
+    kid = dict(department="Kids", category="Tops", subcategory=None, kids_gender="unisex", kids_gender_confidence=0.8,
                size_us=Ev(value="4T", photos=[1], source="photo", confidence=0.9))
     monkeypatch.setattr("thrift_agent.brain.llm.ask", fake_ask(lambda **kw: facts(**kid, **kw)))
     monkeypatch.setattr("thrift_agent.pipeline.load_yaml", lambda name: {"brands": {}, "aliases": {}, "category_defaults": {}})
@@ -726,16 +741,44 @@ def test_kids_items_get_poshmarks_category_and_the_girls_tab_note(tmp_path, monk
     posh = loads(it["renders"])["poshmark"]
     assert loads(it["facts"])["category"] == "Shirts & Tops" and posh["category"] == "Shirts & Tops"
     assert posh["kids_gender"] == "unisex" and posh["size"] == "4T"
-    assert loads(it["gate"])["notes"] == ["listed under Girls on Poshmark (read as unisex); reply 'boys' to list it "
-                                          "under Boys"]
+    gate = loads(it["gate"])
+    assert gate["ask_kids"] and gate["notes"] == [] and owner_messages == [("kids", iid)]   # before the price card
+    assert pipeline.set_kids_gender(s, db, iid, "Boys") == "awaiting_price"                 # not priced yet: the card
+    it = db.item(iid)
+    assert loads(it["renders"])["poshmark"]["kids_gender"] == "boys" and it["owner_kids_gender"] == "boys"
+    assert not loads(it["gate"])["ask_kids"]
+    pipeline.approve.pump(s, db)
+    assert owner_messages == [("kids", iid), ("item", iid)]
+    pipeline.process_item(s, db, iid)                                    # a reprocessing never asks again
+    assert not loads(db.item(iid)["gate"])["ask_kids"]
 
 
-def test_kids_gender_note_only_for_a_kids_size_poshmark_files_under_girls(facts):
-    assert pipeline.kids_gender_notes(facts(department="Kids", kids_gender="girls")) == []
-    assert pipeline.kids_gender_notes(facts(department="Kids", kids_gender="boys")) == []
-    assert len(pipeline.kids_gender_notes(facts(department="Kids", kids_gender=None))) == 1
-    assert pipeline.kids_gender_notes(facts(department="Women", kids_gender=None)) == []
-    assert pipeline.kids_gender_notes(facts(department="Kids", kids_gender="unisex", size_us=Ev(value=None))) == []
+@pytest.mark.parametrize("kw,asked", [
+    (dict(kids_gender="girls", kids_gender_confidence=0.9), False),        # sure: used silently
+    (dict(kids_gender="boys", kids_gender_confidence=0.70), False),
+    (dict(kids_gender="boys", kids_gender_confidence=0.69), True),         # below 0.70: asked [Girls] [Boys]
+    (dict(kids_gender="unisex", kids_gender_confidence=0.95), True),       # Poshmark has no unisex size list
+    (dict(kids_gender=None), True),
+    (dict(kids_gender="girls", kids_gender_confidence=0.2, size_us=Ev(value=None)), False),   # no size: no size list
+    (dict(department="Women", kids_gender=None), False),
+])
+def test_kids_department_question_only_below_0_70(facts, kw, asked):
+    assert pipeline.kids_question(facts(**{"department": "Kids", **kw})) is asked
+
+
+def test_a_kids_item_already_priced_is_ready_once_girls_or_boys_is_answered(tmp_path, monkeypatch, facts,
+                                                                            owner_messages):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    kid = dict(department="Kids", category="Shoes", subcategory=None, kids_gender="girls", kids_gender_confidence=0.5,
+               size_us=Ev(value="US Toddler 7.5", photos=[1], source="photo", confidence=0.9))
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", fake_ask(lambda **kw: facts(**kid, **kw)))
+    iid = _one_item(tmp_path, db)
+    pipeline.process_item(s, db, iid)
+    assert pipeline.set_price(s, db, iid, 30) == "awaiting_price"        # Girls/Boys is still open: not ready yet
+    assert pipeline.set_kids_gender(s, db, iid, "girls") == "ready"
+    with pytest.raises(ValueError, match="girls or boys"):
+        pipeline.set_kids_gender(s, db, iid, "unisex")
 
 
 def test_a_category_poshmark_does_not_have_is_asked_in_the_approval_message(tmp_path, monkeypatch, facts,
@@ -860,7 +903,7 @@ def test_a_flaw_without_a_photo_is_a_note_in_the_approval_message(tmp_path, monk
     notes = loads(db.item(iid)["gate"])["notes"]
     assert "flaw without a photo, so the listing doesn't show it: small hole inside (seller note)" in notes
     caption, _ = pipeline.approve.item_caption(iid, db.item(iid))
-    assert "Note: flaw without a photo, so the listing doesn't show it" in caption
+    assert "⚠️ flaw without a photo, so the listing doesn't show it" in caption
 
 
 # ---------------------------------------------------------------- WO17: the owner's condition rules
@@ -894,8 +937,8 @@ def test_a_fair_reading_goes_up_as_good_and_the_owner_is_told(tmp_path, monkeypa
     assert loads(it["facts"])["condition"] == "good" and loads(it["renders"])["poshmark"]["condition"] == "good"
     assert "looked well-worn — listed as Good; check before approving" in loads(it["gate"])["notes"]
     caption, _ = pipeline.approve.item_caption(iid, it)
-    assert "Note: looked well-worn — listed as Good; check before approving" in caption
-    assert "Condition: good" in caption
+    assert "⚠️ looked well-worn — listed as Good; check before approving" in caption
+    assert "Condition: Good" in caption                               # Poshmark's label (WO20)
 
 
 def test_the_extract_prompt_carries_the_owners_condition_rules():
@@ -906,7 +949,11 @@ def test_the_extract_prompt_carries_the_owners_condition_rules():
 
 # ---------------------------------------------------------------- WO17: better item splitting
 
-def test_a_roll_with_a_break_shows_the_pause_and_doubts_a_grouping_across_it(tmp_path, monkeypatch, owner_messages):
+@pytest.mark.parametrize("confidence", [0.8, 0.9])
+def test_a_roll_with_a_break_shows_the_pause_and_doubts_a_grouping_across_it(tmp_path, monkeypatch, owner_messages,
+                                                                             confidence):
+    """The pause is always shown; the doubt only where the model itself was unsure (under segmentation.min_confidence
+    0.85, WO20): a confident grouping is not second-guessed by a pause and a colour change."""
     s = _settings(tmp_path)
     db = DB(s.path("db"))
     share = s.path("inbox") / "2026-10-03_1400"
@@ -926,7 +973,7 @@ def test_a_roll_with_a_break_shows_the_pause_and_doubts_a_grouping_across_it(tmp
     def ask(model, system, content, out, tool, description, **kw):        # the model lumps it all into one item
         seen["model"], seen["texts"] = model, [c["text"] for c in content if c["type"] == "text"]
         return SegOut(groups=[Group(photos=list(range(6)), summary="red and blue", full_item_photos=[0],
-                                    confidence=0.9)])
+                                    confidence=confidence)])
     monkeypatch.setattr("thrift_agent.brain.llm.ask", ask)
     [folder] = pipeline.ready_folders(s)
     bid = pipeline.register(s, db, folder)
@@ -936,9 +983,13 @@ def test_a_roll_with_a_break_shows_the_pause_and_doubts_a_grouping_across_it(tmp
     b = db.batch(bid)
     segd = loads(b["segmentation"])
     assert segd["pauses"] == [[3, 120]] and segd["changes"] == [3] and segd["preview_px"] == 768
-    assert "item 1: a pause (2 min) and a visual change between photos 2 and 3 — two items?" in loads(b["reasons"])
+    doubt = "item 1: a pause (2 min) and a visual change between photos 2 and 3 — two items?"
     caption = pipeline.approve.batch_caption(bid, b)
-    assert "pauses before: #3 (2 min)" in caption and "two items?" in caption
+    assert "pauses before: #3 (2 min)" in caption
+    if confidence < 0.85:
+        assert doubt in loads(b["reasons"]) and "two items?" in caption
+    else:
+        assert loads(b["reasons"]) == [] and "Check:" not in caption
 
 
 
@@ -1134,3 +1185,134 @@ def test_requeue_batch_takes_only_a_failed_batch_whose_photos_are_still_there(tm
     assert pipeline.last_error(db, bid) is None
     assert pipeline.requeue_batch(s, db, bid) == "new"
     assert "requeued" in [e["kind"] for e in db.conn.execute("SELECT kind FROM events WHERE ref=?", (bid,))]
+
+
+# ---------------------------------------------------------------- WO20: the cover is the front of the item; redo
+
+def _roles(*roles):
+    from thrift_agent.schema import PhotoRole
+    return [PhotoRole(photo=i, role=r) for i, r in enumerate(roles)]
+
+
+@pytest.mark.parametrize("roles,model_cover,kinds,flawed,cover,note", [
+    (("front", "detail", "label", "back"), 3, None, [], 0, None),     # live: the plain back picked over the print
+    (("worn", "front", "back"), 0, None, [], 1, None),                # a try-on / mirror photo is never the cover
+    (("label", "side", "front"), 0, None, [], 2, None),
+    (("tag", "box", "front"), 0, None, [], 2, None),
+    (("front", "front"), 1, None, [], 1, None),                       # among fronts, the model's own pick
+    (("front", "front"), 0, ["retail", "own"], [], 1, None),          # a screenshot never
+    (("front", "front"), 0, None, [0], 1, None),                      # a photo that shows a flaw never
+    (("worn", "back", "label", "side"), 0, None, [], 3, "nf"),        # no front: the item alone, a side before the back
+    (("worn", "back", "label"), 0, None, [], 1, "nf"),
+    (("worn", "label"), 0, None, [], 0, "nf"),                        # nothing of the item alone: the model's pick, told
+    ((), 2, None, [], 2, None),                                       # facts from before WO20: the model's pick
+])
+def test_the_cover_is_the_front_of_the_item_alone(facts, roles, model_cover, kinds, flawed, cover, note):
+    n = max(len(roles), 3)
+    kinds = kinds + ["own"] * (n - len(kinds)) if kinds else None
+    f = facts(photo_roles=_roles(*roles), cover_photo=model_cover, photo_order=list(range(n)),
+              flaws=[{"description": "small hole", "photos": flawed}] if flawed else [])
+    assert pipeline.choose_cover(f, n, kinds)[1] == (pipeline.NO_FRONT_COVER if note else None)
+    order = pipeline.photo_order(f, n, kinds)
+    assert order[0] == cover and sorted(order) == list(range(n))
+
+
+def test_the_rest_of_the_photo_order_stays_and_screenshots_stay_last(facts):
+    f = facts(photo_roles=_roles("back", "front", "worn", "front", "label"), cover_photo=0, photo_order=[0, 2, 4, 1, 3])
+    assert pipeline.photo_order(f, 5, ["own", "own", "own", "retail", "own"]) == [1, 0, 2, 4, 3]
+
+
+def test_no_front_photo_is_said_on_the_card(tmp_path, monkeypatch, facts, owner_messages):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    roles = dict(photo_roles=_roles("worn", "back", "label"), cover_photo=0)
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", fake_ask(lambda **kw: facts(**roles, **kw)))
+    iid = _one_item(tmp_path, db)
+    pipeline.process_item(s, db, iid)
+    it = db.item(iid)
+    assert loads(it["gate"])["notes"] == [pipeline.NO_FRONT_COVER]
+    from thrift_agent.schema import Facts
+    assert pipeline.photo_order(Facts(**loads(it["facts"])), 3)[0] == 1          # the back: the item alone
+    caption, _ = pipeline.approve.item_caption(iid, it)
+    assert "⚠️ cover: no front flat-lay photo" in caption
+
+
+def _redo_item(tmp_path, db, bid, seq, status, **fields):
+    d = tmp_path / f"redo_{seq}"
+    for i, c in enumerate(["red", "green", "blue"]):
+        _jpg(d / "photos" / f"{i:02d}.jpg", c)
+    iid = db.add_item(bid, seq, str(d))
+    db.set_item(iid, status=status, **fields)
+    return iid
+
+
+def test_redo_rebuilds_what_never_reached_the_site_and_leaves_the_rest(tmp_path, monkeypatch, facts, owner_messages):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", fake_ask(facts))
+    bid = _split(db, "share", 18)
+    priced = {"list_price": 40, "source": "owner"}
+    ready = _redo_item(tmp_path, db, bid, 1, "ready", owner_price=40, owner_condition="NWOT", price=priced)
+    db.upsert_post(ready, "poshmark", status="dryrun")
+    waiting = _redo_item(tmp_path, db, bid, 2, "awaiting_price")
+    db.add_outbox("-100", 7, "item", waiting)
+    posted = _redo_item(tmp_path, db, bid, 3, "posted")
+    db.upsert_post(posted, "poshmark", status="posted", url="https://example.invalid/listing/x")
+    unsure = _redo_item(tmp_path, db, bid, 4, "failed")
+    db.upsert_post(unsure, "poshmark", status="failed", last_error="unconfirmed publish: no URL after Next")
+    dropped = _redo_item(tmp_path, db, bid, 5, "dropped")
+    broken = _redo_item(tmp_path, db, bid, 6, "failed")                    # processing failed: rebuilt too
+
+    rebuilt, kept = pipeline.redo_batch(s, db, bid)
+    assert rebuilt == [ready, waiting, broken]
+    assert kept == [f"{posted} (poshmark posted)", f"{unsure} (poshmark: unconfirmed publish)", f"{dropped} (dropped)"]
+    for iid in rebuilt:
+        it = db.item(iid)
+        assert (it["status"], it["owner_price"], it["price"], it["renders"]) == ("new", None, None, None)
+    assert db.item(ready)["owner_condition"] == "NWOT"                   # an answer about the item itself stays
+    assert db.post(ready, "poshmark") is None and db.outbox_pending() == []
+    assert db.post(posted, "poshmark")["status"] == "posted" and db.item(posted)["status"] == "posted"
+    assert db.post(unsure, "poshmark")["last_error"].startswith("unconfirmed publish")
+
+    for iid in rebuilt:                                                   # the worker, from the confirmed grouping:
+        pipeline.process_item(s, db, iid)
+    assert db.batch(bid)["status"] == "split" and owner_messages == [("item", ready)]   # no sheet; one card at a time
+    assert {db.item(i)["status"] for i in rebuilt} == {"awaiting_price"}
+
+
+def test_redo_refuses_a_batch_with_nothing_to_rebuild(tmp_path):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    bid = _split(db, "share", 3)
+    posted = _redo_item(tmp_path, db, bid, 1, "posted")
+    with pytest.raises(ValueError, match=re.escape(f"every item reached the site ({posted} (posted))")):
+        pipeline.redo_batch(s, db, bid)
+    waiting = db.add_batch("share-2", 3)
+    db.set_batch(waiting, status="needs_confirm")
+    with pytest.raises(ValueError, match="no items"):
+        pipeline.redo_batch(s, db, waiting)
+    with pytest.raises(ValueError, match="unknown batch"):
+        pipeline.redo_batch(s, db, "b_000000_nope")
+
+
+def test_an_answer_that_arrives_during_processing_is_not_overwritten(tmp_path, monkeypatch, facts, owner_messages):
+    """The worker answers Telegram on its own thread (WO20): a note that lands while the item is being processed makes
+    that result out of date. The item stays 'new' (no card goes out) and the next turn processes it with the note."""
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid = _one_item(tmp_path, db)
+    calls = []
+    base = fake_ask(facts)
+
+    def ask(model, system, content, out, *a, **kw):
+        if out.__name__ == "Facts" and not calls:
+            calls.append(1)
+            time.sleep(1.1)                                              # updated_at has whole seconds
+            pipeline.answer(s, db, iid, "brand Vince")                   # the owner's reply, handled meanwhile
+        return base(model, system, content, out, *a, **kw)
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", ask)
+    pipeline.process_item(s, db, iid)
+    it = db.item(iid)
+    assert (it["status"], it["note"], it["facts"]) == ("new", "brand Vince", None) and owner_messages == []
+    pipeline.process_item(s, db, iid)                                    # the worker's next turn
+    assert db.item(iid)["status"] == "awaiting_price" and owner_messages == [("item", iid)]

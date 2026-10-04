@@ -45,11 +45,14 @@ CREATE TABLE IF NOT EXISTS kv (
 #        needs_owner: the poster asked the owner a question; the reply reprocesses the item
 #        dropped: the owner confirmed a held re-share is the same garment as an existing item
 # post:  queued → posting → posted | drafted | failed | dryrun   (failed/dryrun with no URL → queued via `thrift requeue`)
-# outbox: every Telegram message the agent sent that expects a reply (kind batch | item | owner_q), so a reply or a
-#        button press can be mapped back to its batch/item; kv holds the getUpdates offset.
+# outbox: every Telegram message the agent sent that expects a reply (kind batch | condition | kids | item | owner_q),
+#        so a reply or a button press can be mapped back to its batch/item. At most one is open at a time (WO20,
+#        approve.pump); the dev print is recorded under chat 'dev'. kv holds the getUpdates offset, the queue's
+#        send lock and the current round's items.
 
 # Columns added after the first release; applied with ALTER TABLE when an older DB is opened.
-MIGRATIONS = {"items": {"cover_hash": "TEXT", "owner_price": "INTEGER", "owner_condition": "TEXT"}}
+MIGRATIONS = {"items": {"cover_hash": "TEXT", "owner_price": "INTEGER", "owner_condition": "TEXT",
+                        "owner_kids_gender": "TEXT", "deferred_at": "TEXT", "owner_question": "TEXT"}}
 
 
 def now() -> str:

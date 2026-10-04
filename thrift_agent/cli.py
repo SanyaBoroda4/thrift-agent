@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -45,15 +46,21 @@ def init() -> None:
 
 
 def _tick(s, db) -> int:
+    """Register what the iPhone shared, then process every new batch and item in the owner's queue order (WO20), one
+    at a time and looking again after each: the card the owner needs next is ready first, and an item sent back for
+    reprocessing by an answer jumps ahead of the rest. Each is taken once per tick."""
     n = 0
     for folder in pipeline.ready_folders(s):
         if pipeline.register(s, db, folder):
             n += 1
-    for b in db.batches("new"):
-        _guard(db, b["id"], lambda: pipeline.process_batch(s, db, b["id"]), lambda: db.set_batch(b["id"], status="failed"))
-        n += 1
-    for it in db.items("new"):
-        _guard(db, it["id"], lambda: pipeline.process_item(s, db, it["id"]), lambda: db.set_item(it["id"], status="failed"))
+    done: set[tuple[str, str]] = set()
+    while job := next((j for j in approve.processing_order(db) if j not in done), None):
+        done.add(job)
+        kind, ref = job
+        if kind == approve.NEW_BATCH:
+            _guard(db, ref, lambda: pipeline.process_batch(s, db, ref), lambda: db.set_batch(ref, status="failed"))
+        else:
+            _guard(db, ref, lambda: pipeline.process_item(s, db, ref), lambda: db.set_item(ref, status="failed"))
         n += 1
     return n
 
@@ -98,15 +105,30 @@ def _safe_poll(s, db, bot, timeout: int) -> int:
         return 0
 
 
-def _worker_iteration(s, db, bot, interval: int, state: dict) -> None:
-    """One turn of the worker: process the inbox, then wait — on Telegram's long poll when the bot is configured
-    (replies and button presses arrive at once), otherwise a plain sleep. Every RESEND_CHECK_SECONDS, re-send what
-    the owner has left waiting longer than telegram.resend_after_hours."""
+def _safe_pump(s, db) -> None:
+    """Send the next question if none is open; an error (Telegram down) is logged and retried on the next turn."""
+    try:
+        approve.pump(s, db)
+    except Exception as e:  # noqa: BLE001
+        db.log(None, "error", traceback.format_exc())
+        print(f"[telegram] send failed: {type(e).__name__}: {e}")
+
+
+def _worker_iteration(s, db, interval: int) -> None:
+    """One turn of the worker's main thread: process the inbox in the queue's order, send the next question if none
+    is open, sleep. Telegram's side (replies, buttons, the next question after an answer) runs on its own thread, so
+    the owner is answered at once while items are still being processed."""
     _safe_tick(s, db)
-    if bot is None:
-        time.sleep(interval)
-        return
-    _safe_poll(s, db, bot, int(s.get("telegram.poll_timeout", interval)))
+    _safe_pump(s, db)
+    time.sleep(interval)
+
+
+def _telegram_iteration(s, db, bot, state: dict) -> None:
+    """One turn of the Telegram thread: long-poll for the owner's replies and button presses (each answer sends the
+    next question), make sure one question is out, and every RESEND_CHECK_SECONDS re-send the open one if it has
+    waited longer than telegram.resend_after_hours."""
+    _safe_poll(s, db, bot, int(s.get("telegram.poll_timeout", 25)))
+    _safe_pump(s, db)
     if time.monotonic() - state.get("last_resend", 0) >= RESEND_CHECK_SECONDS:
         state["last_resend"] = time.monotonic()
         try:
@@ -114,6 +136,15 @@ def _worker_iteration(s, db, bot, interval: int, state: dict) -> None:
         except Exception as e:  # noqa: BLE001
             db.log(None, "error", traceback.format_exc())
             print(f"[telegram] resend failed: {type(e).__name__}: {e}")
+
+
+def _telegram_loop(s, bot) -> None:
+    """The Telegram thread, on its own DB connection (a sqlite3 connection belongs to one thread; WAL lets both
+    write)."""
+    db = _db()
+    state = {"last_resend": time.monotonic()}
+    while True:
+        _telegram_iteration(s, db, bot, state)
 
 
 @app.command()
@@ -125,11 +156,15 @@ def run(interval: int = 15) -> None:
         notify.check(s)                                   # a silent Telegram is not an option on the Mac
     bot = approve.bot_for(s)
     print(f"worker watching {s.path('inbox')}" + (" — Telegram on" if bot else " — Telegram off (dev: messages print)"))
-    state = {"last_resend": time.monotonic()}
+    telegram = None
     if bot:
-        approve.resend_pending(s, db, force=True)        # Telegram keeps updates 24 h: whatever waited over a sleep
+        approve.resend_pending(s, db, force=True)        # only the open question; Telegram keeps updates 24 h
+        telegram = threading.Thread(target=_telegram_loop, args=(s, bot), name="telegram", daemon=True)
+        telegram.start()
     while True:
-        _worker_iteration(s, db, bot, interval, state)
+        if telegram is not None and not telegram.is_alive():
+            raise SystemExit("the Telegram thread stopped — exiting so launchd restarts the worker")
+        _worker_iteration(s, db, interval)
 
 
 @app.command()
@@ -159,6 +194,7 @@ def confirm(batch_id: str, cmd: str = typer.Argument("ok")) -> None:
     db.outbox_resolve("batch", batch_id)                          # the Telegram copy of this question is answered
     approve.announce(s, f"batch {batch_id}: confirmed from the CLI ({cmd})")
     _tick_unless_worker(s, db)
+    approve.pump(s, db)                                           # the next question, if one is ready
 
 
 @app.command()
@@ -170,6 +206,7 @@ def answer(item_id: str, note: str) -> None:
         db.outbox_resolve(kind, item_id)
     approve.announce(s, f"{item_id}: answered from the CLI: {note!r} -> {outcome}")
     _tick_unless_worker(s, db)
+    approve.pump(s, db)
 
 
 @app.command()
@@ -181,6 +218,7 @@ def price(item_id: str, amount: int) -> None:
     if status != "awaiting_price":                                 # a held re-share keeps its message pending
         db.outbox_resolve("item", item_id)
     approve.announce(s, f"{item_id}: price ${amount} set from the CLI -> {status}")
+    approve.pump(s, db)                                            # the next card (one at a time)
 
 
 @app.command()
@@ -198,6 +236,47 @@ def condition(item_id: str, choice: str = typer.Argument(..., metavar="nwt|like_
     label = approve.CONDITION_TAPPED[pipeline.owner_choice(choice)]
     print(f"[green]{label}[/] set for {item_id} — reprocessing, the price card follows")
     approve.announce(s, f"{item_id}: condition {label} set from the CLI - repricing")
+    _tick_unless_worker(s, db)
+    approve.pump(s, db)
+
+
+@app.command()
+def kids(item_id: str, choice: str = typer.Argument(..., metavar="girls|boys")) -> None:
+    """Answer "Girls or Boys?" for a kids item (the CLI twin of the [Girls] [Boys] buttons): which of Poshmark's
+    size lists its size is picked from. No reprocessing; the price card follows if it hasn't been priced yet."""
+    s, db = settings(), _db()
+    try:
+        status = pipeline.set_kids_gender(s, db, item_id, choice)
+    except ValueError as e:
+        print(f"[red]not set[/] {item_id}: {escape(str(e))}")
+        raise typer.Exit(1) from None
+    db.outbox_resolve("kids", item_id)
+    print(f"[green]{choice.strip().lower()}[/] set for {item_id} — status {status}")
+    approve.announce(s, f"{item_id}: {choice.strip().lower()} set from the CLI")
+    approve.pump(s, db)
+
+
+@app.command()
+def redo(batch_id: str) -> None:
+    """Rebuild a batch's items from the grouping already confirmed (no new contact sheet): every item that never
+    reached the site goes through the pipeline again — new cover, new price, a new card in the queue — and its
+    Telegram messages are closed. An item that is posting, posted, drafted or an unconfirmed publish is left as it
+    is, and so is one the owner dropped as a re-share. The owner's condition and Girls/Boys answers are kept; the
+    price is asked again.  e.g.  thrift redo b_..."""
+    s, db = settings(), _db()
+    try:
+        rebuilt, kept = pipeline.redo_batch(s, db, batch_id)
+    except ValueError as e:
+        print(f"[red]not rebuilt[/] {batch_id}: {escape(str(e))}")
+        raise typer.Exit(1) from None
+    n = len(rebuilt)
+    print(f"[green]rebuilding[/] {n} item{'s' if n != 1 else ''} of {batch_id}: " + ", ".join(rebuilt))
+    for line in kept:
+        print(f"[yellow]left as it is[/] {escape(line)}")
+    approve.announce(s, f"batch {batch_id}: {n} item{'s' if n != 1 else ''} rebuilt from the CLI — new cards follow, "
+                        "one at a time")
+    _tick_unless_worker(s, db)
+    approve.pump(s, db)
 
 
 @telegram_app.command("setup")
@@ -370,6 +449,13 @@ def status() -> None:
     for it in db.items("needs_owner"):
         print(f"[yellow]needs owner[/] {it['id']}  →  thrift answer {it['id']} \"<answer>\"  (or thrift requeue "
               f"{it['id']} to retry as it is)")
+    # The owner's Telegram queue (WO20): one open question at a time, the rest in order behind it.
+    queue = approve.queue(db)
+    if queue:
+        row = approve.open_message(db)
+        is_open = f"{row['kind']} {row['ref']}" if row else "nothing"
+        print(f"[cyan]Telegram[/] open: {is_open}; {len(queue)} in the queue, next: "
+              + ", ".join(f"{k} {r}" for k, r in queue[:4]) + (" …" if len(queue) > 4 else ""))
 
 
 @app.command()

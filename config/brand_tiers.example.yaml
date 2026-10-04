@@ -9,10 +9,10 @@ brands:
 aliases:
   ugg australia: ugg
   polo ralph lauren: ralph lauren
-# Fallback targets for a brand that is not in the table, per department: <department>.<category>, then
-# <department>.other. A department that is not listed (or a category with no `other`) gets no default, and the
-# owner sets the price from the approval message. The old flat shape ({Shoes: 40, ...}) still loads and applies
-# to every department.
+# Fallback targets for a brand that is not in the table, per department: <department>.<category> (also under
+# Poshmark's other names for it: Kids "Shirts & Tops" finds Tops), then <department>.other. The old flat shape
+# ({Shoes: 40, ...}) still loads and applies to every department. Past all of them, pricing.default_target
+# (config/settings.yaml): the owner's card always has a price.
 category_defaults:
   Women:
     Shoes: 40
@@ -20,12 +20,17 @@ category_defaults:
     Tops: 20
     Jackets & Coats: 55
     Bags: 50
+    other: 20
   Men:
     Shoes: 40
     Dresses: 35
     Tops: 20
     Jackets & Coats: 55
     Bags: 50
+    other: 20
+  Unisex:
+    Shoes: 40
+    other: 20
   Kids:
     Shoes: 22
     Jackets & Coats: 25

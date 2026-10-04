@@ -114,6 +114,8 @@ departments:
 
 # The model's word -> Poshmark's name. Only unambiguous renames; anything else is left for the owner.
 # Matching ignores case, punctuation, "and" vs "&" and a plural s/es ("Dress" finds "Dresses").
+# The price table looks these up the other way too (Kids "Shirts & Tops" -> its "Tops" price), in this order:
+# keep the general word first ("Tops" before "Sweaters").
 aliases:
   categories:
     Women:

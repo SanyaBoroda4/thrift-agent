@@ -14,7 +14,8 @@ from thrift_agent.schema import Facts, PriceResult
 class GateResult:
     decision: Literal["publish", "draft", "needs_info"]
     reasons: list[str] = field(default_factory=list)
-    notes: list[str] = field(default_factory=list)      # told to the owner, never asked (e.g. an unsure condition)
+    notes: list[str] = field(default_factory=list)      # kept for the record, never asked (e.g. an unsure condition)
+    questions: list[str] = field(default_factory=list)  # the `need` reasons in the owner's words, for the price card
 
 
 def evaluate(facts: Facts, price: PriceResult, lint: list[str], unsupported: int, cfg: dict,
@@ -28,13 +29,17 @@ def evaluate(facts: Facts, price: PriceResult, lint: list[str], unsupported: int
     `price` and `pricing_cfg` are accepted for the caller's sake and not consulted: a brand missing from the price
     table, a category default or a price under the floor is not a question for the owner — the approval message shows
     the price (and "no price history") and the owner settles it there."""
-    need, soft, notes = [], [], []
+    need, soft, notes, questions = [], [], [], []
     mc = cfg["min_confidence"]
 
     if not facts.brand.value or facts.brand.confidence < mc["brand"]:
         need.append(f"brand unclear ({facts.brand.value}, {facts.brand.confidence:.2f})")
+        questions.append(f"Brand: read as “{facts.brand.value}”, not sure — reply 'brand …' if it's wrong"
+                         if facts.brand.value else "Brand? Couldn't read it — reply 'brand …'")
     if not facts.size_us.value or facts.size_us.confidence < mc["size"]:
         need.append(f"size unclear ({facts.size_us.value}, {facts.size_us.confidence:.2f})")
+        questions.append(f"Size: read as “{facts.size_us.value}”, not sure — reply 'size …' if it's wrong"
+                         if facts.size_us.value else "Size? Couldn't read it — reply 'size …'")
     if facts.condition_evidence.confidence < mc.get("condition", 0.70):
         weighed = (f", weighed against {facts.condition_alternative}"
                    if facts.condition_alternative and facts.condition_alternative != facts.condition else "")
@@ -45,15 +50,17 @@ def evaluate(facts: Facts, price: PriceResult, lint: list[str], unsupported: int
     owner_says = facts.condition_evidence.source in ("note", "owner")
     if facts.condition == "NWT" and facts.hang_tag_photo is None and not owner_says:
         need.append("NWT claimed without a hang-tag photo")
+        questions.append("NWT? No photo of an attached hang tag — reply 'NWT' if the tag is attached")
     if facts.category.strip().lower() in ("", "other") or (facts.subcategory or "").strip().lower() == "other":
         need.append("category/subcategory is 'Other' — pick the real Poshmark category")
+        questions.append("Category? — reply e.g. 'category Tops'")
 
     soft.extend(lint)
     if unsupported:
         soft.append(f"verifier removed {unsupported} unsupported claim(s) — review once")
 
     if need:
-        return GateResult("needs_info", need + soft, notes)
+        return GateResult("needs_info", need + soft, notes, questions)
     if soft:
         return GateResult("draft", soft, notes)
     return GateResult("publish", [], notes)

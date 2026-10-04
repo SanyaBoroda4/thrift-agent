@@ -454,6 +454,7 @@ def test_run_passes_the_dry_run_stage_and_reports_the_note(tmp_path, monkeypatch
     iid = _ready_item(db)
     note = "review page recorded in i_1-review.json; style tags Poshmark doesn't offer, left out: sparkly"
     poster = StubPoster(Outcome("dryrun", note=note))
+    s.data["poster"] = {**s.data["poster"], "notify_dry_runs": True}           # a copy: settings() is shared
     _run(monkeypatch, s, db, poster, once=True, stage="review")
     assert poster.stages == ["review"]
     assert any(m.startswith("🧪 dry-run poshmark (review): ") and m.endswith(note) for m in said)
@@ -788,3 +789,14 @@ def test_publish_first_refuses_a_listing_written_before_the_condition_rule(tmp_p
         _first(monkeypatch, s, db, poster, iid)
     assert poster.calls == [] and db.post(iid, "poshmark") is None
     assert runner.condition_rule_breaks(RENDER) == []
+
+
+def test_a_dry_run_is_silent_in_the_owners_chat_by_default(tmp_path, monkeypatch, harness):
+    """WO20: info-only messages are kept few. A dry-run that went fine needs nothing from the owner: no Telegram photo
+    unless poster.notify_dry_runs (the evidence is in failed/shots/ either way)."""
+    said, _ = harness
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    _ready_item(db)
+    _run(monkeypatch, s, db, StubPoster(Outcome("dryrun")), once=True)
+    assert not any("dry-run poshmark" in m for m in said)

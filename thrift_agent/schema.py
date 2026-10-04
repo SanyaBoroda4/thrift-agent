@@ -15,6 +15,12 @@ CONDITION_LABEL = {
     "NWT": "New with tags", "NWOT": "New without tags", "like_new": "Like new",
     "excellent": "Excellent used condition", "good": "Good used condition", "fair": "Fair condition",
 }
+# The Poshmark condition each grade goes up as, in the words the owner's card shows (WO20): the form selects the full
+# label of post/poshmark.py:CONDITION_TO_POSH ("New With Tags (NWT)", "Like New", "Good"); Fair is never used.
+POSH_CONDITION = {"NWT": "NWT", "NWOT": "Like New", "like_new": "Like New", "excellent": "Like New", "good": "Good",
+                  "fair": "Good"}
+PhotoRoleName = Literal["front", "back", "side", "detail", "label", "tag", "flaw", "worn", "box", "other"]
+ITEM_ALONE = ("front", "side", "back")       # photos of the whole item and nothing else: the only possible covers
 
 
 class Ev(BaseModel):
@@ -42,13 +48,25 @@ class Flaw(BaseModel):
     photos: list[int] = Field(default_factory=list)
 
 
+class PhotoRole(BaseModel):
+    photo: int
+    role: PhotoRoleName = Field(description="front = the item alone from the front (print, buttons, neckline; shoes: "
+                                            "the outer side or the pair from the front), flat lay or on a hanger; "
+                                            "back / side = the item alone from the back / side; detail = a close-up "
+                                            "of part of the item; label = brand/size/care label or insole stamp; "
+                                            "tag = hang tag or price tag; flaw = a close-up of a flaw; worn = on a "
+                                            "person (try-on, mirror); box = box or packaging; other")
+
+
 class Facts(BaseModel):
     item_type: str = Field(description="Plain noun phrase, e.g. 'suede ankle boots', 'wrap midi dress'")
     department: Literal["Women", "Men", "Kids", "Unisex", "Home"]
     kids_gender: KidsGender | None = Field(None, description="Kids items only: girls | boys | unisex, your best reading "
                                                              "of the item itself (style, colour, the box or label, a "
                                                              "retail screenshot). It picks Poshmark's Girls or Boys "
-                                                             "size list; never a question. null for adults")
+                                                             "size list. null for adults")
+    kids_gender_confidence: float = Field(0.0, ge=0, le=1, description="Kids items: how sure you are of kids_gender "
+                                                                       "(0..1); below 0.70 the owner is asked")
     category: str = Field(description="The real Poshmark category, from evidence (labels, retailer page, sizing): "
                                       "Shoes, Dresses, Tops, Sweaters, Jackets & Coats, Swim, Skirts, Shorts, "
                                       "Pants & Jumpsuits, Jeans, Bags, Accessories, Intimates & Sleepwear… Never 'Other'")
@@ -87,8 +105,11 @@ class Facts(BaseModel):
                                                     "else null")
     flaws: list[Flaw] = Field(default_factory=list)
     features: list[str] = Field(default_factory=list, description="Visible details: lining, hardware, heel height…")
-    cover_photo: int = Field(description="Best photo for the cover (full item, clean)")
-    photo_order: list[int] = Field(description="All photo indices: cover, back/sides, details, labels, flaws")
+    photo_roles: list[PhotoRole] = Field(default_factory=list, description="One entry per photo: what it shows")
+    cover_photo: int = Field(description="The cover: the item alone, its FRONT, flat lay or on a hanger, clean "
+                                         "background. Never the back, never worn/try-on/mirror, never a label, tag, "
+                                         "flaw or screenshot")
+    photo_order: list[int] = Field(description="All photo indices: cover, back/sides, details, labels, flaws, worn")
     questions: list[str] = Field(default_factory=list,
                                  description="What the seller must answer because a photo can't settle it")
 
@@ -96,7 +117,7 @@ class Facts(BaseModel):
 class PriceResult(BaseModel):
     target: int | None
     list_price: int | None
-    source: Literal["brand", "brand_category", "category_default", "note", "owner", "none"]
+    source: Literal["brand", "brand_category", "category_default", "default", "note", "owner", "none"]
     by_marketplace: dict[str, int] = Field(default_factory=dict)
     basis: str = ""
     original_price: int | None = None      # retail price from a seller note; a retailer screenshot takes precedence

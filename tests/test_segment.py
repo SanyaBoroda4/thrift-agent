@@ -108,14 +108,15 @@ def kinds_for(n, retail=()):
 
 
 def test_check_retail_photo_does_not_break_contiguity():
-    seg = SegOut(groups=[g([0, 1, 5]), g([2, 3, 4])])            # 5 is a screenshot shared last, of item 1
-    assert check(seg, 6, 0.85, kinds=kinds_for(6, retail={5})) == []
+    seg = SegOut(groups=[g([0, 1, 5], conf=0.6), g([2, 3, 4], conf=0.6)])   # 5: a screenshot shared last, of item 1
+    assert check(seg, 6, 0.85, kinds=kinds_for(6, retail={5})) == ["item 1: low confidence 0.60",
+                                                                    "item 2: low confidence 0.60"]
     assert "non-contiguous" in " ".join(check(seg, 6, 0.85))     # without kinds it still is
     assert check(SegOut(groups=[g([0, 1, 5]), g([2, 3, 4])], screenshots=[5]), 6, 0.85) == []   # model-spotted
 
 
 def test_check_own_photos_still_must_be_contiguous_around_retail():
-    seg = SegOut(groups=[g([0, 3, 5]), g([1, 2, 4])])
+    seg = SegOut(groups=[g([0, 3, 5], conf=0.6), g([1, 2, 4], conf=0.6)])
     text = " ".join(check(seg, 6, 0.85, kinds=kinds_for(6, retail={5})))
     assert "item 1: non-contiguous photos [0, 3]" in text and "item 2: non-contiguous photos [1, 2, 4]" in text
 
@@ -253,6 +254,30 @@ def test_timing_check_doubts_a_grouping_that_both_signals_contradict(tmp_path, g
     breaks = segment.pauses(at(0, 10, 20, 90, 100, 110))
     reasons = segment.timing_check(groups, None, breaks, segment.visual_changes(photos)[1])
     assert (flag in reasons) if flag else reasons == [], reasons
+
+
+def test_try_on_photos_at_the_end_are_no_doubt_when_the_model_is_sure():
+    """WO20: the owner shoots the try-on / mirror photos at the end of the roll, so a confident item's photos are
+    often not contiguous (live: photos 15 and 41-43). Flagged only when the model itself was unsure of that item."""
+    sure = SegOut(groups=[g([0, 1, 2, 7]), g([3, 4, 5, 8]), g([6])])
+    assert check(sure, 9, 0.85) == []
+    unsure = SegOut(groups=[g([0, 1, 2, 7], conf=0.7), g([3, 4, 5, 8]), g([6])])
+    assert check(unsure, 9, 0.85) == ["item 1: low confidence 0.70", "item 1: non-contiguous photos [0, 1, 2, 7]"]
+
+
+def test_the_timing_doubt_never_second_guesses_a_confident_split(tmp_path):
+    """WO20: two clearly different items Opus split with confidence, shot back to back with no pause and alike in
+    colour (live: items 2/3 and 3/4), are no doubt; a doubt stays where the model was unsure."""
+    burst = _roll(tmp_path, [RED, RED, RED, RED, RED, RED])          # same colours, no pause: both signals say "one"
+    changes = segment.visual_changes(burst)[1]
+    assert segment.timing_check([[0, 1, 2], [3, 4, 5]], None, {}, changes, [0.95, 0.9], 0.85) == []
+    assert segment.timing_check([[0, 1, 2], [3, 4, 5]], None, {}, changes, [0.95, 0.6], 0.85) == [
+        "items 1 and 2: no pause and no visual change between photos 2 and 3 — one item?"]
+    mixed = _roll(tmp_path / "m", [RED, RED, RED, BLUE, BLUE, BLUE])     # one item over a pause AND a colour change
+    breaks = segment.pauses(at(0, 10, 20, 90, 100, 110))
+    one = segment.timing_check([[0, 1, 2, 3, 4, 5]], None, breaks, segment.visual_changes(mixed)[1], [0.9], 0.85)
+    assert one == []
+    assert segment.timing_check([[0, 1, 2, 3, 4, 5]], None, breaks, segment.visual_changes(mixed)[1], [0.5], 0.85)
 
 
 def test_one_signal_alone_never_raises_a_doubt(tmp_path):

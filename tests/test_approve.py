@@ -65,6 +65,7 @@ RENDERS = {"poshmark": {"marketplace": "poshmark", "title": "Tory Burch Suede Ba
 
 def _item(db, tmp_path, facts, status="awaiting_price", price=PRICE, renders=RENDERS, gate=None, cover=True, **fkw):
     bid = db.add_batch(str(tmp_path / "share" / status), 5)
+    db.set_batch(bid, status="split")                              # a confirmed batch: its items exist only then
     d = tmp_path / "items" / status
     (d / "photos").mkdir(parents=True, exist_ok=True)
     if cover:
@@ -162,44 +163,52 @@ def test_send_item_caption_buttons_and_outbox(env, tmp_path, facts):
     (method, p), = bot.calls
     assert method == "sendPhoto" and p["photo"].name == "cover.jpg"
     cap = p["caption"]
-    assert cap.startswith("Tory Burch Suede Ballet Flats\n")
-    assert f"Item {iid}" in cap and "Size: 7.5 (printed 7.5M)" in cap
-    assert "Condition: good, 2 flaws" in cap
-    assert "Suggested: $85 (brand tier: Tory Burch flats)" in cap and "Retail $198" in cap
-    assert "no price history" not in cap and "Open questions" not in cap
-    assert cap.endswith("Reply with a number to change the price.")
-    assert p["reply_markup"] == {"inline_keyboard": [[
-        {"text": "Approve $85", "callback_data": f"approve:{iid}:85"},
-        {"text": "Change", "callback_data": f"change:{iid}"}]]}
+    # WO20: cover, title, size, condition in Poshmark's words, the price on the buttons; no flaw count, no basis
+    assert cap == "Tory Burch Suede Ballet Flats\nSize 7.5\nCondition: Good"
+    assert p["reply_markup"] == {"inline_keyboard": [
+        [{"text": "\u2705 $85", "callback_data": f"approve:{iid}:85"}],
+        [{"text": f"${n}", "callback_data": f"approve:{iid}:{n}"} for n in (75, 80, 90, 95)],
+        [{"text": "Later", "callback_data": f"later:{iid}"}, {"text": "Change", "callback_data": f"change:{iid}"}]]}
     (row,) = _outbox(db, iid)
     assert (row["chat_id"], row["message_id"], row["kind"], row["resolved_at"]) == ("100", 11, "item", None)
     assert row["text"] == cap
 
 
-def test_send_item_needs_info_lists_questions_and_default_price_warning(env, tmp_path, facts):
+def test_send_item_shows_only_the_allowed_questions_and_the_warnings(env, tmp_path, facts):
     s, db, bot = env
     iid = _item(db, tmp_path, facts, status="needs_info", cover=False,
                 price={**PRICE, "list_price": 40, "source": "category_default", "basis": "category default"},
                 renders={"poshmark": {"title": "Flats", "size": None, "price": 40}},
-                gate={"decision": "needs_info", "reasons": ["brand unclear (None, 0.40)", "size unclear"]})
+                gate={"decision": "needs_info", "reasons": ["brand unclear (None, 0.40)", "lint: title too long"],
+                      "questions": ["Brand? Couldn't read it \u2014 reply 'brand \u2026'"],
+                      "notes": ["cover: no front flat-lay photo"],
+                      "info": ["model unsure of the condition (0.60): listed as good"]})
     send_item(s, db, iid)
     (method, p), = bot.calls
     assert method == "sendMessage"                                # no cover.jpg -> text message
-    cap = p["text"]
-    assert "Size: 7.5" in cap                                     # falls back to facts.size_us
-    assert "no price history for Tory Burch" in cap
-    assert "Open questions:\n- brand unclear (None, 0.40)\n- size unclear\n" in cap
-    assert cap.endswith("Reply with the answers and the price, e.g. 'size 8, 45'")
-    assert p["reply_markup"]["inline_keyboard"][0][0]["text"] == "Approve $40"
+    assert p["text"] == ("Flats\nSize 7.5\nCondition: Good\n\u26a0\ufe0f cover: no front flat-lay photo\n"
+                         "\u2753 Brand? Couldn't read it \u2014 reply 'brand \u2026'\n"
+                         "Reply to this card with the answer (a price too if you like), e.g. 'size 8, 45'")
+    assert "lint" not in p["text"] and "unsure" not in p["text"] and "no price history" not in p["text"]
+    assert [b["text"] for b in p["reply_markup"]["inline_keyboard"][1]] == ["$30", "$35", "$45", "$50"]
 
 
-def test_send_item_without_price_has_no_approve_button(env, tmp_path, facts):
+def test_send_item_processed_before_wo20_keeps_its_recorded_questions(env, tmp_path, facts):
+    s, db, bot = env
+    iid = _item(db, tmp_path, facts, status="needs_info",
+                gate={"decision": "needs_info", "reasons": ["brand unclear (None, 0.40)", "size unclear"]})
+    send_item(s, db, iid)
+    assert "Open questions:\n- brand unclear (None, 0.40)\n- size unclear" in bot.texts()[-1]
+
+
+def test_send_item_without_price_has_no_price_buttons(env, tmp_path, facts):
     s, db, bot = env
     iid = _item(db, tmp_path, facts, price={**PRICE, "list_price": None, "source": "none", "basis": ""})
     send_item(s, db, iid)
     p = bot.sent("sendPhoto")[0]
-    assert "Suggested: no price" in p["caption"] and "no price history for Tory Burch" in p["caption"]
-    assert p["reply_markup"] == {"inline_keyboard": [[{"text": "Change", "callback_data": f"change:{iid}"}]]}
+    assert p["caption"].endswith("No price yet: type one")
+    assert p["reply_markup"] == {"inline_keyboard": [[{"text": "Later", "callback_data": f"later:{iid}"},
+                                                      {"text": "Change", "callback_data": f"change:{iid}"}]]}
 
 
 def test_send_item_without_bot_prints(tmp_path, facts, capsys):
@@ -235,11 +244,14 @@ def test_send_batch_without_sheet_sends_text(env):
     assert _outbox(db, bid)[0]["kind"] == "batch"
 
 
-def test_ask_owner_records_question(env):
+def test_ask_owner_keeps_the_question_and_asks_it_in_its_turn(env, tmp_path, facts):
     s, db, bot = env
-    approve.ask_owner(s, db, "i_x", "Which Poshmark size?")
-    assert bot.texts() == ["Question about i_x: Which Poshmark size?\nReply to this message."]
-    (row,) = _outbox(db, "i_x")
+    iid = _item(db, tmp_path, facts, status="needs_owner")
+    approve.ask_owner(s, db, iid, "Which Poshmark size?")
+    assert db.item(iid)["owner_question"] == "Which Poshmark size?"
+    assert bot.texts() == ["Tory Burch Suede Ballet Flats\nQuestion from the poster: Which Poshmark size?\n"
+                           "Reply to this message."]
+    (row,) = _outbox(db, iid)
     assert (row["kind"], row["text"]) == ("owner_q", "Which Poshmark size?")
 
 
@@ -250,20 +262,28 @@ def test_approve_callback_sets_price_and_resolves(env, tmp_path, facts):
     iid = _item(db, tmp_path, facts)
     send_item(s, db, iid)
     out = handle_update(s, db, bot, _callback(f"approve:{iid}:85"))
-    assert out == f"approved {iid} at $85 (ready)"
+    assert out == f"price {iid}: $85 (ready)"
     it = db.item(iid)
     assert it["status"] == "ready" and it["owner_price"] == 85
     assert loads(it["price"])["source"] == "owner" and loads(it["renders"])["poshmark"]["price"] == 85
     assert all(r["resolved_at"] for r in _outbox(db, iid))
-    assert bot.sent("answerCallbackQuery") == [{"callback_query_id": "cb1", "text": "Approved $85"}]
-    assert bot.sent("sendMessage")[-1]["reply_to_message_id"] == 11 and "$85" in bot.texts()[-1]
+    assert bot.sent("answerCallbackQuery") == [{"callback_query_id": "cb1", "text": "$85"}]
+    assert bot.sent("sendMessage")[-1]["reply_to_message_id"] == 11 and bot.texts()[-1] == "\u2713 $85 \u2014 all done"
+
+
+def test_a_nearby_price_button_sets_that_price(env, tmp_path, facts):
+    s, db, bot = env
+    iid = _item(db, tmp_path, facts)
+    send_item(s, db, iid)
+    assert handle_update(s, db, bot, _callback(f"approve:{iid}:75")) == f"price {iid}: $75 (ready)"
+    assert db.item(iid)["owner_price"] == 75
 
 
 def test_approve_callback_on_a_moved_on_item_replies_with_the_error(env, tmp_path, facts):
     s, db, bot = env
     iid = _item(db, tmp_path, facts, status="posted")
     out = handle_update(s, db, bot, _callback(f"approve:{iid}:85"))
-    assert out.startswith(f"approve {iid}: rejected")
+    assert out.startswith(f"price {iid}: rejected")
     assert "can't be changed" in bot.texts()[-1] and db.item(iid)["owner_price"] is None
 
 
@@ -273,7 +293,8 @@ def test_change_callback_records_a_new_outbox_row(env, tmp_path, facts):
     send_item(s, db, iid)                                                     # message 11
     assert handle_update(s, db, bot, _callback(f"change:{iid}", mid=11)) == f"change {iid}: asked for the price"
     p = bot.sent("sendMessage")[-1]
-    assert p["text"] == f"Reply to this message with the price for {iid}." and p["reply_to_message_id"] == 11
+    assert p["text"] == f"Reply to this message with the price for {iid} (or just type it)."
+    assert p["reply_to_message_id"] == 11
     rows = _outbox(db, iid)
     assert [(r["message_id"], r["kind"], r["resolved_at"]) for r in rows] == [(11, "item", None), (12, "item", None)]
     assert bot.sent("answerCallbackQuery") == [{"callback_query_id": "cb1", "text": None}]
@@ -286,11 +307,11 @@ def test_reply_number_sets_price(env, tmp_path, facts):
     s, db, bot = env
     iid = _item(db, tmp_path, facts)
     send_item(s, db, iid)
-    assert handle_update(s, db, bot, _reply("45", reply_to=11)) == f"item {iid}: price $45 -> ready"
+    assert handle_update(s, db, bot, _reply("45", reply_to=11)) == f"price {iid}: $45 (ready)"
     it = db.item(iid)
     assert it["status"] == "ready" and it["owner_price"] == 45 and loads(it["price"])["list_price"] == 45
     assert _outbox(db, iid)[0]["resolved_at"]
-    assert bot.texts()[-1] == f"{iid}: recorded price $45 -> ready" and bot.sent("sendMessage")[-1]["reply_to_message_id"] == 50
+    assert bot.texts()[-1] == "\u2713 $45 \u2014 all done" and bot.sent("sendMessage")[-1]["reply_to_message_id"] == 50
 
 
 def test_reply_answer_and_price_sets_price_then_reprocesses(env, tmp_path, facts):
@@ -298,11 +319,11 @@ def test_reply_answer_and_price_sets_price_then_reprocesses(env, tmp_path, facts
     iid = _item(db, tmp_path, facts, status="needs_info", gate={"decision": "needs_info", "reasons": ["size unclear"]})
     send_item(s, db, iid)
     out = handle_update(s, db, bot, _reply("size 8, 45", reply_to=11))
-    assert out == f"item {iid}: price $45 -> needs_info; note 'size 8' - reprocessing"
+    assert out == f"item {iid}: $45; noted 'size 8', reprocessing"
     it = db.item(iid)
     assert it["status"] == "new" and it["owner_price"] == 45 and it["note"] == "size 8"
     assert _outbox(db, iid)[0]["resolved_at"]
-    assert "price $45" in bot.texts()[-1] and "'size 8'" in bot.texts()[-1]
+    assert bot.texts()[-1] == "\u2713 $45, noted 'size 8', reprocessing"
 
 
 def test_reply_without_price_or_note_gets_the_hint(env, tmp_path, facts):
@@ -318,8 +339,9 @@ def test_reply_price_error_is_sent_back_not_raised(env, tmp_path, facts):
     iid = _item(db, tmp_path, facts, status="posted")
     db.add_outbox(CHAT, 11, "item", iid)
     out = handle_update(s, db, bot, _reply("45", reply_to=11))
-    assert out.startswith(f"item {iid}: error:")
-    assert "can't be changed" in bot.texts()[-1] and _outbox(db, iid)[0]["resolved_at"] is None
+    assert out.startswith(f"price {iid}: rejected")
+    assert "can't be changed" in bot.texts()[-1]
+    assert _outbox(db, iid)[0]["resolved_at"]               # a posted item waits for nothing: no longer the open one
 
 
 def test_reply_ok_to_batch_calls_confirm(env, monkeypatch):
@@ -327,10 +349,16 @@ def test_reply_ok_to_batch_calls_confirm(env, monkeypatch):
     bid = _batch(s, db)
     send_batch(s, db, bid)
     seen = []
-    monkeypatch.setattr(pipeline, "confirm", lambda _s, _db, b, cmd: seen.append((b, cmd)))
+
+    def confirm(_s, _db, b, cmd):                                  # what pipeline.confirm leaves behind: the items
+        seen.append((b, cmd))
+        _db.set_batch(b, status="split")
+        for seq in (1, 2):
+            _db.add_item(b, seq, f"item_{seq}")
+    monkeypatch.setattr(pipeline, "confirm", confirm)
     assert handle_update(s, db, bot, _reply("ok", reply_to=11)) == f"batch {bid}: confirmed 'ok'"
     assert seen == [(bid, "ok")] and _outbox(db, bid)[0]["resolved_at"]
-    assert bot.texts()[-1] == f"Batch {bid}: split ok (ok)"
+    assert bot.texts()[-1] == "\u2713 2 items \u2014 the cards follow one at a time"     # being processed: no card yet
 
 
 def test_bad_correction_is_sent_back_and_batch_stays_pending(env, monkeypatch):
@@ -366,8 +394,9 @@ def test_unauthorized_and_unrelated_updates_are_ignored(env, tmp_path, facts):
     assert handle_update(s, db, bot, _reply("45", reply_to=11, chat=999)) == "ignored: unauthorized"
     assert handle_update(s, db, bot, _reply("45", reply_to=11, user=STRANGER)) == "ignored: unauthorized"
     assert handle_update(s, db, bot, _callback(f"approve:{iid}:85", user=STRANGER)) == "ignored: unauthorized"
-    plain = {"update_id": 3, "message": {"message_id": 5, "chat": {"id": CHAT}, "from": {"id": OWNER}, "text": "45"}}
-    assert handle_update(s, db, bot, plain) == "ignored: not a reply to the bot"
+    chat = {"update_id": 3, "message": {"message_id": 5, "chat": {"id": CHAT}, "from": {"id": OWNER},
+                                        "text": "see you at 5"}}
+    assert handle_update(s, db, bot, chat) == "ignored: not a reply to the bot"     # the owners' own chat
     assert handle_update(s, db, bot, _reply("45", reply_to=999)) == "ignored: not a reply to the bot"
     assert handle_update(s, db, bot, _callback("nonsense")) == "ignored: unknown callback 'nonsense'"
     assert len(bot.calls) == n + 1                                # only the unknown button got an answerCallbackQuery
@@ -416,33 +445,29 @@ def _age(db, message_id, hours):
     db.conn.execute("UPDATE outbox SET sent_at=? WHERE message_id=?", (old, message_id))
 
 
-def test_resend_pending_resends_old_rows_and_resolves_moved_on_ones(env, tmp_path, facts):
+def test_resend_pending_resends_only_the_open_message(env, tmp_path, facts):
+    """WO20: the flood of messages from before the queue (or any older copy) is closed; only the newest message whose
+    item still waits is open, and only it is sent again."""
     s, db, bot = env
     bid = _batch(s, db)
-    send_batch(s, db, bid)                                                        # 11, will be old
+    send_batch(s, db, bid)                                                        # 11
     waiting = _item(db, tmp_path, facts)
-    send_item(s, db, waiting)                                                     # 12, will be old
-    fresh = _item(db, tmp_path, facts, status="needs_info")
-    send_item(s, db, fresh)                                                       # 13, just sent
+    send_item(s, db, waiting)                                                     # 12
     done = _item(db, tmp_path, facts, status="ready")
     db.add_outbox(CHAT, 99, "item", done)                                         # owner already priced it elsewhere
-    asked = _item(db, tmp_path, facts, status="needs_owner")
-    approve.ask_owner(s, db, asked, "Which size?")                                # 14, will be old
-    for mid in (11, 12, 99, 14):
+    fresh = _item(db, tmp_path, facts, status="needs_info")
+    send_item(s, db, fresh)                                                       # 13: the newest that still waits
+    for mid in (11, 12, 99, 13):
         _age(db, mid, hours=7)
     bot.calls.clear()
 
-    assert resend_pending(s, db) == [bid, waiting, asked]
-    assert [m for m, _ in bot.calls] == ["sendMessage", "sendPhoto", "sendMessage"]
-    assert bot.texts()[0].startswith(f"Batch {bid}:")
-    assert bot.texts()[2] == f"Question about {asked}: Which size?\nReply to this message."
-    assert [r["resolved_at"] is None for r in _outbox(db, done)] == [False]
-    assert [r["message_id"] for r in _outbox(db, waiting)] == [12, 16]            # the old row stays, a new one is added
-    assert _outbox(db, fresh)[0]["resolved_at"] is None and len(_outbox(db, fresh)) == 1
-
+    assert resend_pending(s, db) == [fresh]
+    assert [m for m, _ in bot.calls] == ["sendPhoto"] and bot.texts()[0].startswith("Tory Burch Suede Ballet Flats")
+    assert [(r["kind"], r["ref"]) for r in db.outbox_pending()] == [("item", fresh)]   # the rest are closed
+    assert [r["message_id"] for r in _outbox(db, fresh)] == [13, 14]              # the old copy stays, closed
     bot.calls.clear()
-    assert resend_pending(s, db) == []                                            # everything pending is now recent
-    assert set(resend_pending(s, db, force=True)) == {bid, waiting, fresh, asked}
+    assert resend_pending(s, db) == [] and bot.calls == []                        # the open one is recent now
+    assert resend_pending(s, db, force=True) == [fresh]                          # the worker starts again
 
 
 def test_resend_pending_uses_the_configured_timeout_and_clock(env, monkeypatch):
@@ -550,7 +575,8 @@ def test_a_pending_question_is_sent_again_after_a_restart_and_dropped_once_answe
     assert resend_pending(s, db, force=True) == [iid]                                   # the worker starts again
     assert len(bot.sent("sendPhoto")) == 2 and len(db.outbox_pending()) == 1           # the new message is the one
     db.set_item(iid, status="awaiting_price")                                            # answered elsewhere
-    assert resend_pending(s, db, force=True) == [] and db.outbox_pending() == []
+    assert resend_pending(s, db, force=True) == []                                      # nothing to send again...
+    assert [(r["kind"], r["ref"]) for r in db.outbox_pending()] == [("item", iid)]       # ...the next one goes out
 
 
 def test_the_whole_flow_tap_then_the_price_card_with_the_new_price(env, tmp_path, facts, monkeypatch):
@@ -577,14 +603,16 @@ def test_the_whole_flow_tap_then_the_price_card_with_the_new_price(env, tmp_path
     for i, c in enumerate(["red", "green", "blue"]):
         (d / "photos").mkdir(parents=True, exist_ok=True)
         Image.new("RGB", (60, 80), c).save(d / "photos" / f"{i:02d}.jpg")
-    iid = db.add_item(db.add_batch("share", 3), 1, str(d))
+    bid = db.add_batch("share", 3)
+    db.set_batch(bid, status="split")
+    iid = db.add_item(bid, 1, str(d))
     pipeline.process_item(s, db, iid)
     assert db.item(iid)["status"] == "awaiting_condition"
-    assert not any("Approve $" in str(p.get("reply_markup")) for p in bot.sent("sendPhoto"))   # no price card yet
+    assert not any("\u2705 $" in str(p.get("reply_markup")) for p in bot.sent("sendPhoto"))   # no price card yet
     guess = loads(db.item(iid)["price"])["list_price"]
     handle_update(s, db, bot, _callback(f"cond:{iid}:nwt"))
     pipeline.process_item(s, db, iid)                                                    # what the worker does next
     card = bot.sent("sendPhoto")[-1]
     price = loads(db.item(iid)["price"])["list_price"]
-    assert price > guess and f"Approve ${price}" in str(card["reply_markup"])
+    assert price > guess and f"\u2705 ${price}" in str(card["reply_markup"])
     assert "Condition: NWT (your answer)" in card["caption"]

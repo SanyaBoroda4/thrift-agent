@@ -178,16 +178,21 @@ def visual_changes(photos: list[Path], kinds: list[str] | None = None, min_dista
 
 
 def timing_check(groups: list[list[int]], kinds: list[str] | None, breaks: dict[int, float],
-                 changes: set[int]) -> list[str]:
+                 changes: set[int], confidence: list[float] | None = None, min_conf: float = 0.0) -> list[str]:
     """What the code doubts in the model's grouping (shown in the contact-sheet message): one item spanning a pause
-    AND a visual change (two items?), or a boundary between items with neither (one item?). Never a decision: the
-    owner confirms the batch."""
+    AND a visual change (two items?), or a boundary between items with neither (one item?). Only where the model
+    itself was unsure (a group's confidence below min_conf): a pause or a colour histogram never second-guesses what
+    Opus split with confidence — two different white tees shot back to back, a try-on shot after a break (WO20).
+    Never a decision: the owner confirms the batch."""
     kinds = kinds or ["own"] * (max((i for g in groups for i in g), default=-1) + 1)
     owner = {i: k for k, g in enumerate(groups) for i in g}
+    confidence = confidence or [0.0] * len(groups)
     reasons = []
     for a, b in own_pairs(kinds):
         if a not in owner or b not in owner:
             continue                                  # a partition error: check() says so
+        if min(confidence[owner[a]], confidence[owner[b]]) >= min_conf > 0:
+            continue                                  # the model was sure of both: no doubt raised here
         pause, change = b in breaks, b in changes
         if owner[a] == owner[b] and pause and change:
             reasons.append(f"item {owner[a] + 1}: a pause ({fmt_pause(breaks[b])}) and a visual change between "
@@ -221,7 +226,8 @@ def check(seg: SegOut, n: int, min_conf: float, kinds: list[str] | None = None) 
             reasons.append(f"item {k}: conflicting sizes {g.sizes_read}")
         if g.confidence < min_conf:
             reasons.append(f"item {k}: low confidence {g.confidence:.2f}")
-        if own and own != list(range(min(own), max(own) + 1)):
+        if own and own != list(range(min(own), max(own) + 1)) and g.confidence < min_conf:
+            # Not when the model is confident: the owner shoots try-on / mirror photos at the end of the roll (WO20).
             reasons.append(f"item {k}: non-contiguous photos {own}")
     for i in sorted(set(seg.unassigned)):
         reasons.append(f"screenshot {i} matches no item — reply '{i}>2' (into item 2) or 'drop {i}'")

@@ -111,7 +111,7 @@ def why_dry(s: Settings, force_dry: bool = False) -> str:
 
 
 def record_outcome(db: DB, iid: str, mp: str, render: Render, out: Outcome, marketplaces: list[str],
-                   stage: str = "form") -> None:
+                   stage: str = "form", say_dry_run: bool = True) -> None:
     """The post row, the event, the owner's message and the item's status for one Outcome.
 
     posted_at = when this row last hit the site. A dry-run fills the real form (uploads included), so it gets a stamp
@@ -131,7 +131,7 @@ def record_outcome(db: DB, iid: str, mp: str, render: Render, out: Outcome, mark
     note = f"\n{out.note}" if out.note else ""
     if out.status == "failed":
         notify.photo(Path(out.screenshot or ""), f"❌ {mp} failed ({iid}): {render.title}\n{error}{note}")
-    elif out.status == "dryrun":
+    elif out.status == "dryrun" and say_dry_run:          # poster.notify_dry_runs: off, the owner's chat stays quiet
         notify.photo(Path(out.screenshot or ""),
                      f"🧪 dry-run {mp} ({stage}): {render.title} — ${render.price}{note}")
     elif out.status == "cancelled":
@@ -366,7 +366,7 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, 
                 _halt(s, err, f"⛔ Poster paused: {mp} raised before the form ({err}).\nFix it, then delete the PAUSE file.")
                 return
 
-            record_outcome(db, iid, mp, render, out, list(ps), stage)
+            record_outcome(db, iid, mp, render, out, list(ps), stage, bool(s.get("poster.notify_dry_runs", False)))
 
             # Circuit breaker: N failures in a row means the form, the account or the network changed, not
             # the items. Every further attempt is 16 uploads of noise on the account, so stop and ask.

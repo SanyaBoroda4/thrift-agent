@@ -15,8 +15,8 @@ TITLE_MAX, DEPOP_MAX = 80, 1000
 TEXT_FIELDS = ("poshmark_title", "poshmark_description", "depop_description")
 # kids_gender is the model's best guess for Poshmark's size tab, not evidence: the copy never states it. The flaws and
 # the condition evidence are what the photos show: the copy never describes them (the owner's condition rule, below).
-VIEW_EXCLUDE = {"cover_photo", "photo_order", "questions", "kids_gender", "flaws", "condition_evidence",
-                "condition_alternative", "hang_tag_photo", "unworn", "box_photo"}
+VIEW_EXCLUDE = {"cover_photo", "photo_order", "photo_roles", "questions", "kids_gender", "kids_gender_confidence",
+                "flaws", "condition_evidence", "condition_alternative", "hang_tag_photo", "unworn", "box_photo"}
 TAG_LINE = re.compile(r"(?m)^[ \t]*(#\w+[ \t]*)+\r?$")   # a line that is nothing but hashtags
 TRAILING_TAGS = re.compile(r"(\s*#\w+)+\s*$")           # hashtags tacked onto the end of the last sentence
 

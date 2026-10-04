@@ -22,7 +22,8 @@ Rules:
 - department and category come from evidence (labels, the retailer page, sizing), never from a default.
   Use the real Poshmark category and subcategory, spelled as in the lists below — never 'Other'.
 - Kids items: kids_gender = girls | boys | unisex, your best reading of the item itself (style, colour, the box
-  or label, a retailer page). It only picks Poshmark's Girls or Boys size list; never a question. Adults: null.
+  or label, a retailer page), with kids_gender_confidence (0..1). It picks Poshmark's Girls or Boys size list; when
+  you are less than 0.70 sure, the owner is asked. Adults: null.
 - Condition:
   NWT only if an attached retail hang tag is visible in one of the seller's own photos — put that
   index in hang_tag_photo (and in condition_evidence). A box, a loose tag or a retailer screenshot
@@ -46,8 +47,11 @@ Rules:
   and source=photo. NEVER use a screenshot as evidence for condition, size, hang tag or flaws — those
   come only from the seller's own photos. A screenshot is never the cover.
 - A seller note, if present, is authoritative: use source=note, confidence 1.0.
-- cover_photo = cleanest full-item shot, never a photo that shows a flaw. photo_order = every index: cover,
-  back/sides, details, labels, flaws.
+- photo_roles: one entry for EVERY photo (see the role list). front vs back is a visual judgement: the front carries
+  the print or graphic, the buttons or zip, the neckline's lower dip, the logo; the plain side is the back.
+- cover_photo = the item ALONE, its FRONT, flat lay or on a hanger, on a clean background — the photo a buyer clicks.
+  Never the back, never worn / try-on / mirror, never a label, tag, flaw, box or screenshot. photo_order = every
+  index: cover, back/sides, details, labels, flaws, worn.
 - questions = only what a photo truly can't settle (e.g. "size tag unreadable — what size?")."""
 
 

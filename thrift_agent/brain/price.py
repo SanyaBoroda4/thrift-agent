@@ -4,7 +4,10 @@ from __future__ import annotations
 import math
 import re
 
+from thrift_agent.brain import taxonomy
 from thrift_agent.schema import Facts, PriceResult
+
+DEFAULT_TARGET = 15     # the last resort when neither the brand nor any category table has a price (pricing.default_target)
 
 # "price 44", "price: 45", "price=45", "list at $50". Bare "\bprice" also sits inside "original price $120",
 # so note_price() rejects a match whose preceding word marks it as what the item cost new.
@@ -58,23 +61,23 @@ def note_original_price(note: str | None) -> int | None:
     return None
 
 
-def category_default(defaults: dict | None, department: str, category: str) -> tuple[int, str] | None:
+def category_default(defaults: dict | None, department: str, category: str,
+                     also: list[str] | tuple[str, ...] = ()) -> tuple[int, str] | None:
     """(target, label) for a brand the table doesn't list, or None.
 
-    Lookup order: the department's own table, then the flat legacy table ({category: price} at the top level), then
-    each table's 'other'. The label names the table that was actually used — "Kids 'Shoes'", "flat table 'Shoes'",
-    "Kids 'other'" — so the basis can never say Kids while quoting a number from somewhere else (seen live: a Kids
-    item priced from a flat Women's-era table but labelled Kids 'Shoes'). Keys match case/whitespace-insensitively."""
+    Lookup order: the department's own table — the category, then its other names (`also`: Poshmark files a kids tee
+    under "Shirts & Tops" while the table says "Tops"), then 'other' — and only then the flat legacy table
+    ({category: price} at the top level) the same way. The label names the table that was actually used — "Kids
+    'Tops'", "flat table 'Shoes'", "Kids 'other'" — so the basis can never say Kids while quoting a number from
+    somewhere else. Keys match case/whitespace-insensitively."""
     defaults = defaults or {}
     dept_tables = {_norm_key(k): {_norm_key(ck): cv for ck, cv in v.items()}
                    for k, v in defaults.items() if isinstance(v, dict)}
     flat = {_norm_key(k): v for k, v in defaults.items() if not isinstance(v, dict) and v is not None}
-    dept = dept_tables.get(_norm_key(department), {})
-    for key in (category, "other"):
-        if (target := dept.get(_norm_key(key))) is not None:
-            return target, f"{department} {key!r}"
-        if (target := flat.get(_norm_key(key))) is not None:
-            return target, f"flat table {key!r}"
+    for table, label in ((dept_tables.get(_norm_key(department), {}), department), (flat, "flat table")):
+        for key in (category, *also, "other"):
+            if (target := table.get(_norm_key(key))) is not None:
+                return target, f"{label} {key!r}"
     return None
 
 
@@ -116,12 +119,13 @@ def price(facts: Facts, tiers: dict | None, cfg: dict, note: str | None = None) 
         cat_override = (entry.get("categories") or {}).get(facts.category)
         target, source = (cat_override, "brand_category") if cat_override else (entry["target"], "brand")
         matched = repr(brand)
-    elif default := category_default(defaults, facts.department, facts.category):
+    elif default := category_default(defaults, facts.department, facts.category,
+                                     taxonomy.other_names(facts.department, facts.category)):
         target, source = default[0], "category_default"
-        matched = default[1]                                  # the table actually used: "Kids 'Shoes'", "flat table 'Shoes'"
+        matched = default[1]                                  # the table actually used: "Kids 'Tops'", "flat table 'Shoes'"
     if target is None:
-        return PriceResult(target=None, list_price=None, source="none", basis="no brand or category price",
-                           original_price=original)
+        # Never no price (WO20): the last resort is the global default, so the owner's card always has a number.
+        target, source, matched = cfg.get("default_target", DEFAULT_TARGET), "default", "(no brand or category price)"
 
     cond = cfg["condition_multiplier"][facts.condition]
     list_price = nice_round(target * cond * cfg["list_markup"], cfg["round_to"])

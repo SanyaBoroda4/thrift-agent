@@ -35,22 +35,30 @@ Defaults for the first weeks of live posting, until the eval numbers justify loo
   (a material tag such as Leather only when a label backs it); anything else is left out. The cover is 3:4 portrait,
   1200x1600, padded with the photo's own edge colour and never cropped, which is the frame of Poshmark's cover crop,
   so its default crop keeps the whole picture.
-- **Kids gender.** The model reads `kids_gender` (girls / boys / unisex) from the item itself; it only picks the size
-  tab and is never a question. A unisex (or unread) kids item goes under Girls, and the approval message says so in a
-  `Note:` line (reply `boys` to change it). The copy never states the gender.
+- **The cover is the front of the item** (owner rule). The item alone, its front, flat lay or on a hanger, on a clean
+  background — never the back, a try-on or mirror photo, a label, a tag, a flaw, a box or a screenshot. The model names
+  each photo's role (front, back, side, detail, label, tag, flaw, worn, box) and picks the cover by that rule; code
+  checks it and only ever takes a photo of the item alone (front, else side, else back). Without a front photo the best
+  photo of the item alone is the cover and the price card says "cover: no front flat-lay photo". The rest of the photo
+  order stays as the model set it, retail screenshots last.
+- **Kids gender.** The model reads `kids_gender` (girls / boys / unisex) from the item itself, with how sure it is; it
+  picks Poshmark's Girls or Boys size list. At 0.70 or more it is used silently; below that (or unisex, or unread) the
+  owner gets "Girls or Boys?" with [Girls] [Boys] before the price card (CLI: `thrift kids <item> girls|boys`); the
+  answer is kept. The copy never states the gender.
 - **Poshmark's own category names.** Right after extraction the department, category and subcategory are put onto the
   names the create-listing form offers (`data/poshmark_taxonomy.yaml`; Kids "Tops" becomes "Shirts & Tops",
   "Booties" becomes "Ankle Boots & Booties"). A subcategory Poshmark doesn't have is left out with a `Note:`; a
   department or category it doesn't have is asked like "Other".
-- **Only five questions ever reach the owner:** brand or size below 0.70, NWT without a hang-tag photo, a category
-  of "Other" (or a department/category not on Poshmark's list), a possible re-share, and the poster's
-  `needs_owner`. The model's own questions about optional facts
-  (material, measurements) are dropped: a missing optional fact is left out of the listing. An unsure condition is a
-  `Note:` line, not a question. Anything the owner does from the CLI (`thrift price` / `answer` / `confirm`) is
-  echoed to the Telegram group and settles the pending message there.
-- **Per-department price defaults.** `category_defaults` in `brand_tiers.yaml` are keyed by department (Women / Men /
-  Kids / Unisex / Home, each with an `other` fallback). A brand missing from the price table no longer blocks the gate:
-  the default becomes the suggestion in the owner's message, marked "no price history for <brand>".
+- **The only questions that reach the owner:** brand or size below 0.70, NWT without a hang-tag photo, a category
+  of "Other" (or a department/category not on Poshmark's list), a possible re-share, a pair of shoes in doubt between
+  brand new and worn, Girls or Boys below 0.70, and the poster's `needs_owner`. The model's own questions about
+  optional facts (material, measurements) are dropped: a missing optional fact is left out of the listing. An unsure
+  condition is kept in the item's record, not shown. Anything the owner does from the CLI (`thrift price` / `answer`
+  / `confirm` / `condition` / `kids` / `redo`) is echoed to the Telegram group and settles the pending message there.
+- **Always a price.** brand tier → the department's category default (the category, then Poshmark's other names for
+  it — Kids "Shirts & Tops" finds the table's `Tops` — then the department's `other`) → the old flat table the same way
+  → `pricing.default_target` (config/settings.yaml). The price card always has a number. `category_defaults` in
+  `brand_tiers.yaml` are keyed by department (Women / Men / Kids / Unisex / Home, each with an `other` fallback).
 
 ## Public code, private data
 Seller data (price table from real sales, real listings, account notes, username) lives in `private/`, a separate
@@ -92,7 +100,7 @@ to the previous commit).
 ## Commands
 ```
 thrift init | run | process <dir> | confirm <batch> <cmd> | answer <item> "<note>" | price <item> <amount>
-thrift condition <item> nwt|like_new|good
+thrift condition <item> nwt|like_new|good | kids <item> girls|boys | redo <batch>
 thrift requeue <item> [marketplace] | requeue <batch> | mark-posted <item> <marketplace> <url> | status | show <item>
 thrift poster [--once] [--dry-run] [--stage form|review] [--publish-first <item>] [--allow-dev-browser]
 thrift login --site poshmark | telegram setup|test | harvest | build-style | eval
@@ -102,7 +110,13 @@ thrift login --site poshmark | telegram setup|test | harvest | build-style | eva
   batches under the items: waiting for the worker, waiting for the contact sheet, or failed with the error.
 - **`thrift price <item> <amount>`** approves an item's price from the command line — the same effect as replying
   to the Telegram approval message (source `owner`, item becomes `ready`). `thrift confirm` and `thrift answer` are
-  the CLI twins of the batch-confirmation reply and of answering a question.
+  the CLI twins of the batch-confirmation reply and of answering a question; `thrift kids <item> girls|boys` of the
+  [Girls] [Boys] buttons. Each one sends the next message of the queue.
+- **`thrift redo <batch>`** rebuilds a batch's items from the grouping already confirmed (no new contact sheet):
+  every item that never reached the site is processed again — new cover, new price, a new card, one at a time — and
+  its old Telegram messages are closed. The approved price is asked again; the owner's condition and Girls/Boys
+  answers are kept. Items that are posting, posted, drafted, an unconfirmed publish, or dropped as a re-share are left
+  as they are and listed. `thrift status` also shows the Telegram queue: the open question and what comes next.
 - **`thrift telegram setup | test`** — `setup` prints the chat ids and user ids seen in the bot's recent updates so
   the owner can fill `TELEGRAM_CHAT_ID` and `TELEGRAM_ALLOWED_USER_IDS`; `test` sends a test message. See
   "Telegram approval (M3)".
@@ -126,11 +140,11 @@ thrift login --site poshmark | telegram setup|test | harvest | build-style | eva
 - **Condition is shown, not told** (owner rule). No listing text names wear or flaws (dirt, stain, scuff, worn, wear
   and tear, fraying, pilling, hole, tear, smell…); a used item says "Gently pre-loved, please see photos for
   condition." and is never "like new", "excellent" or "no flaws". Every flaw has a photo in the listing, never the
-  cover; a flaw without a photo shows up as a Note in the approval message.
+  cover; a flaw without a photo shows up as a warning on the price card.
 - **Condition grades** (owner rule). Torn between Like New and Good, the item is Like New (the model names the grade
   it weighed against, code picks the higher; Poshmark has no "very good", so excellent goes up as Like New too). The
-  shop never lists Fair: a fair reading goes up as Good with the Note "looked well-worn — listed as Good; check before
-  approving". NWT still needs the attached hang tag in a photo, or the owner saying NWT.
+  shop never lists Fair: a fair reading goes up as Good with the warning "looked well-worn — listed as Good; check
+  before approving". NWT still needs the attached hang tag in a photo, or the owner saying NWT.
 - **Shoes: brand new or worn?** For shoes only, and only when the photos leave it open (the model is 30–80 % sure
   the pair is unworn, or it wavers between a new and a used grade), the item waits for ONE message before the price:
   the cover and "Brand new or worn? (couldn't tell from the photos)" with [NWT] [Like New] [Good]. The tap is the
@@ -233,15 +247,19 @@ Shooting rule that makes splitting reliable: finish one item before starting the
 shot of the size label / insole stamp.
 
 ## Telegram approval (M3)
-The agent owns its Telegram bot and long-polls `getUpdates` from inside the worker (`thrift run`) — no webhook, so
-it works behind NAT and after the Mac wakes from sleep. One consumer; the update offset is persisted in SQLite (`kv`
-table). Only `TELEGRAM_CHAT_ID` and the senders listed in `TELEGRAM_ALLOWED_USER_IDS` are accepted; everything else
-is ignored. It works in a group with BotFather privacy mode ON, because the owner only ever replies to the bot's
-messages or presses its buttons.
+The agent owns its Telegram bot and long-polls `getUpdates` from inside the worker (`thrift run`, on its own thread,
+so answers are handled at once while items are processed) — no webhook, so it works behind NAT and after the Mac
+wakes from sleep. One consumer; the update offset is persisted in SQLite (`kv` table). Only `TELEGRAM_CHAT_ID` and
+the senders listed in `TELEGRAM_ALLOWED_USER_IDS` are accepted; everything else is ignored. Replies and buttons work
+in a group with BotFather privacy mode ON. A price typed on its own, without replying, reaches the bot only when
+privacy mode is OFF (then remove the bot from the group and add it again) or the bot is an admin of the group; in a
+private chat with the bot it always does.
 
 ### Setup
-1. Create the bot with **@BotFather** and copy the token into `.env` as `TELEGRAM_BOT_TOKEN`. Keep privacy mode ON.
-2. Add the bot to the owner's group (or open a private chat with it) and send `/start` or any message there.
+1. Create the bot with **@BotFather** and copy the token into `.env` as `TELEGRAM_BOT_TOKEN`.
+2. Add the bot to the owner's group (or open a private chat with it) and send `/start` or any message there. For
+   typed prices in a group: make the bot an admin (no rights needed), or `/setprivacy` → Disable in @BotFather and
+   add the bot to the group again.
 3. `thrift telegram setup` prints the chat ids and user ids seen in recent updates; fill `TELEGRAM_CHAT_ID` and
    `TELEGRAM_ALLOWED_USER_IDS` (comma-separated) in `.env`.
 4. `thrift telegram test` sends a test message.
@@ -253,37 +271,50 @@ messages or presses its buttons.
 - **Batch confirmation.** The worker sends the contact sheet with a summary; the owner replies to it with `ok`,
   `12>2`, `split 7`, `merge 2 3` or `drop 7` — the same parser as `thrift confirm`. `segmentation.always_confirm`
   stays configurable. The sheet marks the photo after each pause ("pause 2 min"); the summary lists the pauses and
-  any doubt ("item 2: a pause (2 min) and a visual change between photos 6 and 7 — two items?").
-- **One message per item.** After extraction the item waits in `awaiting_price` and gets a single message: cover
-  photo, title, size (with its system), condition and flaw count, the suggested price with a short basis, "Retail $X"
-  when known, and "no price history for <brand>" when the price came from a category default. Inline buttons
-  **[Approve $P]** and **[Change]**. Replying to the message with a number (`85`, `$85`, `85.00`, `85 dollars`) sets
-  the price; [Change] asks "reply with the price". The approved price is stored with source `owner` and the item
-  becomes `ready`. Nothing publishes without price approval.
-- **Questions folded in.** If brand or size is truly unreadable (below 0.70), the category is not one Poshmark has,
-  or the item looks like a re-share, the question is part of the *same* message. The reply may carry both answers and the price (`size 8, 45`): the price is
-  stored, the note reprocesses the item, and it comes back for approval only if something is still unresolved — the
-  owner's price is kept. A price alone accepts the model's best reading of brand and size.
-- **Two answers must be explicit.** *NWT without a hang-tag photo* is listed as **like new** and the message says so
-  in a `Note:` line; reply `NWT` (with or without the price) if the tag really is attached. *A suspected re-share*
-  stays held even after a price: reply `different item` to list it or `same item` to drop it.
-- **`needs_owner`.** The poster may send a *separate* question when it is stuck on a field only the owner can answer
-  (a brand, category or size missing from Poshmark's lists). The item waits in `needs_owner` while the others
-  continue; the reply is attached to the item and it is reprocessed. No other questions go to the owner.
-- **Re-send after sleep.** On worker start and about every hour, anything still waiting longer than
-  `telegram.resend_after_hours` is sent again — Telegram keeps updates for only 24 h and the Mac may have been asleep.
-- **CLI equivalents** keep working: `thrift confirm`, `thrift answer`, `thrift price <item> <amount>`.
+  a doubt only where the model itself was unsure of an item ("item 2: a pause (2 min) and a visual change between
+  photos 6 and 7 — two items?"): try-on photos shot at the end of the roll, or two different items shot back to back,
+  are no doubt when the model split them with confidence.
+- **One message at a time.** Everything that waits for the owner is one queue across batches and items: the oldest
+  batch first — its contact sheet, then its items in photo order (each item's questions, then its price card) — then
+  the next batch. Only one message is open; the next is sent when it is answered, with a one-line confirmation first
+  ("✓ $28 — 3 of 10 left"). Processing runs ahead, so the next card is usually ready at once; the queue never skips
+  an item still being processed. The queue lives in the DB: it survives restarts, and a restart re-sends only the
+  open message. Info-only messages (errors, posted confirmations) are not queued and are kept few: a dry-run that
+  went fine says nothing unless `poster.notify_dry_runs` is on.
+- **The price card, in Poshmark's words.** Cover photo, title, the size as Poshmark's size menu shows it ("7.5
+  (Toddler Girl)"), the condition as Poshmark's label (NWT / Like New / Good), a warning only where a look is needed
+  (the cover, a well-worn pair, a flaw no photo shows), and only the allowed questions. Buttons: **[✅ $X]** (the
+  suggestion), four round prices near it (e.g. X−10, X−5, X+5, X+10; never under the floor), **[Later]** (the item
+  goes to the end of the queue) and **[Change]**. A number typed on its own (`28`, `$28`, `28.00`) prices the open
+  card (under the floor it is not taken — reply to the card for that); replying to the card with a number still
+  works. The approved price is stored with source `owner` and the item becomes `ready`. Nothing publishes without
+  price approval.
+- **Questions on the card.** If brand or size is truly unreadable (below 0.70), the category is not one Poshmark has,
+  or the item looks like a re-share, the question is on the card. The reply may carry both answers and the price
+  (`size 8, 45`): the price is stored, the note reprocesses the item, and it comes back only if something is still
+  unresolved — the owner's price is kept. A price alone accepts the model's best reading of brand and size.
+- **Two answers must be explicit.** *NWT without a hang-tag photo* is listed as **Like New** and the card asks; reply
+  `NWT` (with or without the price) if the tag really is attached. *A suspected re-share* stays held even after a
+  price: reply `different item` to list it or `same item` to drop it.
+- **`needs_owner`.** The poster may ask its own question when it is stuck on a field only the owner can answer (a
+  brand, category or size missing from Poshmark's lists); it is asked in its turn. The item waits in `needs_owner`
+  while the others continue; the reply is attached to the item and it is reprocessed.
+- **Re-send after sleep.** On worker start, and about every hour once it has waited longer than
+  `telegram.resend_after_hours`, the open message is sent again — Telegram keeps updates for only 24 h and the Mac
+  may have been asleep.
+- **CLI equivalents** keep working: `thrift confirm`, `thrift answer`, `thrift price <item> <amount>`, `thrift
+  condition`, `thrift kids`.
 
-Item statuses: `new` → `awaiting_price` | `needs_info` → `ready` → `posting` → `posted` | `drafted` | `failed`;
-`needs_owner` while the poster's question is open.
+Item statuses: `new` → (`awaiting_condition` →) `awaiting_price` | `needs_info` → `ready` → `posting` → `posted` |
+`drafted` | `failed`; `needs_owner` while the poster's question is open; `dropped` for a re-share of a listed item.
 
 ## Roadmap
 Where the project is going, and the design decisions already made for each step.
 
 - **Telegram approval flow — implemented (M3).** The agent owns the bot and long-polls `getUpdates` from inside the
   worker — no webhook, so it works after the Mac wakes from sleep (Telegram keeps updates for 24 h; pending
-  approvals are re-sent). n8n does *not* attach a Telegram trigger to this bot. One message per item with
-  **[Approve $P] [Change]**; nothing publishes without price approval; `needs_owner` for the poster's own questions.
+  approvals are re-sent). n8n does *not* attach a Telegram trigger to this bot. One message at a time, one-tap
+  prices; nothing publishes without price approval; `needs_owner` for the poster's own questions.
   Details in "Telegram approval (M3)" above. What remains is on the owner's side: create the bot and fill `.env`.
 - **Airtable as the business view.** One row per item: photos, title, prices, platform links, status
   (listed / sold / shipped / delivered / complete), sale price, earnings, days to sell. SQLite stays the source of

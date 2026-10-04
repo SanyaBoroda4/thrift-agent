@@ -45,10 +45,61 @@ def test_category_defaults_are_per_department(facts, pricing_cfg):
     r = price(facts(brand=NOBODY, department="Kids", category="Sweaters"), NESTED, pricing_cfg)
     assert r.source == "category_default" and r.target == 12 and "Kids 'other'" in r.basis
     assert price(facts(brand=NOBODY), NESTED, pricing_cfg).target == 40                        # Women Shoes
-    assert price(facts(brand=NOBODY, category="Sweaters"), NESTED, pricing_cfg).source == "none"   # no Women other
-    r = price(facts(brand=NOBODY, department="Unisex"), NESTED, pricing_cfg)                  # department not listed
-    assert r.source == "none" and r.list_price is None
     assert price(facts(department="Kids"), NESTED, pricing_cfg).source == "brand"             # a brand hit wins
+
+
+def test_past_every_table_the_global_default_still_prices_it(facts, pricing_cfg):
+    """WO20: "Suggested: no price" must never happen — no Women 'other', a department the table doesn't list."""
+    for f in (facts(brand=NOBODY, category="Sweaters"), facts(brand=NOBODY, department="Unisex")):
+        r = price(f, NESTED, pricing_cfg)
+        assert r.source == "default" and r.target == 15 and r.list_price == 20      # 15 × 1.0 × 1.2 = 18 -> floor 20
+        assert "no brand or category price" in r.basis
+    r = price(facts(brand=NOBODY, category="Sweaters"), NESTED, {**pricing_cfg, "default_target": 30})
+    assert r.source == "default" and r.target == 30 and r.list_price == 35            # pricing.default_target
+
+
+def test_the_lacoste_kids_tee_cause(facts, pricing_cfg):
+    """The live miss (WO20): a brand missing from the table, a Kids tee — Poshmark's "Shirts & Tops" after
+    taxonomy.fit — and the Mac's committed flat table ({Shoes: 45, Tops: 20, …}, no departments, no 'other'). No key
+    matched "Shirts & Tops", and price() had nothing after the category tables: no price at all."""
+    tee = facts(brand=Ev(value="Lacoste", photos=[1], source="photo", confidence=0.9), department="Kids",
+                category="Shirts & Tops", subcategory="Tees - Short Sleeve", condition="excellent")
+    flat_on_the_mac = {"brands": {"tory burch": {"target": 70}},
+                       "category_defaults": {"Shoes": 45, "Dresses": 40, "Tops": 20, "Sweaters": 30}}
+    r = price(tee, flat_on_the_mac, pricing_cfg)
+    assert r.source == "category_default" and r.target == 20 and "flat table 'Tops'" in r.basis   # Poshmark's other name
+    r = price(tee, NESTED, pricing_cfg)
+    assert r.source == "category_default" and r.target == 10 and "Kids 'Tops'" in r.basis
+    assert r.list_price == 20                                                         # 10 × 1.0 × 1.2 = 12 -> floor 20
+    r = price(tee, {"category_defaults": {"Shoes": 45}}, pricing_cfg)                 # nothing that fits: the default
+    assert r.source == "default" and r.list_price == 20
+
+
+def _taxonomy_pairs() -> list[tuple[str, str]]:
+    from thrift_agent.brain import taxonomy
+    pairs = [(dept, cat) for dept, d in taxonomy.load()["departments"].items() for cat in (d.get("categories") or {})]
+    return pairs + [("Unisex", "Shoes"), ("Unisex", "Other"), ("Women", "Other"), ("Kids", "Widgets")]
+
+
+@pytest.mark.parametrize("tiers_name", ["example", "nested", "flat", "brands only", "empty", "no file"])
+def test_every_department_category_and_condition_gets_a_price(facts, tiers_name):
+    """WO20: brand tier -> the department's category default -> the global default; the card always has a number.
+    Every Poshmark department × category (plus ones Poshmark doesn't have) × every condition, under every shape of
+    the price table, with the real pricing settings."""
+    from thrift_agent.config import ROOT
+    cfg = yaml.safe_load((ROOT / "config" / "settings.yaml").read_text(encoding="utf-8"))["pricing"]
+    tiers = {"example": yaml.safe_load(EXAMPLE_TIERS.read_text(encoding="utf-8")), "nested": NESTED, "flat": TIERS,
+             "brands only": {"brands": {"tory burch": {"target": 70}}}, "empty": {}, "no file": None}[tiers_name]
+    for dept, cat in _taxonomy_pairs():
+        for cond in cfg["condition_multiplier"]:
+            for brand in (NOBODY, Ev(value=None), facts().brand):
+                r = price(facts(brand=brand, department=dept, category=cat, subcategory=None, condition=cond),
+                          tiers, cfg)
+                label = f"{tiers_name}: {dept} / {cat} / {cond} / {brand.value}"
+                assert isinstance(r.list_price, int) and r.list_price >= cfg["floor"], label
+                assert r.source in ("brand", "brand_category", "category_default", "default"), label
+                assert set(r.by_marketplace) == set(cfg["marketplace_multiplier"]), label
+                assert all(v >= cfg["floor"] for v in r.by_marketplace.values()), label
 
 
 def test_flat_category_defaults_apply_to_every_department(facts, pricing_cfg):
@@ -158,7 +209,7 @@ def test_price_carries_original_price_from_note(facts, pricing_cfg):
 ])
 def test_empty_tier_sections_do_not_crash(facts, pricing_cfg, tiers):
     r = price(facts(), tiers, pricing_cfg)
-    assert r.source == "none" and r.list_price is None
+    assert r.source == "default" and r.list_price == 20               # the global default: never no price (WO20)
     # A seller note still prices the item even with no tiers at all.
     assert price(facts(), tiers, pricing_cfg, note="price 44").list_price == 44
 
