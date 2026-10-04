@@ -19,14 +19,18 @@ FRONT: the listing's cover.
 unclear.
 - The FRONT is the side with a print, graphic, text, logo, buttons, a zip, pockets or the lower neckline. A plain side \
 is the BACK when another photo of the same item shows a print or other design on the other side. Pants, jeans and \
-skirts: back pockets and the yoke are the back. Shoes: the outer side profile or the pair seen from the front are both \
-a front.
+skirts: back pockets and the yoke are the back. A zip: a fly zip with a button (pants, shorts, jeans) is the front, but \
+a zip running down the middle of a skirt or a dress is almost always at the back. Shoes: the outer side profile or the \
+pair seen from the front are both a front.
 - When two sides look alike, the one with more visible design detail is the front.
 - A garment photographed sideways or upside down — laid on the floor in any direction — is still a valid front flat \
 lay: judge the side that is shown, not the angle.
-- design: how much design detail the photo shows (none / some / strong).
+- design: how much printed design the photo shows — a print, graphic, text or logo (none / some / strong); seams, zips and
+  pockets don't count here.
 - upright: the clockwise turn (0, 90, 180 or 270 degrees) that would put the item upright — collar, neckline or \
-waistband at the top; shoes with the soles down. 0 when it already is upright.
+waistband at the top; shoes with the soles down. Find the collar or waistband first (a skirt's or pants' waistband is \
+the straight end where the zip or the button starts; the hem is the open end): on the left of the photo → 90, on the \
+right → 270, at the bottom → 180, already at the top → 0. Items are often laid sideways: look, don't assume 0.
 - front: the number of the photo that shows the front."""
 
 LABEL_SYSTEM = """Read the size label in these photos. Copy the size exactly as it is printed: every size system and \

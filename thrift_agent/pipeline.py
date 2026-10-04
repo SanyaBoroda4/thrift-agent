@@ -735,6 +735,15 @@ def set_cover(s: Settings, db: DB, iid: str, n: int) -> str:
 RECOVERABLE = ("awaiting_condition", "awaiting_price", "needs_info", "ready", "needs_owner")
 
 
+def _listed_cover(it, photos: list[Path]) -> int | str:
+    """The photo the listing's cover was made of, as rendered: the one photo missing after cover.jpg when every
+    photo fits; "?" when that can't be told."""
+    renders = loads(it["renders"]) or {}
+    listed = {Path(p).name for r in renders.values() for p in (r.get("photos") or [])[1:]}
+    missing = [i for i, p in enumerate(photos) if p.name not in listed]
+    return missing[0] if len(missing) == 1 else "?"
+
+
 def recover_item(s: Settings, db: DB, iid: str) -> dict:
     """WO23: recompute ONLY the cover (the front check, upright), the photo order, the category and the size of an
     item that is not on the marketplace — the price, the owner's approved price, condition and Girls/Boys answers and
@@ -751,8 +760,7 @@ def recover_item(s: Settings, db: DB, iid: str) -> dict:
     photos = sorted((d / "photos").glob("*.jpg"))
     kinds = photo_kinds_of(d, photos)
     facts = Facts.model_validate(loads(it["facts"]))
-    before = {"cover": photo_order(facts, len(photos), kinds)[0], "category": facts.category,
-              "size": facts.size_us.value}
+    before = {"cover": _listed_cover(it, photos), "category": facts.category, "size": facts.size_us.value}
     facts, fit_notes, fit_questions = taxonomy.fit(facts)
     facts = settle_kids_size(s, facts, photos)
     check = front_view(s, db, iid, photos, facts, kinds)

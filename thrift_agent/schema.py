@@ -52,8 +52,9 @@ class View(BaseModel):
     """One photo in the front/back comparison (brain/cover.py, WO23)."""
     photo: int
     view: Literal["front", "back", "side", "unclear"] = Field(description="Which side of the item this photo shows")
-    design: Literal["none", "some", "strong"] = Field("none", description="How much design detail it shows: a print, "
-                                                                          "graphic, text, logo, buttons, zip, pockets")
+    design: Literal["none", "some", "strong"] = Field("none", description="How much printed design it shows: a print, "
+                                                                          "graphic, text or logo (not seams, zips or "
+                                                                          "pockets)")
     upright: Literal[0, 90, 180, 270] = Field(0, description="Clockwise degrees that would put the item upright: "
                                                              "collar, neckline or waistband at the top; shoes sole "
                                                              "down. 0 when it already is")

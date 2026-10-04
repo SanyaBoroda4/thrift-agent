@@ -60,6 +60,8 @@ def test_the_lacoste_case_the_sideways_printed_front_not_the_plain_back(facts):
     (("side", "back", "detail"), check(0, (0, "side", "some", 0), (1, "back", "none", 0)), 0, None),  # shoes: profile
     (("worn", "front", "back"), check(0, (1, "front", "some", 0), (2, "back", "none", 0)), 1, None),  # a try-on never
     (("front", "back"), check(0, (0, "front", "none", 0), (1, "back", "strong", 0)), 1, None),        # printed side
+    (("front", "back"), check(0, (0, "front", "some", 90), (1, "back", "some", 90)), 0, None),        # live skirt:
+    # the same print on both sides and a centre-back zip — no design swap, the front decides
     (("back", "worn", "label"), check(0, (0, "back", "none", 0)), 0, "nf"),                           # only a back
     (("worn", "label"), None, None, "nf"),                                                              # nothing alone
 ])
