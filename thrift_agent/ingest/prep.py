@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import stat
 from datetime import datetime
 from pathlib import Path
 
@@ -21,9 +22,22 @@ def is_photo(p: Path) -> bool:
     return p.is_file() and p.suffix.lower() in IMG_EXT and not p.name.startswith(".")
 
 
+SF_DATALESS = getattr(stat, "SF_DATALESS", 0x40000000)   # macOS: a file whose data is still in iCloud
+
+
+def dataless(p: Path) -> bool:
+    """A file iCloud Drive keeps in the cloud only (Optimize Mac Storage, or not downloaded yet): it shows its real
+    name and size, but has no data until something reads it (SF_DATALESS; macOS only)."""
+    try:
+        return bool(getattr(p.stat(), "st_flags", 0) & SF_DATALESS)
+    except OSError:
+        return False
+
+
 def icloud_placeholders(folder: Path) -> list[Path]:
-    """Files iCloud hasn't downloaded yet show up as .Name.jpg.icloud."""
-    return [p for p in folder.iterdir() if p.name.endswith(".icloud")]
+    """The files of a share iCloud hasn't downloaded yet: the old placeholders (.Name.jpg.icloud) and the dataless
+    files of current macOS (WO28 §4)."""
+    return [p for p in folder.iterdir() if p.name.endswith(".icloud") or (p.is_file() and dataless(p))]
 
 
 def capture_time(p: Path) -> datetime:

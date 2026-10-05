@@ -1,10 +1,11 @@
 """The poster loop with the browser and Telegram stubbed: job selection, recording, the circuit breaker, and stop."""
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
 
-from thrift_agent import notify
+from thrift_agent import daily, notify, pipeline, power
 from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
 from thrift_agent.post import runner
@@ -694,7 +695,8 @@ def test_a_publish_that_clicked_but_found_no_listing_is_never_requeued(tmp_path,
     _first(monkeypatch, s, db, poster, iid)
     row = db.post(iid, "poshmark")
     assert row["status"] == "failed" and row["last_error"].startswith(runner.UNCONFIRMED) and row["url"] is None
-    assert any("unconfirmed publish: PosterError: after List This Item" in m for m in said)    # the Telegram ping
+    assert any(m.startswith(runner.unconfirmed_text(RENDER.title, slept=False)) for m in said)   # ONE reply-able
+    assert not any(m.startswith("❌") for m in said)                                    # message (WO28), no ❌
     with pytest.raises(ValueError, match="may be live"):
         pipeline.requeue(s, db, iid)                                       # invariant 4: reconcile by hand
     with pytest.raises(ValueError, match="may have gone live"):
@@ -805,7 +807,8 @@ def test_mark_posted_records_a_listing_found_by_hand(tmp_path, monkeypatch, harn
 
 
 @pytest.mark.parametrize("setup,url,why", [
-    (lambda db, iid: None, LIVE_URL, r"only a post in 'unconfirmed publish' can be marked posted \(i_\w+ has no post\)"),
+    (lambda db, iid: None, LIVE_URL, r"only a post in 'unconfirmed publish' can be marked posted or retried "
+                                     r"\(i_\w+ has no post\)"),
     (lambda db, iid: db.upsert_post(iid, "poshmark", status="failed", last_error="Mismatch: title"), LIVE_URL,
      "only a post in 'unconfirmed publish'"),
     (lambda db, iid: db.upsert_post(iid, "poshmark", status="posted", url=LIVE_URL), LIVE_URL,
@@ -874,3 +877,185 @@ def test_a_dry_run_is_silent_in_the_owners_chat_by_default(tmp_path, monkeypatch
     _ready_item(db)
     _run(monkeypatch, s, db, StubPoster(Outcome("dryrun")), once=True)
     assert not any("dry-run poshmark" in m for m in said)
+
+
+# ---------------------------------------------------------------- WO28: the daily window
+
+class Held:
+    """power.Awake stand-in: what the loop asked for."""
+    log: list = []
+
+    def __init__(self):
+        Held.log = []
+
+    def hold(self, on):
+        Held.log.append(on)
+
+
+class Finding(StubPoster):
+    """A stub that can look in the closet (after a sleep): `found` is the address it sees, or None."""
+
+    def __init__(self, *results, found=None):
+        super().__init__(*results)
+        self.found, self.looked = found, []
+
+    async def find_live(self, ctx, r, since, created=None):
+        self.looked.append((r.sku, created))
+        return self.found, {"stub": True}
+
+
+@pytest.fixture
+def mac(monkeypatch):
+    """The Mac's power readings, scripted: lid open, no battery reading, no sleep — unless a test says so."""
+    state = {"lid": False, "battery": None, "slept": False}
+    monkeypatch.setattr(runner.power, "lid_closed", lambda: state["lid"])
+    monkeypatch.setattr(runner.power, "battery", lambda: state["battery"])
+    monkeypatch.setattr(runner.power, "slept_since", lambda *a, **k: state["slept"])
+    monkeypatch.setattr(runner.power, "last_wake", lambda: None)
+    monkeypatch.setattr(runner.power, "Awake", Held)
+    return state
+
+
+def test_the_loop_keeps_the_mac_awake_while_it_publishes_and_lets_it_sleep_after(tmp_path, monkeypatch, harness, mac):
+    s = _settings(tmp_path, role="prod", autopublish=True, dry_run=False)
+    db = DB(s.path("db"))
+    _ready_item(db, seq=1), _ready_item(db, seq=2)
+    poster = StubPoster(Outcome("posted", url="https://poshmark.com/listing/a"),
+                        Outcome("posted", url="https://poshmark.com/listing/b"))
+    pauses = []
+
+    async def gap(stop, seconds):
+        pauses.append(seconds)
+        if len(pauses) >= 3:
+            stop.set()
+
+    monkeypatch.setattr(runner, "_pause", gap)
+    _run(monkeypatch, s, db, poster, once=False)
+    # held for listing 1, through the pause before listing 2 (one follows), for listing 2; released after it and when
+    # there was nothing left to do
+    assert Held.log[:3] == [True, True, True] and Held.log[-1] is False and False in Held.log[3:]
+    state = json.loads(db.kv_get(daily.POSTER_STATE))
+    assert state["stopped"] is True and state["live"] is True
+
+
+def test_a_closed_lid_or_a_low_battery_starts_no_listing_and_it_resumes(tmp_path, monkeypatch, harness, mac):
+    said, _ = harness
+    s = _settings(tmp_path, role="prod", autopublish=True, dry_run=False)
+    db = DB(s.path("db"))
+    iid = _ready_item(db)
+    poster = StubPoster(Outcome("posted", url="https://poshmark.com/listing/a"))
+    mac["lid"] = True
+    _run(monkeypatch, s, db, poster, once=True)
+    assert poster.calls == [] and db.post(iid, "poshmark") is None             # a maintenance wake: nothing started
+    mac["lid"], mac["battery"] = False, power.Battery(12, False)
+    _run(monkeypatch, s, db, poster, once=True)
+    _run(monkeypatch, s, db, poster, once=True)
+    assert poster.calls == [] and said.count(power.BATTERY_LOW) == 1            # ONE line, nothing lost
+    mac["battery"] = power.Battery(17, False)
+    _run(monkeypatch, s, db, poster, once=True)
+    assert poster.calls == []                                                   # 17%: still waits for 20%
+    mac["battery"] = power.Battery(17, True)                                    # plugged in
+    _run(monkeypatch, s, db, poster, once=True)
+    assert poster.calls == [("i_1", "publish", False)] and db.item(iid)["status"] == "posted"
+
+
+def test_a_publish_the_mac_slept_through_is_found_in_the_closet_and_posted(tmp_path, monkeypatch, harness, mac):
+    said, _ = harness
+    s = _settings(tmp_path, role="prod", autopublish=True, dry_run=False)
+    db = DB(s.path("db"))
+    iid = _ready_item(db)
+    url = "https://poshmark.com/listing/Tory-Burch-Red-Flats-size-75-6ac111490000000000000a01"
+    poster = Finding(Outcome("failed", error="PosterError: after List This Item no listing address", clicked=True,
+                             created_id="6ac111490000000000000a01"), found=url)
+    mac["slept"] = True
+    _run(monkeypatch, s, db, poster, once=True)
+    assert poster.looked == [("i_1", "6ac111490000000000000a01")]                # created_listing_id first
+    row = db.post(iid, "poshmark")
+    assert (row["status"], row["url"], row["last_error"]) == ("posted", url, None)
+    assert db.item(iid)["status"] == "posted"
+    assert any(m.startswith(f"Posted ✓ {RENDER.title}") and url in m for m in said)   # the normal message
+    assert not any(m.startswith("⚠️") for m in said)
+
+
+def test_a_publish_the_mac_slept_through_and_not_in_the_closet_asks_once(tmp_path, monkeypatch, harness, mac):
+    said, _ = harness
+    s = _settings(tmp_path, role="prod", autopublish=True, dry_run=False)
+    db = DB(s.path("db"))
+    iid = _ready_item(db)
+    poster = Finding(Outcome("failed", error="PosterError: after List This Item no listing address", clicked=True))
+    mac["slept"] = True
+    _run(monkeypatch, s, db, poster, once=True)
+    row = db.post(iid, "poshmark")
+    assert row["status"] == "failed" and row["last_error"].startswith(runner.UNCONFIRMED) and row["url"] is None
+    ask = runner.unconfirmed_text(RENDER.title, slept=True)
+    assert ask == (f"⚠️ {RENDER.title}: the Mac went to sleep while publishing and I can't see it in the closet. "
+                   "Check Poshmark: if it's there, reply 'posted <url>'; if not, reply 'retry'.")
+    assert [m for m in said if m.startswith("⚠️")] == [f"{ask}\n(thrift mark-posted {iid} poshmark <url> | thrift "
+                                                         f"retry {iid})"]
+    assert runner.next_job(s, db, ["poshmark"], False) is None                 # never retried by itself
+    assert pipeline.retry_unconfirmed(s, db, iid) == "ready"                    # the owner's 'retry'
+    assert db.post(iid, "poshmark")["status"] == "queued" and runner.next_job(s, db, ["poshmark"], False)[0] == iid
+
+
+def test_a_listing_the_mac_slept_through_before_its_final_click_simply_goes_again(tmp_path, monkeypatch, harness,
+                                                                                  mac):
+    said, _ = harness
+    s = _settings(tmp_path, role="prod", autopublish=True, dry_run=False, max_fail=1)
+    db = DB(s.path("db"))
+    iid = _ready_item(db)
+    poster = Finding(Outcome("failed", error="TimeoutError: the size menu"),
+                     Outcome("posted", url="https://poshmark.com/listing/a"))
+    mac["slept"] = True
+    _run(monkeypatch, s, db, poster, once=True)
+    row = db.post(iid, "poshmark")
+    assert row["status"] == "queued" and row["last_error"].startswith(runner.SLEPT)    # nothing was submitted
+    assert not any(m.startswith("❌") for m in said) and not s.flag("PAUSE").exists()  # not a failure (max_fail=1)
+    mac["slept"] = False
+    _run(monkeypatch, s, db, poster, once=True)
+    assert db.post(iid, "poshmark")["status"] == "posted" and len(poster.calls) == 2
+
+
+def test_a_listing_still_posting_at_start_is_looked_for_in_the_closet(tmp_path, monkeypatch, harness, mac):
+    said, _ = harness
+    s = _settings(tmp_path, role="prod", autopublish=True, dry_run=False)
+    db = DB(s.path("db"))
+    found, lost = _ready_item(db, seq=1), _ready_item(db, seq=2)
+    for iid in (found, lost):
+        db.claim_post(iid, "poshmark", "publish")                               # the Mac slept for good mid-listing
+    url = "https://poshmark.com/listing/Tory-Burch-Red-Flats-size-75-6ac111490000000000000a02"
+
+    class Closet(Finding):
+        async def find_live(self, ctx, r, since, created=None):
+            self.looked.append(r.sku)
+            return (url, {}) if len(self.looked) == 1 else (None, {})
+
+    poster = Closet(Outcome("dryrun"))
+    asyncio.run(runner.reconcile_stale(s, db, {"poshmark": poster}, FakeCtx()))
+    assert db.post(found, "poshmark")["status"] == "posted" and db.post(found, "poshmark")["url"] == url
+    row = db.post(lost, "poshmark")
+    assert row["status"] == "failed" and row["last_error"].startswith(runner.UNCONFIRMED)   # never retried
+    assert any(m.startswith("Posted ✓") for m in said) and sum(m.startswith("⚠️") for m in said) == 1
+
+
+def test_the_owners_posted_url_is_checked_by_the_poster_between_listings(tmp_path, monkeypatch, harness):
+    said, _ = harness
+    s = _settings(tmp_path, role="prod")
+    db = DB(s.path("db"))
+    iid = _approved(db)
+    _unconfirmed(db, iid)
+    with pytest.raises(ValueError, match="not a poshmark listing address"):
+        pipeline.request_posted(s, db, iid, "https://poshmark.com/closet/someone")
+    assert pipeline.request_posted(s, db, iid, LIVE_URL + "?share=1") == LIVE_URL
+    poster = _seeing()
+    done = asyncio.run(runner.serve_requests(s, db, {"poshmark": poster}, PageCtx()))
+    assert done == [iid] and db.post(iid, "poshmark")["url"] == LIVE_URL and db.item(iid)["status"] == "posted"
+    assert any(m.startswith("✅ confirmed live on poshmark") for m in said)
+    assert pipeline.take_requests(db) == []                                     # taken once
+
+    other = _ready_item(db, seq=2)
+    db.set_item(other, owner_price=85)
+    _unconfirmed(db, other)
+    pipeline.request_posted(s, db, other, LIVE_URL.replace("0a01", "0a09"))
+    asyncio.run(runner.serve_requests(s, db, {"poshmark": _seeing(shows=False)}, PageCtx()))
+    assert db.post(other, "poshmark")["status"] == "failed"                      # nothing changed
+    assert any(m.startswith("⚠️") and "doesn't show this item" in m for m in said)   # the owner can reply again

@@ -56,6 +56,15 @@ class Bot:
                         disable_web_page_preview=True)
         return int(res["message_id"])
 
+    def edit_message(self, message_id: int, text: str) -> None:
+        """Change the text of a message the bot sent (the daily window's status message, WO28)."""
+        self.call("editMessageText", chat_id=self.chat_id, message_id=int(message_id), text=text[:MAX_TEXT],
+                  disable_web_page_preview=True)
+
+    def delete_message(self, message_id: int) -> None:
+        """Remove a message the bot sent (Telegram allows it for 48 h in a group)."""
+        self.call("deleteMessage", chat_id=self.chat_id, message_id=int(message_id))
+
     def send_photo(self, path: Path, caption: str, buttons: list[list[dict]] | None = None) -> int:
         res = self.call("sendPhoto", chat_id=self.chat_id, photo=Path(path), caption=caption[:MAX_CAPTION],
                         reply_markup={"inline_keyboard": buttons} if buttons else None)

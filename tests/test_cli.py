@@ -8,7 +8,7 @@ from thrift_agent.db import DB
 
 
 def test_worker_tick_survives_inbox_errors(monkeypatch, tmp_path):
-    def boom(s):
+    def boom(s, db=None):
         raise OSError("iCloud evicted a file mid-scan")
     monkeypatch.setattr(cli.pipeline, "ready_folders", boom)
     db = DB(tmp_path / "state.db")
@@ -328,7 +328,7 @@ def test_poster_publish_first_says_why_it_refused_and_exits_1(monkeypatch):
         assert "Traceback" not in r.output
 
 
-def test_mark_posted_reports_the_address_or_why_not(monkeypatch):
+def test_mark_posted_reports_the_address_or_why_not(monkeypatch, tmp_path):
     from typer.testing import CliRunner
     import thrift_agent.post.runner as runner
     url = "https://poshmark.com/listing/Naturino-Sneakers-Toddler-size-75-6ac111490000000000000a01"
@@ -340,7 +340,8 @@ def test_mark_posted_reports_the_address_or_why_not(monkeypatch):
 
     async def refused(s, db, iid, mp, address):
         raise ValueError(f"{mp}: only a post in 'unconfirmed publish' can be marked posted ({iid} has status posted)")
-    monkeypatch.setattr(cli, "_db", lambda: object())
+    db = DB(tmp_path / "state.db")                            # no poster heartbeat: it opens Chrome itself
+    monkeypatch.setattr(cli, "_db", lambda: db)
     monkeypatch.setattr(runner, "mark_posted", marked)
     r = CliRunner().invoke(cli.app, ["mark-posted", "i_261002_abc123", "poshmark", url])
     assert r.exit_code == 0 and calls == [("i_261002_abc123", "poshmark", url)], r.output
@@ -449,7 +450,7 @@ def test_the_worker_records_each_inbox_scan_and_status_shows_it(monkeypatch, tmp
     from typer.testing import CliRunner
     s = _settings(tmp_path, "dev")
     db = DB(s.path("db"))
-    monkeypatch.setattr(cli.pipeline, "ready_folders", lambda _s: [])
+    monkeypatch.setattr(cli.pipeline, "ready_folders", lambda _s, _db=None: [])
     monkeypatch.setattr(cli, "_db", lambda: db)
     r = CliRunner().invoke(cli.app, ["status"], terminal_width=200)
     assert "worker inbox scan: never" in r.output

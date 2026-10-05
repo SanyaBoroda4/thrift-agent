@@ -15,7 +15,7 @@ from rich import print
 from rich.markup import escape
 from rich.table import Table
 
-from thrift_agent import alerts, approve, config, notify, pipeline, runlock
+from thrift_agent import alerts, approve, config, daily, notify, pipeline, power, runlock
 from thrift_agent.config import settings
 from thrift_agent.db import DB, loads
 
@@ -56,10 +56,17 @@ def _tick(s, db) -> int:
     while job := next((j for j in approve.processing_order(db) if j not in done), None):
         done.add(job)
         kind, ref = job
+        started = time.monotonic()                       # the Mac's clock that stops while it sleeps
+        slept = _sleep_watch()
         if kind == approve.NEW_BATCH:
-            _guard(db, ref, lambda: pipeline.process_batch(s, db, ref), lambda: db.set_batch(ref, status="failed"))
+            _guard(db, ref, lambda: pipeline.process_batch(s, db, ref), lambda: db.set_batch(ref, status="failed"),
+                   slept)
         else:
-            _guard(db, ref, lambda: pipeline.process_item(s, db, ref), lambda: db.set_item(ref, status="failed"))
+            _guard(db, ref, lambda: pipeline.process_item(s, db, ref), lambda: db.set_item(ref, status="failed"),
+                   slept)
+        # the daily window's estimate (WO28 §2) is the median of these
+        db.log(ref, "worked", {"kind": "batch" if kind == approve.NEW_BATCH else "item",
+                               "seconds": round(time.monotonic() - started, 1)})
         n += 1
     return n
 
@@ -72,7 +79,7 @@ def _scan_inbox(s, db) -> int:
     through one. Processing of the items already split goes on either way."""
     alerts.scan_started(db)
     try:
-        n = sum(1 for folder in pipeline.ready_folders(s) if pipeline.register(s, db, folder))
+        n = sum(1 for folder in pipeline.ready_folders(s, db) if pipeline.register(s, db, folder))
     except OSError as e:
         if not alerts.inbox_unreadable(e):
             raise
@@ -94,12 +101,23 @@ def _safe_tick(s, db) -> int:
         return 0
 
 
-def _guard(db, ref, fn, on_fail) -> None:
+def _sleep_watch():
+    """A question to ask after a job: did the Mac sleep while it ran (the lid closed mid-item; WO28)?"""
+    wall, mono, wake = time.time(), time.monotonic(), power.last_wake()
+    return lambda: power.slept_since(wall, wake, mono)
+
+
+def _guard(db, ref, fn, on_fail, slept=None) -> None:
     """One batch or item: a failure marks it failed and is told once a day per identical error, whichever item it
-    hits (ten items failing on one bad API key are one message; thrift status lists them all)."""
+    hits (ten items failing on one bad API key are one message; thrift status lists them all). A failure while the
+    Mac slept (a model call cut off by the lid closing, WO28) is not the item's: it stays as it was and the next tick
+    takes it again."""
     try:
         fn()
     except Exception as e:  # noqa: BLE001
+        if slept is not None and slept():
+            db.log(ref, "interrupted_by_sleep", f"{type(e).__name__}: {e}")
+            return
         on_fail()
         db.log(ref, "error", traceback.format_exc())
         alerts.once(db, f"❌ {ref}: {type(e).__name__}: {e}")
@@ -134,13 +152,28 @@ def _safe_pump(s, db) -> None:
         print(f"[telegram] send failed: {type(e).__name__}: {e}")
 
 
-def _worker_iteration(s, db, interval: int) -> None:
-    """One turn of the worker's main thread: process the inbox in the queue's order, send the next question if none
-    is open, sleep. Telegram's side (replies, buttons, the next question after an answer) runs on its own thread, so
-    the owner is answered at once while items are still being processed."""
-    _safe_tick(s, db)
-    _safe_pump(s, db)
+def _worker_iteration(s, db, interval: int, window: daily.Window | None = None) -> None:
+    """One turn of the worker's main thread: notice a wake (the daily window's catch-up and "Back online"), process
+    the inbox in the queue's order, send the next question if none is open, bring the window's status message up to
+    date, sleep. Telegram's side (replies, buttons, the next question after an answer) runs on its own thread, so the
+    owner is answered at once while items are still being processed."""
+    _safe_window(db, window and window.step)
+    if window is None or not window.lid_closed:          # lid closed: a short maintenance wake, nothing is started
+        _safe_tick(s, db)
+        _safe_pump(s, db)
+        _safe_window(db, window.update if window else None)
     time.sleep(interval)
+
+
+def _safe_window(db, fn) -> None:
+    """The daily window's side of a turn (WO28): never the reason the worker stops."""
+    if fn is None:
+        return
+    try:
+        fn()
+    except Exception as e:  # noqa: BLE001
+        db.log(None, "error", traceback.format_exc())
+        print(f"[window] {type(e).__name__}: {e}")
 
 
 def _telegram_iteration(s, db, bot, state: dict) -> None:
@@ -184,15 +217,20 @@ def run(interval: int = 15) -> None:
         notify.check(s)                                   # a silent Telegram is not an option on the Mac
     bot = approve.bot_for(s)
     print(f"worker watching {s.path('inbox')}" + (" — Telegram on" if bot else " — Telegram off (dev: messages print)"))
+    # The daily window (WO28): its first step() is the start's catch-up — the inbox, "Back online" when there is work,
+    # the open question re-sent only if it is old (never at each deploy) — and so is every wake with the lid open.
+    window = daily.Window(s, db, bot, scan=lambda: _scan_inbox(s, db))
     telegram = None
     if bot:
-        approve.resend_pending(s, db)                    # the open question only if it is old: never at each deploy
         telegram = threading.Thread(target=_telegram_loop, args=(s, bot), name="telegram", daemon=True)
         telegram.start()
-    while lock:                                           # the lock is held for as long as this loop runs
-        if telegram is not None and not telegram.is_alive():
-            raise SystemExit("the Telegram thread stopped — exiting so launchd restarts the worker")
-        _worker_iteration(s, db, interval)
+    try:
+        while lock:                                       # the lock is held for as long as this loop runs
+            if telegram is not None and not telegram.is_alive():
+                raise SystemExit("the Telegram thread stopped — exiting so launchd restarts the worker")
+            _worker_iteration(s, db, interval, window)
+    finally:
+        window.awake.hold(False)
 
 
 @app.command()
@@ -485,15 +523,39 @@ def mark_posted(item_id: str, marketplace: str, url: str) -> None:
     stop the poster service first. e.g.  thrift mark-posted i_... poshmark https://poshmark.com/listing/...-<id>"""
     from thrift_agent.post.base import PosterError
     from thrift_agent.post.runner import mark_posted as run_mark_posted
-    s = settings()
+    s, db = settings(), _db()
     if s.is_prod:
         notify.check(s)
+    if daily.poster_now(db).running:                     # the poster service has Chrome: it checks the page (WO28)
+        try:
+            address = pipeline.request_posted(s, db, item_id, url, marketplace)
+        except ValueError as e:
+            print(f"[red]not marked[/] {item_id}: {escape(str(e))}")
+            raise typer.Exit(1) from None
+        print(f"[green]queued[/] {item_id}: the running poster opens {address} between listings and records it "
+              "(✅ confirmed live in Telegram)")
+        return
     try:
-        address = asyncio.run(run_mark_posted(s, _db(), item_id, marketplace, url))
+        address = asyncio.run(run_mark_posted(s, db, item_id, marketplace, url))
     except (ValueError, RuntimeError, PosterError) as e:
         print(f"[red]not marked[/] {item_id}: {e}")
         raise typer.Exit(1) from None
     print(f"[green]posted[/] {item_id} on {marketplace}: {address}")
+
+
+@app.command()
+def retry(item_id: str, marketplace: str = typer.Argument("poshmark")) -> None:
+    """A listing that may be live ("unconfirmed publish": the Mac slept while publishing, or its address wasn't found)
+    that you checked on the marketplace and is NOT there: it goes back in line and is listed again. The twin of the
+    reply 'retry' (WO28). If it IS there: thrift mark-posted <item> <marketplace> <url>."""
+    s, db = settings(), _db()
+    try:
+        pipeline.retry_unconfirmed(s, db, item_id, marketplace)
+    except ValueError as e:
+        print(f"[red]not retried[/] {item_id}: {escape(str(e))}")
+        raise typer.Exit(1) from None
+    print(f"[green]back in line[/] {item_id} on {marketplace}: the poster lists it again")
+    approve.announce(s, f"{item_id}: retry from the CLI — it goes back in line")
 
 
 @app.command()
@@ -606,6 +668,15 @@ def status() -> None:
         print(f"[cyan]Telegram[/] open: {is_open}; {len(queue)} in the queue, next: "
               + ", ".join(f"{k} {r}" for k, r in queue[:4]) + (" …" if len(queue) > 4 else ""))
     print(f"worker inbox scan: {db.kv_get(SCAN_KEY) or 'never'}")
+    # The daily window (WO28): the poster as it last said, and the window's status message.
+    p = daily.poster_now(db)
+    state = ("not running" if not p.running else ("LIVE" if p.live else "dry-run")
+             + (f", publishing {p.busy}" if p.busy else "") + (f", next at {p.next_at:%H:%M} UTC" if p.next_at else "")
+             + (f", paused: {p.paused}" if p.paused else ""))
+    print(f"poster: {state}")
+    st = loads(db.kv_get(daily.STATUS_KEY)) or {}
+    if st.get("text"):
+        print(f"window: {escape(st['text'])}")
 
 
 @app.command()

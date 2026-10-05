@@ -15,6 +15,9 @@ taps Share → "New item", and gets a Telegram ping when it's listed or when som
 ## Mac over SSH (WO21)
 - The PC reaches the Mac with an SSH key, no password: `ssh tatiana_sorokina@192.168.68.57` (MacBook-Pro-5.local;
   its host key is known under the IP). Repo `~/thrift-agent`, venv `.venv`, logs `~/thrift/logs`, DB `~/thrift/var`.
+- **Find the Mac first (WO28):** it travels (the owner's work) and DHCP moves addresses — on 2026-10-05 the PC itself
+  had 192.168.68.57. Try `MacBook-Pro-5.local`, then 192.168.68.57; if neither answers, ask the user for the IP and
+  wait — never assume. Reach a new address with `-o HostKeyAlias=192.168.68.57` so the known host key must match.
 - `deploy\deploy.ps1` (`-MacHost` to override, `-NoPush`): `git push`, then on the Mac `deploy/mac_deploy.sh`: `git
   pull`, `git -C private pull`, `bash deploy/mac_setup.sh` (venv, folders, the tests, the launchd files), the WORKER
   (re)started as the launchd service, then `services.sh status`, `thrift status` and the worker log's last 30 lines. A
@@ -42,6 +45,11 @@ taps Share → "New item", and gets a Telegram ping when it's listed or when som
   read-only commands, `thrift telegram test`. **Never over SSH:** `thrift poster --publish-first`, starting the poster
   or anything else that publishes or touches the live Poshmark account (`thrift login`, `thrift poster`),
   `thrift mark-posted`, deleting data, changing `config/settings.local.yaml` or `.env` — those are the owner's.
+- **Publishing is LIVE since 2026-10-05** (the owner's three keys; never switched to dry-run or changed by Claude).
+  A work order that changes the poster says so and the poster service is restarted with the deploy, only when it is
+  idle (never mid-item): `services.sh stop poster` → wait until `status` says it is off (it finishes the item in hand,
+  ExitTimeOut 300 s) → deploy → `services.sh start poster` → confirm "Poster started (LIVE)" (the `poster_started`
+  event, `{"live": true}`, and the poster log's first line).
 
 ## Flow
 ```
@@ -69,6 +77,8 @@ iCloud Posh/inbox/<ts>/ (+ _done) ─► register batch ─► prep (HEIC→JPEG
       each dry-run compares Poshmark's Drafts count before and after — more drafts → Telegram warning + Outcome note)
      (never a question, WO27: a value the form doesn't offer exactly → the closest one, listed in "Posted ✓ <title>
       — check: …"; a required field nothing comes close to → the item skipped, nothing saved, reported)
+     (the daily window, WO28: no new listing with the lid closed or below 15% on battery; the Mac kept from idle
+      sleep while listings remain; a listing the Mac slept through is looked for in the closet before "unconfirmed")
 ```
 Item statuses: `new` → (`awaiting_condition` →) `awaiting_price` | `needs_info` → `ready` → `posting` → `posted` |
 `drafted` | `failed`; `needs_owner` only for an item a poster from before WO27 parked (`thrift requeue` takes it
@@ -137,6 +147,11 @@ back); `dropped` (a re-share the owner called the same item). Nothing publishes 
      "unconfirmed publish: …" — it may be live. `thrift requeue` and `--publish-first` refuse it; check the closet,
      then `thrift mark-posted <item> <marketplace> <url>` (only for such a row: the URL must be a listing page no
      other item holds, showing the item's title and price; then `posted` + URL, "✅ confirmed live" in Telegram).
+   - WO28: the owner gets ONE reply-able message for such a row ("⚠️ <title>: … I can't see it in the closet. Check
+     Poshmark: if it's there, reply 'posted <url>'; if not, reply 'retry'.", outbox kind `unconfirmed`). "posted <url>"
+     is queued for the running poster, which opens the page (title, price) between listings (`thrift mark-posted`
+     queues it too while the poster runs); "retry" (`thrift retry <item>`) is the owner saying it is not there: the
+     row goes back to `queued`. The code never decides either by itself.
 5. **Stop, don't guess.** Logged out / CAPTCHA / restricted account → write `PAUSE`, ping, exit. Unknown modal
    → fail the item with a screenshot. Never solve CAPTCHAs, never type credentials.
 6. **Human pacing, human hours.** `schedule` limits; no sharing/following/offers/relisting from this code.
@@ -252,6 +267,8 @@ item's open card is sent again only when what it shows changed (text, price, cov
 cover's hash, before vs after); otherwise it stays as the owner has it. The line printed says which ("card sent again"
 / "card changed (goes out when its turn comes)" / "card unchanged (not sent again)").
 `thrift requeue <item> [marketplace] | requeue <batch> | mark-posted <item> <marketplace> <url> | status | show <item>`
+`thrift retry <item> [marketplace]` (WO28): an "unconfirmed publish" the owner checked and is NOT on the marketplace goes
+back in line (the twin of the reply 'retry'); `thrift status` shows the poster's state and the window's status message.
 `thrift poster [--once] [--dry-run] [--stage form|review] [--publish-first <item>] [--allow-dev-browser]`
 `thrift login --site poshmark | telegram setup|test | harvest | build-style | eval`
 `thrift requeue b_…` sends a failed batch back to the worker (failed batches are never retried on their own);
@@ -490,7 +507,10 @@ The owner shares retailer screenshots (product page with price, style name, colo
   Done (WO27): the poster never stops to ask — Poshmark's brand spelling learned, the nearest size, the closest
   (sub)category, colours / tags left out, each guess listed in "Posted ✓"; a required field it can't fill skips the
   item; the loop takes only owner-approved prices and holds draft-gated items; `thrift edit`.
-  Left: where Save Draft lands (`draft_saved`); the Promote toggle's markup; the owner turns the three keys on.
+  Left: where Save Draft lands (`draft_saved`); the Promote toggle's markup.
+  LIVE since 2026-10-05 (the owner's three keys). Done (WO28): the daily window — no listing started with the lid
+  closed or on a low battery, the Mac kept awake while listings remain, the closet checked after a sleep, a stale
+  `posting` row reconciled at start, the owner's 'posted <url>' / 'retry' replies.
 - **M3 Telegram approval flow — done (v1):** long polling in the worker, one approval message per item
   ([Approve $P] [Change], questions folded in), re-send of pending
   messages after sleep. Nothing left code-wise; the owner creates the bot with @BotFather and fills
@@ -502,6 +522,46 @@ The owner shares retailer screenshots (product page with price, style name, colo
   (`HOLD_UNSHIPPED`), local HTTP API over Tailscale, daily read-only order-status sync.
 - **M5 Depop** adapter.
 - **M6 sold-comps pricing** — tune `private/brand_tiers.yaml` from new sales.
+
+## The daily window (WO28)
+The Mac is mostly closed (asleep). About once a day the owner opens it, logged in, often on battery, for ~30 minutes;
+photos are shared from the iPhone any time, prices approved in Telegram, then the lid closes. The owner's guide:
+`docs/DAILY.md`. Nothing here changes the publish-safety rules or the two-key autopublish rule.
+- **Wake** (`power.WakeWatch`: `kern.waketime` moved, or the wall clock ran 90 s longer than the process — a gap in the
+  tick clock) or worker start, **with the lid open** (`power.lid_closed`, ioreg's AppleClamshellState): a new window
+  (`daily.Window.step`/`begin`) — the inbox looked at, "Back online — N new shares, M items waiting" only when there
+  is work, the open card re-sent only if older than `telegram.resend_after_hours` (`approve.resend_pending`; answers
+  given while asleep, < 24 h, arrive in the next poll in order — the offset is persisted; older ones are lost and the
+  card simply comes again). With the lid closed (the night's maintenance wakes) the worker starts nothing, says
+  nothing, and the poster starts no listing; the Telegram thread still applies answers.
+- **The status message** (`daily.status_text`, `Window.show`): ONE per window, edited (`Bot.edit_message`) when its
+  text changes, sent anew only if it can't be edited; a window where nothing happened sends none; a new window deletes
+  the last window's message (`Bot.delete_message`; Telegram allows it for 48 h). "⏳ Working — 4
+  items left, about 12 min. Please don't close the Mac yet." (processing; approved listings the poster will publish
+  count too) / "⏳ 3 listings still to publish, next in ~4 min. …" / "✓ All done — safe to close the Mac." / "✓ Safe
+  to close — 2 cards are waiting for your answer in Telegram (answers within 24 h are kept)" / "✓ Safe to close — 3
+  listings will go up after 08:00 next time the Mac is open" (outside `schedule.hours`, or the daily cap) / "… wait:
+  <PAUSE, unshipped hold, battery low>". The estimate is the median of the last runs (`daily.timings`): the worker's
+  `worked` events (seconds per batch / item, monotonic: sleep excluded), the poster's `post_posted` seconds, and the
+  real gaps between listings. The poster's own state is a heartbeat in kv (`poster_state`: live, busy, next_at,
+  paused; stale after 3 min = not running).
+- **Sleep while working.** A batch or item whose model call is cut off by the lid closing stays `new` and is taken
+  again (`cli._guard`, event `interrupted_by_sleep`) — never failed for it. A listing the Mac slept through: before
+  its final click nothing was submitted, it goes back to `queued` (≤ 3 attempts, `SLEPT`), never a failure for the
+  circuit breaker; after it without an address, the closet is looked at once more (`PoshmarkPoster.find_live`: the
+  created_listing_id, else exactly this title — tile and slug — created since the listing started; several → never
+  a guess) — found: posted with its URL and the normal "Posted ✓"; not found: unconfirmed and the ONE ⚠️ message. A
+  row still `posting` when the poster starts (the Mac slept for good, shut down) gets the same closet check
+  (`runner.reconcile_stale`; the Chrome profile lock means no other poster can be mid-listing).
+- **Battery** (`power.Awake`: `caffeinate -i -w <pid>`, on battery too): the worker holds it while it has processing to
+  do, the poster while it has listings to publish (through the human pause only when one follows); released when the
+  work is done, so the Mac sleeps normally. Below 15% on battery with work left: ONE line "🔋 Mac battery low — plug
+  in or I'll pause; nothing will be lost"; the listing in hand is finished, none started until charging or ≥ 20%
+  (`power.publish_paused`, kv `battery_low_since`, shared by both processes).
+- **iCloud** (`prep.icloud_placeholders`): a share is ready only when every file is really downloaded — the old
+  `.Name.icloud` placeholders and current macOS's dataless files (`SF_DATALESS`) are asked for (`brctl download`, the
+  folder and each file) — and `_done` is there; past 5 minutes, ONE line "Waiting for iCloud to finish downloading
+  the photos…" per share (kv `icloud_waiting`).
 
 ## Kids clothing sizes (WO23)
 A kids label that gives the child's height ("104 cm", "Gr. 104", "104") or age ("4 ans", "4A", "5-6 Y", "18 mois") is

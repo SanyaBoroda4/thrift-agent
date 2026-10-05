@@ -52,7 +52,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-from playwright.async_api import ElementHandle, Locator, Page
+from playwright.async_api import BrowserContext, ElementHandle, Locator, Page
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from thrift_agent import brands
@@ -240,6 +240,7 @@ LEFT_FORM_MS = 3_000             # ... and, once it has, this long to settle bef
 CLOSET_POLL_MS = 90_000          # then the closet is reloaded for this long until the new listing shows
 CLOSET_EVERY_MS = 10_000         # ... once every this often
 ID_SKEW_S = 600                  # a listing id created this long before the run started is still "new" (clock skew)
+FIND_TRIES, FIND_WAIT_MS = 3, 10_000   # the closet check after a sleep: looks, and the wait between them (WO28)
 POLL_MS = 250
 ROOT_TEXT_MAX = 300              # a dropdown "root" showing more text than this holds more than one field
 
@@ -277,6 +278,16 @@ def _straight(s: str) -> str:
 
 def _key(s: str) -> str:
     return re.sub(r"\s+", " ", _straight(s)).strip().casefold()
+
+
+def listing_address(url: str, base_url: str = "https://poshmark.com") -> str | None:
+    """The canonical address of a Poshmark listing — https://poshmark.com/listing/<slug>-<24 hex id>, as the first live
+    listing's (2026-10-03) — or None for anything else. A query, a fragment or a final "/" is dropped."""
+    u, base = urlparse((url or "").strip()), urlparse(base_url)
+    path = u.path.rstrip("/")
+    if (u.scheme, u.netloc) != (base.scheme, base.netloc) or not SEL["listing_url"].fullmatch(path):
+        return None
+    return f"{base_url}{path}"
 
 
 def _letters(s: str) -> str:
@@ -932,13 +943,7 @@ class PoshmarkPoster(Poster):
         return shot.with_name(f"{shot.stem}-{name}.png")
 
     def listing_address(self, url: str) -> str | None:
-        """The canonical address of a listing on this site — https://poshmark.com/listing/<slug>-<24 hex id>, as the
-        first live listing's (2026-10-03) — or None for anything else. A query, a fragment or a final "/" is dropped."""
-        u, base = urlparse((url or "").strip()), urlparse(self.base_url)
-        path = u.path.rstrip("/")
-        if (u.scheme, u.netloc) != (base.scheme, base.netloc) or not SEL["listing_url"].fullmatch(path):
-            return None
-        return f"{self.base_url}{path}"
+        return listing_address(url, self.base_url)
 
     def _listings(self, rows: list) -> dict[str, dict]:
         """The closet's listings by id, from _LINKS_JS rows: {"path", "slug", "titles"} (two links per tile)."""
@@ -1025,6 +1030,7 @@ class PoshmarkPoster(Poster):
             await asyncio.sleep(THUMB_POLL_MS / 1000)
             waited += THUMB_POLL_MS
         created = _created_id([*navigations, page.url])
+        self.created_id = created
         record = {"url_before": before, "url_after": page.url, "created_listing_id": created,
                   "click_error": click_error, "navigations": navigations, "dialogs": dialogs, "native_dialogs": native,
                   "waited_ms": waited}
@@ -1051,6 +1057,43 @@ class PoshmarkPoster(Poster):
         clicked = f"the click raised {click_error}; " if click_error else ""
         raise PosterError(f"after List This Item no listing address: {clicked}the page went to {page.url}; {why}. "
                           "It may be live: check the closet, then `thrift mark-posted`")
+
+    async def find_live(self, ctx: BrowserContext, r: Render, since: float, created: str | None = None,
+                        tries: int = FIND_TRIES) -> tuple[str | None, dict]:
+        """This listing in the closet, after the Mac slept (or the poster stopped) in the middle of publishing it
+        (WO28 §3): the id Poshmark named (created_listing_id) when the closet shows it, else the one listing with
+        exactly this title — the tile AND the address's slug — created since `since` (epoch seconds; its id carries
+        the time). Several: never a guess. Read only, in a tab of its own; a closet that doesn't load (the Wi-Fi still
+        waking up) is tried again. Returns (the address or None, what was seen)."""
+        want, letters = _key(r.title), _letters(r.title)
+        record: dict = {"created_listing_id": created, "since": since, "tries": []}
+        for attempt in range(tries):
+            page = await ctx.new_page()
+            try:
+                await page.goto(f"{self.base_url}/closet/{self.username}")
+                await page.wait_for_load_state("domcontentloaded")
+                try:
+                    await SEL["closet_links"](page).first.wait_for(state="attached", timeout=MENU_TIMEOUT_MS)
+                except PlaywrightTimeout:
+                    pass
+                listings = self._listings(await SEL["closet_links"](page).evaluate_all(_LINKS_JS))
+            except Exception as e:  # noqa: BLE001 — try again: the network may still be coming back
+                record["tries"].append({"error": f"{type(e).__name__}"})
+                await asyncio.sleep(FIND_WAIT_MS / 1000)
+                continue
+            finally:
+                await page.close()
+            titled = [lid for lid, x in listings.items() if want in x["titles"] and _letters(x["slug"]) == letters
+                      and _id_time(lid) >= since - ID_SKEW_S]
+            ours = [created] if created and created in listings else titled
+            record["tries"].append({"listings": len(listings), "with_this_title": titled})
+            if len(ours) == 1:
+                record["found"] = ours[0]
+                return f"{self.base_url}{listings[ours[0]]['path']}", record
+            if len(ours) > 1:
+                return None, record                       # several: never a guess
+            await asyncio.sleep(FIND_WAIT_MS / 1000)       # not (yet) shown: look once more
+        return None, record
 
     async def verify_live(self, page: Page, url: str, r: Render) -> None:
         """The base check (title and price), plus whether the page carries the SKU (recorded: owner's view only?)."""

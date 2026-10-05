@@ -26,7 +26,7 @@ def env(tmp_path, monkeypatch):
 
 
 def _inbox_fails(monkeypatch, error):
-    def ready_folders(s):
+    def ready_folders(s, db=None):
         raise error
     monkeypatch.setattr(cli.pipeline, "ready_folders", ready_folders)
 
@@ -50,7 +50,7 @@ def test_an_unreadable_inbox_is_retried_quietly_then_told_once_and_its_recovery(
     assert said == [alerts.INBOX_MESSAGE]
     assert "System Settings → Privacy & Security → Files & Folders → python3.14 → iCloud Drive ON" in said[0]
 
-    monkeypatch.setattr(cli.pipeline, "ready_folders", lambda s: [])
+    monkeypatch.setattr(cli.pipeline, "ready_folders", lambda s, db=None: [])
     cli._safe_tick(s, db)                                         # readable again: said once
     cli._safe_tick(s, db)
     assert said == [alerts.INBOX_MESSAGE, alerts.INBOX_BACK] and db.kv_get(alerts.SCAN_DONE)
@@ -67,7 +67,7 @@ def test_a_short_hiccup_says_nothing_at_all(env, monkeypatch):
     s, db, said, clock = env
     _inbox_fails(monkeypatch, InterruptedError(errno.EINTR, "Interrupted system call"))
     cli._safe_tick(s, db)
-    monkeypatch.setattr(cli.pipeline, "ready_folders", lambda s: [])
+    monkeypatch.setattr(cli.pipeline, "ready_folders", lambda s, db=None: [])
     clock["now"] = T0 + timedelta(seconds=15)
     cli._safe_tick(s, db)
     assert said == [] and db.kv_get(alerts.INBOX_DOWN) is None

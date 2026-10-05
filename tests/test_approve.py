@@ -654,3 +654,64 @@ def test_the_whole_flow_tap_then_the_price_card_with_the_new_price(env, tmp_path
     price = loads(db.item(iid)["price"])["list_price"]
     assert price > guess and f"\u2705 ${price}" in str(card["reply_markup"])
     assert "Condition: NWT (your answer)" in card["caption"]
+
+
+# ---------- WO28: the Mac sleeps between windows ----------
+
+def _unconfirmed_post(db, iid):
+    db.upsert_post(iid, "poshmark", status="failed", mode="publish",
+                   last_error="unconfirmed publish: the Mac went to sleep while publishing")
+    db.add_outbox(CHAT, 77, "unconfirmed", iid, text="⚠️ … Check Poshmark: …")
+
+
+def test_replies_to_the_unconfirmed_message_posted_url_and_retry(env, tmp_path, facts):
+    s, db, bot = env
+    iid = _item(db, tmp_path, facts, status="ready")
+    db.set_item(iid, owner_price=85)
+    _unconfirmed_post(db, iid)
+    url = "https://poshmark.com/listing/Tory-Burch-Suede-Ballet-Flats-6ac111490000000000000a01"
+    out = handle_update(s, db, bot, _reply(f"posted {url}?utm=share", reply_to=77))
+    assert out == f"unconfirmed {iid}: posted {url} (queued for the poster)"
+    reqs = pipeline.take_requests(db)                                      # what the poster will check
+    assert [(r["item"], r["mp"], r["url"]) for r in reqs] == [(iid, "poshmark", url)]
+    assert "the poster isn't running now" in bot.texts()[-1]                 # no heartbeat in this test
+    assert handle_update(s, db, bot, _reply("posted https://poshmark.com/closet/x", reply_to=77)).startswith(
+        f"unconfirmed {iid}: rejected")
+    assert handle_update(s, db, bot, _reply("hmm?", reply_to=77)) == f"unconfirmed {iid}: unreadable reply 'hmm?'"
+    assert bot.texts()[-1] == approve.UNCONFIRMED_HINT
+    assert handle_update(s, db, bot, _reply("Retry", reply_to=77)) == f"unconfirmed {iid}: retry"
+    assert db.post(iid, "poshmark")["status"] == "queued" and db.item(iid)["status"] == "ready"
+    assert _outbox(db, iid)[0]["resolved_at"] is not None
+    assert handle_update(s, db, bot, _reply("retry", reply_to=77)).startswith(f"unconfirmed {iid}: retry rejected")
+
+
+def test_answers_given_while_the_mac_slept_are_applied_in_order_on_wake(env, tmp_path, facts):
+    """Telegram keeps a bot's updates 24 h: the answers the owner gave while the lid was closed arrive in one poll
+    after the wake, in the order given, and the offset moves past them."""
+    s, db, bot = env
+    first = _item(db, tmp_path / "a", facts)
+    second = _item(db, tmp_path / "b", facts)
+    db.add_outbox(CHAT, 11, "item", first)
+    db.add_outbox(CHAT, 12, "item", second)
+    bot.updates = [{**_reply("40", reply_to=11), "update_id": 501}, {**_reply("55", reply_to=12), "update_id": 502}]
+    assert poll_once(s, db, bot, 0) == 2
+    assert (db.item(first)["owner_price"], db.item(second)["owner_price"]) == (40, 55)
+    assert db.kv_get(approve.OFFSET_KEY) == "502"
+    order = [r["ref"] for r in db.conn.execute("SELECT ref FROM events WHERE kind='telegram' ORDER BY rowid")]
+    assert order == [first, second]
+
+
+def test_an_answer_lost_after_24_h_just_means_the_card_comes_again_on_wake(env, tmp_path, facts, monkeypatch):
+    from thrift_agent import daily
+    s, db, bot = env
+    iid = _item(db, tmp_path, facts)
+    approve.pump(s, db)                                                    # the card goes out...
+    assert len(bot.texts()) == 1
+    db.conn.execute("UPDATE outbox SET sent_at=?",                         # ... 30 h ago, and nothing came back
+                    ((datetime.now(timezone.utc) - timedelta(hours=30)).isoformat(timespec="seconds"),))
+    window = daily.Window(s, db, bot, say=lambda text: None, lid=lambda: False, battery=lambda: None)
+    window.step()                                                          # the wake's catch-up
+    assert len(bot.texts()) == 2 and bot.texts()[1] == bot.texts()[0]      # the same card, once more
+    window.step()
+    assert len(bot.texts()) == 2                                           # once
+    assert iid in [r["ref"] for r in _outbox(db, iid)]

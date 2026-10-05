@@ -161,7 +161,7 @@ def test_the_worker_processes_in_the_queues_order(env, tmp_path, facts, monkeypa
         if iid == e2:                                                      # meanwhile the owner sends e1 back
             _db.set_item(e1, status="new")
     monkeypatch.setattr(cli.pipeline, "process_item", process)
-    monkeypatch.setattr(cli.pipeline, "ready_folders", lambda _s: [])
+    monkeypatch.setattr(cli.pipeline, "ready_folders", lambda _s, _db=None: [])
     cli._tick(s, db)
     assert order == [e1, e2, l1]                                           # e1 once per tick: again on the next one
     cli._tick(s, db)

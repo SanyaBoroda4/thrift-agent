@@ -38,24 +38,53 @@ NWT_WORD = re.compile(r"\bNWT\b|new with tags", re.I)                     # the 
 # ---------- inbox ----------
 
 
-def ready_folders(s: Settings) -> list[Path]:
-    """Folders the Shortcut finished writing: marker present, nothing still downloading, quiet for a bit."""
+ICLOUD_WAIT = "icloud_waiting"     # kv: {share folder: {"since", "told"}} — shares whose files are still in iCloud
+ICLOUD_TELL_AFTER = timedelta(minutes=5)
+ICLOUD_MESSAGE = "Waiting for iCloud to finish downloading the photos…"
+
+
+def ready_folders(s: Settings, db: DB | None = None) -> list[Path]:
+    """Folders the Shortcut finished writing: marker present, every file really downloaded, quiet for a bit.
+
+    A share whose files are still in iCloud only (the old .Name.icloud placeholders, or current macOS's dataless
+    files) is asked for (`brctl download`, the folder and each such file) and waits; with `db`, ONE line goes out if
+    that lasts more than ICLOUD_TELL_AFTER (WO28 §4), per share."""
     inbox, marker, settle = s.path("inbox"), s["inbox"]["done_marker"], s["inbox"]["settle_seconds"]
     if not inbox.exists():
         return []
-    out = []
+    out, waiting = [], {}
     for d in sorted(p for p in inbox.iterdir() if p.is_dir() and not p.name.startswith(".")):
         pending = prep.icloud_placeholders(d)
         if pending:
             if platform.system() == "Darwin":
-                subprocess.run(["brctl", "download", str(d)], check=False, capture_output=True)
+                for target in [d, *(p for p in pending if not p.name.endswith(".icloud"))]:
+                    subprocess.run(["brctl", "download", str(target)], check=False, capture_output=True)
+            waiting[str(d)] = len(pending)
             continue
         if not any(f.name == marker or f.stem == marker for f in d.iterdir()):   # "_done" or "_done.txt"
             continue
         newest = max((f.stat().st_mtime for f in d.iterdir()), default=0)
         if time.time() - newest >= settle:
             out.append(d)
+    if db is not None:
+        _icloud_wait(db, waiting)
     return out
+
+
+def _icloud_wait(db: DB, waiting: dict[str, int]) -> None:
+    """Remember since when each share waits for iCloud; tell the owner once per share after ICLOUD_TELL_AFTER."""
+    known = loads(db.kv_get(ICLOUD_WAIT)) or {}
+    stamp = datetime.now(timezone.utc)
+    state = {}
+    for folder, n in waiting.items():
+        st = dict(known.get(folder) or {"since": stamp.isoformat(timespec="seconds"), "told": False})
+        if not st["told"] and stamp - datetime.fromisoformat(st["since"]) >= ICLOUD_TELL_AFTER:
+            notify.say(ICLOUD_MESSAGE)
+            db.log(None, "icloud_waiting", {"folder": Path(folder).name, "files": n, "since": st["since"]})
+            st["told"] = True
+        state[folder] = st
+    if state != known:
+        db.kv_set(ICLOUD_WAIT, json.dumps(state))
 
 
 def register(s: Settings, db: DB, folder: Path) -> str | None:
@@ -1278,7 +1307,8 @@ def requeue(s: Settings, db: DB, iid: str, marketplace: str | None = None) -> li
                              "check the closet and fix it by hand")
         if (r["last_error"] or "").startswith("unconfirmed publish: "):
             raise ValueError(f"{r['marketplace']}: List This Item was pressed and no listing address was found — it "
-                             f"may be live; check the closet, then `thrift mark-posted {iid} {r['marketplace']} <url>`")
+                             f"may be live; check the closet, then `thrift mark-posted {iid} {r['marketplace']} <url>` "
+                             f"(it is there) or `thrift retry {iid}` (it is not)")
     if it["status"] not in ("ready", "drafted", "needs_owner"):
         raise ValueError(f"item {iid} is {it['status']}, not ready — fix the item first (thrift answer)")
     with db.tx():
@@ -1370,6 +1400,65 @@ REDO_KEEP = ("posting", "posted", "drafted")      # item and post statuses that 
 def unconfirmed_publish(post) -> bool:
     """A publish that may have gone live although its address was never found (thrift mark-posted settles it)."""
     return (post["last_error"] or "").startswith("unconfirmed publish: ")
+
+
+POSTER_REQUESTS = "poster_requests"   # kv: the owner's "posted <url>", for the poster to check between listings
+
+
+def check_unconfirmed(db: DB, iid: str, mp: str = "poshmark"):
+    """The post row of an unconfirmed publish — the final click happened, no address was found (WO28 §3) — else
+    ValueError saying what the row is."""
+    if db.item(iid) is None:
+        raise ValueError(f"unknown item {iid}")
+    row = db.post(iid, mp)
+    if row is None or row["status"] != "failed" or row["url"] or not unconfirmed_publish(row):
+        state = "no post" if row is None else f"status {row['status']}" + (f" with {row['url']}" if row["url"] else "")
+        raise ValueError(f"{mp}: only a post in 'unconfirmed publish' can be marked posted or retried ({iid} has "
+                         f"{state})")
+    return row
+
+
+def request_posted(s: Settings, db: DB, iid: str, url: str, mp: str = "poshmark") -> str:
+    """The owner's "posted <url>" (a reply to the ⚠️ message, or `thrift mark-posted` while the poster runs): what can
+    be checked here is — the row is an unconfirmed publish, the address is a listing page no other item holds — and
+    it is queued for the poster, which opens the page (the item's title and price) between listings and records it.
+    Returns the canonical address."""
+    check_unconfirmed(db, iid, mp)
+    from thrift_agent.post.poshmark import listing_address    # Playwright's module: only when it is needed
+    address = listing_address(url) if mp == "poshmark" else None
+    if address is None:
+        raise ValueError(f"not a {mp} listing address: {url!r} (e.g. https://poshmark.com/listing/<title-words>-<24 "
+                         "hex id>)")
+    if (other := db.conn.execute("SELECT item_id FROM posts WHERE url=? AND item_id != ?", (address, iid)).fetchone()):
+        raise ValueError(f"{address} is already recorded for item {other['item_id']}")
+    with db.tx():
+        reqs = [r for r in (loads(db.kv_get(POSTER_REQUESTS)) or []) if (r.get("item"), r.get("mp")) != (iid, mp)]
+        db.kv_set(POSTER_REQUESTS, json.dumps([*reqs, {"item": iid, "mp": mp, "url": address, "at": now()}]))
+        db.log(iid, "posted_reported", {"mp": mp, "url": address})
+    return address
+
+
+def take_requests(db: DB) -> list[dict]:
+    """The queued "posted <url>" requests, emptied (the poster takes them)."""
+    with db.tx():
+        reqs = loads(db.kv_get(POSTER_REQUESTS)) or []
+        if reqs:
+            db.kv_set(POSTER_REQUESTS, "[]")
+    return reqs
+
+
+def retry_unconfirmed(s: Settings, db: DB, iid: str, mp: str = "poshmark") -> str:
+    """The owner's "retry" (a reply to the ⚠️ message, or `thrift retry`; WO28 §3): they looked, and the listing is
+    not on the marketplace — so it goes back in line and the poster lists it again. Only for an unconfirmed publish:
+    the code never decides that by itself (invariant 4). Returns the item's status."""
+    check_unconfirmed(db, iid, mp)
+    with db.tx():
+        db.upsert_post(iid, mp, status="queued", last_error=None)
+        if db.item(iid)["status"] != "ready":
+            db.set_item(iid, status="ready")
+        db.outbox_resolve("unconfirmed", iid)
+        db.log(iid, "post_retry", {"mp": mp, "by": "owner"})
+    return "ready"
 
 
 def redo_batch(s: Settings, db: DB, bid: str) -> tuple[list[str], list[str]]:

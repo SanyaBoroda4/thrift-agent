@@ -60,6 +60,7 @@ class Outcome:
     draft_left: str | None = None  # "a draft was left behind (Drafts 0 → 1)": a dry-run that should have left none
     clicked: bool = False        # the final publish/draft control was pressed: the listing may be live
     guesses: list[str] = field(default_factory=list)   # what the poster chose that the listing didn't say exactly
+    created_id: str | None = None   # the listing id the site named after the final click (WO28: the closet check)
 
 
 async def open_browser(profile_dir: Path, timezone_id: str) -> tuple[object, BrowserContext]:
@@ -271,6 +272,12 @@ class Poster(ABC):
         if not _shows_price(body, r.price):
             raise PosterError(f"live page at {url} doesn't show the price ${r.price}")
 
+    async def find_live(self, ctx: BrowserContext, r: Render, since: float,
+                        created: str | None = None) -> tuple[str | None, dict]:
+        """This listing on the site after an interrupted publish (WO28 §3): (its address, what was seen), or (None, …)
+        when it can't be found — or, as here, when the adapter can't look (then it stays "unconfirmed")."""
+        return None, {"unsupported": self.name}
+
     async def post(self, ctx: BrowserContext, r: Render, mode: Mode, dry_run: bool, shots: Path,
                    stage: Stage = "form") -> Outcome:
         """Returns an Outcome for everything that happens once the page exists; only AccountBlocked (stop the
@@ -287,7 +294,7 @@ class Poster(ABC):
         """
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         shot = shots / f"{r.sku}-{self.name}-{stamp}.png"
-        self.shot, self.clicked = shot, None
+        self.shot, self.clicked, self.created_id = shot, None, None
         page: Page | None = None
         opened = submitted = kept = False
         count_drafts = dry_run and self.counts_drafts      # a dry-run must leave no draft: counted before and after
@@ -361,7 +368,8 @@ class Poster(ABC):
                     draft_left, draft_note = await self._left_behind(ctx, drafts_before)
             return Outcome("failed", screenshot=str(shot), error=f"{type(e).__name__}: {e}",
                            diff=getattr(e, "diff", {}), note=_joined(self.notes + [left, draft_note]),
-                           draft_left=draft_left, clicked=self._may_be_live(submitted))
+                           draft_left=draft_left, clicked=self._may_be_live(submitted),
+                           guesses=list(self.guesses), created_id=self.created_id)
         finally:
             if page:
                 try:

@@ -79,6 +79,10 @@ _UNIT_AFTER = re.compile(r"\s*(?:cm|mm|in|inch|inches|us|uk|eu|y|t|m|w)\b", re.I
 # A message that is nothing but a price: "28", "$28", "28.00", "28 dollars" (typed without a reply, WO20).
 # "cover 2": photo 2 of the item becomes its cover (WO23; a reply to the card, or typed while it is open).
 COVER_CMD = re.compile(r"^\s*cover\s*#?\s*(\d{1,2})\s*$", re.I)
+# Replies to "⚠️ … I can't see it in the closet" (outbox kind "unconfirmed", WO28 §3): "posted <url>" / "retry".
+POSTED_CMD = re.compile(r"^\s*(?:it'?s\s+)?posted\s*[:\-]?\s*(\S+)\s*$", re.I)
+RETRY_CMD = re.compile(r"^\s*(?:retry|try again|not there|isn'?t there)\s*[.!]*\s*$", re.I)
+UNCONFIRMED_HINT = "Reply 'posted <url>' if the listing is on Poshmark (its address), or 'retry' if it is not"
 _PLAIN_PRICE = re.compile(r"^\s*\$?\s*(\d{1,5}(?:\.\d{1,2})?)\s*(?:\$|usd|dollars?|bucks)?\s*$", re.I)
 
 _warned_no_users = False
@@ -682,7 +686,35 @@ def _route(s: Settings, db: DB, bot: Bot, update: dict) -> str:
         return _set_kids(s, db, bot, ref, choice, mid)
     if kind == "category":
         return _reply_category(s, db, bot, ref, text, mid)
+    if kind == "unconfirmed":
+        return _reply_unconfirmed(s, db, bot, ref, text, mid)
     return f"ignored: unknown outbox kind {kind}"
+
+
+def _reply_unconfirmed(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int | None) -> str:
+    """A listing that may be live (the Mac slept while publishing, or its address wasn't found; WO28 §3). "posted
+    <url>": queued for the poster, which opens the page between listings and records it (✅ confirmed live). "retry":
+    the owner looked and it isn't there — it goes back in line. The CLI twins: `thrift mark-posted`, `thrift retry`."""
+    from thrift_agent import daily
+    if m := POSTED_CMD.match(text or ""):
+        try:
+            address = pipeline.request_posted(s, db, iid, m[1])
+        except ValueError as e:
+            bot.send_message(str(e), reply_to=mid)
+            return f"unconfirmed {iid}: rejected {m[1]!r}: {e}"
+        later = "" if daily.poster_now(db).running else " (the poster isn't running now: it checks when it starts)"
+        bot.send_message(f"✓ I'll open {address} and record it once it shows this item{later}", reply_to=mid)
+        return f"unconfirmed {iid}: posted {address} (queued for the poster)"
+    if RETRY_CMD.match(text or ""):
+        try:
+            pipeline.retry_unconfirmed(s, db, iid)
+        except ValueError as e:
+            bot.send_message(str(e), reply_to=mid)
+            return f"unconfirmed {iid}: retry rejected: {e}"
+        bot.send_message("✓ It goes back in line and will be listed again", reply_to=mid)
+        return f"unconfirmed {iid}: retry"
+    bot.send_message(UNCONFIRMED_HINT, reply_to=mid)
+    return f"unconfirmed {iid}: unreadable reply {text!r}"
 
 
 def _typed(s: Settings, db: DB, bot: Bot, text: str, mid: int | None) -> str:

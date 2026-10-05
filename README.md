@@ -122,7 +122,9 @@ The poster service stays off until the owner turns publishing on (`poster.dry_ru
 `bash deploy/services.sh stop poster` first.
 
 ### Deploy over SSH
-The PC reaches the Mac with an SSH key (no password): `ssh tatiana_sorokina@192.168.68.57`. From Windows:
+The PC reaches the Mac with an SSH key (no password): `ssh tatiana_sorokina@192.168.68.57`. The Mac travels and
+addresses change: try `MacBook-Pro-5.local` first, then that IP; if neither answers, the owner gives the IP. From
+Windows:
 ```powershell
 .\deploy\deploy.ps1          # -MacHost user@host to override, -NoPush to skip the git push
 ```
@@ -191,7 +193,10 @@ thrift login --site poshmark | telegram setup|test | harvest | build-style | eva
   its address (a post marked "unconfirmed publish"): the address must be a listing page (`https://poshmark.com/
   listing/<title-words>-<24 hex id>`) that no other item holds and that shows the item's title and price. Then the
   post is `posted` with that address and Telegram says "✅ confirmed live". Anything else is refused and nothing
-  changes. Mac only, with the poster service stopped (it opens the poster's Chrome profile to look at the page).
+  changes. Mac only. While the poster service runs, the request is queued and the running poster checks the page
+  between listings (WO28); with it stopped, the command opens the poster's Chrome profile itself.
+- **`thrift retry <item> [marketplace]`** — the other answer to an "unconfirmed publish": you looked in the closet and
+  the listing is NOT there, so it goes back in line and is listed again (the twin of replying `retry` in Telegram).
 - **Condition is shown, not told** (owner rule). No listing text names wear or flaws (dirt, stain, scuff, worn, wear
   and tear, fraying, pilling, hole, tear, smell…); a used item says "Gently pre-loved, please see photos for
   condition." and is never "like new", "excellent" or "no flaws". Every flaw has a photo in the listing, never the
@@ -294,8 +299,29 @@ the module docstring.
   while: the poster reloads it every 10 s for up to 90 s until the listing Poshmark named appears with this title and a
   URL slug made of this title (`failed/shots/…-closet.json` records every reload). The live page must show the title
   and the price; then the post is `posted` with the URL. If anything after the click is unrecognized, nothing is
-  clicked again: the post is `failed` with "unconfirmed publish: …" and the evidence, Telegram is pinged, and
-  `thrift requeue` refuses it — check the closet, then `thrift mark-posted`.
+  clicked again: the post is `failed` with "unconfirmed publish: …" and the evidence, and `thrift requeue` refuses it.
+  The owner gets ONE message to reply to — "⚠️ <title>: … I can't see it in the closet. Check Poshmark: if it's there,
+  reply 'posted <url>'; if not, reply 'retry'." — or uses the CLI twins `thrift mark-posted` / `thrift retry`.
+
+## The daily window (WO28)
+The Mac is mostly closed. About once a day it is opened (often on battery) for ~30 minutes; photos are shared from the
+iPhone any time and prices approved in Telegram. The owner's one-page guide is [docs/DAILY.md](docs/DAILY.md).
+- **On wake or start** (with the lid open): the same catch-up as a restart — the inbox looked at, the open card re-sent
+  only if it is old — and "Back online — 2 new shares, 3 items waiting" when there is work. Answers given in Telegram
+  while the Mac slept (Telegram keeps them 24 h) arrive in order; an older one is lost and the card simply comes
+  again.
+- **One status message per window** (the last window's is deleted), edited as things change: "⏳ Working — 4 items left, about 12 min. Please don't
+  close the Mac yet." · "⏳ 3 listings still to publish, next in ~4 min." · "✓ All done — safe to close the Mac." ·
+  "✓ Safe to close — 2 cards are waiting for your answer in Telegram (answers within 24 h are kept)" · "✓ Safe to
+  close — 3 listings will go up after 08:00 next time the Mac is open". The estimate uses the last runs' real timings.
+- **Lid closed**: the night's short maintenance wakes start nothing and say nothing. A batch or item cut off by the lid
+  closing is simply taken again. A listing cut off before its final click goes again; after it, the closet is
+  looked at first: found → "Posted ✓"; not found → the ⚠️ message above.
+- **Battery**: while there is work the Mac is kept from idle-sleeping (`caffeinate -i`, on battery too), and let go when
+  the work is done. Below 15% with work left: "🔋 Mac battery low — plug in or I'll pause; nothing will be lost"; the
+  listing in hand is finished, the next waits for the charger (or 20%).
+- **iCloud**: a share is taken only when all its photos are really on the Mac (cloud-only files are asked for with
+  `brctl download`); after 5 minutes of waiting: "Waiting for iCloud to finish downloading the photos…".
 
 ## iPhone Shortcut — "New item"
 Same Apple ID as the Mac, iCloud Drive on, folders `iCloud Drive/Posh/inbox`. Finished shares are moved to
