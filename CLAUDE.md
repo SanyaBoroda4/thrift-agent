@@ -19,8 +19,8 @@ taps Share → "New item", and gets a Telegram ping when it's listed or when som
   had 192.168.68.57. Try `MacBook-Pro-5.local`, then 192.168.68.57; if neither answers, ask the user for the IP and
   wait — never assume. Reach a new address with `-o HostKeyAlias=192.168.68.57` so the known host key must match.
 - `deploy\deploy.ps1` (`-MacHost` to override, `-HostKeyAlias 192.168.68.57` for a new address, `-NoPush`): `git push`,
-  then on the Mac `deploy/mac_deploy.sh`: `git
-  pull`, `git -C private pull`, `bash deploy/mac_setup.sh` (venv, folders, the tests, the launchd files), the WORKER
+  then on the Mac `deploy/mac_deploy.sh`: `git pull`, `git -C private pull`, `bash deploy/mac_setup.sh` (venv,
+  folders, the tests, the launchd files), the WORKER
   (re)started as the launchd service, then `services.sh status`, `thrift status` and the worker log's last 30 lines. A
   failed setup or test run rolls the Mac back to the commit before the pull; any failure (incl. a worker that isn't
   running afterwards) exits non-zero.
