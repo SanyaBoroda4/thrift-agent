@@ -6,7 +6,8 @@ import re
 import unicodedata
 
 from thrift_agent.brain import llm, taxonomy
-from thrift_agent.brain.copy import HAS_CONDITION_LINE, NEGATIVE_WORDS, USED, USED_CLAIMS, strip_tag_lines
+from thrift_agent.brain.copy import (HAS_CONDITION_LINE, NEGATIVE_WORDS, STYLE_HEMS, USED, USED_CLAIMS, cutoff,
+                                     strip_tag_lines)
 from thrift_agent.brain.sizes import kids_parts, size_label
 from thrift_agent.schema import CopyOut, Facts, VerifyOut
 
@@ -118,10 +119,19 @@ def _colors_in(text: str) -> set[str]:
     return {_shade(w) for w in re.findall(COLOR_WORDS, text.lower())}
 
 
+def denim_item(facts: Facts) -> bool:
+    """Visibly denim (WO27): jeans, jean shorts, a jean or denim jacket — "denim" names the item type there."""
+    text = f"{facts.item_type} {facts.subcategory or ''}"
+    return facts.category == "Jeans" or bool(re.search(r"\b(?:jeans?|denim)\b", text, re.I))
+
+
 def unsupported_materials(text: str, facts: Facts) -> list[str]:
     """The material words in `text` that facts.material (a label or stamp) does not state — the brand or style name
-    counts too ("Canvas" as a style). Two-word materials match as a unit: "faux leather" needs "faux leather"."""
+    counts too ("Canvas" as a style). Two-word materials match as a unit: "faux leather" needs "faux leather". "denim"
+    on a visibly denim item needs no label (WO27; live: Levi's 501 cutoffs went to draft over it)."""
     names = f"{facts.brand.value or ''} {facts.style_name.value or ''}"
+    if denim_item(facts):
+        names += " denim"
     supported = re.sub(r"[\s-]+", " ", f"{facts.material.value or ''} {names}".lower())
     claimed = dict.fromkeys(re.sub(r"[\s-]+", " ", m.group(1).lower()) for m in MATERIAL_WORDS.finditer(text))
     return [word for word in claimed if not re.search(rf"\b{re.escape(word)}\b", supported)]
@@ -196,8 +206,9 @@ def lint(facts: Facts, copy: CopyOut, photos: list[int] | None = None, brands: l
         if RANK.index(grade) > rank and re.search(pat, everything, re.I):
             problems.append("says NWT but facts aren't NWT" if grade == "NWT"
                             else f"copy claims {grade} but facts are {facts.condition}")
-    if rank < RANK.index("NWOT") and re.match(r"new\b", t, re.I):
-        problems.append(f"title starts with New but facts are {facts.condition}")
+    if rank < RANK.index("NWOT") and re.search(r"(?<!like )\bnew\b", re.sub(re.escape(facts.brand.value or "\x00"), " ",
+                                                                          t, flags=re.I), re.I):
+        problems.append(f"title says New but facts are {facts.condition}")
     if re.search(r"\d,5\b", everything):
         problems.append("decimal comma in a size")
     names = f"{facts.brand.value or ''} {facts.style_name.value or ''}"    # "Vans Authentic" is a style, not a claim
@@ -232,8 +243,9 @@ def lint(facts: Facts, copy: CopyOut, photos: list[int] | None = None, brands: l
         problems.append(f"color words not in facts: {off}")
     # The owner's condition rule: wear and flaws are never put in words; the photos show them.
     tags = " ".join([*copy.poshmark_style_tags, *copy.depop_hashtags])
+    style_ok = cutoff(facts)                           # a cutoff's frayed / raw hem is its style (WO27)
     for where, text in (("title", t), ("poshmark description", d), ("depop description", dd), ("tags", tags)):
-        if words := _found(NEGATIVE_WORDS, text):
+        if words := _found(NEGATIVE_WORDS, STYLE_HEMS.sub(" ", text) if style_ok else text):
             problems.append(f"wear words in the {where}: {', '.join(words)}")
     if used and (claims := _found(USED_CLAIMS, everything)):
         problems.append(f"a used item claims {', '.join(claims)}")

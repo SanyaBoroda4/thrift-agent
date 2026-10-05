@@ -67,11 +67,12 @@ iCloud Posh/inbox/<ts>/ (+ _done) ─► register batch ─► prep (HEIC→JPEG
      (dry-run stage form | review: never the publish button; the form is left through Poshmark's Discard;
       after the upload Poshmark's cover dialog is applied with its default crop, any other dialog fails the item;
       each dry-run compares Poshmark's Drafts count before and after — more drafts → Telegram warning + Outcome note)
-     (stuck on an owner-only field → separate question, item waits in `needs_owner`, the others continue)
+     (never a question, WO27: a value the form doesn't offer exactly → the closest one, listed in "Posted ✓ <title>
+      — check: …"; a required field nothing comes close to → the item skipped, nothing saved, reported)
 ```
 Item statuses: `new` → (`awaiting_condition` →) `awaiting_price` | `needs_info` → `ready` → `posting` → `posted` |
-`drafted` | `failed`; `needs_owner` while the poster's question is open; `dropped` (a re-share the owner called the
-same item). Nothing publishes without price approval.
+`drafted` | `failed`; `needs_owner` only for an item a poster from before WO27 parked (`thrift requeue` takes it
+back); `dropped` (a re-share the owner called the same item). Nothing publishes without price approval.
 
 ## Invariants — do not break these
 1. **Facts before prose.** `extract` never writes copy; `copy` may only restate Facts. Null facts are omitted.
@@ -119,10 +120,11 @@ same item). Nothing publishes without price approval.
      model under 0.70 sure of its category, or one Poshmark doesn't have / "Other": its own message with 1-3 real paths
      as buttons (WO25; with no real path to offer, the old typed question on the card) — a possible re-share, a pair of
      shoes in doubt between brand new and worn (its own message, before the price), Girls or Boys for a kids item the
-     model is under 0.70 sure of (its own message, WO20), and the poster's `needs_owner`. **Never the grouping** (owner
-     decision, WO20b): it is accepted without asking; [Wrong photos] on a card is the owner's way back, not a routine
-     question; only a grouping that isn't a partition (a photo in no item, or in two) still sends the contact sheet,
-     since taking it would lose or double a photo. The model's own `questions` about
+     model is under 0.70 sure of (its own message, WO20). **Never the poster** (WO27: it takes the closest value the
+     form offers and lists it in "Posted ✓"); **never a set's category** (WO27: its bottom decides). **Never the
+     grouping** (owner decision, WO20b): it is accepted without asking; [Wrong photos] on a card is the owner's way
+     back, not a routine question; only a grouping that isn't a partition (a photo in no item, or in two) still sends
+     the contact sheet, since taking it would lose or double a photo. The model's own `questions` about
      optional facts (material, measurements) are dropped — a missing optional fact is left out of the listing; an
      unsure condition is kept in the item's record (`gate.info`), never on the card. CLI actions (`thrift price` /
      `answer` / `confirm` / `condition` / `kids` / `category` / `redo`) are echoed to the Telegram group and settle the
@@ -235,6 +237,7 @@ Without `private/`, the code falls back to `config/*.example.yaml` and `data/sty
 `thrift kids <item> girls|boys` (the twin of [Girls] [Boys]) | `thrift redo <batch>` (rebuild a batch's unposted items)
 `thrift category <item> "<category › subcategory>"` (WO25, the twin of "Which category?"; "Kids > Matching Sets" for
 another department) | `thrift answer <item> "no brand"` (the twin of [No brand])
+`thrift edit <item> --title "<exact title>" --brand "<brand>"` (WO27, either or both: the owner's words, kept)
 `thrift reprocess <item>` (WO25): an item that waits for the owner, or is ready, goes through the pipeline again IN
 PLACE — today's prompts and copy rules, the owner's answers kept (price, condition, Girls/Boys, cover, category, no
 brand). It keeps waiting meanwhile (its card stays open) and the card is sent again only when what it shows changed, as
@@ -259,8 +262,12 @@ item that never reached the site goes back to `new` — its price and approved p
 messages dropped; the owner's condition and Girls/Boys answers kept — and the worker processes it again; new cards
 follow, one at a time. Left alone, and listed: posting / posted / drafted, a post with a URL or an unconfirmed publish,
 and an item the owner dropped as a re-share. Refuses a batch with nothing to rebuild.
-`thrift requeue` also takes back an item the poster parked in `needs_owner` as it is (no reprocessing, the question
-closed) — the retry after a poster fix. `confirm`, `answer` and `price` are the CLI twins of the Telegram replies
+`thrift requeue` also takes back an item a poster from before WO27 parked in `needs_owner` as it is (no reprocessing,
+the question closed), and an item the poster skipped (post `failed` "skipped: …") once the listing is fixed.
+`thrift edit <item> [--title "<exact title>"] [--brand "<brand>"]` (WO27): the owner's own words, kept through any
+reprocessing (`items.owner_title`, `items.owner_brand`), no model call, the price kept; another spelling of the same
+brand ("J.Crew" → "J. Crew") is learned for the poster. `thrift recover <item> --relabel` reads the labels again (one
+call) and replaces the feature lines the old reading gave. `confirm`, `answer` and `price` are the CLI twins of the Telegram replies
 (`confirm <batch> "<fix>"` also answers a [Wrong photos] sheet);
 `telegram setup` prints the chat/user ids seen in recent updates, `telegram test` sends a test message.
 `poster --publish-first <item>` is the supervised first publish: on the Mac only (poster service stopped), one
@@ -273,8 +280,12 @@ listing's address (the closet Poshmark lands on, reloaded until the listing show
 the live page (title, price) and records the post `posted` with the URL. Anything unrecognized after the click: never
 clicked again, `failed` with the evidence, a Telegram ping. Never retried automatically.
 The poster loop (`thrift poster`) publishes only with `poster.dry_run: false` AND `poster.autopublish_confirmed:
-true` (both off by default; plus `marketplaces.<mp>.autopublish: true`, else a publish-gated item is a draft, which
-still refuses: `draft_saved` UNVERIFIED). `mark-posted <item> <marketplace> <url>` records a listing found by hand for
+true` (both off by default) AND `marketplaces.<mp>.autopublish: true`. It takes `ready` items whose listing carries the
+owner-approved price (`runner.approved`; WO27), the oldest first, one at a time, inside `schedule.hours`,
+`per_hour_max` / `daily_cap`, with a human `gap_seconds` pause after each (now and then a 2–4× longer break). A
+gate-"draft" item (the copy needs one look) never publishes on its own, and Save Draft is UNVERIFIED, so the live loop
+leaves it alone — never filled, never failed — and says once "⏸ Not published automatically (<item>) … thrift poster
+--publish-first <item>" (`runner.held`). A skipped item never trips the circuit breaker. `mark-posted <item> <marketplace> <url>` records a listing found by hand for
 an "unconfirmed publish" row (Mac only, poster service stopped).
 `--allow-dev-browser` lets the poster open a browser on the dev machine for selector work; it stays dry-run and
 never logs into or touches the shop. `--stage` overrides `poster.dry_run_stage` for one run: `form` (fill, read back,
@@ -293,10 +304,26 @@ The owner shares retailer screenshots (product page with price, style name, colo
   condition line is "Gently pre-loved, please see photos for condition."; NWT/NWOT say "New with tags." / "New without
   tags." ("New in box." for NWT shoes whose box is in the photos, `box_photo`); flaw photos are in the listing, never
   the cover.
+- **A cutoff's frayed / raw hem is its style** (WO27): "frayed hem", "raw hem", "distressed edges" are allowed on
+  cutoff shorts, jean shorts and jeans only (`copy.cutoff`, `copy.STYLE_HEMS`: the condition rule, lint and the poster's
+  check mask them there); anywhere else they are wear words.
 - **Materials need evidence.** `item_type`/`features` may not name a material (leather, suede, wool, …) unless
   `facts.material` has label/stamp evidence; texture words (woven, quilted, ribbed, glitter) are fine. The verifier
   treats material words as claims; lint flags any material word in title/description/tags that `facts.material`
-  doesn't support.
+  doesn't support — except "denim" on a visibly denim item (jeans, jean shorts, a jean or denim jacket; WO27,
+  `verify.denim_item`).
+- **Titles: the brand FIRST** (owner rule, WO27; `copy.title_order`, run inside `premium.title_with_feature` on every
+  title): brand → the one premium feature → item → colour → US size ("J. Crew 100% Merino Wide Leg Sweater Pants
+  Blue size M", never "100% Merino New J.Crew …"). "New" only for NWT / NWOT, right after the brand; lint flags
+  "New" anywhere in a used item's title (the brand's own "New" — New Balance — aside). The owner's own title
+  (`thrift edit --title`) is kept as it is.
+- **A set goes under its bottom** (owner rule, WO27; `pipeline.settle_set`, code, at confidence 1.0, so "Which
+  category?" never comes for a set): pants → Pants & Jumpsuits (flared → Boot Cut & Flare, wide → Wide Leg, joggers,
+  leggings…), skirt → Skirts › Skirt Sets, shorts → Shorts; Kids → Matching Sets. Pajama, swim and lingerie sets are
+  left to the model; the owner's category wins.
+- **The verifier's edits** (WO27): `copy.changed_fields` compares word by word — case, punctuation, emoji, hashtags,
+  line breaks and the Depop tag line aside — and words it only took out are no rewrite (live: "verifier rewrote
+  depop_description without reporting a claim" for an emoji or a wear phrase it stripped, six items).
 - **Style tags are Poshmark's own.** Only the 130 curated tags its form offers (`data/poshmark_taxonomy.yaml:
   style_tags`, recorded 2026-09-30), spelled Poshmark's way, at most 3. The copy prompt lists them; `fit_style_tags`
   drops anything else before lint, including a material tag (Leather, Suede, Wool, …) that `facts.material` doesn't
@@ -371,7 +398,7 @@ The owner shares retailer screenshots (product page with price, style name, colo
   accepted; everything else is ignored. Replies and buttons work with BotFather privacy mode ON; a number typed
   without a reply reaches the bot only with privacy mode OFF (then remove and re-add the bot) or the bot an admin.
 - **ONE message at a time (owner rule, WO20).** Everything that waits for an answer — contact sheet, "Brand new or
-  worn?", "Girls or Boys?", price card, the poster's question — is one queue read from the DB (`approve.queue`): the
+  worn?", "Girls or Boys?", "Which category?", price card — is one queue read from the DB (`approve.queue`): the
   oldest batch first, its contact sheet when one is asked, then its items in photo order (each item's questions, then its card), then
   the next batch. At most one message is open; `approve.pump` sends the next when it is answered (a send lock in
   `kv` keeps the worker's threads, the poster and a CLI command from both sending). The worker processes in the
@@ -409,9 +436,22 @@ The owner shares retailer screenshots (product page with price, style name, colo
   45` stores the price and reprocesses with the note; it comes back only if still unresolved (price kept). Two
   questions are never settled by a price alone: NWT without a hang-tag photo is listed as Like New (the card asks)
   unless the reply says `NWT`; a re-share hold needs `different item` (list it) or `same item` (drop it).
-- `needs_owner`: the poster's question (brand missing from Poshmark's list, ambiguous category), kept with the item
-  (`items.owner_question`) and asked in its turn; other items continue; the reply is attached and the item
-  reprocessed.
+- **The poster never asks (WO27).** Brand: ours as Poshmark spells it (`brands.Aliases`: `data/brand_aliases.yaml`,
+  written by the poster on the Mac, git-ignored; seed "J.Crew" → "J. Crew"), typed (then its longest word if the list
+  offers nothing), then `brands.pick`: the same name normalised (case, spaces, dots, hyphens, apostrophes, & = and),
+  else the name without a qualifier ours lacks (Factory, Outlet, Kids, Baby, Home, Collection, Sport… — never "J. Crew
+  Factory" for J.Crew), else the longest name all of whose words are ours ("Zara" for "Zara Basic"), else the most
+  similar (≥ 0.85), else Brand left empty (it is optional) — each resolved name learned. Size: the menu's value, else
+  the nearest of the same system, one size away at most (`post/fallback.nearest_size`: 8.5 → 9, XL → L, never a
+  Petite or a kids label for a plain size). Category: the closest (≥ 0.75), else the item is skipped; subcategory: the
+  closest (≥ 0.6), else None; colours and style tags not offered are left out. Every guess goes in the "Posted ✓
+  <title> — check: brand set to 'J. Crew' (from 'J.Crew')" message (none → no extra words) and the event log. A
+  required field nothing comes close to: `skipped` — nothing saved, the post `failed` with "skipped: …", one Telegram
+  line, `thrift requeue <item>` once the listing is fixed. The outbox kind `owner_q` is no longer sent; a reply to an
+  old one still works (to a brand question, the reply is the brand).
+- **A plain reply is the answer to THAT question** (WO27): to a card that asks the brand, "J. Crew" is the brand
+  (`approve.brand_reply` → `pipeline.set_brand`: no model call; the old name replaced in the copy, the title brand-first,
+  the card sent again when it changed); "brand X" works on any card; a size, NWT, a number… keep their meaning.
 - Re-send: once the open message — only that one — has waited longer than `telegram.resend_after_hours` (default 6),
   it is sent again; checked when the worker starts and about hourly (Telegram keeps updates 24 h; the Mac sleeps). A
   restart — every deploy — never repeats a card sent less than that ago (WO24: it used to, at every start; one skirt's
@@ -447,9 +487,12 @@ The owner shares retailer screenshots (product page with price, style name, colo
   `poster.autopublish_confirmed` as the second key for the poster loop.
   Done (WO24): every department's categories and subcategories from the form's catalog; a subcategory given as the
   category put under its category.
-  Left: where Save Draft lands (`draft_saved`); the Promote toggle's markup; a week of dry-runs, then the two keys.
+  Done (WO27): the poster never stops to ask — Poshmark's brand spelling learned, the nearest size, the closest
+  (sub)category, colours / tags left out, each guess listed in "Posted ✓"; a required field it can't fill skips the
+  item; the loop takes only owner-approved prices and holds draft-gated items; `thrift edit`.
+  Left: where Save Draft lands (`draft_saved`); the Promote toggle's markup; the owner turns the three keys on.
 - **M3 Telegram approval flow — done (v1):** long polling in the worker, one approval message per item
-  ([Approve $P] [Change], questions folded in), `needs_owner` for the poster's own questions, re-send of pending
+  ([Approve $P] [Change], questions folded in), re-send of pending
   messages after sleep. Nothing left code-wise; the owner creates the bot with @BotFather and fills
   `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_ALLOWED_USER_IDS` in `.env` (`thrift telegram setup|test`).
   Done (WO20, after the first live test with two batches): one message at a time across batches and items, one-tap
@@ -481,7 +524,8 @@ no-hallucination rule stays).
   photos at the usual size. Out: `facts.premium` — composition exact ([{fiber, pct, part}], one entry per fiber in
   English: "100% SILK / 100% SOIE / 100% SEDA" is silk 100), made_in, a premium line / sub-label, vintage only with a
   concrete cue (union label, old tag, single stitch, Big E, a dated care tag) and the era when clear, collab / limited
-  edition / sample, technical (Gore-Tex, waterproof, down fill, Primaloft, UPF), construction (fully lined, silk lining,
+  edition / sample (with its type as the tag prints it: "Sample: 1st Proto Fit"), technical (Gore-Tex, waterproof,
+  down fill, Primaloft, UPF), construction (fully lined, silk lining,
   hand-knit, handmade, beading, Goodyear welt; never a negative), a retail price printed on an attached hang tag —
   every value with its photos; `premium.merge` keeps only values a photo of this item shows. The main fabric's
   composition becomes `facts.material` (the materials rule's evidence); the hang tag's price the retail price when no
@@ -501,7 +545,8 @@ no-hallucination rule stays).
   words or its colours. Idempotent.
 - **Description** (`premium.ensure_feature_lines`, both marketplaces): every confirmed feature in a plain line of its
   own, before the condition line — "Material: 100% silk." (every fiber of the main fabric), "Lining: 100% silk." (a
-  premium lining), "Made in Italy.", "J.Crew Collection.", "Vintage 90s.", "H&M x Erdem.", "Gore-Tex, waterproof.",
+  premium lining), "Made in Italy.", "J.Crew Collection.", "Vintage 90s.", "H&M x Erdem.", a sample as whose and which
+  ("J. Crew Sample (1st Proto Fit).", WO27, `premium.collab_line`), "Gore-Tex, waterproof.",
   "Fully lined." — then the condition line, then "Original retail $128.". The copy writer never sees `premium`: code
   states it, so it's never doubled or embellished.
 - **Price** (`premium.price_factor` → `price(…, premium=)`): the suggestion × ONE multiplier, the largest that applies

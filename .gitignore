@@ -12,4 +12,7 @@ eval/results_*.json
 .DS_Store
 *.egg-info/
 reports/
-.private.bundle          # deploy.ps1 ships private/ to the Mac as a git bundle
+# deploy.ps1 ships private/ to the Mac as a git bundle
+.private.bundle
+# the poster's learned brand spellings (WO27): written at runtime on the Mac
+data/brand_aliases.yaml

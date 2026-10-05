@@ -414,7 +414,7 @@ def test_the_poster_waits_while_a_batch_is_being_fixed(env, tmp_path, facts):
     render = {"marketplace": "poshmark", "title": "Item 2", "description": "x", "price": 40, "department": "Women",
               "category": "Shoes", "subcategory": None, "size": "7.5", "condition": "good", "brand": "Tory Burch",
               "colors": ["Red"], "photos": ["cover.jpg"], "sku": i2}
-    db.set_item(i2, status="ready", renders={"poshmark": render})
+    db.set_item(i2, status="ready", renders={"poshmark": render}, owner_price=40)
     assert runner.next_job(s, db, ["poshmark"], dry=True)[0] == i2
     pipeline.start_regroup(s, db, i1)
     assert runner.next_job(s, db, ["poshmark"], dry=True) is None

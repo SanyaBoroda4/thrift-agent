@@ -15,7 +15,7 @@ LINE = "Gently pre-loved, please see photos for condition."
 
 
 def pants(facts, **kw):
-    """The live white silk pants (i_261004_2b84a5's shape): no brand, label photo 1."""
+    """The live white silk pants' shape: no brand, label photo 1."""
     base = dict(item_type="sheer wide-leg pants", category="Pants & Jumpsuits", subcategory="Wide Leg", brand=Ev(),
                 size_printed=Ev(value="M", photos=[1], source="photo", confidence=0.9),
                 size_us=Ev(value="M", photos=[1], source="photo", confidence=0.9), colors=["White"])

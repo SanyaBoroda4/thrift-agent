@@ -25,7 +25,8 @@ Studio, Limited Edition, We The Free, Maeve, Pilcro), not the brand itself.
 - vintage: only with a concrete cue the photos show — a union label, an old tag style, a single-stitch hem, Levi's Big E \
 red tab, a date printed on the care tag. List each cue in vintage_cues; vintage = the era when it is clear ("1990s"), \
 else "vintage". No cue: leave both empty.
-- collab: a collaboration ("x Erdem"), "Limited Edition" or "Sample" as printed.
+- collab: a collaboration ("x Erdem"), "Limited Edition", or a sample — "Sample" with the sample type the tag prints, \
+e.g. "Sample: 1st Proto Fit" (a factory sample tag: "SAMPLE TYPE: 1ST PROTO FIT").
 - technical: performance features as printed: Gore-Tex, waterproof, down fill (the percentage or fill power), \
 Primaloft, UPF 50+.
 - construction: fully lined, silk lining, hand-knit, handmade, hand-beaded or embroidered, Goodyear welt — only when a \

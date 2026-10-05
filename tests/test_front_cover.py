@@ -388,7 +388,7 @@ def test_recover_command(tmp_path, monkeypatch):
 
     seen = []
 
-    def recover(s_, db_, iid, recheck=False):
+    def recover(s_, db_, iid, recheck=False, relabel=False):
         seen.append(recheck)
         if iid == ids[1]:
             raise ValueError(f"item {iid} is on the marketplace (poshmark posted) — left as it is")

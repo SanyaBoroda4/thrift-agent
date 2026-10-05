@@ -73,7 +73,9 @@ Defaults for the first weeks of live posting, until the eval numbers justify loo
   exactly one of those values ("Waist 32", "MP", "7.5 (Toddler Girl)", "3 Months"), and a size no menu has is asked.
 - **The only questions that reach the owner:** brand or size below 0.70, NWT without a hang-tag photo, a category
   of "Other" (or a department/category not on Poshmark's list), a possible re-share, a pair of shoes in doubt between
-  brand new and worn, Girls or Boys below 0.70, and the poster's `needs_owner`. The model's own questions about
+  brand new and worn, Girls or Boys below 0.70. Never the poster (it takes the closest value Poshmark's form offers
+  and lists it in its "Posted ✓" message, WO27) and never a set's category (its bottom decides). The model's own
+  questions about
   optional facts (material, measurements) are dropped: a missing optional fact is left out of the listing. An unsure
   condition is kept in the item's record, not shown. Anything the owner does from the CLI (`thrift price` / `answer`
   / `confirm` / `condition` / `kids` / `redo`) is echoed to the Telegram group and settles the pending message there.
@@ -172,9 +174,11 @@ thrift login --site poshmark | telegram setup|test | harvest | build-style | eva
   the owner can fill `TELEGRAM_CHAT_ID` and `TELEGRAM_ALLOWED_USER_IDS`; `test` sends a test message. See
   "Telegram approval (M3)".
 - **`thrift requeue <item> [marketplace]`** puts an item back in the posting queue — after a failed attempt, a fix,
-  or an owner answer — for one marketplace or all of them. It also takes back an item the poster parked with a
-  question (`needs_owner`) as it is, without reprocessing, and closes that question — the way to retry once the poster
-  itself was fixed. Posting stays idempotent: an item that already has a live URL on a marketplace is never posted
+  a skip ("skipped: …", a required field the form couldn't take), or an owner answer — for one marketplace or all of
+  them. It also takes back an item a poster from before WO27 parked with a question (`needs_owner`) as it is, without
+  reprocessing, and closes that question.
+- **`thrift edit <item> --title "…" --brand "…"`** (WO27) sets the listing's title and/or brand exactly as given: the
+  owner's words, kept through any reprocessing, no model call, the price kept. Not for an item already listed. Posting stays idempotent: an item that already has a live URL on a marketplace is never posted
   there again.
 - **`thrift poster --allow-dev-browser`** lets the poster open a browser on the Windows dev machine to work on
   selectors. It stays a dry-run: the dev machine never logs into or touches the shop, and without the flag the dev
@@ -242,14 +246,19 @@ the module docstring.
   Either is fine as long as the form's size field then shows the size; anything else fails the item with the
   evidence.
 - **Poshmark's labels.** Condition, picked by Poshmark's code: NWT = "New With Tags (NWT)" (`nwt`), NWOT and like new
-  = "Like New" (`uln`), excellent and good = "Good" (`ug`), fair = "Fair" (`uf`). Brand: the exact
-  (case-insensitive) suggestion, else the owner is asked. Colours: the 15-colour palette's tiles. Style tags: only
-  Poshmark's 130 curated tags (a tag it doesn't offer is left out and the owner is told). Smart Sell must be off
+  = "Like New" (`uln`), excellent and good = "Good" (`ug`), fair = "Fair" (`uf`). Brand: ours as Poshmark spells it
+  (`data/brand_aliases.yaml`, learned; "J.Crew" → "J. Crew"), else the suggestion with the same normalised name, else
+  the one without a qualifier we don't have (never "J. Crew Factory" for J.Crew), else the closest, else left empty
+  (Brand is optional). Colours: the 15-colour palette's tiles. Style tags: only Poshmark's 130 curated tags (a tag it
+  doesn't offer is left out). Smart Sell must be off
   (checked, never switched); Shipping Discount is left at its default, "Optional" (no discount). The SKU is in the
   collapsed Additional Details: the poster opens "show details" first.
-- **Owner questions (`needs_owner`)** only where the form is fine but lacks our value: a brand, category, subcategory
-  or size Poshmark doesn't offer, or a department it doesn't have (Unisex). A form that looks different from the
-  recording fails the item with a screenshot instead.
+- **The poster never stops to ask (WO27).** A value the form lacks gets the closest one it offers — the nearest size
+  of the same kind (one size away at most), the closest category or subcategory (else none), a brand as above — and
+  every such guess is listed in the owner's "Posted ✓ <title> — check: brand set to 'J. Crew' (from 'J.Crew')"
+  message. Only a required field nothing comes close to (a department Poshmark doesn't have, a size far off the menu)
+  skips the item: nothing is saved, the owner gets one line, and `thrift requeue <item>` retries it once fixed. A form
+  that looks different from the recording fails the item with a screenshot instead.
 - **Dry-run stages** (`poster.dry_run_stage`, or `--stage` for one run). `form`: fill, read back, keep the evidence,
   then leave through the form's **Cancel** and the "Save Draft" dialog's **Discard Changes**, so no draft is left
   behind. Every dry-run also counts Poshmark's Drafts before the form and again on a freshly opened create page
@@ -261,10 +270,14 @@ the module docstring.
 - **Evidence** for every dry-run and failure in `failed/shots/`: `<item>-poshmark-<time>.png` (full page), `.html`
   (the DOM, to record selectors from) and `.json` (what was read back, what was expected, the diff). The HTML can
   contain account details: keep it on the Mac, never in the public repo.
-- **Publishing: two keys.** The poster service publishes only with `poster.dry_run: false` AND
-  `poster.autopublish_confirmed: true` in the Mac's settings (both off by default; publish-gated items also need
-  `marketplaces.poshmark.autopublish: true`, else they would be drafts, which still refuse until where Save Draft
-  lands is recorded). Until then it dry-runs, and one item at a time can be published supervised on the Mac:
+- **Publishing: three keys.** The poster service publishes only with `poster.dry_run: false`,
+  `poster.autopublish_confirmed: true` AND `marketplaces.poshmark.autopublish: true` in the Mac's
+  `config/settings.local.yaml` (all off by default), and only `ready` items whose listing carries the owner-approved
+  price: the oldest first, one at a time, inside `schedule.hours` and the hourly / daily caps, with a human pause
+  (`schedule.gap_seconds`, now and then a longer break) after each. An item whose copy the gate wants looked at once
+  ("draft") is never published by the loop: it is left alone and the owner is told once, with the command below.
+  `bash deploy/services.sh start poster` starts it; `bash deploy/services.sh stop poster` stops it at once (the item
+  in hand is finished first). Until then it dry-runs, and one item at a time can be published supervised on the Mac:
 
   ```bash
   thrift poster --publish-first <item>
@@ -354,9 +367,9 @@ private chat with the bot it always does.
 - **Two answers must be explicit.** *NWT without a hang-tag photo* is listed as **Like New** and the card asks; reply
   `NWT` (with or without the price) if the tag really is attached. *A suspected re-share* stays held even after a
   price: reply `different item` to list it or `same item` to drop it.
-- **`needs_owner`.** The poster may ask its own question when it is stuck on a field only the owner can answer (a
-  brand, category or size missing from Poshmark's lists); it is asked in its turn. The item waits in `needs_owner`
-  while the others continue; the reply is attached to the item and it is reprocessed.
+- **A plain reply answers the question it replies to** (WO27): "J. Crew" sent in reply to a card that asks the brand
+  sets the brand (no reprocessing; the title follows, brand first); "brand X" works on any card. The poster asks
+  nothing any more.
 - **Re-send after sleep.** Once the open message has waited longer than `telegram.resend_after_hours`, it is sent
   again (checked when the worker starts and about every hour) — Telegram keeps updates for only 24 h and the Mac may
   have been asleep. A restart (every deploy) never repeats a card the owner has just been sent.
@@ -364,7 +377,7 @@ private chat with the bot it always does.
   condition`, `thrift kids`.
 
 Item statuses: `new` → (`awaiting_condition` →) `awaiting_price` | `needs_info` → `ready` → `posting` → `posted` |
-`drafted` | `failed`; `needs_owner` while the poster's question is open; `dropped` for a re-share of a listed item.
+`drafted` | `failed`; `needs_owner` only for an item an older poster parked; `dropped` for a re-share of a listed item.
 
 ## Roadmap
 Where the project is going, and the design decisions already made for each step.
@@ -372,7 +385,7 @@ Where the project is going, and the design decisions already made for each step.
 - **Telegram approval flow — implemented (M3).** The agent owns the bot and long-polls `getUpdates` from inside the
   worker — no webhook, so it works after the Mac wakes from sleep (Telegram keeps updates for 24 h; pending
   approvals are re-sent). n8n does *not* attach a Telegram trigger to this bot. One message at a time, one-tap
-  prices; nothing publishes without price approval; `needs_owner` for the poster's own questions.
+  prices; nothing publishes without price approval; the poster never asks (WO27).
   Details in "Telegram approval (M3)" above. What remains is on the owner's side: create the bot and fill `.env`.
 - **Airtable as the business view.** One row per item: photos, title, prices, platform links, status
   (listed / sold / shipped / delivered / complete), sale price, earnings, days to sell. SQLite stays the source of

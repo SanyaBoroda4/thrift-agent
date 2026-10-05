@@ -3,7 +3,7 @@ with the card compared. The model is stubbed; no network."""
 import pytest
 from PIL import Image
 
-from thrift_agent import approve, pipeline
+from thrift_agent import approve, brands, pipeline
 from thrift_agent.brain import copy as copywriter, sizes, taxonomy
 from thrift_agent.brain.gate import evaluate
 from thrift_agent.brain.verify import lint
@@ -186,7 +186,8 @@ def test_the_listing_carries_the_menus_value_and_a_size_it_lacks_is_asked(env, f
 # ---------- 3. "Which category?" ----------
 
 def _unsure(facts):
-    return lambda: facts(item_type="corset top and bubble skirt set", category="Skirts", subcategory="Skirt Sets",
+    """A skirt that might be shorts (a set is never asked since WO27: its bottom decides, see test_never_ask)."""
+    return lambda: facts(item_type="bubble skirt", category="Skirts", subcategory="Circle & Skater",
                          size_us=Ev(value="M", photos=[1], source="photo", confidence=0.9),
                          category_confidence=0.55, category_alternatives=[CategoryPath(category="Shorts")])
 
@@ -197,12 +198,12 @@ def test_an_unsure_category_is_asked_with_real_paths_and_the_models_pick_settles
     iid = _item(s.path("db").parent, db)
     pipeline.process_item(s, db, iid)
     assert bot.sent()[-1]["caption"].endswith(approve.CATEGORY_QUESTION)            # before the price card
-    assert bot.buttons() == [("Skirts › Skirt Sets", f"cat:{iid}:0"), ("Shorts", f"cat:{iid}:1")]
+    assert bot.buttons() == [("Skirts › Circle & Skater", f"cat:{iid}:0"), ("Shorts", f"cat:{iid}:1")]
     assert loads(db.item(iid)["gate"])["reasons"][0] == "category unsure (0.55)"
     approve.handle_update(s, db, bot, _cb(f"cat:{iid}:0", bot.next_id))           # the model's own pick
     it = db.item(iid)
     assert it["status"] == "awaiting_price" and loads(it["facts"])["category_confidence"] == 1.0
-    assert loads(it["gate"])["ask_category"] == [] and loads(it["owner_category"])["subcategory"] == "Skirt Sets"
+    assert loads(it["gate"])["ask_category"] == [] and loads(it["owner_category"])["subcategory"] == "Circle & Skater"
     assert bot.sent()[-1]["caption"].startswith("Tory Burch")                     # now the price card
     assert any(text.startswith("✅") for text, _ in bot.buttons())
 
@@ -389,3 +390,113 @@ def test_the_cli_commands(tmp_path, monkeypatch, facts):
     assert r.exit_code == 0 and got == [{"department": "Women", "category": "Skirts", "subcategory": "Skirt Sets"}]
     r = CliRunner().invoke(cli.app, ["category", iid, "Gadgets"], terminal_width=200)
     assert r.exit_code == 1 and "no such Poshmark category" in " ".join(r.output.split())
+
+
+# ---------- WO27: never asked — a set's category; the owner's brand and title ----------
+
+def test_a_set_is_never_asked_which_category_its_bottom_decides(env, facts, monkeypatch):
+    s, db, bot = env
+    unsure_set = lambda: facts(item_type="corset top and bubble skirt set", category="Skirts",  # noqa: E731
+                               subcategory="Mini", size_us=Ev(value="M", photos=[1], source="photo", confidence=0.9),
+                               category_confidence=0.55, category_alternatives=[CategoryPath(category="Shorts")])
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", _model({"facts": unsure_set}))
+    iid = _item(s.path("db").parent, db)
+    pipeline.process_item(s, db, iid)
+    it = db.item(iid)
+    f, gate = loads(it["facts"]), loads(it["gate"])
+    assert (f["category"], f["subcategory"], f["category_confidence"], f["set_pieces"]) == ("Skirts", "Skirt Sets",
+                                                                                           1.0, 2)
+    assert gate["ask_category"] == [] and it["status"] == "awaiting_price"
+    assert not any(approve.CATEGORY_QUESTION in (m.get("caption") or m.get("text") or "") for m in bot.sent())
+    assert bot.sent()[-1]["caption"].startswith("Tory Burch")                     # straight to the price card
+
+
+def test_a_plain_reply_to_the_cards_brand_question_is_the_brand(env, facts, monkeypatch):
+    """WO27 1e: "Vince" replied to a card that asks the brand sets the brand (live: "J. Crew" was taken as a note)."""
+    s, db, bot = env
+    state = {"facts": lambda: facts(brand=Ev(value="Vinse", photos=[1], source="photo", confidence=0.5)),
+             "title": "Vinse Red Ballet Flats size 7.5"}
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", _model(state))
+    iid = _item(s.path("db").parent, db)
+    pipeline.process_item(s, db, iid)
+    card = bot.next_id
+    assert "reply 'brand …'" in bot.sent()[-1]["caption"]
+    out = approve.handle_update(s, db, bot, _reply("Vince", card))
+    it = db.item(iid)
+    assert out == f"brand {iid}: 'Vince' (awaiting_price)" and it["owner_brand"] == "Vince" and it["note"] is None
+    f, posh = loads(it["facts"]), loads(it["renders"])["poshmark"]
+    assert (f["brand"]["value"], f["brand"]["source"]) == ("Vince", "owner")
+    assert (posh["brand"], posh["title"]) == ("Vince", "Vince Red Ballet Flats size 7.5")
+    assert loads(it["gate"])["questions"] == []
+    assert bot.sent()[-1]["caption"].startswith("Vince Red Ballet Flats")          # the card again, with the brand
+    assert bot.next_id > card + 1
+
+
+def test_edit_sets_the_owners_title_and_brand_and_both_stay(env, facts, monkeypatch, tmp_path):
+    """`thrift edit` (WO27): the owner's exact words, kept through reprocessing; the price kept; another spelling of the
+    same name learned for next time."""
+    s, db, bot = env
+    state = {"facts": lambda: facts(item_type="wide leg sweater pants", category="Pants & Jumpsuits",
+                                    subcategory="Wide Leg", condition="NWOT", colors=["Blue"],
+                                    brand=Ev(value="J.Crew", photos=[1], source="photo", confidence=0.95),
+                                    size_us=Ev(value="M", photos=[1], source="photo", confidence=0.95)),
+             "title": "J.Crew New Wide Leg Sweater Pants Blue size M"}
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", _model(state))
+    monkeypatch.setattr("thrift_agent.brands.SEED", {})                           # as live, before the seed
+    iid = _item(s.path("db").parent, db)
+    pipeline.process_item(s, db, iid)
+    pipeline.set_price(s, db, iid, 35)
+    title = "J. Crew 100% Merino Wide Leg Sweater Pants Blue size M"
+    assert pipeline.edit_listing(s, db, iid, title=title, brand="J. Crew") == "ready"
+    it = db.item(iid)
+    posh = loads(it["renders"])["poshmark"]
+    assert (posh["title"], posh["brand"], posh["price"], it["owner_price"]) == (title, "J. Crew", 35, 35)
+    assert (it["owner_title"], it["owner_brand"]) == (title, "J. Crew")
+    assert "J.Crew" not in posh["description"]
+    assert brands.for_settings(s).spell("J.Crew") == "J. Crew"                    # learned: Poshmark's spelling
+    pipeline.reprocess(s, db, iid)                                                  # the model again: words kept
+    it = db.item(iid)
+    posh = loads(it["renders"])["poshmark"]
+    assert (posh["title"], posh["brand"], posh["price"], it["status"]) == (title, "J. Crew", 35, "ready")
+    with pytest.raises(ValueError, match="1-80 characters"):
+        pipeline.edit_listing(s, db, iid, title="x" * 81)
+    db.set_item(iid, status="posted")
+    with pytest.raises(ValueError, match="on the marketplace|can't be changed now"):
+        pipeline.edit_listing(s, db, iid, title="New title")
+
+
+def test_the_learned_spelling_is_used_from_the_start(env, facts, monkeypatch):
+    s, db, bot = env
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", _model({"facts": lambda: facts(
+        brand=Ev(value="J.Crew", photos=[1], source="photo", confidence=0.95))}))
+    iid = _item(s.path("db").parent, db)
+    pipeline.process_item(s, db, iid)                                               # the seed: J.Crew -> J. Crew
+    it = db.item(iid)
+    assert loads(it["facts"])["brand"]["value"] == "J. Crew" and loads(it["renders"])["poshmark"]["brand"] == "J. Crew"
+
+
+
+def test_the_edit_command(tmp_path, monkeypatch, facts):
+    from typer.testing import CliRunner
+
+    from thrift_agent import cli
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid = db.add_item(db.add_batch("share", 1), 1, str(tmp_path / "item"))
+    db.set_item(iid, status="ready", facts=facts().model_dump(),
+                renders={"poshmark": {"title": "J. Crew Pants size S", "brand": "J. Crew", "price": 35}})
+    monkeypatch.setattr(cli, "settings", lambda: s)
+    monkeypatch.setattr(cli, "_db", lambda: db)
+    monkeypatch.setattr(cli.approve, "pump", lambda *a: None)
+    said = []
+    monkeypatch.setattr(cli.approve, "announce", lambda s_, text: said.append(text) or True)
+    got = []
+    monkeypatch.setattr(cli.pipeline, "edit_listing", lambda s_, db_, i, title=None, brand=None:
+                        got.append((i, title, brand)) or "ready")
+    r = CliRunner().invoke(cli.app, ["edit", iid, "--brand", "J. Crew", "--title", "J. Crew Pants size S"],
+                           terminal_width=200)
+    assert r.exit_code == 0 and got == [(iid, "J. Crew Pants size S", "J. Crew")], r.output
+    assert "J. Crew Pants size S · brand J. Crew · $35 · ready" in " ".join(r.output.split())
+    assert said == [f"{iid}: title 'J. Crew Pants size S', brand 'J. Crew' set from the CLI"]
+    r = CliRunner().invoke(cli.app, ["edit", iid], terminal_width=200)
+    assert r.exit_code == 1 and "give --title and/or --brand" in " ".join(r.output.split())

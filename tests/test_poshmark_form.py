@@ -21,8 +21,9 @@ from PIL import Image
 
 pw_api = pytest.importorskip("playwright.async_api")
 
+from thrift_agent import brands  # noqa: E402
 from thrift_agent.post import poshmark  # noqa: E402
-from thrift_agent.post.base import NeedsOwner, PosterError, compare  # noqa: E402
+from thrift_agent.post.base import PosterError, Skipped, compare  # noqa: E402
 from thrift_agent.schema import Render  # noqa: E402
 
 FIXTURE = Path(__file__).parent / "fixtures" / "poshmark_create_listing.html"
@@ -322,15 +323,47 @@ def test_curated_style_tags_only(chrome, posh, photos):
     assert posh.notes == ["style tags Poshmark doesn't offer, left out: Sparkly unicorn"]
 
 
-# ---------------------------------------------------------------- where it stops
+# ---------------------------------------------------------------- never stops to ask (WO27)
 
-@pytest.mark.parametrize("brand,offer", [("Tory", " (it offers: Tory Burch, Tory Sport)"), ("Zzyzx", "")])
-def test_a_brand_poshmark_does_not_offer_is_the_owners_question(chrome, posh, photos, brand, offer, monkeypatch):
+@pytest.mark.parametrize("brand,offer", [("Tory", " (it offers: Tory Burch, Tory Sport, J. Crew Factory)"),   # facTORY
+                                         ("Zzyzx", "")])
+def test_a_brand_poshmark_does_not_offer_is_left_empty_and_the_form_goes_on(chrome, posh, photos, brand, offer,
+                                                                            monkeypatch):
     monkeypatch.setattr(poshmark, "SUGGEST_TIMEOUT_MS", 400)             # only the brand waits on suggestions
-    err, price = fill_expecting(chrome, posh, render(photos, brand=brand), NeedsOwner)
-    assert err.question == (f"Poshmark's brand list has no match for '{brand}'{offer}. Which brand should I pick? "
-                            "(reply e.g. 'brand Vince')")
-    assert price == ""                                                     # stopped at the brand
+    r = render(photos, brand=brand)
+    seen, events = fill_and_read(chrome, posh, r)
+    assert not [e for e in events if e.startswith("brand:")] and seen["brand"] == ""
+    assert compare(seen, posh.expected(r)) == {}, seen                    # filled to the end: the price is on
+    assert seen["price"] == "$85"
+    assert posh.guesses == [f"brand left empty: Poshmark's list has no '{brand}'{offer}"]
+
+
+def test_j_crew_is_poshmarks_j_crew_never_the_factory_line_and_is_learned(chrome, posh, photos, tmp_path, monkeypatch):
+    monkeypatch.setattr(brands, "SEED", {})                               # as live, before anything was learned
+    posh.aliases = brands.Aliases(tmp_path / "brand_aliases.yaml")
+    r = render(photos, brand="J.Crew", title="J.Crew Red Flats size 7.5")
+    seen, events = fill_and_read(chrome, posh, r, steps=["_brand"])      # "J.Crew" finds nothing, "Crew" both lines
+    assert events == ["brand:J. Crew"] and seen["brand"] == "J. Crew" and diff_on(seen, r, posh, "brand") == {}
+    assert posh.guesses == ["brand set to 'J. Crew' (from 'J.Crew')"]
+    assert posh.aliases.table() == {"jcrew": "J. Crew"}                   # learned: exact from now on
+
+    posh.guesses = []
+    seen, events = fill_and_read(chrome, posh, r, steps=["_brand"])
+    assert events == ["brand:J. Crew"] and posh.guesses == []             # the second time: no guess to report
+
+
+def test_the_factory_line_is_picked_only_for_the_factory_line(chrome, posh, photos, monkeypatch):
+    monkeypatch.setattr(brands, "SEED", {})
+    r = render(photos, brand="J.Crew Factory")
+    seen, events = fill_and_read(chrome, posh, r, steps=["_brand"])
+    assert events == ["brand:J. Crew Factory"] and posh.guesses == ["brand set to 'J. Crew Factory' (from "
+                                                                    "'J.Crew Factory')"]
+
+
+def test_the_seeded_spelling_needs_no_guess(chrome, posh, photos):
+    r = render(photos, brand="J.Crew")
+    seen, events = fill_and_read(chrome, posh, r, steps=["_brand"])
+    assert events == ["brand:J. Crew"] and posh.guesses == [] and diff_on(seen, r, posh, "brand") == {}
 
 
 def test_brand_match_ignores_case_and_curly_quotes(chrome, posh, photos):
@@ -339,31 +372,53 @@ def test_brand_match_ignores_case_and_curly_quotes(chrome, posh, photos):
     assert events == ["brand:Levi's"] and seen["brand"] == "Levi's" and diff_on(seen, r, posh, "brand") == {}
 
 
-@pytest.mark.parametrize("change,question", [
-    (dict(category="Sweatshirts"), "Poshmark has no category 'Sweatshirts' under Women (it offers: Accessories, "
-                                   "Bags, Dresses, Jeans, Shorts, Shoes, Sweaters, Tops, Other). Which "
-                                   "category should I pick? (reply e.g. 'category Tops')"),
-    (dict(subcategory="Knee High Boots"), "Poshmark has no subcategory 'Knee High Boots' under Women/Shoes (it offers: "
-                                          "None, Ankle Boots & Booties, Athletic Shoes"),
-    (dict(department="Unisex"), "Poshmark has no 'Unisex' department. Which one should it go under? "
-                                "(reply e.g. 'department Women')"),
+@pytest.mark.parametrize("change,chosen,guess", [
+    (dict(category="Dress", subcategory=None), {"category": "Dresses"}, "category set to 'Dresses' (from 'Dress')"),
+    (dict(subcategory="Knee High Boots"), {"subcategory": "Over the Knee Boots"},
+     "subcategory set to 'Over the Knee Boots' (from 'Knee High Boots')"),
+    (dict(subcategory="Zzyzx Shoes"), {"subcategory": None}, "subcategory left out (Poshmark has no 'Zzyzx Shoes' "
+                                                             "under Shoes)"),
 ])
-def test_a_category_poshmark_does_not_have_is_the_owners_question(chrome, posh, photos, change, question, monkeypatch):
-    err, _ = fill_expecting(chrome, posh, render(photos, **change), NeedsOwner, steps=["_category"],
+def test_a_category_or_subcategory_not_offered_takes_the_closest_and_reports_it(chrome, posh, photos, change, chosen,
+                                                                                 guess):
+    r = render(photos, **change)
+    seen, events = fill_and_read(chrome, posh, r, steps=["_category"])
+    assert {k: posh.chosen[k] for k in chosen} == chosen and posh.guesses == [guess]
+    assert diff_on(seen, r, posh, "category", "subcategory") == {}, seen
+    if chosen.get("subcategory", "") is None:
+        assert "subcategory:None" in events
+
+
+@pytest.mark.parametrize("change,why", [
+    (dict(category="Sweatshirts"), "Poshmark has no category 'Sweatshirts' under Women, nor one close to it (it "
+                                   "offers: Accessories, Bags, Dresses, Jeans, Shorts, Shoes, Sweaters, Tops, Other) "
+                                   "(the category is required)"),
+    (dict(department="Unisex"), "Poshmark has no 'Unisex' department (the category is required)"),
+])
+def test_a_category_nothing_on_the_form_comes_close_to_skips_the_item(chrome, posh, photos, change, why,
+                                                                       monkeypatch):
+    err, price = fill_expecting(chrome, posh, render(photos, **change), Skipped, steps=["_category"],
+                                monkeypatch=monkeypatch)
+    assert str(err) == why and price == ""
+
+
+def test_a_size_not_on_the_menu_takes_the_nearest_of_its_kind_one_size_away_at_most(chrome, posh, photos,
+                                                                                    monkeypatch):
+    r = render(photos, size="12.5")                                  # Women's shoes stop at 12
+    seen, _ = fill_and_read(chrome, posh, r, steps=["_category", "_size"])
+    assert posh.chosen["size"] == "12" and posh.guesses == ["size set to '12' (from '12.5')"]
+    assert diff_on(seen, r, posh, "size") == {}, seen
+
+    posh.guesses = []
+    err, _ = fill_expecting(chrome, posh, render(photos, size="15"), Skipped, steps=["_category", "_size"],
                             monkeypatch=monkeypatch)
-    assert err.question.startswith(question)
+    assert str(err).startswith("size '15' isn't on Poshmark's Women/Shoes (Standard) menu, nor one near it (it offers: "
+                               "5, 5.5, ")
+    assert str(err).endswith("(the size is required)")
 
-
-def test_a_size_missing_from_a_verified_list_is_a_question_from_an_unrecorded_one_an_error(chrome, posh, photos,
-                                                                                             monkeypatch):
-    err, _ = fill_expecting(chrome, posh, render(photos, size="15"), NeedsOwner, steps=["_category", "_size"],
-                            monkeypatch=monkeypatch)
-    assert err.question.startswith("Poshmark's size list for Women/Shoes (Standard) has no '15' (it offers: 5, 5.5, ")
-    assert err.question.endswith("Which size should I pick? (reply e.g. 'size 8')")
-
-    dress = render(photos, category="Dresses", subcategory="Midi", size="5X")         # Plus tab: labels not recorded
-    err, _ = fill_expecting(chrome, posh, dress, PosterError, steps=["_category", "_size"], monkeypatch=monkeypatch)
-    assert not isinstance(err, NeedsOwner) and "size '5X' is not in Women/Dresses (Plus)" in str(err)
+    dress = render(photos, category="Dresses", subcategory="Midi", size="5X")         # Plus: 0X-3X
+    err, _ = fill_expecting(chrome, posh, dress, Skipped, steps=["_category", "_size"], monkeypatch=monkeypatch)
+    assert "size '5X' isn't on Poshmark's Women/Dresses (Plus) menu" in str(err)
 
 
 def test_smart_sell_switched_on_stops_the_item(chrome, posh, photos):
@@ -427,7 +482,7 @@ def test_no_cover_dialog_is_fine(chrome, posh, photos):
 ])
 def test_a_dialog_unlike_the_recorded_one_fails_the_item(chrome, posh, photos, variant, why):
     err, _ = fill_expecting(chrome, posh, render(photos), PosterError, steps=["_photos"], **variant)
-    assert not isinstance(err, NeedsOwner) and str(err) == why
+    assert not isinstance(err, Skipped) and str(err) == why
 
 
 def test_an_unrecorded_dialog_fails_the_dry_run_with_the_evidence(chrome, posh, photos, tmp_path):
@@ -533,7 +588,7 @@ def test_the_size_menu_may_wait_for_done_or_close_by_itself(chrome, posh, photos
 def test_a_size_menu_that_does_neither_fails_with_the_evidence(chrome, posh, photos, monkeypatch, variant, shown):
     err, _ = fill_expecting(chrome, posh, render(photos), PosterError, steps=["_category", "_size"],
                             monkeypatch=monkeypatch, **variant)
-    assert not isinstance(err, NeedsOwner)
+    assert not isinstance(err, Skipped)
     assert str(err) == ("after picking '7.5' the size menu neither showed Done nor closed with that size on the form "
                         f"(the size field shows '{shown}')")
 

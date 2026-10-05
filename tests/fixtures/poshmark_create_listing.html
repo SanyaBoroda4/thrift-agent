@@ -603,7 +603,7 @@
 
   // ---- brand (suggestions' markup: WO9's a.dropdown__link) ----
   const BRANDS = ['Tory Burch', 'Tory Sport', 'Birkenstock', 'UGG', 'Nike', 'Vince', 'Vince Camuto', "Levi's",
-                  'Madewell', 'J. Crew'];
+                  'Madewell', 'J. Crew', 'J. Crew Factory'];   // a substring search: "J.Crew" finds neither (WO27)
   $('#brand-input').addEventListener('input', () => later(() => {
     const list = $('#brand-list');
     const q = $('#brand-input').value.trim().toLowerCase();

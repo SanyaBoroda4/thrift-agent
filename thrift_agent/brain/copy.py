@@ -1,6 +1,7 @@
 """One call writes both marketplaces' copy from the same facts; code enforces the hard limits."""
 from __future__ import annotations
 
+import difflib
 import json
 import re
 
@@ -47,6 +48,17 @@ NEGATIVE_WORDS = re.compile(
 USED_CLAIMS = re.compile(r"\b(like[\s-]+new|excellent|mint\s+condition|pristine|perfect\s+condition|flawless|"
                          r"no\s+flaws|without\s+flaws|no\s+(?:signs\s+of\s+)?wear|as\s+new|new\s+condition)\b", re.I)
 _SENTENCES = re.compile(r"(?<=[.!?])\s+")
+# Cutoff shorts and jeans (WO27; live: a pair of cutoffs' "Frayed Hem" refused): their frayed or raw hem is the style,
+# not wear — allowed there, and only there.
+STYLE_HEMS = re.compile(r"\b(?:frayed|raw|fraying|distressed)[\s-]+(?:hems?|edges?|cuffs?)\b", re.I)
+_CUTOFF = re.compile(r"\bcut[\s-]?offs?\b", re.I)
+
+
+def cutoff(facts: Facts) -> bool:
+    """Cutoff shorts or jeans: a "cutoff" item type, or denim / jean shorts and jeans."""
+    text = f"{facts.item_type} {' '.join(facts.features)}"
+    return bool(_CUTOFF.search(text)) or (facts.category in ("Shorts", "Jeans")
+                                          and bool(re.search(r"\b(?:jeans?|denim)\b", text, re.I)))
 
 
 def style_examples() -> str:
@@ -62,9 +74,10 @@ def style_examples() -> str:
 SYSTEM = """You write resale listings for one seller's closet, in her established style.
 
 POSHMARK
-- Title ≤80 chars: Brand, then item type, standout detail/material, color, then "size X" (US size).
-  Include the style name when known — buyers search for it (e.g. "Birkenstock Arizona ...").
-  Add "New" at the start only for NWT/NWOT. Use the room — short titles don't get found.
+- Title ≤80 chars: the Brand FIRST, always; then item type, standout detail/material, color, then "size X" (US
+  size). Include the style name when known — buyers search for it (e.g. "Birkenstock Arizona ...").
+  "New" only for NWT/NWOT, right after the brand ("Naked Wardrobe New Leopard Catsuit ..."), never before it.
+  Use the room — short titles don't get found.
   Two garments sold together (a top with a skirt, shorts or pants; set_pieces in the facts) are a "2-Piece Set" in
   the title ("... Corset Top & Bubble Skirt 2-Piece Set size M"; 3 pieces: "3-Piece Set").
   No brand in the facts (unreadable, or the owner says the item has none): the title starts with the item, and no
@@ -194,6 +207,34 @@ def ensure_set_title(title: str, facts: Facts) -> str:
         new = f"{title} {phrase}"
     return new if len(new) <= TITLE_MAX else title
 
+_NEW_WORD = re.compile(r"^(?:new|nwt|nwot)$", re.I)
+
+
+def _brand_span(words: list[str], brand: str) -> tuple[int, int] | None:
+    """Where the brand's words sit in the title's words ("J.Crew" matches "J. Crew"): (start, end), else None."""
+    want = re.sub(r"[^a-z0-9]", "", brand.lower())
+    n = len(brand.split())
+    for size in (n, n + 1, n - 1, 1, 2, 3):
+        for i in range(0, max(0, len(words) - size + 1)):
+            if size > 0 and re.sub(r"[^a-z0-9]", "", "".join(words[i:i + size]).lower()) == want:
+                return i, i + size
+    return None
+
+
+def title_order(title: str, facts: Facts) -> str:
+    """The brand FIRST (WO27; e.g. "100% Merino New J.Crew Wide Leg Sweater Pants Blue size M"): moved to the front
+    from wherever the copy put it, spelled as the facts spell it, added when missing. "New" / "NWT" / "NWOT" — only for
+    NWT and NWOT — right after the brand, never before it; a used item never says it. The rest keeps its order."""
+    words = re.sub(r"\bbrand\s+new\b", "New", title, flags=re.I).split()     # "Brand New" is one "New"
+    brand = (facts.brand.value or "").strip()
+    span = _brand_span(words, brand) if brand else None
+    rest = words[:span[0]] + words[span[1]:] if span else words
+    new = any(_NEW_WORD.match(w) for w in rest)
+    rest = [w for w in rest if not _NEW_WORD.match(w)]
+    head = [*(brand.split() if brand else []), *(["New"] if new and facts.condition in ("NWT", "NWOT") else [])]
+    return " ".join([*head, *rest])
+
+
 def strip_tag_lines(body: str) -> str:
     """Remove hashtag-only lines anywhere in the body (plus a run of hashtags at its very end), then tidy the gaps.
 
@@ -205,19 +246,23 @@ def strip_tag_lines(body: str) -> str:
 
 
 def changed_fields(draft: CopyOut, audit: VerifyOut) -> list[str]:
-    """Names of the copy fields whose text the verifier actually changed.
+    """Names of the copy fields the verifier REWROTE: words added or changed, compared word by word — case,
+    punctuation, emoji, hashtags and line breaks aside; the Depop body without its hashtag line, which the verifier
+    never sees (verify() strips it). Words only taken out are no rewrite: stripping is the verifier's job, and its
+    removals live (WO27: a wear phrase or an emoji it took out without listing it made a listing a draft, six times)."""
 
-    Compared after whitespace normalisation (any run of whitespace -> one space, stripped, casefolded); the Depop
-    body is compared without its hashtag line, which the verifier never sees (verify() strips it)."""
-
-    def norm(name: str, text: str) -> str:
+    def words(name: str, text: str) -> list[str]:
         text = unescape_breaks(text)                        # a break written as "\\n" is no rewrite
         if name == "depop_description":
             text = strip_tag_lines(text)
-        return re.sub(r"\s+", " ", text).strip().casefold()
+        return re.findall(r"[^\W_]+", re.sub(r"#\w+", " ", text).casefold())
+
+    def rewrote(a: list[str], b: list[str]) -> bool:
+        ops = difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes()
+        return any(tag in ("insert", "replace") for tag, *_ in ops)
 
     return [name for name in TEXT_FIELDS
-            if norm(name, getattr(draft, name)) != norm(name, getattr(audit, name))]
+            if rewrote(words(name, getattr(draft, name)), words(name, getattr(audit, name)))]
 
 
 def clean(out: CopyOut) -> CopyOut:
@@ -257,17 +302,19 @@ def ensure_label_size(description: str, facts: Facts) -> str:
     return f"{description.rstrip()}\nLabel size: {printed}."
 
 
-def condition_wording(text: str, condition: str) -> str:
+def condition_wording(text: str, condition: str, style_ok: bool = False) -> str:
     """`text` under the owner's condition rule: every sentence that puts wear or a flaw in words (NEGATIVE_WORDS), or
     grades a used item (USED_CLAIMS), is dropped — the photos show the condition — and a used item's text carries
     CONDITION_LINE: where the first dropped sentence was, else as its own line before a closing "Retail $…" line,
-    else at the end. Nothing else changes: a dropped sentence is never rewritten, only left out."""
+    else at the end. Nothing else changes: a dropped sentence is never rewritten, only left out. `style_ok`: a cutoff's
+    "frayed hem" / "raw hem" is its style, not wear (WO27)."""
     used, mark, marked = condition in USED, "\x00", False
     lines = []
     for line in text.split("\n"):
         kept = []
         for sentence in _SENTENCES.split(line.strip()) if line.strip() else []:
-            if NEGATIVE_WORDS.search(sentence) or (used and USED_CLAIMS.search(sentence)):
+            probe = STYLE_HEMS.sub(" ", sentence) if style_ok else sentence
+            if NEGATIVE_WORDS.search(probe) or (used and USED_CLAIMS.search(sentence)):
                 if not marked:
                     kept.append(mark)
                     marked = True
@@ -291,8 +338,9 @@ def condition_rule(out: CopyOut, facts: Facts) -> CopyOut:
     """The owner's condition rule on finished copy (after the verifier): both descriptions through
     condition_wording(), and no style tag or hashtag that names wear. The title is left as it is: a title that breaks
     the rule is a lint problem, not something to cut."""
-    out.poshmark_description = condition_wording(out.poshmark_description, facts.condition)
-    out.depop_description = condition_wording(strip_tag_lines(out.depop_description), facts.condition)
+    style_ok = cutoff(facts)
+    out.poshmark_description = condition_wording(out.poshmark_description, facts.condition, style_ok)
+    out.depop_description = condition_wording(strip_tag_lines(out.depop_description), facts.condition, style_ok)
     out.poshmark_style_tags = [t for t in out.poshmark_style_tags if not NEGATIVE_WORDS.search(t)]
     out.depop_hashtags = [t for t in out.depop_hashtags if not NEGATIVE_WORDS.search(t)]
     return clean(out)                                  # re-attaches the hashtag line within Depop's limit

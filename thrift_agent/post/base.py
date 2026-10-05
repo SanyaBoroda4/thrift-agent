@@ -31,18 +31,10 @@ class AccountBlocked(PosterError):
     """Logged out, restricted, or a CAPTCHA — stop the whole poster, not just this item."""
 
 
-class NeedsOwner(PosterError):
-    """Stuck on a field only the owner can answer; the item waits in needs_owner, others continue.
-
-    Raised by an adapter's fill() BEFORE anything is submitted (a brand or category the site's lists don't
-    have). The runner parks the item and sends `question` to the owner as a separate Telegram message.
-    `screenshot` is set by Poster.post() to the page as it was when the question came up."""
-
-    def __init__(self, question: str):
-        super().__init__(question)
-        self.question = question
-        self.screenshot: str | None = None
-        self.draft_left: str | None = None     # set by a dry-run's drafts check (Poster.post)
+class Skipped(PosterError):
+    """A REQUIRED field the form can't take, even as a best guess (WO27: the poster never stops to ask — a brand, a
+    subcategory, a size or a colour it can't match exactly is guessed and reported instead). Raised by an adapter's
+    fill() before anything is submitted: nothing is saved, the item is skipped and reported, the others continue."""
 
 
 class Cancelled(PosterError):
@@ -59,7 +51,7 @@ class Mismatch(PosterError):
 
 @dataclass
 class Outcome:
-    status: Literal["posted", "drafted", "dryrun", "failed", "cancelled"]
+    status: Literal["posted", "drafted", "dryrun", "failed", "cancelled", "skipped"]
     url: str | None = None
     screenshot: str | None = None
     diff: dict = field(default_factory=dict)
@@ -67,6 +59,7 @@ class Outcome:
     note: str | None = None      # remarks for the owner: a tag left out, the review page recorded, Discard unconfirmed
     draft_left: str | None = None  # "a draft was left behind (Drafts 0 → 1)": a dry-run that should have left none
     clicked: bool = False        # the final publish/draft control was pressed: the listing may be live
+    guesses: list[str] = field(default_factory=list)   # what the poster chose that the listing didn't say exactly
 
 
 async def open_browser(profile_dir: Path, timezone_id: str) -> tuple[object, BrowserContext]:
@@ -183,6 +176,7 @@ class Poster(ABC):
     name: str
     create_url: str
     notes: list[str]            # remarks the adapter collects while filling one item (reset by post())
+    guesses: list[str]          # its best guesses (WO27): "brand set to 'J. Crew' (from 'J.Crew')" (reset by post())
     counts_drafts = False       # the adapter reads the site's draft count on the create page (drafts())
     # Set by post() to None ("don't know"). An adapter that tracks it sets False when submit() starts and True right
     # before the click that can't be undone; until then the form can still be left through discard().
@@ -280,7 +274,8 @@ class Poster(ABC):
     async def post(self, ctx: BrowserContext, r: Render, mode: Mode, dry_run: bool, shots: Path,
                    stage: Stage = "form") -> Outcome:
         """Returns an Outcome for everything that happens once the page exists; only AccountBlocked (stop the
-        poster) and NeedsOwner (park this item, ask the owner) propagate, so the runner can tell them apart.
+        poster) propagates. A required field the form can't take is "skipped" (nothing saved); every best guess the
+        adapter made rides on the Outcome (WO27: the poster never stops to ask).
 
         A dry-run fills, reads back, diffs and keeps the evidence; stage "review" also presses Next and records the
         page after it; then the form is left through the site's discard path, so no draft is left behind. The final
@@ -297,7 +292,7 @@ class Poster(ABC):
         opened = submitted = kept = False
         count_drafts = dry_run and self.counts_drafts      # a dry-run must leave no draft: counted before and after
         drafts_before: int | None = None
-        self.notes = []
+        self.notes, self.guesses = [], []
         try:
             shots.mkdir(parents=True, exist_ok=True)
             page = await ctx.new_page()
@@ -322,20 +317,24 @@ class Poster(ABC):
                 opened = False                      # leaving now; a failure below must not discard twice
                 self.notes.append(await self._discard_quietly(page))
                 left, note = await self._left_behind(ctx, drafts_before) if count_drafts else (None, None)
-                return Outcome("dryrun", screenshot=str(shot), note=_joined(self.notes + [note]), draft_left=left)
+                return Outcome("dryrun", screenshot=str(shot), note=_joined(self.notes + [note]), draft_left=left,
+                               guesses=list(self.guesses))
             submitted = True
             url = await self.submit(page, mode)
             clicked = self._may_be_live(submitted)
             if mode != "publish":
-                return Outcome("drafted", url=url, screenshot=str(shot), clicked=clicked, note=_joined(self.notes))
+                return Outcome("drafted", url=url, screenshot=str(shot), clicked=clicked, note=_joined(self.notes),
+                               guesses=list(self.guesses))
             if not url:
                 raise PosterError("published but no listing URL captured")
             try:
                 await self.verify_live(page, url, r)
             except Exception as e:  # noqa: BLE001 — the listing IS live: keep its URL, never re-post it
                 return Outcome("failed", url=url, screenshot=str(shot), clicked=clicked, note=_joined(self.notes),
-                               error=f"published but the live check failed ({type(e).__name__}: {e}) — check {url}")
-            return Outcome("posted", url=url, screenshot=str(shot), clicked=clicked, note=_joined(self.notes))
+                               error=f"published but the live check failed ({type(e).__name__}: {e}) — check {url}",
+                               guesses=list(self.guesses))
+            return Outcome("posted", url=url, screenshot=str(shot), clicked=clicked, note=_joined(self.notes),
+                           guesses=list(self.guesses))
         except AccountBlocked:
             await keep_evidence(page, shot)     # and nothing else: stop, don't touch a blocked account
             raise
@@ -343,14 +342,15 @@ class Poster(ABC):
             await keep_evidence(page, shot)
             left = await self._discard_quietly(page) if opened and not self._may_be_live(submitted) else None
             return Outcome("cancelled", screenshot=str(shot), note=_joined(self.notes + [str(e), left]))
-        except NeedsOwner as e:
+        except Skipped as e:                    # before submit: nothing was saved, the form is left through Discard
             await keep_evidence(page, shot)
-            e.screenshot = str(shot)
+            left, draft_left = None, None
             if opened and not submitted:
-                await self._discard_quietly(page)
+                left = await self._discard_quietly(page)
                 if count_drafts:
-                    e.draft_left, _ = await self._left_behind(ctx, drafts_before)
-            raise
+                    draft_left, _ = await self._left_behind(ctx, drafts_before)
+            return Outcome("skipped", screenshot=str(shot), error=str(e), note=_joined(self.notes + [left]),
+                           draft_left=draft_left, guesses=list(self.guesses))
         except Exception as e:  # noqa: BLE001 — record everything, never retry blindly
             if not kept:
                 await keep_evidence(page, shot)

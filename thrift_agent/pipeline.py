@@ -13,7 +13,7 @@ from pathlib import Path
 
 import imagehash
 
-from thrift_agent import approve, notify
+from thrift_agent import approve, brands, notify
 from thrift_agent.brain import copy as copywriter, cover as cover_brain, labels, premium, sizes, taxonomy
 from thrift_agent.brain.extract import extract, strip_screenshot_evidence
 from thrift_agent.brain.gate import OTHER_CATEGORY_QUESTION, GateResult, evaluate
@@ -581,6 +581,8 @@ def owner_answers(it) -> list[str]:
         lines.append(f"Category (the owner's answer): {taxonomy.path_label(path)}")
     if it["owner_brand"] == NO_BRAND:
         lines.append("Brand: none — the owner says the item has no brand")
+    elif it["owner_brand"]:
+        lines.append(f"Brand (the owner's answer): {it['owner_brand']}")
     return lines
 
 
@@ -592,7 +594,48 @@ def apply_owner_answers(it, facts: Facts) -> Facts:
                       category_confidence=1.0, category_alternatives=[])
     if it["owner_brand"] == NO_BRAND:
         update["brand"] = Ev(value=None, photos=[], source="owner", confidence=1.0)
+    elif it["owner_brand"]:                              # the owner's spelling (WO27): "J. Crew"
+        update["brand"] = Ev(value=it["owner_brand"], photos=facts.brand.photos, source="owner", confidence=1.0)
     return facts.model_copy(update=update) if update else facts
+
+
+# A set of two garments goes under its bottom (WO27, the owner's rule made code): pants -> Pants & Jumpsuits, skirt ->
+# Skirts > Skirt Sets, shorts -> Shorts; Kids -> Matching Sets. Never for pajamas, swimwear or lingerie sets.
+_SET_TOPS = r"top|tee|t-shirt|shirt|blouse|cami|camisole|tank|bralette|bandeau|corset|bustier|crop|sweater|cardigan|" \
+            r"jacket|blazer|hoodie|sweatshirt|vest"
+_SET_NOT = re.compile(r"\b(?:pajamas?|pyjamas?|sleep\w*|bikini|swim\w*|lingerie|bra|underwear|robe)\b", re.I)
+_SET_BOTTOMS = (("skirts?|skorts?", "Skirts", "Skirt Sets"), ("shorts", "Shorts", None),
+                ("pants|trousers|jeans|joggers|leggings|sweatpants|culottes|palazzos?", "Pants & Jumpsuits", None))
+_PANTS_SUBS = (("wide", "Wide Leg"), ("flared?|flares|bootcut|boot[- ]cut|bell", "Boot Cut & Flare"),
+               ("joggers?|track|sweatpants", "Track Pants & Joggers"), ("leggings?", "Leggings"),
+               ("straight", "Straight Leg"), ("skinny", "Skinny"), ("cropped|ankle", "Ankle & Cropped"),
+               ("trousers?", "Trousers"))
+
+
+def settle_set(facts: Facts, owner_category: str | None = None) -> Facts:
+    """A two-piece set's category by its bottom, in code, so no "Which category?" comes for a set (WO27): a top and
+    pants -> Pants & Jumpsuits (the subcategory the pants' words name: flared -> Boot Cut & Flare, wide -> Wide Leg),
+    a top and a skirt -> Skirts > Skirt Sets, a top and shorts -> Shorts; Kids -> Matching Sets. The owner's category
+    wins; pajama, swim and lingerie sets are left to the model."""
+    text = facts.item_type or ""
+    two = (facts.set_pieces or 0) >= 2 or (re.search(r"\bset\b", text, re.I)
+                                           and re.search(rf"\b(?:{_SET_TOPS})s?\b", text, re.I))
+    if owner_category or not two or _SET_NOT.search(text):
+        return facts
+    if facts.department == "Kids":
+        category, sub = "Matching Sets", None
+    else:
+        hit = next(((c, s) for pat, c, s in _SET_BOTTOMS if re.search(rf"\b(?:{pat})\b", text, re.I)), None)
+        if hit is None:
+            return facts
+        category, sub = hit
+        if category != "Skirts":
+            subs = ((taxonomy.load()["departments"].get(facts.department) or {}).get("categories") or {}).get(category)
+            sub = facts.subcategory if facts.category == category and facts.subcategory in (subs or []) else \
+                next((s for pat, s in _PANTS_SUBS if re.search(rf"\b(?:{pat})\b", text, re.I)), None) \
+                if category == "Pants & Jumpsuits" else None
+    return facts.model_copy(update={"category": category, "subcategory": sub, "category_confidence": 1.0,
+                                    "category_alternatives": [], "set_pieces": facts.set_pieces or 2})
 
 
 def known_brands(tiers: dict | None = None) -> list[str]:
@@ -624,7 +667,10 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
     if facts.brand.source == "owner":
         facts.brand.source = "note"
     facts = facts.model_copy(update={"premium": None})   # the close label read below sets it, never the extraction
-    facts = apply_owner_answers(it, facts)               # the owner's category, "no brand"
+    if facts.brand.value:                                # Poshmark's spelling, learned (WO27): "J.Crew" -> "J. Crew"
+        spelled = brands.for_settings(s).spell(facts.brand.value)
+        facts = facts.model_copy(update={"brand": facts.brand.model_copy(update={"value": spelled})})
+    facts = apply_owner_answers(it, facts)               # the owner's category, brand or "no brand"
     # Shoes, in doubt between brand new and worn: the owner is asked before the price (WO18) — on the model's own
     # reading, before the settles below merge its two grades. Once answered, the answer is the condition.
     ask_condition = (not it["owner_condition"] and not it["owner_price"] and shoe_condition_doubt(facts))
@@ -634,6 +680,7 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
         facts, notes, nwt_questions = apply_owner_condition(facts, it["owner_condition"]), [], []
     if it["owner_kids_gender"]:                          # the owner's [Girls]/[Boys]: never asked again
         facts = facts.model_copy(update={"kids_gender": it["owner_kids_gender"], "kids_gender_confidence": 1.0})
+    facts = settle_set(facts, it["owner_category"])      # a set goes under its bottom, no question (WO27)
     facts, fit_notes, fit_questions = taxonomy.fit(facts)   # Poshmark's own category names (Kids Tops -> Shirts & Tops)
     facts = settle_kids_size(s, facts, photos)            # a kids label's cm or age -> Poshmark's size, no question
     ask_kids = kids_question(facts)                      # Girls or Boys, below 0.70 sure: a question before the price
@@ -662,7 +709,8 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
         depop_hashtags=draft.depop_hashtags))
     final = copywriter.condition_rule(final, facts)      # wear is shown in the photos, never put in words
     final.poshmark_title = copywriter.ensure_set_title(final.poshmark_title, facts)   # "… 2-Piece Set size M"
-    final.poshmark_title = premium.title_with_feature(final.poshmark_title, facts, pcfg)   # "Vince 100% Silk …" (WO26)
+    final.poshmark_title = (it["owner_title"] or                 # the owner's own title stays as it is (WO27)
+                            premium.title_with_feature(final.poshmark_title, facts, pcfg))   # brand first, the feature
     final.poshmark_description = premium.ensure_feature_lines(final.poshmark_description, facts, pcfg)
     final.depop_description = premium.ensure_feature_lines(final.depop_description, facts, pcfg)
     final.poshmark_description = copywriter.ensure_retail_line(final.poshmark_description, facts)
@@ -846,17 +894,19 @@ def relist(s: Settings, it, facts: Facts, renders: dict) -> dict:
     cover = prep.portrait_cover(photos[order[0]], d / "cover.jpg", width, height, rotate=turn)
     tab, value = sizes.poshmark_size(facts) or (None, None)
     pcfg = premium.config()
+    old = Facts.model_validate(loads(it["facts"])) if it["facts"] else None
     out = {}
     for mp, r in renders.items():
         limit = int((s["marketplaces"].get(mp) or {}).get("max_photos", len(photos)))
         shown = fit_photos(order, flawed, limit)
-        text = premium.ensure_feature_lines(copywriter.unescape_breaks(r.get("description") or ""), facts, pcfg)
+        text = premium.ensure_feature_lines(copywriter.unescape_breaks(r.get("description") or ""), facts, pcfg,
+                                            old=old)
         if mp == "poshmark":
             text = copywriter.ensure_retail_line(text, facts)
         out[mp] = {**r, "photos": [str(cover)] + [str(photos[i]) for i in shown[1:]], "category": facts.category,
                    "subcategory": facts.subcategory, "size": sizes.size_label(facts), "size_tab": tab,
                    "size_value": value, "brand": facts.brand.value,
-                   "title": premium.title_with_feature(r.get("title") or "", facts, pcfg),
+                   "title": it["owner_title"] or premium.title_with_feature(r.get("title") or "", facts, pcfg),
                    "original_price": _dollars(facts.retail_price.value) or r.get("original_price"),
                    "description": copywriter.ensure_label_size(text, facts)}
     return out
@@ -916,7 +966,7 @@ def _digest(path: Path) -> str | None:
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
 
 
-def recover_item(s: Settings, db: DB, iid: str, recheck: bool = False) -> dict:
+def recover_item(s: Settings, db: DB, iid: str, recheck: bool = False, relabel: bool = False) -> dict:
     """WO23: recompute ONLY the cover (the front check, upright), the photo order, the category and the size of an
     item that is not on the marketplace — the price, the owner's approved price, condition and Girls/Boys answers and
     the copy stay. Nothing settled is asked again: a question that the new category or size settles goes; an item that
@@ -941,7 +991,7 @@ def recover_item(s: Settings, db: DB, iid: str, recheck: bool = False) -> dict:
     before = {"cover": _listed_cover(it, photos), "category": facts.category, "subcategory": facts.subcategory,
               "size": facts.size_us.value}
     was = (approve.card(iid, it), _digest(d / "cover.jpg"))
-    facts, _, _ = taxonomy.fit(facts)
+    facts, _, _ = taxonomy.fit(settle_set(facts, it["owner_category"]))
     facts = settle_kids_size(s, facts, photos)
     stored = None if recheck else _stored_check(it)
     check = stored or front_view(s, db, iid, photos, facts, kinds)
@@ -952,7 +1002,7 @@ def recover_item(s: Settings, db: DB, iid: str, recheck: bool = False) -> dict:
         else:
             upright = facts.cover_upright                    # the same photo, turned upright before: kept
         facts = facts.model_copy(update={"cover_photo": cover, "cover_upright": upright})
-    if facts.premium is None or recheck:                 # the labels, read closely once (WO26)
+    if facts.premium is None or recheck or relabel:      # the labels, read closely once (WO26); --relabel again
         facts = premium.merge(facts, label_view(s, db, iid, photos, facts, kinds), len(photos))
     renders = relist(s, it, facts, loads(it["renders"]))
     if not it["owner_price"]:                            # a suggestion, not the owner's price: the premium factor too
@@ -1074,6 +1124,78 @@ def set_no_brand(s: Settings, db: DB, iid: str) -> str:
     with db.tx():
         db.set_item(iid, owner_brand=NO_BRAND, facts=facts.model_dump(), renders=renders, gate=doc, status=status)
         db.log(iid, "brand_set", {"brand": None, "status": status})
+    return status
+
+
+def _rename(text: str, old: str | None, new: str) -> str:
+    """`text` with the old brand name — any spacing or punctuation of it ("J.Crew", "J. Crew") — as the new one."""
+    parts = re.findall(r"[A-Za-z0-9]+", old or "")
+    if not parts:
+        return text
+    return re.sub(r"(?<![A-Za-z0-9])" + r"[^A-Za-z0-9\n]{0,3}".join(map(re.escape, parts)) + r"(?![A-Za-z0-9])",
+                  lambda m: new, text, flags=re.I)
+
+
+def _close_changed_card(db: DB, iid: str, was) -> None:
+    """The item's open card closed when what it shows changed (WO24's rule, as recover): the queue sends the new one."""
+    if approve.card(iid, db.item(iid)) != was and _open_cards(db, iid):
+        db.conn.execute("UPDATE outbox SET resolved_at=? WHERE ref=? AND resolved_at IS NULL", (now(), iid))
+
+
+def set_brand(s: Settings, db: DB, iid: str, brand: str) -> str:
+    """The owner's brand (WO27: a plain reply to the brand question — "J. Crew" — "brand J. Crew", or `thrift edit
+    --brand`): kept as items.owner_brand through any reprocessing, source owner. No model call: the facts, the listing's
+    brand field and its text follow — the old name replaced where the copy wrote it, the title in the owner's order (the
+    brand first). Another spelling of the same name ("J.Crew" -> "J. Crew") is learned for next time. "no brand" is
+    set_no_brand. Returns the item's status."""
+    brand = re.sub(r"\s+", " ", brand or "").strip().strip("'\"")
+    if not brand or NO_BRAND_WORDS.fullmatch(brand.strip(" .!")):
+        return set_no_brand(s, db, iid)
+    it = _answerable(db, iid, "brand")
+    facts = Facts.model_validate(loads(it["facts"]))
+    old = facts.brand.value
+    facts = facts.model_copy(update={"brand": Ev(value=brand, photos=facts.brand.photos, source="owner",
+                                                 confidence=1.0)})
+    if old and brands.key(old) == brands.key(brand):
+        brands.for_settings(s).learn(old, brand)
+    pcfg = premium.config()
+    renders = {}
+    for mp, r in (loads(it["renders"]) or {}).items():
+        title = it["owner_title"] or premium.title_with_feature(_rename(r.get("title") or "", old, brand), facts, pcfg)
+        renders[mp] = {**r, "brand": brand, "title": title, "description": _rename(r.get("description") or "", old, brand)}
+    photos, kinds = _photos_of(it)
+    doc, status = _regate(s, {**dict(it), "owner_brand": brand}, facts, renders, photos, kinds,
+                          (loads(it["gate"]) or {}).get("notes") or [])
+    was = approve.card(iid, it)
+    with db.tx():
+        db.set_item(iid, owner_brand=brand, facts=facts.model_dump(), renders=renders, gate=doc, status=status)
+        db.log(iid, "brand_set", {"brand": brand, "was": old, "status": status})
+        _close_changed_card(db, iid, was)
+    return status
+
+
+def edit_listing(s: Settings, db: DB, iid: str, title: str | None = None, brand: str | None = None) -> str:
+    """`thrift edit <item> --title … --brand …` (WO27): the owner's exact title and/or brand, kept through any
+    reprocessing (items.owner_title, items.owner_brand); no model call, the price kept. Not for an item on the
+    marketplace. Returns the item's status."""
+    status = _answerable(db, iid, "listing")["status"]
+    if brand is not None:
+        status = set_brand(s, db, iid, brand)
+    if title is not None:
+        it = _answerable(db, iid, "title")
+        title = re.sub(r"\s+", " ", title).strip()
+        if not 0 < len(title) <= copywriter.TITLE_MAX:
+            raise ValueError(f"a title is 1-{copywriter.TITLE_MAX} characters, not {len(title)}")
+        facts = Facts.model_validate(loads(it["facts"]))
+        renders = {mp: {**r, "title": title} for mp, r in (loads(it["renders"]) or {}).items()}
+        photos, kinds = _photos_of(it)
+        doc, status = _regate(s, {**dict(it), "owner_title": title}, facts, renders, photos, kinds,
+                              (loads(it["gate"]) or {}).get("notes") or [])
+        was = approve.card(iid, it)
+        with db.tx():
+            db.set_item(iid, owner_title=title, renders=renders, gate=doc, status=status)
+            db.log(iid, "title_set", {"title": title, "status": status})
+            _close_changed_card(db, iid, was)
     return status
 
 

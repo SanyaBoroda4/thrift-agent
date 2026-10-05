@@ -6,11 +6,12 @@ import signal
 from datetime import datetime, timezone
 from pathlib import Path
 
-from thrift_agent import approve, notify
-from thrift_agent.brain.copy import NEGATIVE_WORDS, USED, USED_CLAIMS
+from thrift_agent import brands, notify
+from thrift_agent.brain.copy import NEGATIVE_WORDS, STYLE_HEMS, USED, USED_CLAIMS
 from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
-from thrift_agent.post.base import STAGES, AccountBlocked, NeedsOwner, Outcome, Poster, keep_evidence, open_browser
+from thrift_agent.post.base import STAGES, AccountBlocked, Outcome, Poster, keep_evidence, open_browser
+from thrift_agent.post import poshmark
 from thrift_agent.post.depop import DepopPoster
 from thrift_agent.post.poshmark import PoshmarkPoster
 from thrift_agent.scheduler import can_post, next_gap, windows
@@ -24,6 +25,7 @@ HOLD_REASON = "unshipped orders — publish held (drafts and dry-runs still run)
 # last_error of a failed post whose final click (List This Item) happened but whose listing URL wasn't found: the
 # listing may be live, so nothing re-posts it — not the poster, not `thrift requeue` (invariant 4).
 UNCONFIRMED = "unconfirmed publish: "
+SKIPPED = "skipped: "            # last_error of an item the form couldn't take (a required field): requeue it once fixed
 
 
 def posters(s: Settings) -> dict[str, Poster]:
@@ -35,16 +37,19 @@ def posters(s: Settings) -> dict[str, Poster]:
         if not username:
             raise ValueError(f"marketplaces.{mp}.username is empty — set it in private/settings.yaml "
                              "(the poster checks the closet page to detect a logged-out or restricted account)")
-        out[mp] = PoshmarkPoster(username) if mp == "poshmark" else DepopPoster()
+        out[mp] = PoshmarkPoster(username, brands.for_settings(s)) if mp == "poshmark" else DepopPoster()
     return out
 
 
 def next_job(s: Settings, db: DB, enabled: list[str], dry: bool,
              allow_publish: bool = True) -> tuple[str, str, Render, str] | None:
-    """The next (item, marketplace, render, mode) to post, or None.
+    """The next (item, marketplace, render, mode) to post, or None — the oldest ready item first.
 
-    `allow_publish=False` (HOLD_UNSHIPPED) skips jobs that would go live; drafts still run, and so does a dry-run of
-    a publish-gated item, since a dry-run never submits."""
+    Nothing posts without the owner's price: the listing's price must be the owner-approved one (WO27). A gate
+    "publish" item publishes when the marketplace's autopublish is on; anything else is a draft — and a draft the
+    poster can't save yet (can_draft) is left alone outside a dry-run: held(), never failed, never asked about.
+    `allow_publish=False` (HOLD_UNSHIPPED) skips jobs that would go live; drafts still run, and so does a dry-run of a
+    publish-gated item, since a dry-run never submits."""
     for it in db.items("ready"):
         batch = db.batch(it["batch_id"])
         if batch is not None and batch["status"] == "regroup":
@@ -54,6 +59,8 @@ def next_job(s: Settings, db: DB, enabled: list[str], dry: bool,
         for mp in enabled:
             if mp not in renders:
                 continue
+            if not approved(it, renders[mp]):
+                continue        # nothing publishes without the owner's approved price
             post = db.post(it["id"], mp)
             if post and post["status"] in ("posted", "drafted", "posting", "failed"):
                 continue        # 'posting' after a crash = check the closet by hand, never re-post blindly
@@ -63,6 +70,8 @@ def next_job(s: Settings, db: DB, enabled: list[str], dry: bool,
             mode = "publish" if gate.get("decision") == "publish" and autop else "draft"
             if mode == "publish" and not allow_publish and not dry:
                 continue        # ship first; the item stays 'ready' and is picked up once the hold is lifted
+            if mode == "draft" and not dry and not can_draft(mp):
+                continue        # held(): the form would be filled for nothing
             return it["id"], mp, Render.model_validate(renders[mp]), mode
     return None
 
@@ -93,10 +102,53 @@ def _warn_draft(mp: str, iid: str, left: str | None) -> None:
                    "leave step (Cancel \u2192 Discard Changes) needs a look.")
 
 
+def approved(it, render: dict) -> bool:
+    """The listing carries the owner's approved price (WO27: nothing publishes without it)."""
+    return bool(it["owner_price"]) and int(render.get("price") or 0) == int(it["owner_price"])
+
+
+def can_draft(mp: str) -> bool:
+    """Whether the poster can save a draft on `mp` yet: Poshmark's Save Draft landing (draft_saved) is UNVERIFIED, and
+    so is all of Depop. Until then a draft job outside a dry-run would fill the whole form only to be refused."""
+    return mp == "poshmark" and not (poshmark.DRAFT_NEEDS & poshmark.UNVERIFIED)
+
+
+def held(s: Settings, db: DB, enabled: list[str]) -> list[tuple[str, str, list[str]]]:
+    """(item, marketplace, the gate's reasons) of the approved, ready items the loop leaves alone outside a dry-run:
+    the gate said "draft" (the copy needs one look: lint, a verifier edit) or the marketplace's autopublish is off,
+    and the poster can't save a draft yet. The owner looks, then publishes it with --publish-first."""
+    out = []
+    for it in db.items("ready"):
+        gate, renders = loads(it["gate"]) or {}, loads(it["renders"]) or {}
+        for mp in enabled:
+            post = db.post(it["id"], mp)
+            if mp not in renders or not approved(it, renders[mp]) or (post and post["status"] not in ("queued",
+                                                                                                    "dryrun")):
+                continue
+            autop = s.get(f"marketplaces.{mp}.autopublish", False) and s.is_prod
+            if not (gate.get("decision") == "publish" and autop) and not can_draft(mp):
+                out.append((it["id"], mp, list(gate.get("reasons") or [])))
+    return out
+
+
+def _tell_held(s: Settings, db: DB, enabled: list[str]) -> None:
+    """One message per held item, once (event held_draft): what to look at, and the command that publishes it."""
+    for iid, mp, reasons in held(s, db, enabled):
+        if db.conn.execute("SELECT 1 FROM events WHERE ref=? AND kind='held_draft'", (iid,)).fetchone():
+            continue
+        title = ((loads(db.item(iid)["renders"]) or {}).get(mp) or {}).get("title") or iid
+        why = ("the copy needs a look: " + "; ".join(reasons)) if reasons else f"marketplaces.{mp}.autopublish is off"
+        db.log(iid, "held_draft", {"mp": mp, "reasons": reasons})
+        notify.say(f"⏸ Not published automatically ({iid}): {title}\n{why}\nAfter a look: thrift poster "
+                   f"--publish-first {iid} (with the poster service stopped)")
+
+
 def condition_rule_breaks(r: Render) -> list[str]:
     """What in a stored listing breaks the owner's condition rule (wear words; a used item's grade claims): a listing
     rendered before the rule existed. The pipeline never makes one now (copy.condition_rule + lint)."""
     text = f"{r.title}\n{r.description}\n{' '.join(r.tags)}"
+    if r.subcategory in ("Jean Shorts",) or r.category == "Jeans" or "cutoff" in r.title.lower().replace("-", ""):
+        text = STYLE_HEMS.sub(" ", text)                  # a cutoff's frayed / raw hem is its style (WO27)
     found = {m.group(0).lower() for m in NEGATIVE_WORDS.finditer(text)}
     if r.condition in USED:
         found |= {m.group(0).lower() for m in USED_CLAIMS.finditer(text)}
@@ -113,8 +165,16 @@ def why_dry(s: Settings, force_dry: bool = False) -> str:
     return "dry-run: poster.autopublish_confirmed is off (poster.dry_run alone doesn't publish)"
 
 
+def posted_message(render: Render, out: Outcome, checks: list[str] = ()) -> str:
+    """"Posted ✓ <title> — check: brand set to 'J. Crew' (from 'J.Crew')" (WO27): the poster's guesses and the copy's
+    flags, so the owner fixes the live listing by hand if needed. Nothing to check: no extra words."""
+    check = [*out.guesses, *(f"copy: {c}" for c in checks)]
+    head = f"Posted ✓ {render.title}" + (f" — check: {'; '.join(check)}" if check else "")
+    return f"{head}\n${render.price} · {out.url or ''}" + (f"\n{out.note}" if out.note else "")
+
+
 def record_outcome(db: DB, iid: str, mp: str, render: Render, out: Outcome, marketplaces: list[str],
-                   stage: str = "form", say_dry_run: bool = True) -> None:
+                   stage: str = "form", say_dry_run: bool = True, checks: list[str] = ()) -> None:
     """The post row, the event, the owner's message and the item's status for one Outcome.
 
     posted_at = when this row last hit the site. A dry-run fills the real form (uploads included), so it gets a stamp
@@ -125,22 +185,31 @@ def record_outcome(db: DB, iid: str, mp: str, render: Render, out: Outcome, mark
     error = out.error
     if out.status == "failed" and out.clicked and not out.url:
         error = UNCONFIRMED + (error or "")
-    status = "queued" if out.status == "cancelled" else out.status
+    if out.status == "skipped":                     # nothing was saved; never retried until the owner requeues it
+        error = SKIPPED + (error or "")
+    status = {"cancelled": "queued", "skipped": "failed"}.get(out.status, out.status)
     db.upsert_post(iid, mp, status=status, url=out.url, last_error=error if out.status != "cancelled" else out.note,
                    posted_at=stamp if out.status in ("posted", "drafted", "dryrun") else None)
     db.log(iid, f"post_{out.status}", {"mp": mp, "url": out.url, "error": error, "shot": out.screenshot,
-                                       "note": out.note, "draft_left": out.draft_left, "clicked": out.clicked})
+                                       "note": out.note, "draft_left": out.draft_left, "clicked": out.clicked,
+                                       "guesses": out.guesses})
     _warn_draft(mp, iid, out.draft_left)
     note = f"\n{out.note}" if out.note else ""
+    guesses = f"\ncheck: {'; '.join(out.guesses)}" if out.guesses else ""
     if out.status == "failed":
         notify.photo(Path(out.screenshot or ""), f"❌ {mp} failed ({iid}): {render.title}\n{error}{note}")
+    elif out.status == "skipped":
+        notify.photo(Path(out.screenshot or ""), f"⏭ skipped on {mp} ({iid}): {render.title}\n{out.error}\nFix the "
+                                                 f"listing, then: thrift requeue {iid}{note}")
     elif out.status == "dryrun" and say_dry_run:          # poster.notify_dry_runs: off, the owner's chat stays quiet
         notify.photo(Path(out.screenshot or ""),
-                     f"🧪 dry-run {mp} ({stage}): {render.title} — ${render.price}{note}")
+                     f"🧪 dry-run {mp} ({stage}): {render.title} — ${render.price}{guesses}{note}")
     elif out.status == "cancelled":
         notify.say(f"↩️ not published on {mp} ({iid}): {render.title}{note}")
+    elif out.status == "posted":
+        notify.say(posted_message(render, out, checks))
     else:
-        notify.say(f"✅ {out.status} on {mp}: {render.title} — ${render.price}\n{out.url or ''}{note}")
+        notify.say(f"✅ {out.status} on {mp}: {render.title} — ${render.price}\n{out.url or ''}{guesses}{note}")
     _settle_item(db, iid, marketplaces)
 
 
@@ -216,15 +285,10 @@ async def publish_first(s: Settings, db: DB, iid: str, confirm=terminal_confirm)
             db.upsert_post(iid, "poshmark", status="queued", last_error=str(e))
             _halt(s, str(e), f"⛔ Poster paused: {e}\nFix it in the poster Chrome window, then delete the PAUSE file.")
             raise
-        except NeedsOwner as e:
-            db.upsert_post(iid, "poshmark", status="queued", last_error=f"needs owner: {e.question}")
-            db.set_item(iid, status="needs_owner")
-            approve.ask_owner(s, db, iid, e.question)
-            raise
     finally:
         await ctx.close()
         await pw.stop()
-    record_outcome(db, iid, "poshmark", render, out, list(ps))     # 'posted' once every enabled marketplace is
+    record_outcome(db, iid, "poshmark", render, out, list(ps), checks=_checks(it))   # 'posted' once all are
     return out
 
 
@@ -288,6 +352,12 @@ async def mark_posted(s: Settings, db: DB, iid: str, mp: str, url: str) -> str:
     return address
 
 
+def _checks(it) -> list[str]:
+    """The copy's flags (the gate's "draft" reasons) of an item that publishes anyway: things to check by hand."""
+    gate = loads(it["gate"]) if it is not None else None
+    return list((gate or {}).get("reasons") or []) if (gate or {}).get("decision") == "draft" else []
+
+
 def _halt(s: Settings, reason: str, text: str) -> None:
     """Invariant 5 — stop, don't guess: PAUSE makes can_post() refuse until the seller deletes the file."""
     s.flag("PAUSE").write_text(f"{datetime.now():%F %T} {reason}\n", encoding="utf-8")
@@ -330,6 +400,8 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, 
             # flag can appear mid-run (n8n sees a late order), so it is re-read every time round the loop.
             hold = s.flag_set("HOLD_UNSHIPPED")
             job = next_job(s, db, list(ps), dry, allow_publish=not hold) if ok else None
+            if not dry:
+                _tell_held(s, db, list(ps))              # approved items it won't publish: told once each
             if job is None:
                 if once:
                     print(f"nothing to do ({HOLD_REASON if ok and hold else why})")
@@ -346,20 +418,6 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, 
                 db.upsert_post(iid, mp, status="queued", last_error=str(e))
                 _halt(s, str(e), f"⛔ Poster paused: {e}\nFix it in the poster Chrome window, then delete the PAUSE file.")
                 return
-            except NeedsOwner as e:
-                # A field only the owner can answer (a brand or category Poshmark's lists don't have). Nothing was
-                # submitted, so 'queued' cannot double-post. The item leaves 'ready' (next_job takes only 'ready'),
-                # so it waits until the owner's reply reprocesses it; the poster carries on with the others.
-                # Not a failure for the circuit breaker: the form and the account are fine, the item is unusual.
-                db.upsert_post(iid, mp, status="queued", last_error=f"needs owner: {e.question}")
-                db.set_item(iid, status="needs_owner")
-                approve.ask_owner(s, db, iid, e.question)
-                db.log(iid, "needs_owner", {"mp": mp, "question": e.question})
-                _warn_draft(mp, iid, e.draft_left)
-                if once:
-                    return
-                await _pause(stop, next_gap(s["schedule"]))
-                continue
             except Exception as e:  # noqa: BLE001
                 # Poster.post() turns everything after the page opens into an Outcome, so an exception reaching
                 # here came from before the form was touched — nothing was submitted, and 'queued' cannot
@@ -372,8 +430,9 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, 
             record_outcome(db, iid, mp, render, out, list(ps), stage, bool(s.get("poster.notify_dry_runs", False)))
 
             # Circuit breaker: N failures in a row means the form, the account or the network changed, not
-            # the items. Every further attempt is 16 uploads of noise on the account, so stop and ask.
-            failures = failures + 1 if out.status == "failed" else 0
+            # the items. Every further attempt is 16 uploads of noise on the account, so stop and ask. A skipped
+            # item is not one: the form and the account are fine, the item is unusual (WO27).
+            failures = failures + 1 if out.status == "failed" else 0 if out.status != "skipped" else failures
             if failures >= max_fail:
                 _halt(s, f"{failures} consecutive failures: {out.error}",
                       f"⛔ Poster paused after {failures} consecutive failures: {out.error}\n"

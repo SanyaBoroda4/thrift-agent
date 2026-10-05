@@ -11,6 +11,7 @@ paths:
   db: ./var/state.db
   chrome_profile: ./var/chrome-profile
   control: ./var           # PAUSE and HOLD_UNSHIPPED flag files live here
+  brand_aliases: ./data/brand_aliases.yaml   # Poshmark's spelling of brands, learned by the poster (WO27; git-ignored)
   harvest: ./private/harvest      # raw pages incl. buyer data — never public
 
 models:

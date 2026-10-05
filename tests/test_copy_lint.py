@@ -310,7 +310,8 @@ def test_lint_condition_ladder(facts):
     assert "says NWT but facts aren't NWT" in lint(facts(condition="NWOT"), co(poshmark_description="New with tags flats."))
     assert not any("claims" in p or "NWT" in p for p in lint(facts(condition="NWT"),
                                                               co(poshmark_description="Brand new, NWT red flats.")))
-    assert any("title starts with New" in p for p in lint(facts(), co(poshmark_title="New Tory Burch Flats size 7.5")))
+    assert any("title says New" in p for p in lint(facts(), co(poshmark_title="New Tory Burch Flats size 7.5")))
+    assert any("title says New" in p for p in lint(facts(), co(poshmark_title="Tory Burch New Flats size 7.5")))
     assert not any("title starts with New" in p
                    for p in lint(facts(condition="NWOT"), co(poshmark_title="New Tory Burch Flats size 7.5")))
     assert not any("New" in p for p in lint(facts(), co(poshmark_title="Newport Tory Burch Flats size 7.5")))

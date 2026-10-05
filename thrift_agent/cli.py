@@ -288,7 +288,8 @@ def kids(item_id: str, choice: str = typer.Argument(..., metavar="girls|boys")) 
 @app.command()
 def recover(ref: str, recheck: bool = typer.Option(
         False, "--recheck", help="ask the front check and the upright check again (model calls) instead of keeping "
-                                 "the item's stored ones")) -> None:
+                                 "the item's stored ones"),
+            relabel: bool = typer.Option(False, "--relabel", help="read the labels again (one model call; WO27)")) -> None:
     """Recompute ONLY the cover (which photo shows the front, turned upright), the photo order, the category and the
     size of an item — or of every item of a batch (b_...) — that is not on the marketplace. Price, approved price,
     condition and Girls/Boys answers and the listing text stay; nothing settled is asked again (WO23). The item's
@@ -305,7 +306,7 @@ def recover(ref: str, recheck: bool = typer.Option(
     done = 0
     for iid in ids:
         try:
-            out = pipeline.recover_item(s, db, iid, recheck=recheck)
+            out = pipeline.recover_item(s, db, iid, recheck=recheck, relabel=relabel)
         except ValueError as e:
             print(f"[yellow]left as it is[/] {iid}: {escape(str(e))}")
             continue
@@ -343,6 +344,31 @@ def reprocess(item_id: str) -> None:
           f"{out['status']}; {card}")
     if out.get("features") is not None:
         print(f"    {escape(out['features'])}")
+    approve.pump(s, db)
+
+
+@app.command()
+def edit(item_id: str,
+         title: str = typer.Option(None, "--title", help="the listing's title, exactly (at most 80 characters)"),
+         brand: str = typer.Option(None, "--brand", help="the brand, spelled as Poshmark lists it ('no brand' for none)")
+         ) -> None:
+    """Set an item's title and/or brand exactly as given (WO27): the owner's words, kept through any reprocessing; no
+    model call, the price kept. Not for an item already on the marketplace.
+    e.g.  thrift edit i_... --brand 'J. Crew' --title 'J. Crew 100% Merino Wide Leg Sweater Pants Blue size M'"""
+    if title is None and brand is None:
+        print("[red]nothing to set[/]: give --title and/or --brand")
+        raise typer.Exit(1)
+    s, db = settings(), _db()
+    try:
+        status = pipeline.edit_listing(s, db, item_id, title=title, brand=brand)
+    except ValueError as e:
+        print(f"[red]not set[/] {item_id}: {escape(str(e))}")
+        raise typer.Exit(1) from None
+    posh = (loads(db.item(item_id)["renders"]) or {}).get("poshmark") or {}
+    print(f"[green]set[/] {item_id}: {escape(str(posh.get('title')))} · brand {escape(str(posh.get('brand')))} · "
+          f"${posh.get('price')} · {status}")
+    approve.announce(s, f"{item_id}: " + ", ".join(f"{k} '{v}'" for k, v in (("title", title), ("brand", brand)) if v)
+                     + " set from the CLI")
     approve.pump(s, db)
 
 
@@ -570,9 +596,8 @@ def status() -> None:
         print(f"[yellow]brand new or worn?[/] {it['id']}  →  thrift condition {it['id']} nwt|like_new|good")
     for it in db.items("awaiting_price"):
         print(f"[yellow]awaiting price[/] {it['id']}  →  thrift price {it['id']} <amount>")
-    for it in db.items("needs_owner"):
-        print(f"[yellow]needs owner[/] {it['id']}  →  thrift answer {it['id']} \"<answer>\"  (or thrift requeue "
-              f"{it['id']} to retry as it is)")
+    for it in db.items("needs_owner"):                 # parked by a poster from before WO27 (it asks nothing now)
+        print(f"[yellow]needs owner[/] {it['id']}  →  thrift requeue {it['id']} (retry as it is; the poster now guesses)")
     # The owner's Telegram queue (WO20): one open question at a time, the rest in order behind it.
     queue = approve.queue(db)
     if queue:

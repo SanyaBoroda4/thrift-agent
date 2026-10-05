@@ -133,21 +133,24 @@ def test_account_blocked_propagates_despite_close_error(tmp_path):
     assert p.submitted is None
 
 
-def test_needs_owner_propagates_with_a_screenshot(tmp_path):
-    """A question for the owner is not a failed Outcome: the runner must see it to park the item and ask."""
-    from thrift_agent.post.base import NeedsOwner
+SKIP = "size '15' isn't on Poshmark's Women/Shoes (Standard) menu, nor one near it (the size is required)"
+
+
+def test_a_skip_is_its_own_outcome_with_a_screenshot(tmp_path):
+    """WO27: a required field the form can't take, even as a guess, is neither a question nor a failure: the item is
+    skipped (nothing saved) and the runner reports it."""
+    from thrift_agent.post.base import Skipped
 
     class Stuck(StubPoster):
         async def fill(self, page, r):
-            raise NeedsOwner("Poshmark's brand list has no match for 'Tory Burch'. Which brand should I pick?")
+            self.guesses.append("brand left empty: Poshmark's list has no 'Zzyzx'")
+            raise Skipped(SKIP)
 
     p = Stuck({"title": "Tory Burch Red Flats size 7.5", "price": "85"})
-    with pytest.raises(NeedsOwner) as info:
-        run(p, shots=tmp_path, ctx=FakeCtx(page=CloseFailsPage()))
-    assert info.value.question.startswith("Poshmark's brand list has no match for 'Tory Burch'")
-    assert str(info.value) == info.value.question
-    assert p.submitted is None
-    assert list(tmp_path.glob("i_1-stub-*.png"))               # the screenshot is taken before re-raising
+    out = run(p, shots=tmp_path, ctx=FakeCtx(page=CloseFailsPage()))
+    assert (out.status, out.error) == ("skipped", SKIP) and p.submitted is None
+    assert out.guesses == ["brand left empty: Poshmark's list has no 'Zzyzx'"]
+    assert list(tmp_path.glob("i_1-stub-*.png")) and Path(out.screenshot).exists()
 
 
 def test_other_fill_errors_are_still_a_failed_outcome(tmp_path):
@@ -221,17 +224,16 @@ def test_mismatch_and_errors_discard_the_form(tmp_path):
     assert out.status == "failed" and p.calls == ["discard"] and out.note == "could not leave"
 
 
-def test_needs_owner_discards_and_carries_the_screenshot(tmp_path):
-    from thrift_agent.post.base import NeedsOwner
+def test_a_skip_discards_the_form_and_keeps_the_screenshot(tmp_path):
+    from thrift_agent.post.base import Skipped
 
     class Stuck(Leaving):
         async def fill(self, page, r):
-            raise NeedsOwner("which brand?")
+            raise Skipped("Poshmark has no 'Unisex' department (the category is required)")
 
     p = Stuck(GOOD)
-    with pytest.raises(NeedsOwner) as info:
-        run(p, shots=tmp_path)
-    assert p.calls == ["discard"] and Path(info.value.screenshot).exists()
+    out = run(p, shots=tmp_path)
+    assert out.status == "skipped" and p.calls == ["discard"] and Path(out.screenshot).exists()
 
 
 def test_a_blocked_account_or_a_started_submit_is_never_discarded(tmp_path):
@@ -348,19 +350,18 @@ def test_an_unreadable_draft_count_is_a_note_not_a_warning(tmp_path):
     assert out.draft_left is None and out.note == "could not read the Drafts count after the dry-run"
 
 
-def test_the_drafts_are_counted_after_failed_and_parked_dry_runs_but_never_live(tmp_path):
-    from thrift_agent.post.base import NeedsOwner
+def test_the_drafts_are_counted_after_failed_and_skipped_dry_runs_but_never_live(tmp_path):
+    from thrift_agent.post.base import Skipped
 
     out = run(Counting({"title": "Tory Burch Red Flats size 7.5", "price": "80"}, [0, 1]), dry_run=True, shots=tmp_path)
     assert out.status == "failed" and out.draft_left == LEFT
 
     class Stuck(Counting):
         async def fill(self, page, r):
-            raise NeedsOwner("which brand?")
+            raise Skipped(SKIP)
 
-    with pytest.raises(NeedsOwner) as info:
-        run(Stuck(GOOD, [0, 1]), dry_run=True, shots=tmp_path)
-    assert info.value.draft_left == LEFT
+    out = run(Stuck(GOOD, [0, 1]), dry_run=True, shots=tmp_path)
+    assert out.status == "skipped" and out.draft_left == LEFT
 
     p = Counting(GOOD, [0, 1])
     assert run(p, shots=tmp_path).status == "posted" and p.counts == [0, 1]     # a live post: never counted

@@ -4,11 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from thrift_agent import approve, notify
+from thrift_agent import notify
 from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
 from thrift_agent.post import runner
-from thrift_agent.post.base import AccountBlocked, NeedsOwner, Outcome, PosterError
+from thrift_agent.post.base import AccountBlocked, Outcome, PosterError
 from thrift_agent.post.depop import DepopPoster
 from thrift_agent.post.poshmark import PoshmarkPoster
 from thrift_agent.schema import Render
@@ -39,11 +39,14 @@ def _settings(tmp_path, role="dev", autopublish=False, dry_run=True, max_fail=3,
     return s
 
 
-def _ready_item(db: DB, seq: int = 1, decision: str = "publish") -> str:
+def _ready_item(db: DB, seq: int = 1, decision: str = "publish", price: int | None = 85,
+                reasons: list[str] | None = None) -> str:
+    """A ready item as the pipeline leaves one: the owner approved the listing's price ($85) unless `price` says
+    otherwise (None: never approved)."""
     bid = db.add_batch(f"share_{seq}", 5)
     iid = db.add_item(bid, seq, f"work/{seq}")
-    db.set_item(iid, status="ready", gate={"decision": decision, "reasons": []},
-                renders={"poshmark": RENDER.model_dump()})
+    db.set_item(iid, status="ready", gate={"decision": decision, "reasons": reasons or []},
+                renders={"poshmark": RENDER.model_dump()}, owner_price=price)
     return iid
 
 
@@ -74,7 +77,7 @@ def test_posters_require_a_username_for_each_enabled_marketplace(tmp_path, mp, u
     ("posting", False, False), ("failed", False, False), ("posted", False, False), ("drafted", False, False),
 ])
 def test_next_job_status_matrix(tmp_path, status, dry, expect_job):
-    s = _settings(tmp_path)
+    s = _settings(tmp_path, role="prod", autopublish=True)
     db = DB(s.path("db"))
     iid = _ready_item(db)
     if status:
@@ -93,21 +96,37 @@ def test_next_job_skips_marketplaces_without_a_render(tmp_path):
     assert runner.next_job(s, db, ["depop"], False) is None
 
 
-@pytest.mark.parametrize("role,autopublish,decision,mode", [
-    ("dev", True, "publish", "draft"),        # the dev machine never publishes, whatever the config says
-    ("prod", False, "publish", "draft"),
-    ("prod", True, "draft", "draft"),
-    ("prod", True, "publish", "publish"),
+@pytest.mark.parametrize("role,autopublish,decision,dry,mode", [
+    ("dev", True, "publish", True, "draft"),        # the dev machine never publishes, whatever the config says
+    ("prod", False, "publish", True, "draft"),
+    ("prod", True, "draft", True, "draft"),         # a dry-run fills the form whatever the gate said
+    ("prod", True, "publish", True, "publish"),
+    ("prod", True, "publish", False, "publish"),
+    ("prod", True, "draft", False, None),           # live: a draft the poster can't save yet is left alone (held)
+    ("prod", False, "publish", False, None),
 ])
-def test_next_job_mode(tmp_path, role, autopublish, decision, mode):
+def test_next_job_mode(tmp_path, role, autopublish, decision, dry, mode):
     s = _settings(tmp_path, role=role, autopublish=autopublish)
     db = DB(s.path("db"))
     _ready_item(db, decision=decision)
-    assert runner.next_job(s, db, ["poshmark"], False)[3] == mode
+    job = runner.next_job(s, db, ["poshmark"], dry)
+    assert (job[3] if job else None) == mode
 
 
-def test_next_job_hold_skips_publish_but_still_returns_drafts(tmp_path):
-    """HOLD_UNSHIPPED (allow_publish=False) holds only what would go live; the held item stays 'ready' behind it."""
+@pytest.mark.parametrize("price", [None, 0, 80])                     # never approved; approved at another price
+def test_next_job_takes_only_the_owners_approved_price(tmp_path, price):
+    """WO27: nothing publishes without the approved price — the listing's price must be the one the owner approved."""
+    s = _settings(tmp_path, role="prod", autopublish=True, dry_run=False)
+    db = DB(s.path("db"))
+    _ready_item(db, price=price)
+    assert runner.next_job(s, db, ["poshmark"], False) is None and runner.next_job(s, db, ["poshmark"], True) is None
+    assert runner.held(s, db, ["poshmark"]) == []                   # not held either: simply not approved
+
+
+def test_next_job_hold_skips_publish_but_still_returns_drafts(tmp_path, monkeypatch):
+    """HOLD_UNSHIPPED (allow_publish=False) holds only what would go live; the held item stays 'ready' behind it.
+    (A draft once the poster can save one: Save Draft's landing is still UNVERIFIED.)"""
+    monkeypatch.setattr(runner, "can_draft", lambda mp: True)
     s = _settings(tmp_path, role="prod", autopublish=True)
     db = DB(s.path("db"))
     live = _ready_item(db, seq=1, decision="publish")
@@ -232,11 +251,29 @@ def test_run_records_a_posted_outcome(tmp_path, monkeypatch, harness):
     assert row["url"] == "https://poshmark.com/listing/abc"
     assert row["posted_at"] and db.posted_since("2000-01-01T00:00:00+00:00") == 1
     assert db.item(iid)["status"] == "posted"
-    assert any("posted on poshmark" in m for m in said) and not s.flag("PAUSE").exists()
+    assert f"Posted ✓ {RENDER.title}\n$85 · https://poshmark.com/listing/abc" in said     # nothing guessed: no "check"
+    assert not s.flag("PAUSE").exists()
     assert [e["kind"] for e in db.conn.execute("SELECT kind FROM events WHERE ref=?", (iid,))] == ["post_posted"]
 
 
+def test_the_posted_message_lists_the_posters_guesses(tmp_path, monkeypatch, harness):
+    """WO27: the poster never asks; what it had to guess is listed so the owner can fix the live listing by hand."""
+    said, _ = harness
+    s = _settings(tmp_path, role="prod", autopublish=True, dry_run=False)
+    db = DB(s.path("db"))
+    iid = _ready_item(db)
+    guesses = ["brand set to 'J. Crew' (from 'J.Crew')", "size set to '12' (from '12.5')"]
+    _run(monkeypatch, s, db, StubPoster(Outcome("posted", url="https://poshmark.com/listing/abc", guesses=guesses)),
+         once=True)
+    assert (f"Posted ✓ {RENDER.title} — check: brand set to 'J. Crew' (from 'J.Crew'); size set to '12' (from "
+            "'12.5')\n$85 · https://poshmark.com/listing/abc") in said
+    detail = loads(db.conn.execute("SELECT detail FROM events WHERE ref=? AND kind='post_posted'", (iid,)).fetchone()[0])
+    assert detail["guesses"] == guesses
+
+
 def test_run_records_a_drafted_outcome(tmp_path, monkeypatch, harness):
+    """Once the poster can save a draft (draft_saved is still UNVERIFIED, so can_draft is patched here)."""
+    monkeypatch.setattr(runner, "can_draft", lambda mp: True)
     said, _ = harness
     s = _settings(tmp_path, role="prod", autopublish=False, dry_run=False)
     db = DB(s.path("db"))
@@ -351,18 +388,17 @@ def test_run_account_blocked_requeues_and_pauses(tmp_path, monkeypatch, harness)
     assert sum("Poster paused" in m for m in said) == 1
 
 
-QUESTION = "Poshmark's brand list has no match for 'Tory Burch'. Which brand should I pick? (reply e.g. 'brand Vince')"
+SKIP = "size '15' isn't on Poshmark's Women/Shoes (Standard) menu, nor one near it (the size is required)"
 
 
-def test_run_needs_owner_parks_the_item_and_asks_without_pausing(tmp_path, monkeypatch, harness):
-    """The poster's separate question: item A waits in needs_owner, the owner is asked once, item B still posts."""
+def test_a_skipped_item_saves_nothing_is_reported_and_the_loop_goes_on(tmp_path, monkeypatch, harness):
+    """WO27: a required field the form can't take, even as a guess: nothing saved, the item reported and left for the
+    owner (thrift requeue once fixed); never a question, never a pause — item B still posts."""
     said, pauses = harness
     s = _settings(tmp_path, role="prod", autopublish=True, dry_run=False, max_fail=1)
     db = DB(s.path("db"))
     a, b = _ready_item(db, seq=1), _ready_item(db, seq=2)
-    poster = StubPoster(NeedsOwner(QUESTION), Outcome("posted", url="https://poshmark.com/listing/b"))
-    asked: list[tuple] = []
-    monkeypatch.setattr(approve, "ask_owner", lambda s_, db_, iid, q: asked.append((iid, q)))
+    poster = StubPoster(Outcome("skipped", error=SKIP), Outcome("posted", url="https://poshmark.com/listing/b"))
 
     async def stop_on_second_pause(stop, seconds):
         pauses.append(seconds)
@@ -372,44 +408,84 @@ def test_run_needs_owner_parks_the_item_and_asks_without_pausing(tmp_path, monke
     monkeypatch.setattr(runner, "_pause", stop_on_second_pause)
     _run(monkeypatch, s, db, poster, once=False)
 
-    assert len(poster.calls) == 2                              # B was not held up by A's question
+    assert len(poster.calls) == 2                              # B was not held up by A
     row = db.post(a, "poshmark")
-    assert (row["status"], row["attempts"], row["last_error"]) == ("queued", 1, f"needs owner: {QUESTION}")
-    assert row["posted_at"] is None and db.item(a)["status"] == "needs_owner"
-    assert asked == [(a, QUESTION)]
-    assert db.post(b, "poshmark")["status"] == "posted" and db.item(b)["status"] == "posted"
+    assert (row["status"], row["last_error"], row["url"], row["posted_at"]) == ("failed", runner.SKIPPED + SKIP,
+                                                                                 None, None)
+    assert db.item(a)["status"] == "ready" and db.post(b, "poshmark")["status"] == "posted"
+    assert any(m.startswith(f"⏭ skipped on poshmark ({a}): {RENDER.title}\n{SKIP}\nFix the listing, then: thrift "
+                            f"requeue {a}") for m in said)
     assert not s.flag("PAUSE").exists() and not any("paused" in m.lower() for m in said)   # max_fail=1: not a failure
-    events = db.conn.execute("SELECT kind, detail FROM events WHERE ref=?", (a,)).fetchall()
-    assert [(e["kind"], loads(e["detail"])) for e in events] == [("needs_owner", {"mp": "poshmark", "question": QUESTION})]
-    assert len(pauses) == 2                                    # the usual gap after the question, then after B
+    assert runner.next_job(s, db, ["poshmark"], False) is None          # never retried on its own
 
 
-def test_run_needs_owner_leaves_the_failure_counter_alone(tmp_path, monkeypatch, harness):
-    """Neither a failure nor a success for the circuit breaker: failed, question, failed still trips max_fail=2."""
+def test_a_skip_leaves_the_failure_counter_alone(tmp_path, monkeypatch, harness):
+    """Neither a failure nor a success for the circuit breaker: failed, skipped, failed still trips max_fail=2."""
     s = _settings(tmp_path, max_fail=2)
     db = DB(s.path("db"))
     ids = [_ready_item(db, seq=i) for i in range(1, 4)]
-    poster = StubPoster(Outcome("failed", error="a"), NeedsOwner("which brand?"), Outcome("failed", error="b"))
-    monkeypatch.setattr(approve, "ask_owner", lambda *a: None)
+    poster = StubPoster(Outcome("failed", error="a"), Outcome("skipped", error=SKIP), Outcome("failed", error="b"))
     _run(monkeypatch, s, db, poster, once=False)
 
     assert len(poster.calls) == 3
-    assert [db.post(i, "poshmark")["status"] for i in ids] == ["failed", "queued", "failed"]
-    assert [db.item(i)["status"] for i in ids] == ["ready", "needs_owner", "ready"]
+    assert [db.post(i, "poshmark")["last_error"] for i in ids] == ["a", runner.SKIPPED + SKIP, "b"]
     assert "2 consecutive failures: b" in s.flag("PAUSE").read_text(encoding="utf-8")
 
 
-def test_run_once_returns_after_a_needs_owner_question(tmp_path, monkeypatch, harness):
-    _, pauses = harness
-    s = _settings(tmp_path)
+def test_a_draft_gated_item_is_held_and_told_once_never_filled(tmp_path, monkeypatch, harness):
+    """The gate's "draft" (the copy needs one look) still never publishes on its own; Save Draft is UNVERIFIED, so the
+    live loop leaves the item alone — no form, no failure — and says so once, with the command that publishes it."""
+    said, _ = harness
+    s = _settings(tmp_path, role="prod", autopublish=True, dry_run=False)
     db = DB(s.path("db"))
-    ids = [_ready_item(db, seq=i) for i in range(1, 3)]
-    poster = StubPoster(NeedsOwner("which brand?"), Outcome("dryrun"))
-    monkeypatch.setattr(approve, "ask_owner", lambda *a: None)
+    iid = _ready_item(db, decision="draft", reasons=["material word without a label: wool"])
+    poster = StubPoster(Outcome("posted", url="https://poshmark.com/listing/x"))
     _run(monkeypatch, s, db, poster, once=True)
+    _run(monkeypatch, s, db, poster, once=True)
+    assert poster.calls == [] and db.post(iid, "poshmark") is None and db.item(iid)["status"] == "ready"
+    told = [m for m in said if m.startswith("⏸ Not published automatically")]
+    assert told == [f"⏸ Not published automatically ({iid}): {RENDER.title}\nthe copy needs a look: material word "
+                    f"without a label: wool\nAfter a look: thrift poster --publish-first {iid} (with the poster service "
+                    "stopped)"]
 
-    assert len(poster.calls) == 1 and pauses == [] and db.item(ids[0])["status"] == "needs_owner"
-    assert db.post(ids[1], "poshmark") is None and not s.flag("PAUSE").exists()
+
+def test_the_live_loop_end_to_end(tmp_path, monkeypatch, harness):
+    """WO27 §4, the loop as the owner will switch it on (dry_run off, autopublish_confirmed on, poshmark autopublish
+    on), with a stand-in browser: the oldest approved item first, one at a time, a human gap (gap_seconds) after each,
+    "Posted ✓" with the guesses; an unapproved item untouched, a draft-gated one held; outside the hours nothing."""
+    said, pauses = harness
+    s = _settings(tmp_path, role="prod", autopublish=True, dry_run=False)
+    db = DB(s.path("db"))
+    first, second = _ready_item(db, seq=1), _ready_item(db, seq=2)
+    unpriced, gated = _ready_item(db, seq=3, price=None), _ready_item(db, seq=4, decision="draft", reasons=["x"])
+    poster = StubPoster(Outcome("posted", url="https://poshmark.com/listing/1", guesses=["colour 'Teal' left out"]),
+                        Outcome("posted", url="https://poshmark.com/listing/2"))
+    gaps = []
+
+    async def human_gap(stop, seconds):
+        gaps.append(seconds)
+        if len(gaps) >= 3:                                   # after both items and one idle minute
+            stop.set()
+
+    monkeypatch.setattr(runner, "_pause", human_gap)
+    monkeypatch.setattr(runner, "can_post", lambda s_, hour, day: (False, "outside posting hours"))
+    _run(monkeypatch, s, db, poster, once=True)
+    assert poster.calls == []                                # outside the hours: nothing at all
+    monkeypatch.setattr(runner, "can_post", lambda s_, hour, day: (True, "ok"))
+    _run(monkeypatch, s, db, poster, once=False)
+
+    assert [c[1:] for c in poster.calls] == [("publish", False)] * 2
+    assert [db.post(i, "poshmark")["url"] for i in (first, second)] == ["https://poshmark.com/listing/1",
+                                                                          "https://poshmark.com/listing/2"]
+    assert all(150 <= g <= 4 * 420 for g in gaps[:2]) and gaps[2] == 60   # human gaps (now and then a longer
+    #                                                                        break, next_gap), then the idle minute
+    assert db.post(unpriced, "poshmark") is None and db.post(gated, "poshmark") is None
+    started = [m for m in said if m.startswith("Poster started")]
+    assert started and all("LIVE" in m for m in started)
+    posted = [m for m in said if m.startswith("Posted ✓")]
+    assert posted == [f"Posted ✓ {RENDER.title} — check: colour 'Teal' left out\n$85 · https://poshmark.com/listing/1",
+                      f"Posted ✓ {RENDER.title}\n$85 · https://poshmark.com/listing/2"]
+    assert sum(m.startswith("⏸ Not published automatically") for m in said) == 1
 
 
 def test_run_skips_a_job_another_poster_claimed(tmp_path, monkeypatch, harness):
@@ -512,15 +588,13 @@ def test_run_warns_when_a_dry_run_left_a_draft(tmp_path, monkeypatch, harness):
     assert detail["draft_left"] == left
 
 
-def test_run_warns_about_a_left_draft_after_a_question_too(tmp_path, monkeypatch, harness):
+def test_run_warns_about_a_left_draft_after_a_skip_too(tmp_path, monkeypatch, harness):
     said, _ = harness
     s = _settings(tmp_path)
     db = DB(s.path("db"))
     _ready_item(db)
-    question = NeedsOwner("which brand?")
-    question.draft_left = "a draft was left behind (Drafts 2 → 3)"
-    monkeypatch.setattr(approve, "ask_owner", lambda *a: None)
-    _run(monkeypatch, s, db, StubPoster(question), once=True)
+    left = "a draft was left behind (Drafts 2 → 3)"
+    _run(monkeypatch, s, db, StubPoster(Outcome("skipped", error=SKIP, draft_left=left)), once=True)
     assert any("a draft was left behind (Drafts 2 → 3) by the dry-run of" in m for m in said)
 
 
@@ -596,7 +670,7 @@ def test_publish_first_publishes_once_and_records_the_listing(tmp_path, monkeypa
     assert poster.confirm == "the LIST prompt"
     row = db.post(iid, "poshmark")
     assert (row["status"], row["mode"], row["url"]) == ("posted", "publish", "https://poshmark.com/listing/naturino-6ad")
-    assert db.item(iid)["status"] == "posted" and any(m.startswith("✅ posted on poshmark") for m in said)
+    assert db.item(iid)["status"] == "posted" and any(m.startswith(f"Posted ✓ {RENDER.title}") for m in said)
 
 
 def test_publish_first_cancelled_at_the_prompt_goes_back_to_the_queue(tmp_path, monkeypatch, harness):

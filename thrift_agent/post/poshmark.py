@@ -55,8 +55,10 @@ from urllib.parse import urlparse
 from playwright.async_api import ElementHandle, Locator, Page
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
-from thrift_agent.post.base import (AccountBlocked, Cancelled, Contains, Mode, NeedsOwner, Poster, PosterError,
-                                    human_type, keep_evidence, settle)
+from thrift_agent import brands
+from thrift_agent.post.base import (AccountBlocked, Cancelled, Contains, Mode, Poster, PosterError, Skipped, human_type,
+                                    keep_evidence, settle)
+from thrift_agent.post.fallback import closest, nearest_size
 from thrift_agent.schema import Render
 
 # The condition menu's labels (verified). Poshmark has no "new without tags": unworn goes up as Like New. It has no
@@ -108,7 +110,7 @@ KIDS_SIZE_OPTIONS = _kids_shoe_options()
 class SizeChoice:
     tab: str | None          # the size menu's tab: Standard, Plus, Girls, Boys, Baby
     button: str              # the size button's text; its id is "size-<text>"
-    verified: bool           # tab and button text were seen on the live form: a missing button is the owner's question
+    verified: bool           # tab and button from the live form or its catalog: a missing tab is noted, not fatal
     loose: bool = False      # also accept "<button> (...)": the Baby tab's labels are not recorded
 
 
@@ -314,6 +316,13 @@ def _is(want: str, el_id: str, text: str, attrs: str, loose: bool = False) -> bo
     return loose and re.fullmatch(rf"{re.escape(w)}(?:\s*\(.*\))?", _key(text)) is not None
 
 
+def _brand_queries(name: str) -> list[str]:
+    """What to type for a brand: the name, then — when the list offers nothing for it — its longest word ("J.Crew" ->
+    "Crew", "Levi's" -> "Levi"), so a spelling Poshmark's search doesn't take still brings its suggestions (WO27)."""
+    words = sorted(re.findall(r"[^\W_]{3,}", _straight(name)), key=len, reverse=True)
+    return list(dict.fromkeys([name, *words[:1]]))
+
+
 def _offer(options: list[str], limit: int = 12) -> str:
     if not options:
         return ""
@@ -337,9 +346,12 @@ class PoshmarkPoster(Poster):
     base_url = "https://poshmark.com"
     counts_drafts = True                 # the create page shows "Drafts N": Poster.post checks each dry-run left none
 
-    def __init__(self, username: str):
+    def __init__(self, username: str, aliases: brands.Aliases | None = None):
         self.username = username
+        self.aliases = aliases or brands.Aliases(None)       # Poshmark's spelling of a brand, learned (WO27)
         self.notes: list[str] = []
+        self.guesses: list[str] = []
+        self.chosen: dict = {}                             # what the form got where it differs from the Render
         self._roots: dict[str, ElementHandle | None] = {}   # dropdown -> the element that shows its choice
         self._state: dict = {}                             # what fill() saw for read_back: thumbnails, Smart Sell
         self._render: Render | None = None
@@ -379,7 +391,9 @@ class PoshmarkPoster(Poster):
     # ---------------------------------------------------------------- fill
 
     async def fill(self, page: Page, r: Render) -> None:
-        self._roots, self._state, self._render = {}, {}, r
+        """WO27: never stops to ask. A brand, subcategory, size or colour the form doesn't offer exactly is its best
+        guess (self.guesses, reported in "Posted ✓"); a REQUIRED field it can't fill at all skips the item (Skipped)."""
+        self._roots, self._state, self._render, self.chosen = {}, {}, r, {}
         await self._photos(page, r)
         await _type(SEL["title"](page), r.title)
         await settle(page)
@@ -470,8 +484,7 @@ class PoshmarkPoster(Poster):
     async def _category(self, page: Page, r: Render) -> None:
         et = r.department.strip().lower()
         if et not in DEPARTMENTS:
-            raise NeedsOwner(f"Poshmark has no '{r.department}' department. Which one should it go under? "
-                             "(reply e.g. 'department Women')")
+            raise Skipped(f"Poshmark has no '{r.department}' department (the category is required)")
         trigger = SEL["category_open"](page)
         await self._remember("category", trigger)
         await trigger.click()
@@ -486,8 +499,12 @@ class PoshmarkPoster(Poster):
         if not picked:
             if not options:
                 raise PosterError(f"the {r.department} category list did not show")
-            raise NeedsOwner(f"Poshmark has no category '{r.category}' under {r.department}{_offer(options)}. "
-                             "Which category should I pick? (reply e.g. 'category Tops')")
+            guess = closest(r.category, options, 0.75)
+            if guess is None or not (await self._choose(page, SEL["category_items"](page), guess))[0]:
+                raise Skipped(f"Poshmark has no category '{r.category}' under {r.department}, nor one close to it"
+                              f"{_offer(options)} (the category is required)")
+            self.chosen["category"] = guess
+            self.guesses.append(f"category set to '{guess}' (from '{r.category}')")
         await settle(page, 0.3, 0.8)
         await self._subcategory(page, r)
 
@@ -503,11 +520,16 @@ class PoshmarkPoster(Poster):
             return
         await self._remember("subcategory", items.first)
         picked, options = await self._choose(page, items, r.subcategory or "None")
+        if not picked and r.subcategory:                 # the closest one, else none (a subcategory is optional)
+            guess = closest(r.subcategory, [o for o in options if _key(o) != "none"], 0.6)
+            picked = guess is not None and (await self._choose(page, items, guess))[0]
+            self.chosen["subcategory"] = guess if picked else None
+            if not picked:
+                picked = (await self._choose(page, items, "None"))[0]
+            self.guesses.append(f"subcategory set to '{guess}' (from '{r.subcategory}')" if self.chosen["subcategory"]
+                                else f"subcategory left out (Poshmark has no '{r.subcategory}' under {r.category})")
         if not picked:
-            if not r.subcategory:
-                raise PosterError(f"the subcategory menu has no 'None'{_offer(options)}")
-            raise NeedsOwner(f"Poshmark has no subcategory '{r.subcategory}' under {r.department}/{r.category}"
-                             f"{_offer(options)}. Which one should I pick? (reply e.g. 'subcategory Sneakers')")
+            raise PosterError(f"the subcategory menu has no 'None'{_offer(options)}")
         await settle(page, 0.3, 0.8)
 
     async def _size(self, page: Page, r: Render) -> None:
@@ -521,17 +543,18 @@ class PoshmarkPoster(Poster):
             if picked:
                 await settle(page, 0.3, 0.8)
             elif choice.verified and tabs:             # no tabs at all: a category with one menu (Women's shoes)
-                raise PosterError(f"the size menu for {r.department}/{r.category} has no '{choice.tab}' tab"
-                                  f"{_offer(tabs)}")
+                self.guesses.append(f"size tab '{choice.tab}' not offered{_offer(tabs)}: picked from the menu shown")
         picked, sizes = await self._choose(page, SEL["size_buttons"](page), choice.button, loose=choice.loose)
         if not picked:
             if not sizes:
                 raise PosterError(f"the size menu for {where} shows no sizes")
-            if choice.verified:
-                raise NeedsOwner(f"Poshmark's size list for {where} has no '{choice.button}'{_offer(sizes, 30)}. "
-                                 "Which size should I pick? (reply e.g. 'size 8')")
-            raise PosterError(f"size '{choice.button}' is not in {where}{_offer(sizes, 30)}; this size list is not "
-                              "recorded yet")
+            guess = nearest_size(choice.button, sizes)
+            if guess is None or not (await self._choose(page, SEL["size_buttons"](page), guess))[0]:
+                raise Skipped(f"size '{choice.button}' isn't on Poshmark's {where} menu, nor one near it"
+                              f"{_offer(sizes, 30)} (the size is required)")
+            self.chosen["size"] = guess
+            self.guesses.append(f"size set to '{guess}' (from '{choice.button}')")
+            choice = SizeChoice(choice.tab, guess, choice.verified)
         await self._confirm_size(page, choice)
         await settle(page, 0.3, 0.8)
 
@@ -574,14 +597,34 @@ class PoshmarkPoster(Poster):
         await settle(page, 0.3, 0.8)
 
     async def _brand(self, page: Page, r: Render) -> None:
+        """Ours as Poshmark spells it (data/brand_aliases.yaml), typed; then the suggestion brands.pick() chooses — the
+        same name normalised ("J.Crew" is "J. Crew"), never a line we don't have ("J. Crew Factory"), else the closest
+        — or none: Brand is optional on the form, so it is left empty (WO27). A name it had to resolve is learned."""
         if not r.brand:
             return
-        await _type(SEL["brand"](page), _straight(r.brand))
-        picked, options = await self._choose(page, SEL["brand_options"](page), r.brand, timeout_ms=SUGGEST_TIMEOUT_MS)
-        if not picked:
-            # Only the owner knows whether Poshmark spells it differently or the item goes under another brand.
-            raise NeedsOwner(f"Poshmark's brand list has no match for '{r.brand}'{_offer(options, 8)}. Which brand "
-                             "should I pick? (reply e.g. 'brand Vince')")
+        ours = self.aliases.spell(r.brand) or r.brand
+        box = SEL["brand"](page)
+        options: list[str] = []
+        for query in _brand_queries(ours):
+            await _type(box, _straight(query))
+            picked, options = await self._choose(page, SEL["brand_options"](page), ours, timeout_ms=SUGGEST_TIMEOUT_MS)
+            if picked:                                     # exact, or a spelling learned before: nothing to report
+                self.chosen["brand"] = ours
+                await settle(page)
+                return
+            if options:
+                break
+        choice, guess = brands.pick(ours, options)
+        if choice is not None and (await self._choose(page, SEL["brand_options"](page), choice))[0]:
+            self.chosen["brand"] = choice
+            self.aliases.learn(r.brand, choice)
+            guess = f"brand set to '{choice}' (from '{r.brand}')" if choice != r.brand else guess
+        else:
+            await box.fill("")                             # optional: left empty rather than a wrong brand
+            self.chosen["brand"] = None
+            guess = guess or f"brand left empty: Poshmark's list has no '{r.brand}'"
+        if guess:
+            self.guesses.append(guess)
         await settle(page)
 
     async def _colors(self, page: Page, r: Render) -> None:
@@ -591,11 +634,15 @@ class PoshmarkPoster(Poster):
         trigger = SEL["color_open"](page)
         await self._remember("colors", trigger)
         await trigger.click()
+        chosen = []
         for color in colors:
             picked, options = await self._choose(page, SEL["color_tiles"](page), color)
-            if not picked:                             # the tiles are our 15-colour palette: a missing one = a change
-                raise PosterError(f"no '{color}' colour tile{_offer(options, 15)}")
+            if not picked:                             # optional: a colour the form doesn't offer is left out (WO27)
+                self.guesses.append(f"colour '{color}' left out (not offered{_offer(options, 15)})")
+                continue
+            chosen.append(color)
             await settle(page, 0.2, 0.6)
+        self.chosen["colors"] = chosen
         done = SEL["color_done"](page)
         await self._wait(done, "the colour menu's Done button")
         await done.first.click()
@@ -751,18 +798,21 @@ class PoshmarkPoster(Poster):
         }
 
     def expected(self, r: Render) -> dict:
+        """What the form must read back: the Render, with the poster's own choices where it had to guess (WO27)."""
+        chosen = self.chosen
+        brand = chosen["brand"] if "brand" in chosen else (self.aliases.spell(r.brand) if r.brand else r.brand)
         exp = {
-            "title": r.title, "description": r.description, "brand": _straight(r.brand), "price": r.price,
+            "title": r.title, "description": r.description, "brand": _straight(brand), "price": r.price,
             "original_price": r.original_price, "sku": r.sku, "photos": len(r.photos),
-            "category": Contains(r.department, r.category),
+            "category": Contains(r.department, chosen.get("category", r.category)),
             "condition": Contains(CONDITION_TO_POSH[r.condition]),
             "smart_sell": "off",
         }
-        if r.subcategory:
-            exp["subcategory"] = Contains(r.subcategory)
+        if sub := chosen.get("subcategory", r.subcategory):
+            exp["subcategory"] = Contains(sub)
         if choice := size_choice(r):
-            exp["size"] = Contains(choice.button)
-        if colors := [c for c in r.colors if c][:2]:
+            exp["size"] = Contains(chosen.get("size", choice.button))
+        if colors := chosen.get("colors", [c for c in r.colors if c][:2]):
             exp["colors"] = Contains(*colors)
         return exp
 

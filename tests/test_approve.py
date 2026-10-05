@@ -10,6 +10,7 @@ from thrift_agent.approve import (BATCH_HINT, ITEM_HINT, bot_for, handle_update,
                                   send_batch, send_item)
 from thrift_agent.config import Settings, settings
 from thrift_agent.db import DB, loads
+from thrift_agent.schema import Ev
 from thrift_agent.telegram import Bot
 
 CHAT, OWNER, STRANGER = 100, 7, 8
@@ -246,15 +247,15 @@ def test_send_batch_without_sheet_sends_text(env):
     assert _outbox(db, bid)[0]["kind"] == "batch"
 
 
-def test_ask_owner_keeps_the_question_and_asks_it_in_its_turn(env, tmp_path, facts):
+def test_the_poster_asks_nothing_an_old_parked_item_is_not_queued(env, tmp_path, facts):
+    """WO27: the poster never stops to ask, so its question kind is gone from the queue; an item a poster from before
+    parked in needs_owner waits for `thrift requeue`, it is never asked about again."""
     s, db, bot = env
     iid = _item(db, tmp_path, facts, status="needs_owner")
-    approve.ask_owner(s, db, iid, "Which Poshmark size?")
-    assert db.item(iid)["owner_question"] == "Which Poshmark size?"
-    assert bot.texts() == ["Tory Burch Suede Ballet Flats\nQuestion from the poster: Which Poshmark size?\n"
-                           "Reply to this message."]
-    (row,) = _outbox(db, iid)
-    assert (row["kind"], row["text"]) == ("owner_q", "Which Poshmark size?")
+    db.set_item(iid, owner_question="Which Poshmark size?")
+    assert not hasattr(approve, "ask_owner") and "owner_q" not in approve.QUEUE_KINDS
+    approve.pump(s, db)
+    assert bot.texts() == [] and _outbox(db, iid) == [] and iid not in approve.queue(db)
 
 
 # ---------- handle_update ----------
@@ -378,14 +379,48 @@ def test_bad_correction_is_sent_back_and_batch_stays_pending(env, monkeypatch):
     assert handle_update(s, db, bot, _reply("", reply_to=11)) == f"batch {bid}: empty reply" and bot.texts()[-1] == BATCH_HINT
 
 
-def test_owner_question_reply_answers_the_item(env, tmp_path, facts):
+def _asked_before(db, iid, question, mid=11):
+    """A poster question sent before WO27, still open in the chat."""
+    db.set_item(iid, owner_question=question)
+    db.add_outbox(CHAT, mid, "owner_q", iid, text=question)
+
+
+def test_a_reply_to_an_old_poster_question_still_answers_the_item(env, tmp_path, facts):
     s, db, bot = env
     iid = _item(db, tmp_path, facts, status="needs_owner")
-    approve.ask_owner(s, db, iid, "Which size?")                                 # message 11
+    _asked_before(db, iid, "Which size?")
     assert handle_update(s, db, bot, _reply("size 8", reply_to=11)) == f"owner_q {iid}: answered 'size 8'"
     it = db.item(iid)
     assert it["status"] == "new" and it["note"] == "size 8" and _outbox(db, iid)[0]["resolved_at"]
     assert "got it" in bot.texts()[-1]
+
+
+def test_a_plain_reply_to_an_old_brand_question_is_the_brand(env, tmp_path, facts):
+    """WO27 1e (live: "J. Crew", without the word "brand", was taken as a note and the item came back stuck)."""
+    s, db, bot = env
+    listing = {**RENDERS["poshmark"], "title": "J.Crew Suede Ballet Flats", "brand": "J.Crew", "tags": [],
+               "description": "J.Crew ballet flats.\nGently pre-loved, please see photos for condition."}
+    iid = _item(db, tmp_path, facts, status="needs_owner", renders={"poshmark": listing},
+                brand=Ev(value="J.Crew", photos=[1], source="photo", confidence=0.9))
+    db.set_item(iid, owner_price=85)
+    db.upsert_post(iid, "poshmark", status="queued", last_error="needs owner: Poshmark's brand list has no match")
+    _asked_before(db, iid, "Poshmark's brand list has no match for 'J.Crew' (it offers: J. Crew, J. Crew Factory). "
+                           "Which brand should I pick? (reply e.g. 'brand Vince')")
+    assert handle_update(s, db, bot, _reply("J. Crew", reply_to=11)).startswith(f"brand {iid}: 'J. Crew'")
+    it = db.item(iid)
+    assert it["owner_brand"] == "J. Crew" and loads(it["facts"])["brand"]["value"] == "J. Crew"
+    assert it["status"] == "ready" and it["note"] is None                     # back in line as it was, no reprocessing
+    assert loads(it["renders"])["poshmark"]["brand"] == "J. Crew" and _outbox(db, iid)[0]["resolved_at"]
+    assert bot.texts()[-1].startswith("✓ brand: J. Crew")
+
+
+@pytest.mark.parametrize("text,brand", [("J. Crew", "J. Crew"), ("brand J. Crew", "J. Crew"), ("brand: Vince", "Vince"),
+                                        ("size 8", None), ("NWT", None), ("same item", None), ("40", None),
+                                        ("8.5", None), ("M", None), ("cover 2", None)])
+def test_a_reply_to_a_card_asking_the_brand_is_the_brand(text, brand):
+    gate = {"questions": ["Brand: read as “J.Crew”, not sure — reply 'brand …' if it's wrong"]}
+    assert approve.brand_reply(text, gate) == brand
+    assert approve.brand_reply("J. Crew", {"questions": []}) is None          # no brand asked: a note, as before
 
 
 def test_unauthorized_and_unrelated_updates_are_ignored(env, tmp_path, facts):

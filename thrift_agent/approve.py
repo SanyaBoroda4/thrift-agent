@@ -16,7 +16,8 @@ senders in TELEGRAM_ALLOWED_USER_IDS are accepted; everything else is ignored.
 Without a bot (dev) the messages print and are recorded under the chat "dev", so the queue works the same way there:
 the CLI twins (thrift confirm / condition / kids / price / answer) answer them.
 
-pipeline.py, cli.py and post/runner.py call pump, ask_owner, announce, resend_pending and the handlers below."""
+pipeline.py, cli.py and post/runner.py call pump, announce, resend_pending and the handlers below. The poster never
+asks anything (WO27): it guesses and reports its guesses in its "Posted ✓" message."""
 from __future__ import annotations
 
 import json
@@ -45,11 +46,11 @@ LOCK_KEY = "telegram_queue_lock"                     # kv: who is sending the ne
 ROUND_KEY = "telegram_round"                         # kv: items queued since the queue was last empty ("of 10")
 LOCK_TTL = 120                                       # seconds: a sender's lock older than this was abandoned (a crash)
 DEV_CHAT = "dev"                                     # outbox chat of the dev print (no bot)
-QUEUE_KINDS = ("batch", "regroup", "condition", "category", "kids", "item", "owner_q")   # kinds that wait for an answer
+QUEUE_KINDS = ("batch", "regroup", "condition", "category", "kids", "item")   # outbox kinds that wait for an answer
 SENDERS = {"batch": "send_batch", "regroup": "send_regroup", "condition": "ask_condition", "category": "ask_category",
-           "kids": "ask_kids", "item": "send_item", "owner_q": "send_owner_q"}
+           "kids": "ask_kids", "item": "send_item"}
 NEW_BATCH, NEW_ITEM = "new_batch", "new_item"        # queue entries still being processed: the queue holds there
-OWNER_WAITING = ("awaiting_condition", "awaiting_price", "needs_info", "needs_owner")   # item waits for an answer
+OWNER_WAITING = ("awaiting_condition", "awaiting_price", "needs_info")   # item waits for an answer
 QUEUED_ITEMS = ("new", *OWNER_WAITING)               # item statuses in the queue ('new': still being processed)
 WAITING_ITEM = ("awaiting_price", "needs_info")      # item statuses whose price card is the open question
 BATCH_HINT = "Reply to this message: ok | 12>2 | split 7 | merge 2 3 | drop 7"
@@ -188,8 +189,6 @@ def _item_kind(status: str, gate: dict) -> str:
         return NEW_ITEM
     if status == "awaiting_condition":
         return "condition"
-    if status == "needs_owner":
-        return "owner_q"
     return "category" if gate.get("ask_category") else "kids" if gate.get("ask_kids") else "item"
 
 
@@ -620,28 +619,6 @@ def ask_kids(s: Settings, db: DB, iid: str) -> None:
     _ask(s, db, iid, "kids", KIDS_QUESTION, kids_buttons(iid), f"thrift kids {iid} girls|boys")
 
 
-def send_owner_q(s: Settings, db: DB, iid: str) -> None:
-    """The poster's question (kind owner_q) when its turn comes; the reply is attached to the item as a note."""
-    it = db.item(iid)
-    if it is None:
-        raise ValueError(f"unknown item {iid}")
-    question = it["owner_question"] or "the poster needs an answer for this item"
-    text = f"{_title(it, iid)}\nQuestion from the poster: {question}\nReply to this message."
-    bot = bot_for(s)
-    if bot is None:
-        notify.say(f"{text}\n(thrift answer {iid} \"…\")")
-        return
-    mid = bot.send_message(text)
-    db.add_outbox(bot.chat_id, mid, "owner_q", iid, text=question)
-
-
-def ask_owner(s: Settings, db: DB, iid: str, question: str) -> None:
-    """The poster's question when stuck on a field only the owner can answer (the item is already needs_owner): kept
-    with the item and asked when its turn in the queue comes."""
-    db.set_item(iid, owner_question=question)
-    pump(s, db)
-
-
 def announce(s: Settings, text: str) -> bool:
     """A short one-way line to the group when the owner acts from the CLI (thrift price / answer / confirm), so
     everyone who approves sees what changed. Best effort: True when sent, False without a bot or on an error."""
@@ -952,6 +929,35 @@ def _reply_category(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int
     return f"category {iid}: noted {text!r}"
 
 
+_BRAND_CMD = re.compile(r"^\s*brand\s*[:=]?\s*(.+?)\s*$", re.I)
+# Words that make a reply something other than a brand: an answer of another kind, or a size.
+_NOT_A_BRAND = re.compile(r"^\s*(?:size|sz|category|subcategory|cover|nwt|nwot|new|same item|different item|condition|"
+                          r"retail|recheck|department|price|xs|s|m|l|xl|xxl|\d+(?:\.\d+)?\s*[a-z]{0,2})\b", re.I)
+
+
+def brand_reply(text: str, gate: dict) -> str | None:
+    """The brand a reply to a card gives (WO27): "brand J. Crew", or — when the card asks the brand — the reply as it
+    is ("J. Crew"; live: taken as a note, the item was reprocessed and stuck again). None for anything else."""
+    if m := _BRAND_CMD.match(text or ""):
+        return m.group(1)
+    words = (text or "").split()
+    if asks_brand(gate) and words and len(words) <= 5 and not _NOT_A_BRAND.match(text):
+        return text.strip()
+    return None
+
+
+def _set_brand(s: Settings, db: DB, bot: Bot, iid: str, brand: str, reply_to: int | None, kind: str = "item") -> str:
+    try:
+        status = pipeline.set_brand(s, db, iid, brand)
+    except ValueError as e:
+        bot.send_message(str(e), reply_to=reply_to)
+        return f"brand {iid}: rejected {brand!r}: {e}"
+    if status not in OWNER_WAITING:
+        db.outbox_resolve(kind, iid)
+    bot.send_message(f"✓ brand: {brand}" + ("" if status in OWNER_WAITING else f" — {progress(db)}"), reply_to=reply_to)
+    return f"brand {iid}: {brand!r} ({status})"
+
+
 def _reply_item(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int | None) -> str:
     if m := COVER_CMD.match(text or ""):
         return _set_cover(s, db, bot, iid, int(m[1]), mid)
@@ -974,6 +980,11 @@ def _reply_item(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int | N
         return f"item {iid}: empty reply"
     if note is None:
         return _set_price(s, db, bot, iid, price, mid)
+    it = db.item(iid)
+    if (brand := brand_reply(note, (loads(it["gate"]) or {}) if it else {})) is not None:
+        if price is not None:
+            _set_price(s, db, bot, iid, price, mid)      # first: an approved price stays through it all
+        return _set_brand(s, db, bot, iid, brand, mid)
     recorded, errors = [], []
     if price is not None:                              # kept through the reprocessing: never asked again
         try:
@@ -994,9 +1005,23 @@ def _reply_item(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int | N
 
 
 def _reply_owner_q(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int | None) -> str:
+    """A reply to a question the poster asked before WO27 (it asks none now): to its brand question, the reply is the
+    brand; anything else a note, as before."""
     if not text:
         bot.send_message(f"Reply to this message with the answer for {iid}.", reply_to=mid)
         return f"owner_q {iid}: empty reply"
+    it = db.item(iid)
+    if it is not None and "brand" in (it["owner_question"] or "").lower():
+        brand = (_BRAND_CMD.match(text) or re.match(r"(.*)", text)).group(1).strip()
+        result = _set_brand(s, db, bot, iid, brand, mid, kind="owner_q")
+        if "rejected" not in result:
+            db.outbox_resolve("owner_q", iid)
+            if db.item(iid)["status"] == "needs_owner":
+                try:
+                    pipeline.requeue(s, db, iid)         # back to 'ready' as it is, its old question closed
+                except ValueError as e:
+                    bot.send_message(str(e), reply_to=mid)
+        return result
     try:
         pipeline.answer(s, db, iid, text)
     except ValueError as e:

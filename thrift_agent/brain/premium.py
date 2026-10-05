@@ -94,6 +94,23 @@ def collab(facts: Facts) -> str | None:
     return _seen(facts.premium.collab) if facts.premium else None
 
 
+_SAMPLE = re.compile(r"\bsample\b", re.I)
+
+
+def _words_titled(text: str) -> str:
+    """ "1ST PROTO FIT" -> "1st Proto Fit"."""
+    return " ".join(w.lower() if w[:1].isdigit() else w.capitalize() for w in text.split())
+
+
+def collab_line(value: str, brand: str | None) -> str:
+    """The description's line for a collab / limited edition / sample: a sample says whose and which (WO27: "J. Crew
+    Sample (1st Proto Fit)." — the tag read "SAMPLE TYPE: 1ST PROTO FIT"), anything else as printed."""
+    if _SAMPLE.search(value):
+        kind = re.sub(r"(?i)\bsample(?:\s*type)?\b[\s:;,-]*", " ", value).strip(" .:;,-()")
+        return f"{(brand + ' ') if brand else ''}Sample{f' ({_words_titled(kind)})' if kind else ''}."
+    return f"{value.rstrip('.')}."
+
+
 def _shown(features) -> list[str]:
     """Features with a photo, never a negative one ("unlined")."""
     return [f.text.strip() for f in features if f.photos and f.text.strip() and not _NEGATIVE.search(f.text)]
@@ -110,7 +127,9 @@ def strongest(facts: Facts, cfg: dict) -> Strongest | None:
     """The ONE feature the title states (WO26 order); None when no label or photo shows one."""
     fiber = premium_fiber(facts, cfg)
     if fiber and fiber[1] >= 90:
-        return Strongest("fiber", f"100% {fiber[0]}" if fiber[1] == 100 else fiber[0], (fiber[0],))
+        name, short = fiber[0], fiber[0].split()[0]     # a title's "100% Merino" is "100% Merino Wool" said shorter
+        weaker = (f"100% {short}", name, short) if short != name else (name,)
+        return Strongest("fiber", f"100% {name}" if fiber[1] == 100 else name, weaker)
     if line := premium_line(facts, cfg):
         return Strongest("line", line[1], ())
     if old := vintage(facts):
@@ -118,7 +137,7 @@ def strongest(facts: Facts, cfg: dict) -> Strongest | None:
     if country := made_in(facts, cfg):
         return Strongest("made_in", f"Made in {country}", ())
     if together := collab(facts):
-        return Strongest("collab", together, ())
+        return Strongest("collab", "Sample" if _SAMPLE.search(together) else together, ())
     if fiber and fiber[1] >= 50:
         return Strongest("blend", f"{fiber[0]} Blend", (fiber[0],))
     return None
@@ -171,24 +190,27 @@ def fit_title(title: str, keep: list[str]) -> str:
 
 
 def title_with_feature(title: str, facts: Facts, cfg: dict) -> str:
-    """The strongest feature right after the brand ("Vince 100% Silk Black Slip Dress size S"; no brand: first), its
-    weaker wording taken out of the rest ("White Silk Pants" -> "100% Silk White Pants"), then fitted to 80. Unchanged
-    when no label or photo shows a feature. Run it twice, same title."""
+    """The title in the owner's order (WO26, WO27): the brand first (copy.title_order), "New" right after it for NWT /
+    NWOT, then the strongest feature ("Vince 100% Silk Black Slip Dress size S"; no brand: first), its weaker wording
+    taken out of the rest ("White Silk Pants" -> "100% Silk White Pants"), fitted to 80. Run it twice, same title."""
+    title = copywriter.title_order(title, facts)          # the brand first, "New" right after it (WO27)
     best = strongest(facts, cfg)
-    if best is None:
-        return title
     brand = (facts.brand.value or "").strip()
     words = title.split()
     head: list[str] = []
     if brand and _k(" ".join(words[:len(brand.split())])) == _k(brand):
         head, words = words[:len(brand.split())], words[len(brand.split()):]
-    for phrase in (best.phrase, *best.weaker):
-        words = _drop(words, phrase)
-    new = " ".join([*head, *best.phrase.split(), *words])
+    if words and words[0] == "New" and facts.condition in ("NWT", "NWOT"):
+        head, words = [*head, "New"], words[1:]
+    if best is not None:
+        for phrase in (best.phrase, *best.weaker):
+            words = _drop(words, phrase)
+    new = " ".join([*head, *(best.phrase.split() if best else []), *words])
     nouns = (facts.item_type or "").split()[-2:]                  # "flared pants set": pants, set
     colours = [*(facts.colors or []), *((facts.color_name or "").split())]
-    keep = [brand, best.phrase, sizes.title_size(facts) or "", f"{facts.set_pieces}-Piece Set" if facts.set_pieces
-            else "", *(form for noun in nouns for form in (noun, noun.rstrip("s"), noun + "s")), *colours]
+    keep = [brand, best.phrase if best else "", sizes.title_size(facts) or "",
+            f"{facts.set_pieces}-Piece Set" if facts.set_pieces else "",
+            *(form for noun in nouns for form in (noun, noun.rstrip("s"), noun + "s")), *colours]
     return fit_title(new, keep)
 
 
@@ -214,7 +236,7 @@ def feature_lines(facts: Facts, cfg: dict) -> list[str]:
     if old := vintage(facts):
         lines.append(f"{old}.")
     if together := collab(facts):
-        lines.append(f"{together.rstrip('.')}.")
+        lines.append(collab_line(together, facts.brand.value))
     for group in (_shown(p.technical), _shown(p.construction)):
         if group:
             text = ", ".join(group)
@@ -225,14 +247,17 @@ def feature_lines(facts: Facts, cfg: dict) -> list[str]:
 _CONDITION = re.compile(r"^\s*(?:new with tags|new without tags|new in box)\.?\s*$", re.I)
 
 
-def ensure_feature_lines(description: str, facts: Facts, cfg: dict) -> str:
+def ensure_feature_lines(description: str, facts: Facts, cfg: dict, old: Facts | None = None) -> str:
     """The feature lines go in before the condition line (else at the end); a line the description already has is not
-    repeated. Run it twice, same text."""
-    rows = description.rstrip().split("\n")
+    repeated; the lines an `old` reading of the labels gave that this one doesn't are taken out (a re-read, WO27). Run it
+    twice, same text."""
+    gone = {line.lower() for line in feature_lines(old, cfg)} - {line.lower() for line in feature_lines(facts, cfg)} \
+        if old is not None else set()
+    rows = [r for r in description.rstrip().split("\n") if r.strip().lower() not in gone]
     have = {r.strip().lower() for r in rows}
     add = [line for line in feature_lines(facts, cfg) if line.lower() not in have]
     if not add:
-        return description
+        return "\n".join(rows) if gone else description
     at = next((i for i, r in enumerate(rows) if copywriter.HAS_CONDITION_LINE.search(r) or _CONDITION.match(r)),
               len(rows))
     return "\n".join(rows[:at] + add + rows[at:])
