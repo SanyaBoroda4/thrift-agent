@@ -629,7 +629,7 @@ def login(site: str = "poshmark") -> None:
     """Open the poster Chrome profile to log in by hand (once per site). Stop the poster service first."""
     from thrift_agent.post.base import open_browser
     urls = {"poshmark": "https://poshmark.com/login", "depop": "https://www.depop.com/login/",
-            "vinted": "https://www.vinted.com/member/signup/select_type"}
+            "vinted": "https://www.vinted.com/"}
 
     async def go():
         s = settings()

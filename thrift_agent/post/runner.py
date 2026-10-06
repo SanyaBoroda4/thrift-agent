@@ -525,7 +525,16 @@ async def run_cross(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, *, dr
     poster.fields, poster.confirm, poster.strict = fields, None, not dry
     shots = s.path("failed") / "shots"
     if request:
-        out = await poster.post(ctx, render, "publish", True, shots)
+        try:
+            out = await poster.post(ctx, render, "publish", True, shots)
+        except AccountBlocked as e:              # logged out / CAPTCHA / verification: the owner must act on the Mac
+            db.log(iid, "crosslist_dry_run", {"mp": mp, "status": "blocked", "error": str(e)})
+            crosslist.block(db, mp, str(e))
+            return None
+        except Exception as e:  # noqa: BLE001 — an asked-for dry run never stops the poster
+            db.log(iid, "crosslist_dry_run", {"mp": mp, "status": "error", "error": f"{type(e).__name__}: {e}"})
+            notify.say(f"❌ dry run {crosslist.LABEL[mp]} ({iid}): {type(e).__name__}: {e}")
+            return None
         db.log(iid, "crosslist_dry_run", {"mp": mp, "status": out.status, "shot": out.screenshot, "error": out.error})
         notify.ops_photo(Path(out.screenshot or ""),
                          f"🧪 dry-run {crosslist.LABEL[mp]} ({iid}): {title} — ${fields.price} [{out.status}]\n"
@@ -640,7 +649,11 @@ async def serve_cross_requests(s: Settings, db: DB, ps: dict, ctx) -> list[str]:
         iid = req.get("item")
         for mp in req.get("mps") or []:
             if mp in ps and db.item(iid) is not None:
-                await run_cross(s, db, ps, ctx, iid, mp, dry=True, request=True)
+                try:
+                    await run_cross(s, db, ps, ctx, iid, mp, dry=True, request=True)
+                except Exception as e:  # noqa: BLE001 — never the poster's end
+                    db.log(iid, "error", f"crosslist dry run {mp}: {type(e).__name__}: {e}")
+                    notify.say(f"❌ dry run {crosslist.LABEL[mp]} ({iid}): {type(e).__name__}: {e}")
         done.append(iid)
     return done
 

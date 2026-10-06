@@ -322,3 +322,25 @@ def test_a_new_window_lifts_blocks_and_never_retries_an_unconfirmed_publish(tmp_
     db.kv_set(daily.SESSION_KEY, "w2")
     assert crosslist.new_window(s, db) and not crosslist.blocked(db, "vinted")
     assert crosslist.pending(s, db) == [(iid, "vinted")]
+
+
+def test_an_asked_for_dry_run_never_stops_the_poster(tmp_path, loop, monkeypatch):
+    """Live on the Mac (WO30 deploy): Depop logged out in the poster's profile raised AccountBlocked out of the asked-for
+    dry run and the poster process ended. Now: Depop stopped for the window with the group's one plain line, Vinted
+    still filled, the poster goes on."""
+    said, run = loop
+    s = _settings(tmp_path, depop_live=False, vinted_live=False)
+    db = DB(s.path("db"))
+    iid = _item(db)
+    db.upsert_listing(iid, "poshmark", status="posted", url="https://poshmark.com/listing/x")
+    db.set_item(iid, status="posted")
+    runner.request_dry_run(db, iid, ["depop", "vinted"])
+    ps = _posters(depop=Stub("depop", AccountBlocked("Depop: not logged in in the poster profile")),
+                  vinted=Stub("vinted", Outcome("dryrun")))
+    run(s, db, ps)
+    assert said.group == ["Depop needs you to log in on the Mac."]
+    assert ps["vinted"].calls == [(iid, True)] and any(m.startswith("🧪 dry-run Vinted") for m in said.ops)
+    assert db.listing(iid, "depop") is None and db.listing(iid, "vinted") is None      # no row taken or changed
+    kinds = [json.loads(d)["status"] for (d,) in db.conn.execute(
+        "SELECT detail FROM events WHERE kind='crosslist_dry_run' ORDER BY rowid")]
+    assert kinds == ["blocked", "dryrun"]
