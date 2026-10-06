@@ -28,14 +28,18 @@ taps Share → "New item", and gets a Telegram ping when it's listed or when som
   The worker runs as the launchd service (`com.thriftagent.worker`, KeepAlive). **The poster service stays off** until
   the owner turns publishing on (the two keys, unchanged); deploy never starts it, and there is no bare
   `start`/`restart` that would.
-- **Worker trouble is told once (WO22, `alerts.py`).** The iCloud inbox that can't be read — a read macOS refuses or
-  interrupts (EPERM / EACCES / EINTR: python3.14 waiting for its iCloud Drive permission), or a look at the inbox stuck
-  in that wait for 2 min (noticed by the Telegram thread) — is retried quietly; after 2 min ONE message ("⚠️ Can't
-  read the iCloud inbox. On the Mac: System Settings → Privacy & Security → Files & Folders → python3.14 → iCloud
-  Drive ON …"), nothing more until it recovers, then "✓ inbox readable again". Items already split keep being
-  processed. Any other worker error (a tick, a batch, an item) goes out once and then at most once a day per
-  identical error (item/batch ids ignored: ten items failing on one bad key are one message); every occurrence is
-  in the event log and `thrift status`.
+- **Worker trouble is told once (WO22, WO29, `alerts.py`).** The iCloud inbox that can't be read — a read macOS
+  refuses or interrupts (EPERM / EACCES / EINTR: python3.14 waiting for its iCloud Drive permission), or a look at the
+  inbox stuck in that wait (noticed by the Telegram thread) — is retried quietly; after 10 min ONE plain line in the
+  group ("⚠️ Can't read the iCloud inbox — on the Mac, open System Settings → Privacy & Security → Files & Folders →
+  python3.14 and turn iCloud Drive on; I continue by myself."), nothing more until it recovers, then "✓ inbox readable
+  again" in the ops chat. **iCloud still downloading or coordinating a file is no error** (WO29; live: "OSError:
+  [Errno 11] Resource deadlock avoided" on the first automatic share — EDEADLK is 11 on macOS; also EAGAIN,
+  ETIMEDOUT: `alerts.icloud_busy`): the inbox or the batch is simply taken again on the next tick (a batch stays
+  `new`), the ops chat hears once only past 10 min (`alerts.busy`), "✓ iCloud free again" after. Items already split
+  keep being processed. Any other worker error (a tick, a batch, an item) goes to the **ops chat** once and then at
+  most once a day per identical error (item/batch ids ignored: ten items failing on one bad key are one message) —
+  never to the group; every occurrence is in the event log and `thrift status`.
 - **One worker, ever:** `thrift run` holds `worker.lock` next to the DB (an OS lock, dropped when the process ends; the
   holder is in `worker.lock.pid`); a second one exits at once with "another worker is already running (pid …)".
   `services.sh start worker` refuses while a `thrift run` runs outside launchd (a Terminal window). Two workers would
@@ -50,7 +54,7 @@ taps Share → "New item", and gets a Telegram ping when it's listed or when som
   A work order that changes the poster says so and the poster service is restarted with the deploy, only when it is
   idle (never mid-item): `services.sh stop poster` → wait until `status` says it is off (it finishes the item in hand,
   ExitTimeOut 300 s) → deploy → `services.sh start poster` → confirm "Poster started (LIVE)" (the `poster_started`
-  event, `{"live": true}`, and the poster log's first line).
+  event, `{"live": true}`, the poster log's first line, and — WO29 — the line in the ops chat, never the group).
 
 ## Flow
 ```
@@ -138,7 +142,7 @@ back); `dropped` (a re-share the owner called the same item). Nothing publishes 
      the contact sheet, since taking it would lose or double a photo. The model's own `questions` about
      optional facts (material, measurements) are dropped — a missing optional fact is left out of the listing; an
      unsure condition is kept in the item's record (`gate.info`), never on the card. CLI actions (`thrift price` /
-     `answer` / `confirm` / `condition` / `kids` / `category` / `redo`) are echoed to the Telegram group and settle the
+     `answer` / `confirm` / `condition` / `kids` / `category` / `redo`) are echoed to the ops chat (WO29) and settle the
      pending message.
 3. **The model never clicks publish.** Deterministic code fills, reads back, diffs, then publishes.
    An LLM fallback (Playwright MCP) may *fill* a form when a selector breaks; code still verifies and submits.
@@ -271,7 +275,7 @@ cover's hash, before vs after); otherwise it stays as the owner has it. The line
 `thrift retry <item> [marketplace]` (WO28): an "unconfirmed publish" the owner checked and is NOT on the marketplace goes
 back in line (the twin of the reply 'retry'); `thrift status` shows the poster's state and the window's status message.
 `thrift poster [--once] [--dry-run] [--stage form|review] [--publish-first <item>] [--allow-dev-browser]`
-`thrift login --site poshmark | telegram setup|test | harvest | build-style | eval`
+`thrift login --site poshmark | telegram setup|test [--ops] | harvest | build-style | eval`
 `thrift requeue b_…` sends a failed batch back to the worker (failed batches are never retried on their own);
 `thrift status` lists the open batches (waiting for the worker, the contact sheet, or failed with their error) and the
 Telegram queue (the open question, what comes next).
@@ -422,11 +426,28 @@ The owner shares retailer screenshots (product page with price, style name, colo
   `kv` keeps the worker's threads, the poster and a CLI command from both sending). The worker processes in the
   same order and runs ahead, so the next card is usually ready at once; the queue never skips an item still being
   processed (an item sent back by an answer is processed first; an answer that lands while its item is being
-  processed wins: that result is dropped and the item processed again). After an answer: one line, "✓ $28 — 3 of 10 left"
-  (the items queued since the queue was last empty), then the next message. [Later] puts the item behind everything
-  queued so far (`items.deferred_at`). The queue is the DB: a restart re-sends only the open message; older unanswered
-  copies are closed (their buttons still work). Info-only messages (errors, posted confirmations, the Drafts warning,
-  CLI echoes) are not queued; a successful dry-run says nothing unless `poster.notify_dry_runs`.
+  processed wins: that result is dropped and the item processed again). After an answer: no message (WO29) — the
+  answered card's buttons become ONE inert button with the answer (`approve._ack`, `editMessageReplyMarkup`: "✓ $35 —
+  queued", "✓ Girls", "✓ Like New (brand new, no tags)", "✓ cover: photo 2", "✓ brand: J. Crew"; callback `noop`), then
+  the next message. [Later] puts the item behind everything queued so far (`items.deferred_at`). The queue is the DB: a
+  restart re-sends only the open message; older unanswered copies are closed (their buttons still work). Info-only
+  messages are not queued; a successful dry-run says nothing unless `poster.notify_dry_runs`.
+- **A quiet group (owner rule, WO29).** The GROUP (`TELEGRAM_CHAT_ID`) gets only: (a) the cards and the allowed
+  questions; (b) "Posted ✓ <title> — $X · <url>" (+ " — check: …" when the poster guessed), and on the window's LAST
+  listing (`daily.all_done`: nothing to process, no card waiting, nothing left to publish) a second line "✓ All done
+  — safe to close the Mac."; (c) action-needed alerts, one plain sentence each, once per episode: 🔋 battery low; the
+  Mac slept while publishing / "I pressed List but can't see it" (reply `posted <url>` / `retry`); "Can't read the
+  iCloud inbox" (past 10 min); "⏸ Not published automatically: <title> — its text needs a look first."; "⏭ <title> was
+  skipped: Poshmark's form doesn't take one of its details." — plus plain replies to the owner's own messages ("No
+  price card is open", the hints, "Sorry, that didn't go through — please try again."). No item or batch ids, no
+  errno, no traceback. Everything else goes to the **ops chat** (`notify.ops`/`notify.say`): the status message
+  (WO28; also in `thrift status`), "Back online", "Poster started (LIVE)", dry-run notes, CLI echoes, "batch …
+  rebuilt", the details of a hold or a skip, every ❌ error. The ops chat is the owner's private chat with the bot:
+  `TELEGRAM_OPS_CHAT_ID` (`.env`), else `telegram.ops_chat_id` (set in `private/settings.yaml`), never the group's id;
+  it works once the owner has sent the bot /start. A send there that fails is logged (event `ops_chat_down`), dropped and
+  not tried for 10 min (kv `ops_down_until`) — **never sent to the group instead**. The same text again: once, then
+  at most once a day (kv `ops_sent`, ids ignored), except the status message (edited in place) and the CLI echoes.
+  On the dev machine both print (`[notify]` / `[ops]`). `notify.group*` is called only for (a)-(c).
 - Batch (WO20b): the grouping is accepted at once (`segmentation.auto_confirm: true`) — no contact sheet, the
   batch's first message is its first item. The sheet is still drawn (`work/<batch>/contact_sheet.png`); the code's
   doubts stay in `batches.reasons` and `thrift status` ("grouping accepted with doubts"); a retail screenshot that
@@ -474,8 +495,9 @@ The owner shares retailer screenshots (product page with price, style name, colo
   it is sent again; checked when the worker starts and about hourly (Telegram keeps updates 24 h; the Mac sleeps). A
   restart — every deploy — never repeats a card sent less than that ago (WO24: it used to, at every start; one skirt's
   card went out 13 times in a day between deploys and `thrift recover` runs).
-- Settings: `telegram.enabled`, `telegram.resend_after_hours`, `telegram.poll_timeout`. On prod, `thrift run` and
-  `thrift poster` refuse to start when `telegram.enabled` but any of the three env vars is missing.
+- Settings: `telegram.enabled`, `telegram.resend_after_hours`, `telegram.poll_timeout`, `telegram.ops_chat_id`. On
+  prod, `thrift run` and `thrift poster` refuse to start when `telegram.enabled` but any of the three env vars is
+  missing (the ops chat is optional: without one the technical messages are only logged).
 
 ## Milestones
 - **M0 eval** — 20–30 real sessions in `eval/fixtures/<case>/{photos,expected.yaml}` (mostly shoes, some with
@@ -530,12 +552,14 @@ photos are shared from the iPhone any time, prices approved in Telegram, then th
 `docs/DAILY.md`. Nothing here changes the publish-safety rules or the two-key autopublish rule.
 - **Wake** (`power.WakeWatch`: `kern.waketime` moved, or the wall clock ran 90 s longer than the process — a gap in the
   tick clock) or worker start, **with the lid open** (`power.lid_closed`, ioreg's AppleClamshellState): a new window
-  (`daily.Window.step`/`begin`) — the inbox looked at, "Back online — N new shares, M items waiting" only when there
-  is work, the open card re-sent only if older than `telegram.resend_after_hours` (`approve.resend_pending`; answers
+  (`daily.Window.step`/`begin`) — the inbox looked at, "Back online — N new shares, M items waiting" (ops chat, WO29)
+  only when there is work, the open card re-sent only if older than `telegram.resend_after_hours` (`approve.resend_pending`; answers
   given while asleep, < 24 h, arrive in the next poll in order — the offset is persisted; older ones are lost and the
   card simply comes again). With the lid closed (the night's maintenance wakes) the worker starts nothing, says
   nothing, and the poster starts no listing; the Telegram thread still applies answers.
-- **The status message** (`daily.status_text`, `Window.show`): ONE per window, edited (`Bot.edit_message`) when its
+- **The status message** (`daily.status_text`, `Window.show`) — in the **ops chat** and `thrift status` since WO29;
+  the group gets "✓ All done — safe to close the Mac." only as the last "Posted ✓"'s second line: ONE per window, edited
+  (`Bot.edit_message`) when its
   text changes, sent anew only if it can't be edited; a window where nothing happened sends none; a new window deletes
   the last window's message (`Bot.delete_message`; Telegram allows it for 48 h). "⏳ Working — 4
   items left, about 12 min. Please don't close the Mac yet." (processing; approved listings the poster will publish

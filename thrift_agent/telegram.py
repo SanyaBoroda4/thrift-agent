@@ -61,6 +61,11 @@ class Bot:
         self.call("editMessageText", chat_id=self.chat_id, message_id=int(message_id), text=text[:MAX_TEXT],
                   disable_web_page_preview=True)
 
+    def set_buttons(self, message_id: int, buttons: list[list[dict]] | None) -> None:
+        """Replace a message's buttons — an answered card gets one "✓ …" button (WO29); None removes them."""
+        self.call("editMessageReplyMarkup", chat_id=self.chat_id, message_id=int(message_id),
+                  reply_markup={"inline_keyboard": buttons or []})
+
     def delete_message(self, message_id: int) -> None:
         """Remove a message the bot sent (Telegram allows it for 48 h in a group)."""
         self.call("deleteMessage", chat_id=self.chat_id, message_id=int(message_id))

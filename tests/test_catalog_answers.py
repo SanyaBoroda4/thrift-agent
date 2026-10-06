@@ -31,6 +31,11 @@ class FakeBot(Bot):
     def sent(self):
         return [p for m, p in self.calls if m in ("sendMessage", "sendPhoto")]
 
+    def marks(self):
+        """The answered cards (WO29): (message_id, the "✓ …" label) of each editMessageReplyMarkup."""
+        return [(p["message_id"], p["reply_markup"]["inline_keyboard"][0][0]["text"])
+                for m, p in self.calls if m == "editMessageReplyMarkup"]
+
     def buttons(self):
         """The buttons of the last message that had any: [(text, callback_data)]."""
         last = next(p for p in reversed(self.sent()) if p.get("reply_markup"))
@@ -214,8 +219,9 @@ def test_another_category_reprocesses_the_item_with_it(env, facts, monkeypatch):
     monkeypatch.setattr("thrift_agent.brain.llm.ask", _model({"facts": _unsure(facts)}, notes))
     iid = _item(s.path("db").parent, db)
     pipeline.process_item(s, db, iid)
-    approve.handle_update(s, db, bot, _cb(f"cat:{iid}:1", bot.next_id))           # Shorts
-    assert db.item(iid)["status"] == "new" and "reprocessing" in bot.sent()[-1]["text"]
+    question = bot.next_id
+    approve.handle_update(s, db, bot, _cb(f"cat:{iid}:1", question))               # Shorts
+    assert db.item(iid)["status"] == "new" and bot.marks() == [(question, "✓ Shorts")]   # WO29: the card, quietly
     pipeline.process_item(s, db, iid)                                               # the model still says Skirts, 0.55
     it = db.item(iid)
     f = loads(it["facts"])
@@ -266,7 +272,7 @@ def test_no_brand_is_a_button_on_a_brand_question_and_keeps_the_card(env, facts,
     assert it["owner_brand"] == "none" and it["status"] == "awaiting_price"
     assert loads(it["facts"])["brand"]["source"] == "owner" and loads(it["renders"])["poshmark"]["brand"] is None
     assert not any(q.startswith("Brand") for q in loads(it["gate"])["questions"])
-    assert len(bot.sent()) == sends + 1 and "brand stays empty" in bot.sent()[-1]["text"]   # no second card
+    assert len(bot.sent()) == sends and bot.marks() == []      # WO29: nothing said; the card keeps its buttons
     assert [r["message_id"] for r in db.outbox_pending()] == [card]               # the card stays open
     approve.handle_update(s, db, bot, _cb(f"approve:{iid}:40", card))
     assert db.item(iid)["status"] == "ready"
@@ -429,7 +435,7 @@ def test_a_plain_reply_to_the_cards_brand_question_is_the_brand(env, facts, monk
     assert (posh["brand"], posh["title"]) == ("Vince", "Vince Red Ballet Flats size 7.5")
     assert loads(it["gate"])["questions"] == []
     assert bot.sent()[-1]["caption"].startswith("Vince Red Ballet Flats")          # the card again, with the brand
-    assert bot.next_id > card + 1
+    assert bot.next_id == card + 1 and bot.marks() == [(card, "✓ brand: Vince")]   # no message; the old copy marked
 
 
 def test_edit_sets_the_owners_title_and_brand_and_both_stay(env, facts, monkeypatch, tmp_path):

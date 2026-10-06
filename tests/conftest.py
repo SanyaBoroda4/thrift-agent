@@ -65,6 +65,8 @@ def no_telegram(monkeypatch):
     def no_network(*a, **k):
         raise AssertionError("network call in tests")
     monkeypatch.setattr("thrift_agent.notify._enabled", lambda: (False, "", ""))
+    monkeypatch.setattr("thrift_agent.notify._ops_enabled", lambda: (False, "", None))     # the ops chat too (WO29)
+    monkeypatch.setattr("thrift_agent.notify._db", lambda: None)        # never the repo's own var/state.db
     monkeypatch.setattr("thrift_agent.notify.httpx.post", no_network)
 
 

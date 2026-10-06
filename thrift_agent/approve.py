@@ -117,6 +117,38 @@ def bot_for(s: Settings) -> Bot | None:
     return Bot(tok, chat, users)
 
 
+def ops_bot_for(s: Settings) -> Bot | None:
+    """The bot, speaking to the ops chat (WO29: the owner's private chat; the status message lives there); None
+    without one — never the group."""
+    group = bot_for(s)
+    chat = notify.ops_chat(s)
+    if group is None or chat is None:
+        return None
+    return Bot(group.token, chat, group.allowed_users)
+
+
+NOOP = "noop"          # the callback of an answered card's "✓ …" button: it shows the answer and does nothing
+_IDS = re.compile(r"\b([ib])_\d{6}_[0-9a-f]{6}\b")
+
+
+def _ack(db: DB, bot: Bot, kind: str, ref: str, label: str) -> None:
+    """An answered card (WO29: no message in the group): its buttons become one "✓ …" button that does nothing, on
+    every copy of it sent in the last two days."""
+    since = (_now() - timedelta(days=2)).isoformat(timespec="seconds")
+    rows = db.conn.execute("SELECT message_id FROM outbox WHERE kind=? AND ref=? AND chat_id=? AND sent_at>=? "
+                           "ORDER BY rowid DESC LIMIT 5", (kind, ref, str(bot.chat_id), since)).fetchall()
+    for r in rows:
+        try:
+            bot.set_buttons(int(r["message_id"]), [[{"text": label[:60], "callback_data": NOOP}]])
+        except Exception as e:  # noqa: BLE001 - "not modified", or gone: the answer is taken either way
+            db.log(ref, "card_mark_failed", f"{type(e).__name__}: {e}")
+
+
+def _tell(bot: Bot, mid: int | None, text: str) -> None:
+    """A reply in the group to an answer that wasn't taken (WO29): one plain line, no ids."""
+    bot.send_message(_IDS.sub(lambda m: "this item" if m[1] == "i" else "this batch", text), reply_to=mid)
+
+
 # ---------- reply parsing ----------
 
 def parse_reply(text: str) -> tuple[int | None, str | None]:
@@ -387,7 +419,7 @@ def send_batch(s: Settings, db: DB, bid: str) -> None:
     sheet = s.path("work") / bid / "contact_sheet.png"
     bot = bot_for(s)
     if bot is None:
-        notify.photo(sheet, f"{caption}\n(thrift confirm {bid} ok)")
+        notify.group_photo(sheet, f"{caption}\n(thrift confirm {bid} ok)")
         return
     if sheet.is_file() and len(caption) <= MAX_CAPTION:
         mid = bot.send_photo(sheet, caption)
@@ -417,7 +449,7 @@ def send_regroup(s: Settings, db: DB, bid: str) -> None:
     sheet = s.path("work") / bid / pipeline.REGROUP_SHEET
     bot = bot_for(s)
     if bot is None:
-        notify.photo(sheet, f"{caption}\n(thrift confirm {bid} <fix>)")
+        notify.group_photo(sheet, f"{caption}\n(thrift confirm {bid} <fix>)")
         return
     if sheet.is_file() and len(caption) <= MAX_CAPTION:
         mid = bot.send_photo(sheet, caption)
@@ -556,7 +588,7 @@ def send_item(s: Settings, db: DB, iid: str) -> None:
     bot = bot_for(s)
     if bot is None:
         text = f"{caption}\n(thrift price {iid} {price or '<amount>'})"
-        notify.photo(cover, text) if cover.is_file() else notify.say(text)
+        notify.group_photo(cover, text) if cover.is_file() else notify.group(text)
         return
     floor = max(int(s["pricing"]["floor"]), note_floor(it["note"]) or 0)
     buttons = item_buttons(iid, price, floor, int(s["pricing"]["round_to"]), asks_brand(loads(it["gate"]) or {}))
@@ -578,7 +610,7 @@ def _ask(s: Settings, db: DB, iid: str, kind: str, question: str, buttons: list[
     bot = bot_for(s)
     if bot is None:
         text = f"{caption}\n({cli})"
-        notify.photo(cover, text) if cover.is_file() else notify.say(text)
+        notify.group_photo(cover, text) if cover.is_file() else notify.group(text)
         return
     mid = bot.send_photo(cover, caption, buttons) if cover.is_file() else bot.send_message(caption, buttons)
     db.add_outbox(bot.chat_id, mid, kind, iid, text=caption)
@@ -624,17 +656,9 @@ def ask_kids(s: Settings, db: DB, iid: str) -> None:
 
 
 def announce(s: Settings, text: str) -> bool:
-    """A short one-way line to the group when the owner acts from the CLI (thrift price / answer / confirm), so
-    everyone who approves sees what changed. Best effort: True when sent, False without a bot or on an error."""
-    bot = bot_for(s)
-    if bot is None:
-        return False
-    try:
-        bot.send_message(text)
-        return True
-    except Exception as e:  # noqa: BLE001 - never let a courtesy message break the command
-        print(f"[telegram] announce failed: {type(e).__name__}: {e}", file=sys.stderr)
-        return False
+    """A line to the OPS chat when the owner acts from the CLI (thrift price / answer / confirm …): WO29, the group
+    hears none of it. Best effort: True when sent."""
+    return notify.ops(text, once=False)
 
 
 # ---------- incoming ----------
@@ -700,18 +724,20 @@ def _reply_unconfirmed(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: 
         try:
             address = pipeline.request_posted(s, db, iid, m[1])
         except ValueError as e:
-            bot.send_message(str(e), reply_to=mid)
+            _tell(bot, mid, "That isn't a Poshmark listing link for this item — open the listing, copy its link and "
+                            "reply 'posted <link>' again" if "listing address" in str(e) else str(e))
             return f"unconfirmed {iid}: rejected {m[1]!r}: {e}"
-        later = "" if daily.poster_now(db).running else " (the poster isn't running now: it checks when it starts)"
-        bot.send_message(f"✓ I'll open {address} and record it once it shows this item{later}", reply_to=mid)
+        _ack(db, bot, "unconfirmed", iid, "✓ link received — checking it")
+        if not daily.poster_now(db).running:
+            notify.say(f"{iid}: 'posted {address}' queued — the poster isn't running, it checks when it starts")
         return f"unconfirmed {iid}: posted {address} (queued for the poster)"
     if RETRY_CMD.match(text or ""):
         try:
             pipeline.retry_unconfirmed(s, db, iid)
         except ValueError as e:
-            bot.send_message(str(e), reply_to=mid)
+            _tell(bot, mid, str(e))
             return f"unconfirmed {iid}: retry rejected: {e}"
-        bot.send_message("✓ It goes back in line and will be listed again", reply_to=mid)
+        _ack(db, bot, "unconfirmed", iid, "✓ retry — it goes back in line")
         return f"unconfirmed {iid}: retry"
     bot.send_message(UNCONFIRMED_HINT, reply_to=mid)
     return f"unconfirmed {iid}: unreadable reply {text!r}"
@@ -754,16 +780,16 @@ def _set_price(s: Settings, db: DB, bot: Bot, iid: str, amount: int, reply_to: i
     try:
         status = pipeline.set_price(s, db, iid, amount)
     except ValueError as e:
-        bot.send_message(str(e), reply_to=reply_to)
+        _tell(bot, reply_to, str(e))
         return f"price {iid}: rejected ${amount}: {e}"
     if status in OWNER_WAITING:                        # still open: a re-share hold, or Girls/Boys not answered yet
         gate = loads(db.item(iid)["gate"]) or {}
-        why = (HELD_HINT if gate.get("hold") else " (Which category? is still open)" if gate.get("ask_category")
-               else " (Girls or Boys? is still open)" if gate.get("ask_kids") else "")
-        bot.send_message(f"✓ ${amount} recorded{why}", reply_to=reply_to)
+        _ack(db, bot, "item", iid, f"✓ ${amount} recorded")
+        if gate.get("hold"):                           # a question only the owner can settle: said plainly
+            _tell(bot, reply_to, f"${amount} recorded{HELD_HINT}")
     else:
         db.outbox_resolve("item", iid)
-        bot.send_message(f"✓ ${amount} — {progress(db)}", reply_to=reply_to)
+        _ack(db, bot, "item", iid, f"✓ ${amount} — queued")     # WO29: no "✓ $X — N left" message
     return f"price {iid}: ${amount} ({status})"
 
 
@@ -771,10 +797,10 @@ def _set_condition(s: Settings, db: DB, bot: Bot, iid: str, choice: str, reply_t
     try:
         pipeline.set_condition(s, db, iid, choice)
     except ValueError as e:
-        bot.send_message(str(e), reply_to=reply_to)
+        _tell(bot, reply_to, str(e))
         return f"condition {iid}: rejected {choice!r}: {e}"
+    _ack(db, bot, "condition", iid, f"✓ {CONDITION_TAPPED[choice]}")
     db.outbox_resolve("condition", iid)
-    bot.send_message(f"✓ {CONDITION_TAPPED[choice]} — repricing, its card comes next", reply_to=reply_to)
     return f"condition {iid}: {choice}"
 
 
@@ -782,11 +808,10 @@ def _set_kids(s: Settings, db: DB, bot: Bot, iid: str, choice: str, reply_to: in
     try:
         status = pipeline.set_kids_gender(s, db, iid, choice)
     except ValueError as e:
-        bot.send_message(str(e), reply_to=reply_to)
+        _tell(bot, reply_to, str(e))
         return f"kids {iid}: rejected {choice!r}: {e}"
+    _ack(db, bot, "kids", iid, f"✓ {choice.title()}")
     db.outbox_resolve("kids", iid)
-    bot.send_message(f"✓ {choice.title()}" + ("" if status in OWNER_WAITING else f" — {progress(db)}"),
-                     reply_to=reply_to)
     return f"kids {iid}: {choice} ({status})"
 
 
@@ -794,6 +819,9 @@ def _handle_callback(s: Settings, db: DB, bot: Bot, cq: dict) -> str:
     cid = cq.get("id")
     parts = (cq.get("data") or "").split(":")
     src_mid = (cq.get("message") or {}).get("message_id")
+    if parts[0] == NOOP:                               # an answered card's "✓ …" button
+        bot.answer_callback(cid)
+        return "ignored: answered card"
     if parts[0] == "approve" and len(parts) == 3 and parts[2].isdigit():
         result = _set_price(s, db, bot, parts[1], int(parts[2]), src_mid)
         bot.answer_callback(cid, f"${parts[2]}" if "rejected" not in result else "Could not set the price")
@@ -804,6 +832,7 @@ def _handle_callback(s: Settings, db: DB, bot: Bot, cq: dict) -> str:
         except ValueError as e:
             bot.answer_callback(cid, "Nothing to put off")
             return f"later {parts[1]}: rejected: {e}"
+        _ack(db, bot, "item", parts[1], "✓ later — it comes back at the end")
         db.outbox_resolve("item", parts[1])
         bot.answer_callback(cid, "Later: moved to the end")
         return f"later {parts[1]}"
@@ -828,13 +857,13 @@ def _handle_callback(s: Settings, db: DB, bot: Bot, cq: dict) -> str:
             bid = pipeline.start_regroup(s, db, parts[1])
         except ValueError as e:
             bot.answer_callback(cid, "Can't change its photos")
-            bot.send_message(str(e), reply_to=src_mid)
+            _tell(bot, src_mid, str(e))
             return f"regroup {parts[1]}: rejected: {e}"
         bot.answer_callback(cid, "The batch's photos follow")
         return f"regroup {parts[1]}: batch {bid} reopened"
     if parts[0] == "change" and len(parts) == 2:
         iid = parts[1]
-        mid = bot.send_message(f"Reply to this message with the price for {iid} (or just type it).", reply_to=src_mid)
+        mid = bot.send_message("Reply to this message with the price (or just type it).", reply_to=src_mid)
         db.add_outbox(bot.chat_id, mid, "item", iid)
         bot.answer_callback(cid)
         return f"change {iid}: asked for the price"
@@ -849,11 +878,11 @@ def _reply_batch(s: Settings, db: DB, bot: Bot, bid: str, text: str, mid: int | 
     try:
         pipeline.confirm(s, db, bid, text)
     except ValueError as e:
-        bot.send_message(str(e), reply_to=mid)
+        _tell(bot, mid, str(e))
         return f"batch {bid}: rejected {text!r}: {e}"
-    db.outbox_resolve("batch", bid)
     n = db.conn.execute("SELECT COUNT(*) FROM items WHERE batch_id=?", (bid,)).fetchone()[0]
-    bot.send_message(f"✓ {n} item{'s' if n != 1 else ''} — the cards follow one at a time", reply_to=mid)
+    _ack(db, bot, "batch", bid, f"✓ {n} item{'s' if n != 1 else ''} — the cards follow")
+    db.outbox_resolve("batch", bid)
     return f"batch {bid}: confirmed {text!r}"
 
 
@@ -864,14 +893,14 @@ def _reply_regroup(s: Settings, db: DB, bot: Bot, bid: str, text: str, mid: int 
     try:
         out = pipeline.regroup(s, db, bid, text)
     except ValueError as e:
-        bot.send_message(str(e), reply_to=mid)
+        _tell(bot, mid, str(e))
         return f"regroup {bid}: rejected {text!r}: {e}"
-    db.outbox_resolve("regroup", bid)
     changed = len(out["rebuilt"]) + len(out["created"])
-    bot.send_message("\u2713 no change \u2014 the cards follow" if not changed and not out["removed"] else
-                     f"\u2713 {changed} item{'s' if changed != 1 else ''} rebuilt"
-                     + (f", {len(out['removed'])} removed" if out["removed"] else "") + " \u2014 the cards follow",
-                     reply_to=mid)
+    _ack(db, bot, "regroup", bid, "✓ no change — the cards follow" if not changed and not out["removed"] else
+         f"✓ {changed} item{'s' if changed != 1 else ''} rebuilt"
+         + (f", {len(out['removed'])} removed" if out["removed"] else "") + " — the cards follow")
+    db.outbox_resolve("regroup", bid)
+    notify.say(f"batch {bid}: regrouped ({text!r}) — " + ", ".join(f"{k} {len(v)}" for k, v in out.items()))
     return f"regroup {bid}: {text!r} -> " + ", ".join(f"{k} {len(v)}" for k, v in out.items())
 
 
@@ -881,17 +910,11 @@ def _set_cover(s: Settings, db: DB, bot: Bot, iid: str, n: int, reply_to: int | 
     try:
         status = pipeline.set_cover(s, db, iid, n)
     except ValueError as e:
-        bot.send_message(str(e), reply_to=reply_to)
+        _tell(bot, reply_to, str(e))
         return f"cover {iid}: rejected {n}: {e}"
+    _ack(db, bot, "item", iid, f"✓ cover: photo {n}")
     if status in WAITING_ITEM:
-        db.outbox_resolve("item", iid)
-        bot.send_message(f"\u2713 cover: photo {n} \u2014 the card follows", reply_to=reply_to)
-    else:
-        cover = Path(db.item(iid)["dir"]) / "cover.jpg"
-        if cover.is_file():
-            bot.send_photo(cover, f"\u2713 cover: photo {n}")
-        else:
-            bot.send_message(f"\u2713 cover: photo {n}", reply_to=reply_to)
+        db.outbox_resolve("item", iid)                 # the card comes again with its new cover
     return f"cover {iid}: photo {n} ({status})"
 
 
@@ -902,16 +925,11 @@ def _set_no_brand(s: Settings, db: DB, bot: Bot, iid: str, reply_to: int | None)
     try:
         status = pipeline.set_no_brand(s, db, iid)
     except ValueError as e:
-        bot.send_message(str(e), reply_to=reply_to)
+        _tell(bot, reply_to, str(e))
         return f"nobrand {iid}: rejected: {e}"
-    if status == "new":
+    if status not in OWNER_WAITING:                    # a card still open for its price stays as it is
+        _ack(db, bot, "item", iid, "✓ No brand" + (" — its card follows" if status == "new" else ""))
         db.outbox_resolve("item", iid)
-        bot.send_message("✓ No brand — rewriting the listing without one, its card follows", reply_to=reply_to)
-    elif status in OWNER_WAITING:
-        bot.send_message("✓ No brand — Poshmark's brand stays empty. Now the price, on the card above", reply_to=reply_to)
-    else:
-        db.outbox_resolve("item", iid)
-        bot.send_message(f"✓ No brand — {progress(db)}", reply_to=reply_to)
     return f"nobrand {iid}: ({status})"
 
 
@@ -920,7 +938,7 @@ def _set_category_option(s: Settings, db: DB, bot: Bot, iid: str, n: int, reply_
     it = db.item(iid)
     options = ((loads(it["gate"]) or {}).get("ask_category") or []) if it else []
     if not 0 <= n < len(options):
-        bot.send_message("That choice isn't open any more", reply_to=reply_to)
+        _tell(bot, reply_to, "That choice isn't open any more")
         return f"category {iid}: rejected option {n}"
     return _set_category(s, db, bot, iid, options[n], reply_to)
 
@@ -929,12 +947,11 @@ def _set_category(s: Settings, db: DB, bot: Bot, iid: str, path: dict, reply_to:
     try:
         status = pipeline.set_category(s, db, iid, path)
     except ValueError as e:
-        bot.send_message(str(e), reply_to=reply_to)
+        _tell(bot, reply_to, str(e))
         return f"category {iid}: rejected {path}: {e}"
-    db.outbox_resolve("category", iid)
     label = taxonomy.path_label(path)
-    bot.send_message(f"✓ {label}" + (" — reprocessing, its card comes next" if status == "new" else
-                                     "" if status in OWNER_WAITING else f" — {progress(db)}"), reply_to=reply_to)
+    _ack(db, bot, "category", iid, f"✓ {label}")
+    db.outbox_resolve("category", iid)
     return f"category {iid}: {label} ({status})"
 
 
@@ -954,10 +971,10 @@ def _reply_category(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int
     try:
         pipeline.answer(s, db, iid, text)
     except ValueError as e:
-        bot.send_message(str(e), reply_to=mid)
+        _tell(bot, mid, str(e))
         return f"category {iid}: rejected {text!r}: {e}"
+    _ack(db, bot, "category", iid, "✓ noted — rechecking")
     db.outbox_resolve("category", iid)
-    bot.send_message(f"✓ noted {text!r}, reprocessing", reply_to=mid)
     return f"category {iid}: noted {text!r}"
 
 
@@ -982,11 +999,13 @@ def _set_brand(s: Settings, db: DB, bot: Bot, iid: str, brand: str, reply_to: in
     try:
         status = pipeline.set_brand(s, db, iid, brand)
     except ValueError as e:
-        bot.send_message(str(e), reply_to=reply_to)
+        _tell(bot, reply_to, str(e))
         return f"brand {iid}: rejected {brand!r}: {e}"
     if status not in OWNER_WAITING:
         db.outbox_resolve(kind, iid)
-    bot.send_message(f"✓ brand: {brand}" + ("" if status in OWNER_WAITING else f" — {progress(db)}"), reply_to=reply_to)
+    if not db.conn.execute("SELECT 1 FROM outbox WHERE kind=? AND ref=? AND resolved_at IS NULL", (kind, iid)
+                           ).fetchone():                # done, or closed to come again with the brand: the old copy
+        _ack(db, bot, kind, iid, f"✓ brand: {brand}")
     return f"brand {iid}: {brand!r} ({status})"
 
 
@@ -1001,10 +1020,10 @@ def _reply_item(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int | N
         if note and "rejected" not in result:
             try:
                 pipeline.answer(s, db, iid, note)
+                _ack(db, bot, "item", iid, "✓ No brand · noted — rechecking")
                 db.outbox_resolve("item", iid)
-                bot.send_message(f"✓ noted {note!r}, reprocessing", reply_to=mid)
             except ValueError as e:
-                bot.send_message(str(e), reply_to=mid)
+                _tell(bot, mid, str(e))
         return result
     price, note = parse_reply(text)
     if price is None and note is None:
@@ -1017,22 +1036,25 @@ def _reply_item(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int | N
         if price is not None:
             _set_price(s, db, bot, iid, price, mid)      # first: an approved price stays through it all
         return _set_brand(s, db, bot, iid, brand, mid)
-    recorded, errors = [], []
+    recorded, errors, labels = [], [], []
     if price is not None:                              # kept through the reprocessing: never asked again
         try:
             pipeline.set_price(s, db, iid, price)
             recorded.append(f"${price}")
+            labels.append(f"${price}")
         except ValueError as e:
             errors.append(str(e))
     try:
         outcome = pipeline.answer(s, db, iid, note)
         recorded.append("same item: dropped" if outcome == "dropped" else f"noted {note!r}, reprocessing")
+        labels.append("same item — dropped" if outcome == "dropped" else "noted — rechecking")
     except ValueError as e:
         errors.append(str(e))
     if recorded:
+        _ack(db, bot, "item", iid, "✓ " + " · ".join(labels))
         db.outbox_resolve("item", iid)
-    lines = (["✓ " + ", ".join(recorded)] if recorded else []) + errors
-    bot.send_message("\n".join(lines), reply_to=mid)
+    if errors:
+        _tell(bot, mid, "\n".join(errors))
     return f"item {iid}: " + "; ".join(recorded + [f"error: {e}" for e in errors])
 
 
@@ -1040,7 +1062,7 @@ def _reply_owner_q(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int 
     """A reply to a question the poster asked before WO27 (it asks none now): to its brand question, the reply is the
     brand; anything else a note, as before."""
     if not text:
-        bot.send_message(f"Reply to this message with the answer for {iid}.", reply_to=mid)
+        bot.send_message("Reply to this message with the answer.", reply_to=mid)
         return f"owner_q {iid}: empty reply"
     it = db.item(iid)
     if it is not None and "brand" in (it["owner_question"] or "").lower():
@@ -1052,15 +1074,15 @@ def _reply_owner_q(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int 
                 try:
                     pipeline.requeue(s, db, iid)         # back to 'ready' as it is, its old question closed
                 except ValueError as e:
-                    bot.send_message(str(e), reply_to=mid)
+                    _tell(bot, mid, str(e))
         return result
     try:
         pipeline.answer(s, db, iid, text)
     except ValueError as e:
-        bot.send_message(str(e), reply_to=mid)
+        _tell(bot, mid, str(e))
         return f"owner_q {iid}: rejected: {e}"
+    _ack(db, bot, "owner_q", iid, "✓ got it — rechecking")
     db.outbox_resolve("owner_q", iid)
-    bot.send_message("✓ got it — reprocessing", reply_to=mid)
     return f"owner_q {iid}: answered {text!r}"
 
 
@@ -1092,8 +1114,9 @@ def poll_once(s: Settings, db: DB, bot: Bot, timeout: int) -> int:
             db.log(ref, "telegram", result)
         except Exception as e:  # noqa: BLE001 - one bad update must not stop the loop or be re-read forever
             db.log(ref, "telegram_error", f"{type(e).__name__}: {e}")
+            notify.say(f"❌ telegram update ({ref or 'no item'}): {type(e).__name__}: {e}")   # the detail: ops
             try:
-                bot.send_message(f"Sorry, that failed: {type(e).__name__}: {e}")
+                bot.send_message("Sorry, that didn't go through — please try again.")  # WO29: plain in the group
             except Exception:  # noqa: BLE001
                 pass
         if (uid := u.get("update_id")) is not None:

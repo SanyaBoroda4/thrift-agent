@@ -78,7 +78,7 @@ Defaults for the first weeks of live posting, until the eval numbers justify loo
   questions about
   optional facts (material, measurements) are dropped: a missing optional fact is left out of the listing. An unsure
   condition is kept in the item's record, not shown. Anything the owner does from the CLI (`thrift price` / `answer`
-  / `confirm` / `condition` / `kids` / `redo`) is echoed to the Telegram group and settles the pending message there.
+  / `confirm` / `condition` / `kids` / `redo`) is echoed to the ops chat and settles the pending message.
 - **Always a price.** brand tier → the department's category default (the category, then Poshmark's other names for
   it — Kids "Shirts & Tops" finds the table's `Tops` — then the department's `other`) → the old flat table the same way
   → `pricing.default_target` (config/settings.yaml). The price card always has a number. `category_defaults` in
@@ -135,9 +135,11 @@ failure exits non-zero. Only one worker can run: `thrift run` holds a lock next 
 to start ("another worker is already running (pid …)"); `services.sh start worker` refuses while a `thrift run` runs
 in a Terminal window. Two workers would take each other's Telegram updates.
 When the worker can't read the iCloud inbox (macOS hasn't allowed python3.14 into iCloud Drive yet), it retries
-quietly and, after 2 minutes, sends ONE message saying where to allow it (System Settings → Privacy & Security → Files &
-Folders → python3.14 → iCloud Drive), then "✓ inbox readable again" once it can. Any other repeated error is sent
-once and then at most once a day.
+quietly and, after 10 minutes, sends the group ONE plain message saying where to allow it (System Settings → Privacy &
+Security → Files & Folders → python3.14 → iCloud Drive), then "✓ inbox readable again" in the ops chat once it can.
+iCloud still downloading or coordinating a file ("Resource deadlock avoided", errno 11 on macOS) is not an error: the
+share is simply taken on a later tick, and the ops chat hears of it only if it lasts 10 minutes. Any other error goes
+to the ops chat once and then at most once a day — never to the group.
 Over SSH Claude deploys and checks status and logs after every work order, and may run status, logs, `requeue`,
 `redo` and the tests; never `poster --publish-first`, the poster or anything that touches the live Poshmark account,
 `mark-posted`, deleting data, or changes to `settings.local.yaml` / `.env`.
@@ -149,7 +151,7 @@ thrift condition <item> nwt|like_new|good | kids <item> girls|boys | category <i
 thrift recover <item|batch> [--recheck] | reprocess <item>
 thrift requeue <item> [marketplace] | requeue <batch> | mark-posted <item> <marketplace> <url> | status | show <item>
 thrift poster [--once] [--dry-run] [--stage form|review] [--publish-first <item>] [--allow-dev-browser]
-thrift login --site poshmark | telegram setup|test | harvest | build-style | eval
+thrift login --site poshmark | telegram setup|test [--ops] | harvest | build-style | eval
 ```
 - **`thrift requeue b_…`** sends a failed batch (e.g. an API error during the split) back to the worker, which
   splits it again within ~15 s; a failed batch is never retried on its own. `thrift status` lists the open
@@ -280,7 +282,9 @@ the module docstring.
   `config/settings.local.yaml` (all off by default), and only `ready` items whose listing carries the owner-approved
   price: the oldest first, one at a time, inside `schedule.hours` and the hourly / daily caps, with a human pause
   (`schedule.gap_seconds`, now and then a longer break) after each. An item whose copy the gate wants looked at once
-  ("draft") is never published by the loop: it is left alone and the owner is told once, with the command below.
+  ("draft") is never published by the loop: it is left alone, the group is told once in one plain line ("⏸ Not
+  published automatically: <title> — its text needs a look first.") and the ops chat gets the reason and the command
+  below.
   `bash deploy/services.sh start poster` starts it; `bash deploy/services.sh stop poster` stops it at once (the item
   in hand is finished first). Until then it dry-runs, and one item at a time can be published supervised on the Mac:
 
@@ -307,13 +311,15 @@ the module docstring.
 The Mac is mostly closed. About once a day it is opened (often on battery) for ~30 minutes; photos are shared from the
 iPhone any time and prices approved in Telegram. The owner's one-page guide is [docs/DAILY.md](docs/DAILY.md).
 - **On wake or start** (with the lid open): the same catch-up as a restart — the inbox looked at, the open card re-sent
-  only if it is old — and "Back online — 2 new shares, 3 items waiting" when there is work. Answers given in Telegram
+  only if it is old — and "Back online — 2 new shares, 3 items waiting" (ops chat) when there is work. Answers given in Telegram
   while the Mac slept (Telegram keeps them 24 h) arrive in order; an older one is lost and the card simply comes
   again.
-- **One status message per window** (the last window's is deleted), edited as things change: "⏳ Working — 4 items left, about 12 min. Please don't
-  close the Mac yet." · "⏳ 3 listings still to publish, next in ~4 min." · "✓ All done — safe to close the Mac." ·
-  "✓ Safe to close — 2 cards are waiting for your answer in Telegram (answers within 24 h are kept)" · "✓ Safe to
-  close — 3 listings will go up after 08:00 next time the Mac is open". The estimate uses the last runs' real timings.
+- **One status message per window, in the ops chat** (WO29; also in `thrift status`; the last window's is deleted),
+  edited as things change: "⏳ Working — 4 items left, about 12 min. Please don't close the Mac yet." · "⏳ 3 listings
+  still to publish, next in ~4 min." · "✓ All done — safe to close the Mac." · "✓ Safe to close — 2 cards are waiting
+  for your answer in Telegram (answers within 24 h are kept)" · "✓ Safe to close — 3 listings will go up after 08:00
+  next time the Mac is open". The estimate uses the last runs' real timings. The group sees "✓ All done — safe to close
+  the Mac." only as a second line under the window's last "Posted ✓".
 - **Lid closed**: the night's short maintenance wakes start nothing and say nothing. A batch or item cut off by the lid
   closing is simply taken again. A listing cut off before its final click goes again; after it, the closet is
   looked at first: found → "Posted ✓"; not found → the ⚠️ message above.
@@ -321,7 +327,7 @@ iPhone any time and prices approved in Telegram. The owner's one-page guide is [
   the work is done. Below 15% with work left: "🔋 Mac battery low — plug in or I'll pause; nothing will be lost"; the
   listing in hand is finished, the next waits for the charger (or 20%).
 - **iCloud**: a share is taken only when all its photos are really on the Mac (cloud-only files are asked for with
-  `brctl download`); after 5 minutes of waiting: "Waiting for iCloud to finish downloading the photos…".
+  `brctl download`); after 5 minutes of waiting: "Waiting for iCloud to finish downloading the photos…" (ops chat).
 
 ## iPhone Shortcut — "New item"
 Same Apple ID as the Mac, iCloud Drive on, folders `iCloud Drive/Posh/inbox`. Finished shares are moved to
@@ -356,6 +362,20 @@ private chat with the bot it always does.
 5. Set `telegram.enabled: true` in `config/settings.local.yaml`. Other settings: `telegram.resend_after_hours`
    (default 6) and `telegram.poll_timeout`. On prod, `thrift run` and `thrift poster` refuse to start when
    `telegram.enabled` is on but any of the three env vars is missing.
+6. **The ops chat** (WO29): the owner opens a private chat with the bot and sends `/start`; his user id goes in
+   `TELEGRAM_OPS_CHAT_ID` (`.env`) or `telegram.ops_chat_id` (`private/settings.yaml`). `thrift telegram test --ops`
+   checks it. Without it the technical messages are only logged.
+
+### A quiet group (WO29)
+The group gets only: the cards and the allowed questions; "Posted ✓ <title> — $35 · <url>" (+ " — check: …" when the
+poster had to guess), with "✓ All done — safe to close the Mac." under the window's last one; and, once per episode,
+the alerts that need the owner, each one plain sentence — battery low, the Mac slept while publishing (reply
+`posted <url>` / `retry`), the iCloud inbox unreadable for 10 minutes, "⏸ Not published automatically", "⏭ skipped".
+No item ids, no error text. An answered card is edited instead of answered: its buttons become one inert button
+showing the answer ("✓ $35 — queued"). Everything else — the status message, "Back online", "Poster started (LIVE)",
+dry-run notes, CLI echoes, "batch … rebuilt", every error — goes to the ops chat; the same text there at most once a
+day. A send to the ops chat that fails is logged and dropped (and the chat left alone for 10 minutes), never sent to
+the group instead.
 
 ### Flow
 - **The grouping is accepted automatically** (owner decision). After the split no contact sheet is sent: the
@@ -373,10 +393,10 @@ private chat with the bot it always does.
   The sheet marks the photo after each pause ("pause 2 min"); the summary lists the pauses and the doubts.
 - **One message at a time.** Everything that waits for the owner is one queue across batches and items: the oldest
   batch first — its contact sheet when one is asked, then its items in photo order (each item's questions, then its price card) — then
-  the next batch. Only one message is open; the next is sent when it is answered, with a one-line confirmation first
-  ("✓ $28 — 3 of 10 left"). Processing runs ahead, so the next card is usually ready at once; the queue never skips
-  an item still being processed. The queue lives in the DB: it survives restarts, and a restart re-sends only the
-  open message. Info-only messages (errors, posted confirmations) are not queued and are kept few: a dry-run that
+  the next batch. Only one message is open; the next is sent when it is answered — no confirmation message: the
+  answered card shows "✓ $28 — queued" in place of its buttons. Processing runs ahead, so the next card is usually
+  ready at once; the queue never skips an item still being processed. The queue lives in the DB: it survives restarts,
+  and a restart re-sends only the open message. Info-only messages are not queued and are kept few: a dry-run that
   went fine says nothing unless `poster.notify_dry_runs` is on.
 - **The price card, in Poshmark's words.** Cover photo, title, the size as Poshmark's size menu shows it ("7.5
   (Toddler Girl)"), the condition as Poshmark's label (NWT / Like New / Good), a warning only where a look is needed

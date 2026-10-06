@@ -167,8 +167,9 @@ def _tell_held(s: Settings, db: DB, enabled: list[str]) -> None:
         title = ((loads(db.item(iid)["renders"]) or {}).get(mp) or {}).get("title") or iid
         why = ("the copy needs a look: " + "; ".join(reasons)) if reasons else f"marketplaces.{mp}.autopublish is off"
         db.log(iid, "held_draft", {"mp": mp, "reasons": reasons})
-        notify.say(f"⏸ Not published automatically ({iid}): {title}\n{why}\nAfter a look: thrift poster "
-                   f"--publish-first {iid} (with the poster service stopped)")
+        notify.group(f"⏸ Not published automatically: {title} — its text needs a look first.")   # WO29: plain
+        notify.say(f"⏸ {iid} held: {title}\n{why}\nAfter a look: thrift poster --publish-first {iid} (with the "
+                   "poster service stopped)")
 
 
 def condition_rule_breaks(r: Render) -> list[str]:
@@ -193,19 +194,24 @@ def why_dry(s: Settings, force_dry: bool = False) -> str:
     return "dry-run: poster.autopublish_confirmed is off (poster.dry_run alone doesn't publish)"
 
 
-def posted_message(render: Render, out: Outcome, checks: list[str] = ()) -> str:
-    """"Posted ✓ <title> — check: brand set to 'J. Crew' (from 'J.Crew')" (WO27): the poster's guesses and the copy's
-    flags, so the owner fixes the live listing by hand if needed. Nothing to check: no extra words."""
+ALL_DONE_LINE = "✓ All done — safe to close the Mac."
+
+
+def posted_message(render: Render, out: Outcome, checks: list[str] = (), done: bool = False) -> str:
+    """The group's "Posted ✓ <title> — $35 · <url>" (WO29), plus " — check: brand set to 'J. Crew' (from 'J.Crew')"
+    when the poster had to guess (WO27) or the copy was flagged; the window's last listing (daily.all_done) adds
+    "✓ All done — safe to close the Mac." on a line of its own. Nothing else: the notes go to the ops chat."""
     check = [*out.guesses, *(f"copy: {c}" for c in checks)]
-    head = f"Posted ✓ {render.title}" + (f" — check: {'; '.join(check)}" if check else "")
-    return f"{head}\n${render.price} · {out.url or ''}" + (f"\n{out.note}" if out.note else "")
+    text = f"Posted ✓ {render.title} — ${render.price} · {out.url or ''}" + (f" — check: {'; '.join(check)}"
+                                                                           if check else "")
+    return text + (f"\n{ALL_DONE_LINE}" if done else "")
 
 
 def unconfirmed_text(title: str, slept: bool) -> str:
     """The ONE message for a listing that may be live (WO28 §3); a reply 'posted <url>' or 'retry' answers it."""
     if slept:
         return f"⚠️ {title}: the Mac went to sleep while publishing and I can't see it in the closet. {ASK}"
-    return f"⚠️ {title}: List This Item was pressed but I can't see the listing in the closet. {ASK}"
+    return f"⚠️ {title}: I pressed List on Poshmark but can't see it in the closet. {ASK}"
 
 
 def ask_unconfirmed(db: DB, iid: str, mp: str, text: str) -> None:
@@ -226,13 +232,16 @@ def ask_unconfirmed(db: DB, iid: str, mp: str, text: str) -> None:
 
 def record_outcome(db: DB, iid: str, mp: str, render: Render, out: Outcome, marketplaces: list[str],
                    stage: str = "form", say_dry_run: bool = True, checks: list[str] = (),
-                   seconds: float | None = None, slept: bool = False) -> None:
+                   seconds: float | None = None, slept: bool = False, s: Settings | None = None) -> None:
     """The post row, the event, the owner's message and the item's status for one Outcome.
 
     posted_at = when this row last hit the site. A dry-run fills the real form (uploads included), so it gets a stamp
     too and counts against the pacing caps in posted_since(). A cancelled supervised publish never reached the site:
     the row goes back to 'queued'. A failed publish after the final click without a URL is "unconfirmed": the listing
-    may be live, so `thrift requeue` refuses it until the closet is checked by hand (invariant 4)."""
+    may be live, so `thrift requeue` refuses it until the closet is checked by hand (invariant 4).
+
+    WO29: the group hears "Posted ✓" (with "✓ All done …" on the window's last listing, `s` given), the ⚠️ of an
+    unconfirmed publish and a plain "⏭ … was skipped"; failures, dry-runs and the details go to the ops chat."""
     stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
     error = out.error
     if out.status == "failed" and out.clicked and not out.url:
@@ -254,6 +263,7 @@ def record_outcome(db: DB, iid: str, mp: str, render: Render, out: Outcome, mark
     elif out.status == "failed":
         notify.photo(Path(out.screenshot or ""), f"❌ {mp} failed ({iid}): {render.title}\n{error}{note}")
     elif out.status == "skipped":
+        notify.group(f"⏭ {render.title} was skipped: Poshmark's form doesn't take one of its details.")   # plain
         notify.photo(Path(out.screenshot or ""), f"⏭ skipped on {mp} ({iid}): {render.title}\n{out.error}\nFix the "
                                                  f"listing, then: thrift requeue {iid}{note}")
     elif out.status == "dryrun" and say_dry_run:          # poster.notify_dry_runs: off, the owner's chat stays quiet
@@ -262,7 +272,10 @@ def record_outcome(db: DB, iid: str, mp: str, render: Render, out: Outcome, mark
     elif out.status == "cancelled":
         notify.say(f"↩️ not published on {mp} ({iid}): {render.title}{note}")
     elif out.status == "posted":
-        notify.say(posted_message(render, out, checks))
+        _settle_item(db, iid, marketplaces)
+        notify.group(posted_message(render, out, checks, done=s is not None and daily.all_done(s, db)))
+        if out.note:
+            notify.say(f"{iid} posted: {out.note}")
     else:
         notify.say(f"✅ {out.status} on {mp}: {render.title} — ${render.price}\n{out.url or ''}{guesses}{note}")
     _settle_item(db, iid, marketplaces)
@@ -343,7 +356,7 @@ async def publish_first(s: Settings, db: DB, iid: str, confirm=terminal_confirm)
     finally:
         await ctx.close()
         await pw.stop()
-    record_outcome(db, iid, "poshmark", render, out, list(ps), checks=_checks(it))   # 'posted' once all are
+    record_outcome(db, iid, "poshmark", render, out, list(ps), checks=_checks(it), s=s)   # 'posted' once all are
     return out
 
 
@@ -395,8 +408,9 @@ async def confirm_live(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, ur
     db.upsert_post(iid, mp, status="posted", url=address, last_error=None, posted_at=row["updated_at"])
     db.log(iid, "post_confirmed", {"mp": mp, "url": address, "was": row["last_error"]})
     db.outbox_resolve("unconfirmed", iid)
-    notify.say(f"✅ confirmed live on {mp}: {render.title} — ${render.price}\n{address}")
     _settle_item(db, iid, list(ps))
+    notify.group(posted_message(render, Outcome("posted", url=address), done=daily.all_done(s, db)))   # WO29
+    notify.say(f"✅ {iid} confirmed live on {mp} (the owner's link): {address}")
     return address
 
 
@@ -459,7 +473,8 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, 
     _install_stop(stop)
     pw, ctx = await open_browser(s.path("chrome_profile"), s["schedule"]["timezone"])
     started = f"Poster started ({f'DRY-RUN, {stage} stage' if dry else 'LIVE'}) — {', '.join(ps)}"
-    notify.say(started + (f"\n{why_dry(s, force_dry)}" if dry and s.is_prod else ""))
+    # WO29: the ops chat (never the group); the time keeps a second start the same day from being "a repeat"
+    notify.say(f"{started} · {datetime.now():%H:%M}" + (f"\n{why_dry(s, force_dry)}" if dry and s.is_prod else ""))
     print(started)
     db.log(None, "poster_started", {"live": not dry, "stage": None if not dry else stage, "pid": os.getpid()})
     awake = power.Awake()
@@ -520,7 +535,7 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, 
                 out, requeued = await after_sleep(db, ps, ctx, iid, mp, render, out, t0)
             if not requeued:
                 record_outcome(db, iid, mp, render, out, list(ps), stage,
-                               bool(s.get("poster.notify_dry_runs", False)), seconds=seconds, slept=slept)
+                               bool(s.get("poster.notify_dry_runs", False)), seconds=seconds, slept=slept, s=s)
                 # Circuit breaker: N failures in a row means the form, the account or the network changed, not
                 # the items. Every further attempt is 16 uploads of noise on the account, so stop and ask. A skipped
                 # item is not one: the form and the account are fine, the item is unusual (WO27). Nor is a listing
@@ -550,7 +565,7 @@ def _paused(db: DB) -> str | None:
     sleep again mid-listing), or the battery rule (WO28 §5: below 15% on battery, until charging or 20%)."""
     if power.lid_closed() is True:
         return "lid closed"
-    if power.publish_paused(db, power.battery(), True, notify.say):
+    if power.publish_paused(db, power.battery(), True, notify.group):     # the battery line: the group (WO29)
         return "battery low"
     return None
 
@@ -607,7 +622,7 @@ async def reconcile_stale(s: Settings, db: DB, ps: dict, ctx) -> list[str]:
                       "stopped) in the middle of this listing") if url else \
             Outcome("failed", clicked=True, error="the Mac slept (or the poster stopped) in the middle of this listing "
                     "and it isn't in the closet")
-        record_outcome(db, iid, mp, render, out, list(ps), slept=True)
+        record_outcome(db, iid, mp, render, out, list(ps), slept=True, s=s)
         done.append(iid)
     return done
 
@@ -625,5 +640,6 @@ async def serve_requests(s: Settings, db: DB, ps: dict, ctx) -> list[str]:
             it = db.item(iid) if iid else None
             title = ((loads(it["renders"]) or {}).get(mp) or {}).get("title") if it else iid
             db.log(iid, "post_confirm_refused", {"mp": mp, "url": url, "error": str(e)})
-            ask_unconfirmed(db, iid, mp, f"⚠️ {title}: {e}. {ASK}")
+            notify.say(f"⚠️ {iid}: the owner's link {url} was refused: {e}")
+            ask_unconfirmed(db, iid, mp, f"⚠️ {title}: that link doesn't show this item. {ASK}")
     return done

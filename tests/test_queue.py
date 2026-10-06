@@ -31,6 +31,11 @@ class FakeBot(Bot):
     def texts(self):
         return [p.get("text") or p.get("caption") for m, p in self.calls if m in ("sendMessage", "sendPhoto")]
 
+    def marks(self):
+        """The answered cards (WO29): the "✓ …" label of each editMessageReplyMarkup."""
+        return [p["reply_markup"]["inline_keyboard"][0][0]["text"] for m, p in self.calls
+                if m == "editMessageReplyMarkup"]
+
     def questions(self):
         """The messages with buttons or a contact sheet: what the queue sent (not the one-line confirmations)."""
         return [(p.get("text") or p.get("caption")).splitlines()[0] for m, p in self.calls
@@ -111,20 +116,21 @@ def test_one_message_at_a_time_in_the_queues_order_across_two_batches(env, tmp_p
     assert _open(db) == ("condition", a1)
 
     handle_update(s, db, bot, _callback(f"cond:{a1}:like_new"))            # Like New -> a1 is repriced first...
-    assert bot.texts()[-1].startswith("✓ Like New") and "its card comes next" in bot.texts()[-1]
+    assert bot.marks()[-1] == "✓ Like New (brand new, no tags)" and len(bot.texts()) == 1   # quietly (WO29)
     assert approve.queue(db)[0] == (approve.NEW_ITEM, a1) and _open(db) is None
     assert approve.pump(s, db) is None                                     # ...and the queue holds for it
     db.set_item(a1, status="awaiting_price")                               # the worker is done with it
     assert approve.pump(s, db) == f"item {a1}"
 
     handle_update(s, db, bot, _callback(f"approve:{a1}:45"))
-    assert bot.texts()[-2] == "✓ $45 — 3 of 4 left"                # then the next question at once:
+    assert bot.marks()[-1] == "✓ $45 — queued"                     # the card marked, then the next question at once:
     assert bot.texts()[-1].startswith("Kids tee A2\nGirls or Boys?")
     handle_update(s, db, bot, _callback(f"kids:{a2}:girls"))
-    assert bot.texts()[-2] == "✓ Girls" and bot.texts()[-1].startswith("Kids tee A2\nSize")   # its card
+    assert bot.marks()[-1] == "✓ Girls" and bot.texts()[-1].startswith("Kids tee A2\nSize")   # its card
     handle_update(s, db, bot, _callback(f"approve:{a2}:40"))
     handle_update(s, db, bot, _callback(f"approve:{a3}:40"))
-    assert bot.texts()[-2] == "✓ $40 — 1 of 4 left" and bot.texts()[-1].startswith(f"Batch {b}")
+    assert bot.marks()[-1] == "✓ $40 — queued" and bot.texts()[-1].startswith(f"Batch {b}")
+    assert not any(t.startswith("✓") for t in bot.texts())               # never a "✓ … left" message (WO29)
 
     def confirm(_s, _db, bid, cmd):                                        # what confirm leaves: b's two new items
         _db.set_batch(bid, status="split")
@@ -132,7 +138,7 @@ def test_one_message_at_a_time_in_the_queues_order_across_two_batches(env, tmp_p
             _db.add_item(bid, seq, str(tmp_path / f"b{seq}"))
     monkeypatch.setattr(pipeline, "confirm", confirm)
     handle_update(s, db, bot, _reply("ok", reply_to=bot.next_id))
-    assert bot.texts()[-1] == "✓ 2 items — the cards follow one at a time"
+    assert bot.marks()[-1] == "✓ 2 items — the cards follow"
     assert approve.queue(db)[:2] == [(approve.NEW_ITEM, i) for i in _items_of(db, b)]
     assert approve.pump(s, db) is None                                     # c1 never jumps ahead of b's items
     assert [kind for kind, _ in approve.queue(db)][-1] == "item" and approve.queue(db)[-1][1] == c1
@@ -238,13 +244,13 @@ def test_a_number_typed_without_a_reply_prices_the_open_card(env, tmp_path, fact
     a2 = _item(db, tmp_path, facts, a, 2, title="Tee A2")
     approve.pump(s, db)
     assert handle_update(s, db, bot, _typed("28")) == f"price {a1}: $28 (ready)"
-    assert db.item(a1)["owner_price"] == 28 and bot.texts()[-2] == "✓ $28 — 1 of 2 left"
+    assert db.item(a1)["owner_price"] == 28 and bot.marks() == ["✓ $28 — queued"]
     assert bot.questions()[-1] == "Tee A2"                                 # the next card at once
     assert handle_update(s, db, bot, _typed("hi, are you there?")) == "ignored: not a reply to the bot"
     assert handle_update(s, db, bot, _typed("5")) == "typed $5: under the floor, not taken"
     assert "under the $20 floor" in bot.texts()[-1] and db.item(a2)["owner_price"] is None
     assert handle_update(s, db, bot, _typed("$35.00")) == f"price {a2}: $35 (ready)"
-    assert bot.texts()[-1] == "✓ $35 — all done"
+    assert bot.marks()[-1] == "✓ $35 — queued" and not bot.texts()[-1].startswith("✓")
 
 
 def test_a_typed_number_is_not_a_price_while_another_question_is_open(env, tmp_path, facts):
@@ -363,7 +369,7 @@ def test_wrong_photos_reopens_the_batch_and_rebuilds_only_what_changed(env, tmp_
     assert _open(db) == ("regroup", bid)
 
     handle_update(s, db, bot, _reply("2>2", reply_to=bot.next_id))        # photo 2 belongs to item 2
-    assert bot.texts()[-1] == "\u2713 2 items rebuilt \u2014 the cards follow"
+    assert bot.marks()[-1] == "✓ 2 items rebuilt — the cards follow"
     assert _photos_of(db, i1) == [0, 1] and _photos_of(db, i2) == [2, 3, 4] and _photos_of(db, i3) == [5]
     assert [db.item(i)["status"] for i in (i1, i2, i3)] == ["new", "new", "ready"]
     assert db.item(i3)["owner_price"] == 30 and db.item(i1)["owner_price"] is None    # unchanged keeps everything

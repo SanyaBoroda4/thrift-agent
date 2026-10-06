@@ -5,7 +5,11 @@ it is older than telegram.resend_after_hours — and ONE line, "Back online — 
 window, ONE status message per window is kept up to date by editing it: "⏳ Working …, please don't close the Mac
 yet" while items are processed or listings published, "✓ Safe to close …" once only the owner's answers (or the listing
 hours) are left, "✓ All done — safe to close the Mac." when nothing is. Nothing is said while the lid is closed (the
-Mac's short maintenance wakes at night). The estimate uses the real timings of the last runs."""
+Mac's short maintenance wakes at night). The estimate uses the real timings of the last runs.
+
+WO29 (a quiet group): "Back online" and the status message go to the OPS chat (the owner's private chat; `thrift
+status` shows the message too). The group's only "safe to close" is the line the last "Posted ✓" of a window carries
+(all_done); the battery line is one of the group's plain action-needed lines."""
 from __future__ import annotations
 
 import json
@@ -198,6 +202,14 @@ def status_text(w: Work, p: PosterNow, t: Timing, hours_open: bool, block: str |
     return f"✓ Safe to close — {'; '.join(parts)}" if parts else ALL_DONE
 
 
+def all_done(s: Settings, db: DB) -> bool:
+    """Nothing left in this window (WO29): nothing being processed, no listing to publish (or being published), no
+    card waiting for an answer, none held for a look. The "Posted ✓" that leaves it so carries "✓ All done — safe to
+    close the Mac."."""
+    w = work(s, db)
+    return not (w.new_shares or w.processing or w.cards or w.to_publish or w.held)
+
+
 def back_online(w: Work) -> str | None:
     """ "Back online — 2 new shares, 3 items waiting" (WO28 §1), or None when there is no work."""
     parts = [_n(w.new_shares, "new share")] if w.new_shares else []
@@ -213,11 +225,14 @@ class Window:
     window — the catch-up and "Back online". update() after each tick: the status message, the idle-sleep assertion
     while the worker has processing to do, the battery line. Every seam is injectable (tests)."""
 
-    def __init__(self, s: Settings, db: DB, bot=None, *, say: Callable[[str], object] = notify.say,
+    def __init__(self, s: Settings, db: DB, bot=None, *, say: Callable[[str], object] | None = None,
+                 group: Callable[[str], object] | None = None,
                  scan: Callable[[], object] | None = None, lid: Callable[[], bool | None] = power.lid_closed,
                  watch: power.WakeWatch | None = None, awake: power.Awake | None = None,
                  battery: Callable[[], power.Battery | None] = power.battery, now: Callable[[], datetime] = _now):
-        self.s, self.db, self.bot, self.say, self.scan = s, db, bot, say, scan
+        self.s, self.db, self.bot, self.scan = s, db, bot, scan
+        self.say = say or (lambda text: notify.say(text))          # looked up when used: the ops chat
+        self.group = group or (lambda text: notify.group(text))    # ... and the group (the battery line)
         self.lid, self.battery, self.now = lid, battery, now
         self.watch = watch or power.WakeWatch()
         self.awake = awake or power.Awake()
@@ -278,7 +293,7 @@ class Window:
         self.awake.hold(w.busy)
         p = poster_now(self.db, now)
         publishing_left = w.to_publish > 0 and live(self.s)
-        power.publish_paused(self.db, self.battery(), w.busy or publishing_left, self.say)
+        power.publish_paused(self.db, self.battery(), w.busy or publishing_left, self.group)   # the group: plain
         hours_open, block, opens = blocked(self.s, self.db, now)
         text = status_text(w, p, timings(self.s, self.db), hours_open, block, opens, now)
         self.show(text)
@@ -298,15 +313,18 @@ class Window:
             return
         if self.bot is None:
             self.say(text)
-        else:
-            if st.get("message_id"):
-                try:
-                    self.bot.edit_message(int(st["message_id"]), text)
-                except RuntimeError as e:
-                    if "not modified" not in str(e):
-                        st["message_id"] = None
-            if not st.get("message_id"):
-                st["message_id"] = self.bot.send_message(text)
+        elif not notify.ops_down(self.db):              # the ops chat (WO29); not reached yet: tried again later
+            try:
+                if st.get("message_id"):
+                    try:
+                        self.bot.edit_message(int(st["message_id"]), text)
+                    except RuntimeError as e:
+                        if "not modified" not in str(e):
+                            st["message_id"] = None
+                if not st.get("message_id"):
+                    st["message_id"] = self.bot.send_message(text)
+            except Exception as e:  # noqa: BLE001 — never the group, never the worker's end: logged, dropped
+                notify.mark_ops_down(self.db, f"status message: {type(e).__name__}: {e}")
         st.update(text=text, worked=worked)
         self.db.kv_set(STATUS_KEY, json.dumps(st))
 

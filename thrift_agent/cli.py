@@ -76,17 +76,22 @@ def _scan_inbox(s, db) -> int:
     waiting for its iCloud Drive permission) is not an error to report each time (WO22): it is retried quietly on the
     next tick, and the owner gets one message if it lasts (alerts.inbox_trouble). The start and the end of each look
     are recorded: the Telegram thread notices a look stuck on the permission prompt, deploy that the worker got
-    through one. Processing of the items already split goes on either way."""
+    through one. Processing of the items already split goes on either way. iCloud still downloading a share
+    (EDEADLK, WO29) is quieter still: retried, and only the ops chat hears if it lasts 10 minutes."""
     alerts.scan_started(db)
     try:
         n = sum(1 for folder in pipeline.ready_folders(s, db) if pipeline.register(s, db, folder))
     except OSError as e:
+        if alerts.icloud_busy(e):
+            alerts.busy(db, "the inbox", f"{type(e).__name__}: {e}")
+            return 0
         if not alerts.inbox_unreadable(e):
             raise
         alerts.inbox_trouble(db, f"{type(e).__name__}: {e}")
         return 0
     alerts.scan_done(db)
     alerts.inbox_ok(db)
+    alerts.not_busy(db, "the inbox")
     return n
 
 
@@ -111,16 +116,22 @@ def _guard(db, ref, fn, on_fail, slept=None) -> None:
     """One batch or item: a failure marks it failed and is told once a day per identical error, whichever item it
     hits (ten items failing on one bad API key are one message; thrift status lists them all). A failure while the
     Mac slept (a model call cut off by the lid closing, WO28) is not the item's: it stays as it was and the next tick
-    takes it again."""
+    takes it again. Nor is iCloud still downloading the share's photos (EDEADLK, WO29): retried quietly, the ops chat
+    hears only if it lasts 10 minutes. Errors go to the ops chat, never the group."""
     try:
         fn()
     except Exception as e:  # noqa: BLE001
         if slept is not None and slept():
             db.log(ref, "interrupted_by_sleep", f"{type(e).__name__}: {e}")
             return
+        if alerts.icloud_busy(e):
+            alerts.busy(db, ref, f"{type(e).__name__}: {e}")
+            return
         on_fail()
         db.log(ref, "error", traceback.format_exc())
         alerts.once(db, f"❌ {ref}: {type(e).__name__}: {e}")
+        return
+    alerts.not_busy(db, ref)
 
 
 def _tick_unless_worker(s, db) -> None:
@@ -219,7 +230,8 @@ def run(interval: int = 15) -> None:
     print(f"worker watching {s.path('inbox')}" + (" — Telegram on" if bot else " — Telegram off (dev: messages print)"))
     # The daily window (WO28): its first step() is the start's catch-up — the inbox, "Back online" when there is work,
     # the open question re-sent only if it is old (never at each deploy) — and so is every wake with the lid open.
-    window = daily.Window(s, db, bot, scan=lambda: _scan_inbox(s, db))
+    # WO29: the window's status message and "Back online" go to the ops chat; the group hears neither.
+    window = daily.Window(s, db, approve.ops_bot_for(s), scan=lambda: _scan_inbox(s, db))
     telegram = None
     if bot:
         telegram = threading.Thread(target=_telegram_loop, args=(s, bot), name="telegram", daemon=True)
@@ -487,14 +499,18 @@ def telegram_setup() -> None:
 
 @telegram_app.command("test")
 def telegram_test(text: str = typer.Option("thrift-agent: test message — the bot can reach this chat.", "--text",
-                                           help="What to send, e.g. --text 'worker started over SSH'")) -> None:
-    """Send a test message to TELEGRAM_CHAT_ID with the configured bot."""
-    bot = approve.bot_for(settings())
+                                           help="What to send, e.g. --text 'worker started over SSH'"),
+                  ops: bool = typer.Option(False, "--ops", help="to the ops chat instead of the group")) -> None:
+    """Send a test message to TELEGRAM_CHAT_ID (the group) with the configured bot — or, with --ops, to the ops chat
+    (TELEGRAM_OPS_CHAT_ID, the owner's private chat: it works once he has sent the bot /start)."""
+    s = settings()
+    bot = approve.ops_bot_for(s) if ops else approve.bot_for(s)
     if bot is None:
         raise typer.BadParameter("Telegram is not configured: telegram.enabled plus TELEGRAM_BOT_TOKEN, "
-                                 f"TELEGRAM_CHAT_ID and TELEGRAM_ALLOWED_USER_IDS in {config.ENV_FILE}")
+                                 f"TELEGRAM_CHAT_ID and TELEGRAM_ALLOWED_USER_IDS in {config.ENV_FILE}"
+                                 + (" — and an ops chat: TELEGRAM_OPS_CHAT_ID or telegram.ops_chat_id" if ops else ""))
     mid = bot.send_message(text)
-    print(f"[green]sent[/] message {mid} to chat {bot.chat_id}")
+    print(f"[green]sent[/] message {mid} to {'the ops chat' if ops else 'the group'} ({bot.chat_id})")
 
 
 @app.command()

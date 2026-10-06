@@ -269,8 +269,9 @@ def test_a_reply_cover_n_sets_the_cover_and_sends_the_card_again(tmp_path, facts
     it = db.item(iid)
     assert it["owner_cover"] == 2 and loads(it["facts"])["cover_photo"] == 2
     assert [Path(p).name for p in loads(it["renders"])["poshmark"]["photos"]][:2] == ["cover.jpg", "00.jpg"]
-    assert bot.calls[-2][1]["text"].startswith("✓ cover: photo 2")
-    assert bot.calls[-1][0] == "sendPhoto" and bot.next_id == card + 2          # the card, again
+    assert bot.calls[-2][0] == "editMessageReplyMarkup" and bot.calls[-2][1]["message_id"] == card   # WO29: marked
+    assert bot.calls[-2][1]["reply_markup"]["inline_keyboard"][0][0]["text"] == "✓ cover: photo 2"
+    assert bot.calls[-1][0] == "sendPhoto" and bot.next_id == card + 1          # the card, again — and nothing else
     pipeline.process_item(s, db, iid)                                 # kept through any reprocessing
     assert loads(db.item(iid)["facts"])["cover_photo"] == 2
 

@@ -98,6 +98,12 @@ def _callback(data, chat=CHAT, user=OWNER, mid=11):
                                                "message": {"message_id": mid, "chat": {"id": chat}}}}
 
 
+def _marks(bot):
+    """The answered cards (WO29): (message_id, the "✓ …" label) of each editMessageReplyMarkup."""
+    return [(p["message_id"], p["reply_markup"]["inline_keyboard"][0][0]["text"])
+            for p in bot.sent("editMessageReplyMarkup")]
+
+
 def _outbox(db, iid_or_bid):
     return db.conn.execute("SELECT * FROM outbox WHERE ref=? ORDER BY message_id", (iid_or_bid,)).fetchall()
 
@@ -271,7 +277,9 @@ def test_approve_callback_sets_price_and_resolves(env, tmp_path, facts):
     assert loads(it["price"])["source"] == "owner" and loads(it["renders"])["poshmark"]["price"] == 85
     assert all(r["resolved_at"] for r in _outbox(db, iid))
     assert bot.sent("answerCallbackQuery") == [{"callback_query_id": "cb1", "text": "$85"}]
-    assert bot.sent("sendMessage")[-1]["reply_to_message_id"] == 11 and bot.texts()[-1] == "\u2713 $85 \u2014 all done"
+    assert _marks(bot) == [(11, "✓ $85 — queued")] and bot.sent("sendMessage") == []   # WO29: the card, no message
+    assert bot.sent("editMessageReplyMarkup")[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == "noop"
+    assert handle_update(s, db, bot, _callback("noop")) == "ignored: answered card"     # its "✓" button does nothing
 
 
 def test_a_nearby_price_button_sets_that_price(env, tmp_path, facts):
@@ -296,7 +304,7 @@ def test_change_callback_records_a_new_outbox_row(env, tmp_path, facts):
     send_item(s, db, iid)                                                     # message 11
     assert handle_update(s, db, bot, _callback(f"change:{iid}", mid=11)) == f"change {iid}: asked for the price"
     p = bot.sent("sendMessage")[-1]
-    assert p["text"] == f"Reply to this message with the price for {iid} (or just type it)."
+    assert p["text"] == "Reply to this message with the price (or just type it)."      # no item id (WO29)
     assert p["reply_to_message_id"] == 11
     rows = _outbox(db, iid)
     assert [(r["message_id"], r["kind"], r["resolved_at"]) for r in rows] == [(11, "item", None), (12, "item", None)]
@@ -314,7 +322,7 @@ def test_reply_number_sets_price(env, tmp_path, facts):
     it = db.item(iid)
     assert it["status"] == "ready" and it["owner_price"] == 45 and loads(it["price"])["list_price"] == 45
     assert _outbox(db, iid)[0]["resolved_at"]
-    assert bot.texts()[-1] == "\u2713 $45 \u2014 all done" and bot.sent("sendMessage")[-1]["reply_to_message_id"] == 50
+    assert _marks(bot) == [(11, "✓ $45 — queued")] and bot.sent("sendMessage") == []
 
 
 def test_reply_answer_and_price_sets_price_then_reprocesses(env, tmp_path, facts):
@@ -326,7 +334,7 @@ def test_reply_answer_and_price_sets_price_then_reprocesses(env, tmp_path, facts
     it = db.item(iid)
     assert it["status"] == "new" and it["owner_price"] == 45 and it["note"] == "size 8"
     assert _outbox(db, iid)[0]["resolved_at"]
-    assert bot.texts()[-1] == "\u2713 $45, noted 'size 8', reprocessing"
+    assert _marks(bot) == [(11, "✓ $45 · noted — rechecking")] and bot.sent("sendMessage") == []
 
 
 def test_reply_without_price_or_note_gets_the_hint(env, tmp_path, facts):
@@ -361,7 +369,7 @@ def test_reply_ok_to_batch_calls_confirm(env, monkeypatch):
     monkeypatch.setattr(pipeline, "confirm", confirm)
     assert handle_update(s, db, bot, _reply("ok", reply_to=11)) == f"batch {bid}: confirmed 'ok'"
     assert seen == [(bid, "ok")] and _outbox(db, bid)[0]["resolved_at"]
-    assert bot.texts()[-1] == "\u2713 2 items \u2014 the cards follow one at a time"     # being processed: no card yet
+    assert _marks(bot) == [(11, "✓ 2 items — the cards follow")]                     # the sheet says it, quietly
 
 
 def test_bad_correction_is_sent_back_and_batch_stays_pending(env, monkeypatch):
@@ -392,7 +400,7 @@ def test_a_reply_to_an_old_poster_question_still_answers_the_item(env, tmp_path,
     assert handle_update(s, db, bot, _reply("size 8", reply_to=11)) == f"owner_q {iid}: answered 'size 8'"
     it = db.item(iid)
     assert it["status"] == "new" and it["note"] == "size 8" and _outbox(db, iid)[0]["resolved_at"]
-    assert "got it" in bot.texts()[-1]
+    assert _marks(bot) == [(11, "✓ got it — rechecking")]
 
 
 def test_a_plain_reply_to_an_old_brand_question_is_the_brand(env, tmp_path, facts):
@@ -411,7 +419,7 @@ def test_a_plain_reply_to_an_old_brand_question_is_the_brand(env, tmp_path, fact
     assert it["owner_brand"] == "J. Crew" and loads(it["facts"])["brand"]["value"] == "J. Crew"
     assert it["status"] == "ready" and it["note"] is None                     # back in line as it was, no reprocessing
     assert loads(it["renders"])["poshmark"]["brand"] == "J. Crew" and _outbox(db, iid)[0]["resolved_at"]
-    assert bot.texts()[-1].startswith("✓ brand: J. Crew")
+    assert _marks(bot) == [(11, "✓ brand: J. Crew")] and bot.sent("sendMessage") == []
 
 
 @pytest.mark.parametrize("text,brand", [("J. Crew", "J. Crew"), ("brand J. Crew", "J. Crew"), ("brand: Vince", "Vince"),
@@ -470,7 +478,8 @@ def test_poll_once_logs_a_crashing_update_and_moves_on(env, monkeypatch):
     bot.updates = [_reply("x", reply_to=1) | {"update_id": 9}]
     assert poll_once(s, db, bot, timeout=1) == 1
     assert db.kv_get("telegram_offset") == "9"
-    assert "selector broke" in bot.texts()[-1]
+    assert bot.texts()[-1] == "Sorry, that didn't go through — please try again."   # plain in the group (WO29)
+    assert not any("selector broke" in (t or "") or "RuntimeError" in (t or "") for t in bot.texts())
     kinds = [r["kind"] for r in db.conn.execute("SELECT kind FROM events")]
     assert "telegram_error" in kinds
 
@@ -534,11 +543,11 @@ def test_held_reshare_reply_says_so_and_same_item_drops(env, tmp_path, facts, mo
     iid = _item(db, tmp_path, facts, gate={"decision": "needs_info", "reasons": ["looks like item i_x"], "hold": "reshare"})
     send_item(s, db, iid)
     out = handle_update(s, db, bot, _reply("45", reply_to=11))
-    assert "still held" in bot.texts()[-1] and "awaiting_price" in out
+    assert "still held" in bot.texts()[-1] and "awaiting_price" in out          # a question only she can settle
     it = db.item(iid)
     assert it["status"] == "awaiting_price" and it["owner_price"] == 45
     out = handle_update(s, db, bot, _reply("same item", reply_to=11))
-    assert "dropped" in out and "dropped" in bot.texts()[-1] and db.item(iid)["status"] == "dropped"
+    assert "dropped" in out and _marks(bot)[-1] == (11, "✓ same item — dropped") and db.item(iid)["status"] == "dropped"
 
 
 def test_item_caption_shows_notes(env, tmp_path, facts):
@@ -578,7 +587,7 @@ def test_a_tap_sets_the_condition_and_reprocesses(env, tmp_path, facts, choice, 
     assert (it["status"], it["owner_condition"]) == ("new", condition), result
     assert db.outbox_pending() == []                                                   # the question is settled
     assert bot.sent("answerCallbackQuery")[-1]["text"] == approve.CONDITION_TAPPED[choice]
-    assert "repricing" in bot.texts()[-1]
+    assert _marks(bot) == [(bot.next_id, f"✓ {approve.CONDITION_TAPPED[choice]}")]   # the question's own message
 
 
 def test_a_tap_from_someone_else_is_ignored(env, tmp_path, facts):
@@ -674,9 +683,10 @@ def test_replies_to_the_unconfirmed_message_posted_url_and_retry(env, tmp_path, 
     assert out == f"unconfirmed {iid}: posted {url} (queued for the poster)"
     reqs = pipeline.take_requests(db)                                      # what the poster will check
     assert [(r["item"], r["mp"], r["url"]) for r in reqs] == [(iid, "poshmark", url)]
-    assert "the poster isn't running now" in bot.texts()[-1]                 # no heartbeat in this test
+    assert _marks(bot) == [(77, "✓ link received — checking it")] and bot.sent("sendMessage") == []
     assert handle_update(s, db, bot, _reply("posted https://poshmark.com/closet/x", reply_to=77)).startswith(
         f"unconfirmed {iid}: rejected")
+    assert bot.texts()[-1].startswith("That isn't a Poshmark listing link for this item")    # plain
     assert handle_update(s, db, bot, _reply("hmm?", reply_to=77)) == f"unconfirmed {iid}: unreadable reply 'hmm?'"
     assert bot.texts()[-1] == approve.UNCONFIRMED_HINT
     assert handle_update(s, db, bot, _reply("Retry", reply_to=77)) == f"unconfirmed {iid}: retry"

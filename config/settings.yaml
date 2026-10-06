@@ -116,3 +116,5 @@ telegram:
   enabled: false
   resend_after_hours: 6    # a batch or item still waiting this long gets its message sent again (Telegram keeps updates 24 h)
   poll_timeout: 15         # getUpdates long-poll seconds; the worker ticks between polls
+  ops_chat_id: null        # the owner's private chat with the bot (WO29): everything technical goes there, the group
+                           # gets only the cards and "Posted ✓"; TELEGRAM_OPS_CHAT_ID wins (set it in private/)

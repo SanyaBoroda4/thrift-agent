@@ -45,6 +45,7 @@ def _ready_item(db: DB, seq: int = 1, decision: str = "publish", price: int | No
     """A ready item as the pipeline leaves one: the owner approved the listing's price ($85) unless `price` says
     otherwise (None: never approved)."""
     bid = db.add_batch(f"share_{seq}", 5)
+    db.set_batch(bid, status="split")                         # its items exist: the share was split
     iid = db.add_item(bid, seq, f"work/{seq}")
     db.set_item(iid, status="ready", gate={"decision": decision, "reasons": reasons or []},
                 renders={"poshmark": RENDER.model_dump()}, owner_price=price)
@@ -180,10 +181,22 @@ class StubPoster:
         return res
 
 
+class Said(list):
+    """Every message, in order; `.group` holds the ones sent to the GROUP (WO29: everything else is the ops chat)."""
+
+    def __init__(self):
+        super().__init__()
+        self.group = []
+
+    def to_group(self, text):
+        self.append(text)
+        self.group.append(text)
+
+
 @pytest.fixture
 def harness(monkeypatch):
     """Browser, Telegram, pacing checks and the between-item sleep stubbed; returns the message log."""
-    said: list[str] = []
+    said = Said()
     pauses: list[float] = []
 
     async def fake_open_browser(profile_dir, timezone_id):
@@ -199,6 +212,8 @@ def harness(monkeypatch):
     monkeypatch.setattr(runner, "_pause", fake_pause)
     monkeypatch.setattr(notify, "say", lambda text: said.append(text))
     monkeypatch.setattr(notify, "photo", lambda path, caption: said.append(caption))
+    monkeypatch.setattr(notify, "group", said.to_group)
+    monkeypatch.setattr(notify, "group_photo", lambda path, caption: said.to_group(caption))
     return said, pauses
 
 
@@ -252,7 +267,8 @@ def test_run_records_a_posted_outcome(tmp_path, monkeypatch, harness):
     assert row["url"] == "https://poshmark.com/listing/abc"
     assert row["posted_at"] and db.posted_since("2000-01-01T00:00:00+00:00") == 1
     assert db.item(iid)["status"] == "posted"
-    assert f"Posted ✓ {RENDER.title}\n$85 · https://poshmark.com/listing/abc" in said     # nothing guessed: no "check"
+    assert said.group == [f"Posted ✓ {RENDER.title} — $85 · https://poshmark.com/listing/abc\n"   # nothing guessed:
+                          "✓ All done — safe to close the Mac."]                          # no "check"; the last one
     assert not s.flag("PAUSE").exists()
     assert [e["kind"] for e in db.conn.execute("SELECT kind FROM events WHERE ref=?", (iid,))] == ["post_posted"]
 
@@ -266,8 +282,9 @@ def test_the_posted_message_lists_the_posters_guesses(tmp_path, monkeypatch, har
     guesses = ["brand set to 'J. Crew' (from 'J.Crew')", "size set to '12' (from '12.5')"]
     _run(monkeypatch, s, db, StubPoster(Outcome("posted", url="https://poshmark.com/listing/abc", guesses=guesses)),
          once=True)
-    assert (f"Posted ✓ {RENDER.title} — check: brand set to 'J. Crew' (from 'J.Crew'); size set to '12' (from "
-            "'12.5')\n$85 · https://poshmark.com/listing/abc") in said
+    assert said.group == [f"Posted ✓ {RENDER.title} — $85 · https://poshmark.com/listing/abc — check: brand set to "
+                          "'J. Crew' (from 'J.Crew'); size set to '12' (from '12.5')\n✓ All done — safe to close the "
+                          "Mac."]
     detail = loads(db.conn.execute("SELECT detail FROM events WHERE ref=? AND kind='post_posted'", (iid,)).fetchone()[0])
     assert detail["guesses"] == guesses
 
@@ -444,10 +461,10 @@ def test_a_draft_gated_item_is_held_and_told_once_never_filled(tmp_path, monkeyp
     _run(monkeypatch, s, db, poster, once=True)
     _run(monkeypatch, s, db, poster, once=True)
     assert poster.calls == [] and db.post(iid, "poshmark") is None and db.item(iid)["status"] == "ready"
-    told = [m for m in said if m.startswith("⏸ Not published automatically")]
-    assert told == [f"⏸ Not published automatically ({iid}): {RENDER.title}\nthe copy needs a look: material word "
-                    f"without a label: wool\nAfter a look: thrift poster --publish-first {iid} (with the poster service "
-                    "stopped)"]
+    assert said.group == [f"⏸ Not published automatically: {RENDER.title} — its text needs a look first."]   # plain
+    told = [m for m in said if m.startswith(f"⏸ {iid} held")]                     # the detail: the ops chat, once
+    assert told == [f"⏸ {iid} held: {RENDER.title}\nthe copy needs a look: material word without a label: wool\n"
+                    f"After a look: thrift poster --publish-first {iid} (with the poster service stopped)"]
 
 
 def test_the_live_loop_end_to_end(tmp_path, monkeypatch, harness):
@@ -483,9 +500,10 @@ def test_the_live_loop_end_to_end(tmp_path, monkeypatch, harness):
     assert db.post(unpriced, "poshmark") is None and db.post(gated, "poshmark") is None
     started = [m for m in said if m.startswith("Poster started")]
     assert started and all("LIVE" in m for m in started)
-    posted = [m for m in said if m.startswith("Posted ✓")]
-    assert posted == [f"Posted ✓ {RENDER.title} — check: colour 'Teal' left out\n$85 · https://poshmark.com/listing/1",
-                      f"Posted ✓ {RENDER.title}\n$85 · https://poshmark.com/listing/2"]
+    posted = [m for m in said.group if m.startswith("Posted ✓")]
+    assert posted == [f"Posted ✓ {RENDER.title} — $85 · https://poshmark.com/listing/1 — check: colour 'Teal' left out",
+                      f"Posted ✓ {RENDER.title} — $85 · https://poshmark.com/listing/2"]   # a held one is left: no
+    #                                                                                         "All done" line
     assert sum(m.startswith("⏸ Not published automatically") for m in said) == 1
 
 
@@ -801,7 +819,8 @@ def test_mark_posted_records_a_listing_found_by_hand(tmp_path, monkeypatch, harn
     assert (row["status"], row["url"], row["last_error"]) == ("posted", LIVE_URL, None)
     assert row["posted_at"] == before["updated_at"]                     # when it went live, as near as known
     assert db.item(iid)["status"] == "posted"
-    assert f"✅ confirmed live on poshmark: {RENDER.title} — $85\n{LIVE_URL}" in said
+    assert said.group == [f"Posted ✓ {RENDER.title} — $85 · {LIVE_URL}\n✓ All done — safe to close the Mac."]
+    assert f"✅ {iid} confirmed live on poshmark (the owner's link): {LIVE_URL}" in said      # the ops chat
     assert "post_confirmed" in [e["kind"] for e in db.conn.execute("SELECT kind FROM events WHERE ref=?", (iid,))]
     assert list((s.path("failed") / "shots").glob(f"{iid}-poshmark-*-confirm.json"))   # the evidence of the check
 
@@ -1049,7 +1068,7 @@ def test_the_owners_posted_url_is_checked_by_the_poster_between_listings(tmp_pat
     poster = _seeing()
     done = asyncio.run(runner.serve_requests(s, db, {"poshmark": poster}, PageCtx()))
     assert done == [iid] and db.post(iid, "poshmark")["url"] == LIVE_URL and db.item(iid)["status"] == "posted"
-    assert any(m.startswith("✅ confirmed live on poshmark") for m in said)
+    assert any(m.startswith(f"Posted ✓ {RENDER.title} — $85 · {LIVE_URL}") for m in said.group)
     assert pipeline.take_requests(db) == []                                     # taken once
 
     other = _ready_item(db, seq=2)
