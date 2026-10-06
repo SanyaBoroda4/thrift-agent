@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The Thrift Chrome (WO32): an ordinary Google Chrome window with its own profile (~/thrift/chrome-cross), next to the
+     owner's own Chrome and the Poshmark poster's profile. The Thrift crosslister extension (ext/) runs in it, loaded
+     unpacked once by hand. No remote debugging, no automation flags, no load-extension: the sites see a person's
+     Chrome. The two "backgrounding" switches keep the window working at full speed behind other windows and the lock
+     screen; pages can't see them. KeepAlive restarts it after a crash; a Chrome that quit normally (Cmd-Q, a relaunch
+     to update) is left to the bridge, which starts it again when no extension has checked in for 2 minutes — a plain
+     KeepAlive would start a second copy on every exit, and that copy only hands its address to the running one. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.thrift.chrome-cross</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Applications/Google Chrome.app/Contents/MacOS/Google Chrome</string>
+    <string>--user-data-dir=__HOME__/thrift/chrome-cross</string>
+    <string>--no-first-run</string>
+    <string>--no-default-browser-check</string>
+    <string>--restore-last-session</string>
+    <string>--disable-backgrounding-occluded-windows</string>
+    <string>--disable-renderer-backgrounding</string>
+    <string>https://www.vinted.com/</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key>
+  <dict><key>SuccessfulExit</key><false/></dict>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>StandardOutPath</key><string>__HOME__/thrift/logs/chrome-cross.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/thrift/logs/chrome-cross.err</string>
+</dict>
+</plist>

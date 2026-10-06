@@ -110,12 +110,12 @@ class DepopPoster(CrossPoster):
         "Continue with email") and Depop's block page ("Sorry, not authorized. 403 Forbidden")."""
         text = await self._page_text(page)
         if why := self._blocked(status, text):
-            raise AccountBlocked(why)
+            raise AccountBlocked(why, page="block")
         if "/login" in page.url or "/signup" in page.url or await SEL["login_wall"](page).count() or \
                 re.search(r"^\s*log in\s*$|sign up or log in|continue with email", text, re.I | re.M):
-            raise AccountBlocked("Depop: not logged in in the poster profile")
+            raise AccountBlocked("Depop: not logged in in the poster profile", page="login")
         if await SEL["captcha"](page).count():
-            raise AccountBlocked("Depop: a CAPTCHA is shown — solve it by hand in the poster window")
+            raise AccountBlocked("Depop: a CAPTCHA is shown — solve it by hand in the poster window", page="captcha")
 
     # ---------------------------------------------------------------- fill
 

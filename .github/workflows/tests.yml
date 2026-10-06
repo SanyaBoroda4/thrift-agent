@@ -17,6 +17,13 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: pip install -e ".[dev]"
+      # WO32: the extension's content scripts are tested in jsdom (Node), the extension itself in Playwright's own
+      # Chromium (branded Chrome ignores --load-extension); without them those tests skip.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - run: npm ci --prefix tests/js
+      - run: python -m playwright install --with-deps chromium
       - run: ruff check thrift_agent tests --select F,E
       - run: pytest -q
       # The suite must not depend on the machine: run it again as if on the Mac before .env is filled in

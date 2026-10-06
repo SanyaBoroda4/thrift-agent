@@ -332,6 +332,27 @@ itself — with the diff in the ops chat).
 - **Not yet recorded:** Depop's and Vinted's form selectors are UNVERIFIED until a Mac dry run records them; until then
   nothing is published there (the first publish on each is the owner's supervised `--publish-first`).
 
+## The extension driver: Vinted and Depop from the seller's own Chrome (WO32)
+Vinted and Depop turn away a browser driven over the DevTools protocol, so both are posted by a Chrome extension
+(`ext/`, Manifest V3, plain JS) running in an ordinary Chrome window on the Mac — the **Thrift Chrome**
+(`~/thrift/chrome-cross`, LaunchAgent `com.thrift.chrome-cross`, `bash deploy/services.sh start|stop|status chrome`).
+- **The bridge** (`thrift_agent/bridge.py`) inside the poster: HTTP + WebSocket on 127.0.0.1:8765 only, token-checked
+  (`~/thrift/var/ext_token`, made once at deploy). It hands the extension one job at a time — the catalog values, the
+  copy, the approved price, the photos — and gets back each step, the screenshots (`failed/shots/`), the filled form's
+  read-back, and the listing's address. No extension for 2 minutes → it starts the Thrift Chrome; 5 → one ops line.
+- **The driver** (`thrift_agent/post/ext_driver.py`) is a poster like the others: the loop, the records and the
+  Telegram lines can't tell. A dry run fills the form and closes the tab; a publish needs the steps recorded in
+  `ext/selectors.json`, then clicks Post / Upload exactly once and checks the listing page; a login / block / CAPTCHA
+  page stops that site for the window with one plain line ("Vinted needs you to log in on the Mac.").
+- **Setting:** `marketplaces.<m>.driver: extension` (default) | `playwright` (WO30's poster profile) | `api` (Depop's
+  Selling API: a stub until its key arrives). `thrift crosslist --check-login` opens the sell pages in the Thrift
+  Chrome and says whether they're logged in.
+- **Once, at the Mac (the owner):** load `~/thrift-agent/ext` at `chrome://extensions` (Developer mode → Load unpacked)
+  in the Thrift Chrome, paste the token (`cat ~/thrift/var/ext_token`) in its options, log in to vinted.com and
+  depop.com there, turn both sites on, restart the poster. The window may sit behind others; never minimized.
+- **Tests:** jsdom (`npm ci --prefix tests/js`), Playwright's Chromium with the unpacked extension (`python -m playwright
+  install chromium`), and the bridge / driver / WO30 loop with a scripted stand-in extension.
+
 ## The daily window (WO28)
 The Mac is mostly closed. About once a day it is opened (often on battery) for ~30 minutes; photos are shared from the
 iPhone any time and prices approved in Telegram. The owner's one-page guide is [docs/DAILY.md](docs/DAILY.md).

@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Thrift crosslister",
+  "version": "0.1.0",
+  "description": "Fills the seller's own Vinted and Depop listing forms for the thrift agent running on this Mac.",
+  "permissions": ["storage", "alarms", "tabs", "scripting"],
+  "host_permissions": ["https://www.vinted.com/*", "https://www.depop.com/*", "http://127.0.0.1:8765/*", "<all_urls>"],
+  "background": {"service_worker": "background.js"},
+  "content_scripts": [
+    {"matches": ["https://www.vinted.com/*"], "js": ["content/common.js", "content/vinted.js"], "run_at": "document_idle"},
+    {"matches": ["https://www.depop.com/*"], "js": ["content/common.js", "content/depop.js"], "run_at": "document_idle"}
+  ],
+  "options_page": "options.html"
+}

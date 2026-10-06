@@ -29,11 +29,16 @@ LABEL = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted"}
 BLOCKS = "crosslist_blocked"           # kv: {mp: {"window", "reason", "since"}}: stopped for this window
 WINDOW_SEEN = "crosslist_window"       # kv: the daily window the poster last saw
 STREAK = "crosslist_failures"          # kv: {mp: failures in a row}: N in a row stop that marketplace for the window
+EXT_LINK = "ext_link"                  # kv: {"connected", "at"}: the poster's view of the Thrift Chrome extension (WO32)
 MAX_ATTEMPTS = 3                       # a failure before the publish button: retried next window, up to this many
 UNCONFIRMED = "unconfirmed publish: "
 SKIPPED = "skipped: "
-ALERTS = {"depop": "Depop needs you to log in on the Mac.",
-          "vinted": "Vinted asks for a check — open it on the Mac."}
+# The group's one plain line when a marketplace stops for the window, by what the site showed (WO32).
+ALERTS = {"login": "{site} needs you to log in on the Mac.",
+          "captcha": "{site} shows a CAPTCHA — solve it in its Chrome window on the Mac.",
+          "verify": "{site} asks for a check — open it on the Mac.",
+          "block": "{site} turned the Mac away for now — I'll try again next time the Mac is open."}
+DRIVERS = {"depop": ("extension", "playwright", "api"), "vinted": ("extension", "playwright")}
 ALL_DONE_LINE = "✓ All done — safe to close the Mac."
 
 
@@ -41,6 +46,38 @@ def enabled(s: Settings) -> list[str]:
     """The cross-list marketplaces that are on and whose catalog loads (a broken catalog turns only that one off)."""
     ok = catalogs.check()
     return [mp for mp in CROSS if s.get(f"marketplaces.{mp}.enabled", False) and ok.get(mp) is None]
+
+
+def driver(s: Settings, mp: str) -> str:
+    """How a marketplace is posted to (WO32): "extension" — the Thrift Chrome's extension, the seller's own Chrome (the
+    default); "playwright" — WO30's poster profile (Vinted and Depop turn it away); "api" — Depop's Selling API (a
+    stub until its key arrives)."""
+    d = str(s.get(f"marketplaces.{mp}.driver") or "extension").strip().lower()
+    if d not in DRIVERS.get(mp, ("playwright",)):
+        raise ValueError(f"marketplaces.{mp}.driver must be one of {', '.join(DRIVERS.get(mp, ()))}, not {d!r}")
+    return d
+
+
+def alert_kind(reason: str, page: str | None = None) -> str:
+    """What the site showed, for the owner's line: the poster's own word for it, else read from the reason."""
+    if page in ALERTS:
+        return page
+    low = reason.lower()
+    if "captcha" in low:
+        return "captcha"
+    if "verif" in low or "check" in low:
+        return "verify"
+    if "turned" in low or "block" in low or "403" in low or "not authorized" in low:
+        return "block"
+    return "login"
+
+
+def reachable(s: Settings, db: DB) -> list[str]:
+    """The enabled marketplaces the poster can work on now: one on the extension driver only while the poster sees the
+    extension connected (WO32) — for the daily window's "still to publish", which mustn't wait on a missing Chrome."""
+    link = loads(db.kv_get(EXT_LINK)) or {}
+    return [mp for mp in enabled(s) if driver(s, mp) == "playwright"
+            or (driver(s, mp) == "extension" and link.get("connected"))]
 
 
 def live(s: Settings, mp: str) -> bool:
@@ -119,17 +156,18 @@ def blocked(db: DB, mp: str) -> str | None:
     return b["reason"] if b and b.get("window") == window(db) else None
 
 
-def block(db: DB, mp: str, reason: str) -> None:
-    """Stop `mp` for this window (logged out, CAPTCHA, a verification wall, failures in a row): ONE plain line in the
-    group for an account problem, the reason in the ops chat; Poshmark and the other marketplace go on."""
+def block(db: DB, mp: str, reason: str, page: str | None = None) -> None:
+    """Stop `mp` for this window (logged out, CAPTCHA, a verification wall, a block page, failures in a row): ONE plain
+    line in the group for an account problem — what to do, by what the site showed (`page`) — the reason in the ops
+    chat; Poshmark and the other marketplace go on."""
     blocks = loads(db.kv_get(BLOCKS)) or {}
     if (blocks.get(mp) or {}).get("window") == window(db):
         return
     blocks[mp] = {"window": window(db), "reason": reason, "since": datetime.now(timezone.utc).isoformat()}
     db.kv_set(BLOCKS, json.dumps(blocks))
-    db.log(None, "crosslist_blocked", {"mp": mp, "reason": reason})
+    db.log(None, "crosslist_blocked", {"mp": mp, "reason": reason, "page": page})
     if not reason.startswith("failures:"):
-        notify.group(ALERTS[mp])
+        notify.group(ALERTS[alert_kind(reason, page)].format(site=LABEL[mp]))
     notify.say(f"⛔ {LABEL[mp]} stopped for this window: {reason}")
 
 
@@ -165,10 +203,10 @@ def pending(s: Settings, db: DB, mps: list[str] | None = None) -> list[tuple[str
     return out
 
 
-def next_job(s: Settings, db: DB, prefer: str | None = None) -> tuple[str, str] | None:
+def next_job(s: Settings, db: DB, prefer: str | None = None, mps: list[str] | None = None) -> tuple[str, str] | None:
     """The next cross-list job: the item just listed first (Poshmark → Depop → Vinted, then the next item), else the
-    oldest waiting one."""
-    jobs = pending(s, db)
+    oldest waiting one. `mps`: only these marketplaces (WO32: the ones whose poster can take a job now)."""
+    jobs = pending(s, db, mps)
     if not jobs:
         return None
     if prefer is not None:

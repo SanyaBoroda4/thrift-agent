@@ -79,6 +79,12 @@ def no_telegram(monkeypatch):
     monkeypatch.setattr("thrift_agent.notify.httpx.post", no_network)
 
 
+@pytest.fixture(autouse=True)
+def no_thrift_chrome(monkeypatch):
+    """WO32: no test ever starts the Mac's Thrift Chrome (services.sh start chrome) — the suite runs there at deploy."""
+    monkeypatch.setattr("thrift_agent.post.runner.start_thrift_chrome", lambda s: "not in a test")
+
+
 @pytest.fixture
 def facts():
     def make(**kw):

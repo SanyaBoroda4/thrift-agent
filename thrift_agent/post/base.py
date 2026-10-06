@@ -28,7 +28,12 @@ class PosterError(Exception):
 
 
 class AccountBlocked(PosterError):
-    """Logged out, restricted, or a CAPTCHA — stop the whole poster, not just this item."""
+    """Logged out, restricted, or a CAPTCHA — stop the whole poster, not just this item. `page`: what the site showed
+    (login | captcha | block | verify) when the poster knows it: the owner's one line says what to do (WO32)."""
+
+    def __init__(self, message: str = "", page: str | None = None):
+        super().__init__(message)
+        self.page = page
 
 
 class Skipped(PosterError):

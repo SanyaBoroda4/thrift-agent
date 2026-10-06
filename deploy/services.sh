@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# The two launchd agents on the Mac: the worker (thrift run) and the poster (thrift poster).
-#     bash deploy/services.sh start worker|poster
-#     bash deploy/services.sh stop worker|poster|all
+# The launchd agents on the Mac: the worker (thrift run), the poster (thrift poster) and the Thrift Chrome (WO32: the
+# owner's Chrome window the Depop / Vinted extension runs in).
+#     bash deploy/services.sh start worker|poster|chrome
+#     bash deploy/services.sh stop worker|poster|chrome|all     (all: the worker and the poster)
 #     bash deploy/services.sh restart worker|poster     (starts it when it isn't loaded)
 #     bash deploy/services.sh status
 #     bash deploy/services.sh logs [worker|poster] [lines]
@@ -16,10 +17,11 @@ DOMAIN="gui/$(id -u)"
 LOGS="$HOME/thrift/logs"
 
 usage() {
-  echo "usage: bash deploy/services.sh start|stop|restart worker|poster | stop all | status | logs [worker|poster] [lines]" >&2
+  echo "usage: bash deploy/services.sh start|stop|restart worker|poster | start|stop chrome | stop all | status |" \
+       "logs [worker|poster] [lines]" >&2
   exit 2
 }
-label() { echo "com.thriftagent.$1"; }
+label() { if [ "$1" = chrome ]; then echo "com.thrift.chrome-cross"; else echo "com.thriftagent.$1"; fi; }
 loaded() { launchctl print "$DOMAIN/$(label "$1")" >/dev/null 2>&1; }
 service_pid() { launchctl print "$DOMAIN/$(label "$1")" 2>/dev/null | awk '$1 == "pid" && $2 == "=" {print $3; exit}'; }
 
@@ -36,6 +38,11 @@ stray_workers() {
 start() {
   local svc="$1" plist
   plist="$HOME/Library/LaunchAgents/$(label "$svc").plist"
+  if [ "$svc" = chrome ] && loaded chrome && [ -z "$(service_pid chrome)" ]; then
+    launchctl kickstart "$DOMAIN/$(label chrome)"      # loaded but quit (Cmd-Q, a relaunch): open it again
+    echo "chrome: started"
+    return
+  fi
   if loaded "$svc"; then
     echo "$svc: already running"
     return
@@ -71,11 +78,13 @@ restart() {
 
 status() {
   local svc pid
-  for svc in worker poster; do
+  for svc in worker poster chrome; do
     if ! loaded "$svc"; then
       echo "$svc: not loaded (off)"
     elif pid="$(service_pid "$svc")" && [ -n "$pid" ]; then
       echo "$svc: running (pid $pid)"
+    elif [ "$svc" = chrome ]; then
+      echo "chrome: loaded, not running (quit; the poster starts it again: bash deploy/services.sh start chrome)"
     else
       echo "$svc: loaded, not running right now (launchd restarts it; see: bash deploy/services.sh logs $svc)"
     fi
@@ -99,10 +108,14 @@ cmd="$1"
 target="${2:-}"
 case "$cmd" in
   start|restart)
-    case "$target" in worker|poster) "$cmd" "$target" ;; *) usage ;; esac ;;
+    case "$target" in
+      worker|poster) "$cmd" "$target" ;;
+      chrome) [ "$cmd" = start ] && start chrome || usage ;;
+      *) usage ;;
+    esac ;;
   stop)
     case "$target" in
-      worker|poster) stop "$target" ;;
+      worker|poster|chrome) stop "$target" ;;
       all) stop worker; stop poster ;;
       *) usage ;;
     esac ;;

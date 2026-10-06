@@ -1,0 +1,12 @@
+{
+  "name": "thrift-ext-content-tests",
+  "private": true,
+  "description": "jsdom tests of the Thrift crosslister's content scripts (WO32). Run: npm ci --prefix tests/js, then pytest (tests/test_ext_js.py) or node --test tests/js/content.test.mjs",
+  "type": "module",
+  "scripts": {
+    "test": "node --test content.test.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^30.1.2"
+  }
+}

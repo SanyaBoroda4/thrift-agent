@@ -28,7 +28,7 @@ echo "== packages ($(.venv/bin/python --version))"
 .venv/bin/pip install -e ".[dev]" -q
 
 echo "== folders"
-mkdir -p ~/thrift/logs ~/thrift/var
+mkdir -p ~/thrift/logs ~/thrift/var ~/thrift/chrome-cross
 ICLOUD="$HOME/Library/Mobile Documents/com~apple~CloudDocs/Posh"
 mkdir -p "$ICLOUD/inbox" "$ICLOUD/archive"     # archive stays inside iCloud, next to inbox
 [ -f config/settings.local.yaml ] || cp config/settings.local.example.yaml config/settings.local.yaml
@@ -38,11 +38,20 @@ mkdir -p "$ICLOUD/inbox" "$ICLOUD/archive"     # archive stays inside iCloud, ne
 echo "== tests"
 .venv/bin/python -m pytest -q
 
-echo "== launchd service files (installed, not loaded: bash deploy/services.sh start worker does that)"
+echo "== the extension's token (WO32: made once, never changed by a deploy; pasted once into the extension's options)"
+TOKEN_FILE="$HOME/thrift/var/ext_token"
+if [ ! -s "$TOKEN_FILE" ]; then
+  (umask 077; .venv/bin/python -c 'import secrets; print(secrets.token_urlsafe(32))' > "$TOKEN_FILE")
+  echo "new token: $TOKEN_FILE"
+fi
+chmod 600 "$TOKEN_FILE"
+
+echo "== launchd service files (installed, not loaded: bash deploy/services.sh start worker|chrome does that)"
 mkdir -p ~/Library/LaunchAgents
 for svc in worker poster; do
   sed "s#__HOME__#$HOME#g" "deploy/com.thriftagent.$svc.plist" > "$HOME/Library/LaunchAgents/com.thriftagent.$svc.plist"
 done
+sed "s#__HOME__#$HOME#g" deploy/com.thrift.chrome-cross.plist > "$HOME/Library/LaunchAgents/com.thrift.chrome-cross.plist"
 
 [ -n "${THRIFT_DEPLOY:-}" ] && exit 0                 # deploy/mac_deploy.sh goes on from here
 cat <<MSG

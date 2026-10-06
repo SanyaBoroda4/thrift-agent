@@ -1,20 +1,26 @@
 """WO30 cross-listing through the poster loop, with stub posters (no browser, no network, no model): Poshmark → Depop
 → Vinted per item, 30–90 s apart; ONE "Posted ✓" line per item naming every marketplace; "All done" only when nothing
 is left on any of them; a dry run's screenshot and fields to the ops chat; a logged-out marketplace stopped for the
-window with one plain line; failures retried next window, 3 attempts; the daily cap; the backfill."""
+window with one plain line; failures retried next window, 3 attempts; the daily cap; the backfill.
+
+WO32: every test of the loop runs with both drivers — the Playwright-style stubs, and the extension driver (the real
+ExtensionPoster and bridge, with a scripted stand-in for the Chrome extension answering the same results)."""
 import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from ext_fake import FakeExtension
 
 from thrift_agent import approve, crosslist, daily, notify, pipeline
+from thrift_agent.bridge import EXT_DIR
 from thrift_agent.catalogs.common import MappingError
 from thrift_agent.config import Settings
 from thrift_agent.db import DB
 from thrift_agent.post import runner
 from thrift_agent.post.base import AccountBlocked, Outcome
+from thrift_agent.post.ext_driver import ExtensionPoster
 from thrift_agent.schema import Render
 
 TITLE = "Tory Burch Red Ballet Flats size 7.5"
@@ -36,7 +42,9 @@ def _settings(tmp_path, depop_live=True, vinted_live=True, cap=25) -> Settings:
                          "vinted": {"enabled": True, "autopublish": vinted_live, "daily_cap": cap}},
         "crosslist": {"gap_seconds": [30, 90]},
         "models": {},
+        "bridge": {"token_file": str(tmp_path / "ext_token"), "port": 0},      # WO32: the extension driver's bridge
     })
+    (tmp_path / "ext_token").write_text("flow-test-token-" + "x" * 24, encoding="utf-8")
     s.ensure_dirs()
     return s
 
@@ -88,12 +96,68 @@ def fields_for(mp):
                   condition="Used - Good" if mp == "depop" else "Good", colors=["Red"], guesses=[],
                   category="Women > Footwear > Ballet shoes" if mp == "depop" else None,
                   category_path="Women > Shoes > Ballerinas" if mp == "vinted" else None,
-                  title=TITLE if mp == "vinted" else None, hashtags=[])
+                  title=TITLE if mp == "vinted" else None, hashtags=[], brand="Tory Burch",
+                  category_id=2955 if mp == "vinted" else None, materials=[], skirt_length=None,
+                  package_sizes=["SMALL", "MEDIUM"], source=[], age=None, style=[], attributes={},
+                  shipping="Depop Shipping", package_size="Small")
+
+
+class ExtStub(ExtensionPoster):
+    """WO32: the extension driver itself — ExtensionPoster, its job, the bridge — with a stand-in for the Chrome extension
+    that answers each job from the WO30 stub's results (its calls recorded on the stub, so the tests read them as
+    before). Addresses are the stubs' own (the tests' URLs are placeholders)."""
+
+    def __init__(self, stub, selectors_path):
+        self._bridge_obj, self.stub, self.fake = None, stub, None
+        super().__init__(stub.name)
+        self.selectors_path = selectors_path         # the publish steps recorded (verified) for these tests
+
+    @property
+    def bridge(self):
+        return self._bridge_obj
+
+    @bridge.setter
+    def bridge(self, b):
+        self._bridge_obj = b
+        if b is not None:                         # open_bridge attaches it: the ONE "extension" serves both sites
+            if not hasattr(b, "fake"):
+                b.fake = FakeExtension(b.port, b.token)
+                b.fake.start()
+            b.fake.sites[self.name] = self.stub
+            self.fake = b.fake
+
+    def available(self) -> bool:
+        return True
+
+    def listing_address(self, url):
+        return url or None
+
+    @property
+    def calls(self):
+        return self.stub.calls
+
+
+@pytest.fixture(params=["playwright", "extension"])
+def driver(request):
+    return request.param
 
 
 @pytest.fixture
-def loop(monkeypatch):
-    """The poster loop with its browser, pacing and Telegram stubbed. Returns (said, run)."""
+def verified_selectors(tmp_path):
+    """ext/selectors.json with every step recorded: the publish gate open, as after the Mac's first dry run."""
+    data = json.loads((EXT_DIR / "selectors.json").read_text(encoding="utf-8"))
+    for site in ("vinted", "depop"):
+        for step in data[site]["steps"].values():
+            step["verified"] = True
+    path = tmp_path / "selectors-verified.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def loop(monkeypatch, driver, verified_selectors):
+    """The poster loop with its browser, pacing and Telegram stubbed. Returns (said, run). With the extension driver,
+    Depop's and Vinted's stubs answer through ExtensionPoster, the bridge and a stand-in extension (WO32)."""
     said = SimpleNamespace(group=[], ops=[], pauses=[])
 
     class Ctx:
@@ -113,6 +177,7 @@ def loop(monkeypatch):
             stop.set()
 
     monkeypatch.setattr(runner, "open_browser", browser)
+    monkeypatch.setattr(runner, "start_thrift_chrome", lambda s: "not in a test")   # never the Mac's real Chrome
     monkeypatch.setattr(runner, "_pause", pause)
     monkeypatch.setattr(runner, "_paused", lambda db: None)
     monkeypatch.setattr(runner, "map_fields", lambda mp, view: fields_for(mp))
@@ -126,6 +191,9 @@ def loop(monkeypatch):
     monkeypatch.setattr("thrift_agent.catalogs.refresh.due", lambda s, db, mp, now=None: False)
 
     def run(s, db, posters):
+        if driver == "extension":
+            posters = {mp: ExtStub(p, verified_selectors) if mp in ("depop", "vinted") and isinstance(p, Stub) else p
+                       for mp, p in posters.items()}
         monkeypatch.setattr(runner, "posters", lambda s_: posters)
         asyncio.run(runner.run(s, db))
     return said, run

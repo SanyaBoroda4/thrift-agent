@@ -77,7 +77,7 @@ def work(s: Settings, db: DB) -> Work:
     if live(s):                                        # the one being published right now is still to publish
         publishable |= {r[0] for r in db.conn.execute("SELECT item_id FROM listings WHERE status='posting'")}
         from thrift_agent import crosslist              # WO30: Depop and Vinted still to do count as work
-        publishable |= {iid for iid, _ in crosslist.pending(s, db)}
+        publishable |= {iid for iid, _ in crosslist.pending(s, db, crosslist.reachable(s, db))}
     approved = {it["id"] for it in db.items("ready") if it["owner_price"]}
     held = {iid for iid, _, _ in runner.held(s, db, enabled)} if live(s) else approved - publishable
     return Work(new_shares=sum(1 for kind, _ in q if kind == approve.NEW_BATCH),

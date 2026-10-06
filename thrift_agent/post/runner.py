@@ -9,19 +9,24 @@ import asyncio
 import json
 import os
 import signal
+import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from thrift_agent import approve, brands, catalogs, crosslist, daily, notify, pipeline, power
+from thrift_agent import bridge as bridge_mod
 from thrift_agent.brain.copy import NEGATIVE_WORDS, STYLE_HEMS, USED, USED_CLAIMS
 from thrift_agent.catalogs import CatalogError, refresh
 from thrift_agent.catalogs.common import ItemView, MappingError
-from thrift_agent.config import Settings
+from thrift_agent.config import ROOT, Settings
 from thrift_agent.db import DB, listing_id_from, loads
 from thrift_agent.post.base import STAGES, AccountBlocked, Outcome, Poster, keep_evidence, open_browser
 from thrift_agent.post import poshmark
 from thrift_agent.post.depop import DepopPoster
+from thrift_agent.post.depop_api import DepopApiPoster
+from thrift_agent.post.ext_driver import ExtensionPoster
 from thrift_agent.post.poshmark import PoshmarkPoster
 from thrift_agent.post.vinted import VintedPoster
 from thrift_agent.scheduler import can_post, next_gap, windows
@@ -45,7 +50,8 @@ PRESSED = {"poshmark": ("List", "closet"), "depop": ("Post", "shop"), "vinted": 
 def posters(s: Settings) -> dict[str, Poster]:
     """Poshmark (its closet name is required: the account check reads it) and the cross-list marketplaces that are on
     and whose catalog loads (WO30; their shop name is optional: only the closet check after an interrupted publish
-    needs it)."""
+    needs it), each by its driver (WO32: the extension by default; WO30's Playwright poster; Depop's API stub). An
+    extension poster gets its bridge from open_bridge()."""
     out: dict[str, Poster] = {}
     if s.get("marketplaces.poshmark.enabled", False):
         username = str(s.get("marketplaces.poshmark.username") or "").strip()
@@ -55,8 +61,93 @@ def posters(s: Settings) -> dict[str, Poster]:
         out["poshmark"] = PoshmarkPoster(username, brands.for_settings(s))
     for mp in crosslist.enabled(s):
         shop = str(s.get(f"marketplaces.{mp}.shop") or s.get(f"marketplaces.{mp}.username") or "")
-        out[mp] = DepopPoster(shop, brands.for_settings(s)) if mp == "depop" else VintedPoster(shop)
+        driver = crosslist.driver(s, mp)
+        if driver == "extension":
+            out[mp] = ExtensionPoster(mp, shop, brands.for_settings(s) if mp == "depop" else None)
+        elif driver == "api":
+            out[mp] = DepopApiPoster(shop)
+        else:
+            out[mp] = DepopPoster(shop, brands.for_settings(s)) if mp == "depop" else VintedPoster(shop)
     return out
+
+
+def uses_browser(ps: dict) -> bool:
+    """Does any poster need the Playwright Chrome profile (Poshmark, a Playwright-driven Depop / Vinted)?"""
+    return any(getattr(p, "driver", "playwright") == "playwright" for p in ps.values())
+
+
+def ready_cross(ps: dict, cross: list[str]) -> list[str]:
+    """The cross-list marketplaces whose poster can take a job now: an extension poster only while the extension is
+    connected (WO32) — its rows wait meanwhile, and the bridge's watch tells the owner."""
+    return [mp for mp in cross if mp in ps and getattr(ps[mp], "available", lambda: True)()]
+
+
+EXT_MISSING_SAID = "ext_missing_said"     # kv: the window the "extension hasn't checked in" line was said in
+
+
+def start_thrift_chrome(s: Settings) -> str:
+    """`services.sh start chrome` (the Thrift Chrome's LaunchAgent, WO32): on the Mac only."""
+    if not s.is_prod or sys.platform != "darwin":
+        return "not on the Mac: the Thrift Chrome isn't started here"
+    try:
+        r = subprocess.run(["bash", str(ROOT / "deploy" / "services.sh"), "start", "chrome"], capture_output=True,
+                           text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as e:
+        return f"{type(e).__name__}: {e}"
+    return (r.stdout + r.stderr).strip()[-300:]
+
+
+async def open_bridge(s: Settings, db: DB | None, ps: dict, watch: bool = True):
+    """WO32: the bridge for the extension-driven marketplaces, on 127.0.0.1:8765, its token from ~/thrift/var/ext_token;
+    with `watch`, the 2-minute / 5-minute watch for an extension that doesn't check in. A bridge that can't start (no
+    token, the port taken) turns those marketplaces off for this run, with an ops line — Poshmark goes on. Returns
+    (the bridge or None, the watch task or None)."""
+    ext = {mp: p for mp, p in ps.items() if getattr(p, "driver", "") == "extension"}
+    if not ext:
+        return None, None
+    try:
+        b = await bridge_mod.Bridge(bridge_mod.read_token(bridge_mod.token_path(s)),
+                                    port=int(s.get("bridge.port", bridge_mod.PORT))).start()   # tests: 0, any port
+    except bridge_mod.BridgeError as e:
+        for mp in ext:
+            ps.pop(mp, None)
+        notify.say(f"❗ {', '.join(crosslist.LABEL[mp] for mp in ext)} off for this run: {e}")
+        return None, None
+    for p in ext.values():
+        p.bridge = b
+    if not watch or db is None:
+        return b, None
+    shown = {"connected": None, "at": 0.0}
+
+    def state(connected: bool) -> None:          # thrift status / the daily window: is the extension there?
+        if connected != shown["connected"] or time.monotonic() - shown["at"] > 300:
+            shown.update(connected=connected, at=time.monotonic())
+            db.kv_set(crosslist.EXT_LINK, json.dumps({"connected": connected, "at": datetime.now(timezone.utc)
+                                                      .isoformat(timespec="seconds")}))
+
+    def say(text: str) -> None:                  # once a window
+        if db.kv_get(EXT_MISSING_SAID) != crosslist.window(db):
+            db.kv_set(EXT_MISSING_SAID, crosslist.window(db))
+            notify.say(text)
+
+    def start_chrome() -> None:
+        out = start_thrift_chrome(s)
+        db.log(None, "thrift_chrome_started", {"why": "no extension for 2 min", "out": out})
+
+    task = asyncio.create_task(b.watch(in_window=lambda: power.lid_closed() is not True, start_chrome=start_chrome,
+                                       say=say, state=state))
+    return b, task
+
+
+async def close_bridge(b, task) -> None:
+    if task is not None:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
+    if b is not None:
+        await b.close()
 
 
 def next_job(s: Settings, db: DB, enabled: list[str], dry: bool,
@@ -430,7 +521,8 @@ async def confirm_live(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, ur
     poster.shot = shots / f"{iid}-{mp}-{stamp}-confirm.png"
     page = None
     try:
-        page = await ctx.new_page()
+        if getattr(poster, "driver", "playwright") == "playwright":
+            page = await ctx.new_page()                             # an extension poster opens it in the Thrift Chrome
         await poster.verify_live(page, address, render)             # title and price on the page, else it raises
         await keep_evidence(page, poster.shot, {"item": iid, "url": address, "title": True, "price": True})
     except Exception as e:  # noqa: BLE001
@@ -467,6 +559,16 @@ async def mark_posted(s: Settings, db: DB, iid: str, mp: str, url: str) -> str:
                            "profile to look at the listing")
     ps = posters(s)
     pipeline.check_unconfirmed(db, iid, mp)                       # refused before Chrome opens: nothing touched
+    if getattr(ps.get(mp), "driver", "playwright") == "extension":   # WO32: the listing is read in the Thrift Chrome
+        b, _ = await open_bridge(s, None, ps, watch=False)
+        if b is None:
+            raise RuntimeError(f"{mp}: the extension bridge didn't start (see the ops chat)")
+        try:
+            if not await ps[mp].wait_connected(120):
+                raise RuntimeError("the Thrift Chrome extension didn't connect in 2 minutes — is the Thrift Chrome open?")
+            return await confirm_live(s, db, ps, None, iid, mp, url)
+        finally:
+            await close_bridge(b, None)
     try:
         pw, ctx = await open_browser(s.path("chrome_profile"), s["schedule"]["timezone"])
     except Exception as e:  # noqa: BLE001 — nothing was touched
@@ -529,7 +631,7 @@ async def run_cross(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, *, dr
             out = await poster.post(ctx, render, "publish", True, shots)
         except AccountBlocked as e:              # logged out / CAPTCHA / verification: the owner must act on the Mac
             db.log(iid, "crosslist_dry_run", {"mp": mp, "status": "blocked", "error": str(e)})
-            crosslist.block(db, mp, str(e))
+            crosslist.block(db, mp, str(e), e.page)
             return None
         except Exception as e:  # noqa: BLE001 — an asked-for dry run never stops the poster
             db.log(iid, "crosslist_dry_run", {"mp": mp, "status": "error", "error": f"{type(e).__name__}: {e}"})
@@ -550,7 +652,7 @@ async def run_cross(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, *, dr
     except AccountBlocked as e:
         row = db.listing(iid, mp)
         db.upsert_listing(iid, mp, status="queued", error=str(e), attempts=max(0, (row["attempts"] or 1) - 1))
-        crosslist.block(db, mp, str(e))
+        crosslist.block(db, mp, str(e), e.page)
         return None
     except Exception as e:  # noqa: BLE001 — before the form: nothing submitted; this marketplace stops for the window
         db.upsert_listing(iid, mp, status="queued", error=f"{type(e).__name__}: {e}")
@@ -600,11 +702,23 @@ async def publish_first_cross(s: Settings, db: DB, iid: str, mp: str, confirm) -
     poster = ps.get(mp)
     if poster is None:
         raise ValueError(f"marketplaces.{mp} is not enabled (or its catalog doesn't load)")
-    try:
-        pw, ctx = await open_browser(s.path("chrome_profile"), s["schedule"]["timezone"])
-    except Exception as e:  # noqa: BLE001
-        raise RuntimeError(f"Chrome didn't open ({type(e).__name__}) — is the poster service still running? Stop it "
-                           "first: bash deploy/services.sh stop poster") from e
+    pw = ctx = b = None
+    if getattr(poster, "driver", "playwright") == "extension":     # WO32: the Thrift Chrome, through this bridge
+        b, _ = await open_bridge(s, None, {mp: poster}, watch=False)
+        if b is None:
+            raise RuntimeError(f"{mp}: the extension bridge didn't start (is the poster service running? Stop it "
+                               "first: bash deploy/services.sh stop poster)")
+        print("Waiting for the Thrift Chrome extension to connect (up to 2 minutes)…")
+        if not await poster.wait_connected(120):
+            await close_bridge(b, None)
+            raise RuntimeError("the Thrift Chrome extension didn't connect in 2 minutes — is the Thrift Chrome open, "
+                               "the extension loaded and its token saved?")
+    else:
+        try:
+            pw, ctx = await open_browser(s.path("chrome_profile"), s["schedule"]["timezone"])
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(f"Chrome didn't open ({type(e).__name__}) — is the poster service still running? Stop "
+                               "it first: bash deploy/services.sh stop poster") from e
     render = cross_render_of(db, iid, mp, fields)
     try:
         db.upsert_listing(iid, mp, fields_json=fields.model_dump(), price=fields.price)
@@ -618,8 +732,10 @@ async def publish_first_cross(s: Settings, db: DB, iid: str, mp: str, confirm) -
             notify.say(f"⛔ {crosslist.LABEL[mp]}: {e}")
             raise
     finally:
-        await ctx.close()
-        await pw.stop()
+        if ctx is not None:
+            await ctx.close()
+            await pw.stop()
+        await close_bridge(b, None)
     crosslist.record(s, db, iid, mp, view.render.title, out, fields.model_dump())
     crosslist.announce(s, db, iid)
     return out
@@ -637,15 +753,48 @@ def request_dry_run(db: DB, iid: str, mps: list[str]) -> None:
         db.log(iid, "crosslist_dry_run_requested", {"mps": mps})
 
 
+def request_check_login(db: DB, mps: list[str]) -> None:
+    """`thrift crosslist --check-login` while the poster runs: the sell pages opened in the Thrift Chrome (WO32)."""
+    with db.tx():
+        reqs = [r for r in (loads(db.kv_get(CROSSLIST_REQUESTS)) or []) if not r.get("check_login")]
+        db.kv_set(CROSSLIST_REQUESTS, json.dumps([*reqs, {"check_login": True, "mps": mps, "at": datetime.now(
+            timezone.utc).isoformat(timespec="seconds")}]))
+
+
+async def check_logins(db: DB, ps: dict, mps: list[str]) -> list[str]:
+    """Each marketplace's sell page in the Thrift Chrome: logged in → one ops line; a login / block / CAPTCHA page →
+    the marketplace stops for the window with the owner's one line (WO32). Returns the lines said."""
+    said = []
+    for mp in mps:
+        poster = ps.get(mp)
+        if not hasattr(poster, "check_login"):
+            continue
+        try:
+            await poster.check_login()
+            said.append(f"✓ {crosslist.LABEL[mp]}: logged in — its sell form opens in the Thrift Chrome")
+            notify.say(said[-1])
+        except AccountBlocked as e:
+            crosslist.block(db, mp, str(e), e.page)
+            said.append(f"⛔ {crosslist.LABEL[mp]}: {e}")
+        except Exception as e:  # noqa: BLE001 — a check never stops the poster
+            said.append(f"❌ {crosslist.LABEL[mp]} login check: {type(e).__name__}: {e}")
+            notify.say(said[-1])
+    return said
+
+
 async def serve_cross_requests(s: Settings, db: DB, ps: dict, ctx) -> list[str]:
     """The dry runs `thrift crosslist --dry-run` asked for: each marketplace's form filled for the item, the screenshot
-    and the mapped fields to the ops chat, the tab closed — nothing published, no row changed."""
+    and the mapped fields to the ops chat, the tab closed — nothing published, no row changed. And the login checks
+    `thrift crosslist --check-login` asked for (WO32)."""
     with db.tx():
         reqs = loads(db.kv_get(CROSSLIST_REQUESTS)) or []
         if reqs:
             db.kv_set(CROSSLIST_REQUESTS, "[]")
     done = []
     for req in reqs:
+        if req.get("check_login"):
+            await check_logins(db, ps, [mp for mp in req.get("mps") or [] if mp in ps])
+            continue
         iid = req.get("item")
         for mp in req.get("mps") or []:
             if mp in ps and db.item(iid) is not None:
@@ -691,7 +840,15 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, 
     ps = posters(s)
     stop = asyncio.Event()
     _install_stop(stop)
-    pw, ctx = await open_browser(s.path("chrome_profile"), s["schedule"]["timezone"])
+    bridge, watch = await open_bridge(s, db, ps)         # WO32: Depop / Vinted through the Thrift Chrome's extension
+    for mp in [m for m, p in ps.items() if getattr(p, "driver", "") == "api"]:
+        notify.say(f"❗ {crosslist.LABEL[mp]}: marketplaces.{mp}.driver is api, a stub until Depop's API key arrives "
+                   f"(WO32) — its listings wait. Set it back to extension to list there.")
+    try:
+        pw, ctx = await open_browser(s.path("chrome_profile"), s["schedule"]["timezone"])
+    except BaseException:
+        await close_bridge(bridge, watch)
+        raise
     started = f"Poster started ({f'DRY-RUN, {stage} stage' if dry else 'LIVE'}) — {', '.join(ps)}"
     # WO29: the ops chat (never the group); the time keeps a second start the same day from being "a repeat"
     notify.say(f"{started} · {datetime.now():%H:%M}" + (f"\n{why_dry(s, force_dry)}" if dry and s.is_prod else ""))
@@ -716,7 +873,8 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, 
                 if not _paused(db):
                     await serve_cross_requests(s, db, ps, ctx)
                     if asked := refresh.take_requests(db):             # `thrift catalogs refresh`
-                        await refresh.run(s, db, ctx, asked)
+                        await _refresh(s, db, ctx, asked)
+            ready = ready_cross(ps, cross)                 # WO32: an extension marketplace while the extension is there
             hour_ago, midnight = windows(tz=s["schedule"]["timezone"])
             ok, why = can_post(s, db.listed_since(hour_ago, "poshmark"), db.listed_since(midnight, "poshmark"))
             hours_ok, _ = can_post(s, 0, 0)              # PAUSE and the hours: the cross-list jobs' own caps apply
@@ -724,10 +882,11 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, 
             # flag can appear mid-run (n8n sees a late order), so it is re-read every time round the loop.
             hold = s.flag_set("HOLD_UNSHIPPED")
             # Per item: Poshmark → Depop → Vinted, then the next item (WO30) — the item in hand goes on first.
-            cont = crosslist.next_job(s, db, prefer=last) if cross and hours_ok and last and not dry else None
+            cont = crosslist.next_job(s, db, prefer=last, mps=ready) if ready and hours_ok and last and not dry else None
             cont = cont if cont and cont[0] == last else None
             job = next_job(s, db, list(ps), dry, allow_publish=not hold) if ok and cont is None else None
-            cjob = cont or (crosslist.next_job(s, db) if cross and hours_ok and job is None and not dry else None)
+            cjob = cont or (crosslist.next_job(s, db, mps=ready) if ready and hours_ok and job is None and not dry
+                            else None)
             if not dry:
                 _tell_held(s, db, list(ps))              # approved items it won't publish: told once each
             if (job is not None or cjob is not None) and (paused := _paused(db)):
@@ -743,14 +902,16 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, 
                 if once:
                     crosslist.announce(s, db, iid)
                     return
-                await _pause(stop, await _between(s, db, iid, awake, stop, hours_ok and not dry))
+                await _pause(stop, await _between(s, db, iid, awake, stop, hours_ok and not dry,
+                                                  ready_cross(ps, cross)))
                 continue
             if job is None:
                 awake.hold(False)
                 if once:
                     print(f"nothing to do ({HOLD_REASON if ok and hold else why})")
                     return
-                if cross and not _paused(db) and (due := [m for m in cross if refresh.due(s, db, m)]):
+                if cross and not _paused(db) and (due := [m for m in cross if crosslist.driver(s, m) == "playwright"
+                                                          and refresh.due(s, db, m)]):
                     await refresh.run(s, db, ctx, due)   # once a week, while idle in the daily window (WO30 §8)
                 await _pause(stop, 60)
                 continue
@@ -799,18 +960,22 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, 
             if once:
                 crosslist.announce(s, db, iid)
                 return
-            await _pause(stop, await _between(s, db, iid, awake, stop, cross and hours_ok and not dry))
+            await _pause(stop, await _between(s, db, iid, awake, stop, bool(cross) and hours_ok and not dry,
+                                              ready_cross(ps, cross)))
     finally:
         awake.hold(False)
         daily.poster_beat(db, stopped=True, busy=None, next_at=None)
+        await close_bridge(bridge, watch)
         await ctx.close()
         await pw.stop()
 
 
-async def _between(s: Settings, db: DB, iid: str, awake, stop, cross_ok: bool) -> float:
+async def _between(s: Settings, db: DB, iid: str, awake, stop, cross_ok: bool, mps: list[str] | None = None) -> float:
     """After a listing: the item's next marketplace follows in 30–90 s (Poshmark → Depop → Vinted, WO30); else the
-    item's round is over — its one "Posted ✓" line — and the human pause before the next item."""
-    following = crosslist.next_job(s, db, prefer=iid) if cross_ok else None
+    item's round is over — its one "Posted ✓" line — and the human pause before the next item. `mps`: the cross-list
+    marketplaces that can take a job now (WO32)."""
+    cross_ok = cross_ok and mps != []
+    following = crosslist.next_job(s, db, prefer=iid, mps=mps) if cross_ok else None
     if following and following[0] == iid:
         gap = crosslist.gap(s)
         awake.hold(True)
@@ -819,10 +984,20 @@ async def _between(s: Settings, db: DB, iid: str, awake, stop, cross_ok: bool) -
     crosslist.announce(s, db, iid)
     gap = next_gap(s["schedule"])
     more = (next_job(s, db, ["poshmark"], False, allow_publish=not s.flag_set("HOLD_UNSHIPPED")) is not None
-            or (cross_ok and crosslist.next_job(s, db) is not None))
+            or (cross_ok and crosslist.next_job(s, db, mps=mps) is not None))
     awake.hold(more)                            # awake through the human pause only if a listing follows
     daily.poster_beat(db, busy=None, next_at=daily.in_seconds(gap) if more else None)
     return gap
+
+
+async def _refresh(s: Settings, db: DB, ctx, asked: list[str]) -> None:
+    """`thrift catalogs refresh`, between listings: through the poster profile for a Playwright-driven marketplace;
+    never for one on the extension (WO32: the driven browser is turned away there, and Vinted then flags the network)."""
+    if mine := [m for m in asked if crosslist.driver(s, m) == "playwright"]:
+        await refresh.run(s, db, ctx, mine)
+    if other := [m for m in asked if m not in mine]:
+        notify.say(f"catalog refresh: not for {', '.join(crosslist.LABEL.get(m, m) for m in other)} — on the "
+                   f"extension driver the poster profile doesn't visit it (WO32); the saved catalogs stay")
 
 
 def _paused(db: DB) -> str | None:

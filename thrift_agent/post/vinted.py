@@ -100,14 +100,16 @@ class VintedPoster(CrossPoster):
         clothes with no fees" with the header's [data-testid=header--login-button] and /member/signup links."""
         text = await self._page_text(page)
         if why := self._blocked(status, text):
-            raise AccountBlocked(why)
+            raise AccountBlocked(why, page="block")
         if any(x in page.url for x in ("/signup", "/login", "/member/signup")) or await SEL["login_wall"](page).count() \
                 or re.search(r"join and sell|already have an account\??\s*log in", text, re.I):
-            raise AccountBlocked("Vinted: not logged in in the poster profile")
+            raise AccountBlocked("Vinted: not logged in in the poster profile", page="login")
         if await SEL["captcha"](page).count():
-            raise AccountBlocked("Vinted: a CAPTCHA is shown — solve it by hand in the poster window")
+            raise AccountBlocked("Vinted: a CAPTCHA is shown — solve it by hand in the poster window",
+                                 page="captcha")
         if await SEL["verify_wall"](page).count():
-            raise AccountBlocked("Vinted: a verification (first listing / account check) is asked — open it on the Mac")
+            raise AccountBlocked("Vinted: a verification (first listing / account check) is asked — open it on the Mac",
+                                 page="verify")
 
     # ---------------------------------------------------------------- fill
 

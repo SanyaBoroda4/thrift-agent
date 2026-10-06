@@ -8,6 +8,9 @@ taps Share → "New item", and gets a Telegram ping when it's listed or when som
   the dev machine never logs into or posts to a marketplace.
 - **MacBook (prod)** — MacBook Pro 13" M2, 8 GB, macOS 27 Golden Gate, Python 3.14 (python.org), bash shell, no Homebrew. Runs `thrift run` (worker) and `thrift poster` (Chrome) as launchd agents.
   The poster's Chrome profile is created and logged in *on the Mac only* (cookies are keychain-bound).
+  **The Thrift Chrome (WO32):** a second, ordinary Google Chrome (`~/thrift/chrome-cross`, LaunchAgent
+  `com.thrift.chrome-cross`, its own Dock icon) where the Thrift crosslister extension (`ext/`) lists on Vinted and
+  Depop; the owner logs in there by hand. See "The extension driver".
 - **iPhone (dedicated)** — same Apple ID as the Mac; saves photos to iCloud Drive `Posh/inbox/<ts>/`.
 - Deploy: `git push` from PyCharm → `deploy\deploy.ps1` (over SSH: pull, private pull, `mac_setup.sh` + tests,
   restart the worker service, show status + log). See "Mac over SSH".
@@ -24,7 +27,9 @@ taps Share → "New item", and gets a Telegram ping when it's listed or when som
   (re)started as the launchd service, then `services.sh status`, `thrift status` and the worker log's last 30 lines. A
   failed setup or test run rolls the Mac back to the commit before the pull; any failure (incl. a worker that isn't
   running afterwards) exits non-zero.
-- `bash deploy/services.sh start|stop|restart worker|poster`, `stop all`, `status`, `logs [worker|poster] [lines]`.
+- `bash deploy/services.sh start|stop|restart worker|poster`, `start|stop chrome` (the Thrift Chrome, WO32), `stop
+  all` (worker + poster), `status`, `logs [worker|poster] [lines]`. The deploy starts the Thrift Chrome when it isn't
+  running (never restarts it) and makes the extension's token once.
   The worker runs as the launchd service (`com.thriftagent.worker`, KeepAlive). **The poster service stays off** until
   the owner turns publishing on (the two keys, unchanged); deploy never starts it, and there is no bare
   `start`/`restart` that would.
@@ -255,9 +260,14 @@ rows were copied in once (kv `listings_migrated`); `posts` is left as it was.
   one-checkbox path); where Save Draft lands
   (`draft_saved`); the size field and Done for adult sizes (the values and tabs are the catalog's, WO25); the
   CAPTCHA wording; every `SEL` entry of Depop's and Vinted's posters (WO30, `post/depop.py`, `post/vinted.py`:
-  only Depop's combobox ids came from its logged-in form). Record them from the evidence in
-  `failed/shots/` (`.png`/`.html`/`.json` per run, `<item>-review.json`, `…-after-list.*`) or with
+  only Depop's combobox ids came from its logged-in form); every step of the extension's `ext/selectors.json` (WO32:
+  its pages login — both sites — and Depop's block page are WO30's live evidence; the rest from the extension's first
+  dry run: `failed/shots/<item>-<mp>-<time>.png/.html/.json`, the `.json` with each step's ok). Record them from the
+  evidence in `failed/shots/` (`.png`/`.html`/`.json` per run, `<item>-review.json`, `…-after-list.*`) or with
   `playwright codegen --channel chrome https://poshmark.com/create-listing` on the Mac.
+- Seen in Chromium (WO32 tests): `chrome.tabs.captureVisibleTab` needs `<all_urls>` or `activeTab`; an unpacked
+  extension's `chrome.alarms` may tick every 3 s (`poll_minutes` 0.05); a tab opened by the extension can escape a
+  Playwright route on its first request — the tests make every host but 127.0.0.1 unresolvable.
 
 ## Seller data (private)
 Seller-specific data — brand price tiers, real listing examples, sales findings, account notes, the closet username —
@@ -286,7 +296,8 @@ item's open card is sent again only when what it shows changed (text, price, cov
 cover's hash, before vs after); otherwise it stays as the owner has it. The line printed says which ("card sent again"
 / "card changed (goes out when its turn comes)" / "card unchanged (not sent again)").
 `thrift requeue <item> [marketplace] | requeue <batch> | mark-posted <item> <marketplace> <url> | status | show <item>`
-`thrift crosslist <item> | crosslist --dry-run <item> | crosslist --backfill [--dry-run]` (WO30, see "Cross-listing")
+`thrift crosslist <item> | crosslist --dry-run <item> | crosslist --backfill [--dry-run] | crosslist --check-login`
+(WO30, WO32: see "Cross-listing" and "The extension driver")
 `thrift catalogs check | catalogs refresh [--depop] [--vinted]`; `--marketplace poshmark|depop|vinted` on
 `poster --publish-first`, `retry`, `mark-posted` and `requeue`
 `thrift retry <item> [marketplace]` (WO28): an "unconfirmed publish" the owner checked and is NOT on the marketplace goes
@@ -565,6 +576,8 @@ The owner shares retailer screenshots (product page with price, style name, colo
   (`HOLD_UNSHIPPED`), local HTTP API over Tailscale, daily read-only order-status sync.
 - **M5 Depop** — WO30: Depop and Vinted cross-listing built (catalogs, mapping, posters, the loop); their forms'
   selectors are recorded from the Mac's dry runs, then the owner's supervised `--publish-first` per marketplace.
+  WO32: both posted from the Thrift Chrome through the extension (the driven browser is turned away); the extension's
+  selectors start UNVERIFIED and are recorded from its first dry run; `delist` ready for WO31; Depop's API a stub.
 - **M6 sold-comps pricing** — tune `private/brand_tiers.yaml` from new sales.
 
 ## The daily window (WO28)
@@ -642,7 +655,8 @@ Every item live on Poshmark goes on Depop, then Vinted — the same approved pri
     description. Photos: Depop ≤ 8 (the front cover first, every flaw photo kept), Vinted ≤ 20 (Poshmark's order).
   - The mapped fields are saved to `listings.fields_json` before the form opens; a mapping failure skips only that
     marketplace (status skipped, ops note).
-- **Posters** (`post/depop.py`, `post/vinted.py` on `post/cross.py`): the same browser and profile, a tab each; a dry
+- **Posters** (`post/depop.py`, `post/vinted.py` on `post/cross.py`; WO32: `driver: playwright` — the default is the
+  extension, see "The extension driver"): the same browser and profile, a tab each; a dry
   run fills every field (one that won't fill is recorded and the read-back fails it, the whole form kept as evidence)
   and closes the tab — never the publish button; a publish presses it once, records everything after it, takes the
   address of the page it lands on (else the shop's one new listing with this title; several → never a guess), and
@@ -661,9 +675,109 @@ Every item live on Poshmark goes on Depop, then Vinted — the same approved pri
   fill both forms (screenshots + fields to the ops chat, nothing saved); `--backfill` queues every item still for sale
   on Poshmark (its public page checked first), oldest first (`--dry-run`: lists them only).
 - **Catalog refresh** (`catalogs/refresh.py`): `thrift catalogs refresh` and once a week in the daily window, the poster
-  re-reads the same read-only APIs from its logged-in Chrome; a catalog is rewritten only when the new one validates;
+  re-reads the same read-only APIs from its logged-in Chrome (WO32: Playwright-driven marketplaces only); a catalog is rewritten only when the new one validates;
   the diff, and a ❗ line for a table row whose target has gone (that row then goes to the model), go to the ops chat.
   The raw answers are kept in `data/catalog_raw/` (git-ignored).
+
+## The extension driver: Vinted and Depop from the seller's own Chrome (WO32)
+Vinted (DataDome) and Depop turn away any browser driven over the DevTools protocol (WO30's poster profile got Depop's
+403 page and a logged-out Vinted; a human login inside that window changes nothing). The commercial crosslisters'
+answer: a Chrome extension in the seller's own, normally opened Chrome — no DevTools connection, no automation flags,
+the real Chrome, the real cookies. `marketplaces.<m>.driver: extension` (the default for both; `playwright` = WO30's
+posters, still there; Depop's `api` = a stub). Everything from WO30 stays: catalogs, mapping, `listings`, the queue,
+the pacing, the Telegram lines, the dry-run gate. Poshmark is untouched (its Playwright poster, LIVE).
+- **The Thrift Chrome** (`deploy/com.thrift.chrome-cross.plist`, LaunchAgent `com.thrift.chrome-cross`): an ordinary
+  Google Chrome with its own profile `~/thrift/chrome-cross` and Dock icon, next to the owner's own Chrome and the
+  poster's profile: `--user-data-dir=… --no-first-run --no-default-browser-check --restore-last-session
+  --disable-backgrounding-occluded-windows --disable-renderer-backgrounding https://www.vinted.com/` (the two
+  "backgrounding" switches keep it at full speed behind other windows and the lock screen; pages can't see them).
+  Never `--remote-debugging-*`, `--enable-automation`, `--load-extension` (a test checks). KeepAlive restarts it after a
+  crash only (`SuccessfulExit: false`): a plain KeepAlive would relaunch on every normal quit (Cmd-Q, Chrome's
+  relaunch to update) a second copy that just hands its address to the running one, again and again — the bridge
+  starts it when needed instead. `services.sh start|stop chrome` (`start` kickstarts one that quit), `status` lists it;
+  `mac_deploy.sh` starts it when it isn't running, never restarts it. The owner loads the extension unpacked once
+  (`chrome://extensions` → Developer mode → Load unpacked → `~/thrift-agent/ext`), pastes the token, logs in to both
+  sites there by hand. The window can sit behind others, never minimized (the screenshots capture the visible tab).
+- **The extension** (`ext/`: Manifest V3, plain JS, no build step, no third-party code): `manifest.json` — permissions
+  storage, alarms, tabs, scripting; host permissions the two sites, the bridge, and `<all_urls>` (the owner's choice,
+  WO32: `chrome.tabs.captureVisibleTab` refuses without `<all_urls>` or `activeTab` — "Either the '<all_urls>' or
+  'activeTab' permission is required", seen in Chromium — and activeTab needs a person's click; the content scripts
+  still run on the two sites only, nothing else is opened or read). `background.js` — the WebSocket to
+  `ws://127.0.0.1:8765/ext` (the token first; back-off to 60 s; a ping every 20 s keeps the MV3 worker up), a
+  `chrome.alarms` tick each minute (`GET /jobs/next` while the socket is down; `poll_minutes` in storage, tests 0.05),
+  one job at a time in its own new tab of the Thrift window (closed after, except a login / block / CAPTCHA page,
+  left for the owner), the photos fetched from the bridge by the worker (the extension's origin: no page CORS, no local
+  network prompt) and handed to the page as bytes, `captureVisibleTab` + the page's HTML on request, the landing page
+  watched after the one click (`tabs.onUpdated`, ≤ 60 s), a job called off or past 7 minutes or whose tab was closed
+  ended; the reload check — the bridge's `files_hash` of `EXT_FILES` vs the hash taken when it loaded: a deploy that
+  changed `ext/` reloads it (`chrome.runtime.reload()`, between jobs, once per version). `content/common.js` + `vinted.js`
+  / `depop.js` (isolated world): text through the native value setter + input / change, typed in chunks with 40–140 ms
+  pauses; real clicks (pointer / mouse events, then click) on the real options — Depop's Downshift menus `<id>-menu`
+  cleared then typed, the size menu read until it shows the size, Vinted's category walker (the leaf by id, else the
+  path), brand search (ours or its clean form only, `strictPick`), size, condition, colours ≤ 2, materials ≤ 3, the
+  skirt length, the package radio; photos as Files on `input.files` (fallback: a drop); `scrollIntoView`, 250–900 ms
+  between steps, 2–5 s before the first; Depop's Boost unchecked if it is on, Vinted's bump / promote offers closed.
+  Pages classified block → captcha → login → verify → listing → form (`selectors.json` pages; jsdom has no innerText:
+  the text without scripts). `selectors.json`: site → pages / steps → selector(s) → how verified; every step starts
+  UNVERIFIED (`"verified": false`); WO30's live evidence recorded the login pages of both and Depop's block page.
+  `options.html`: the token, and the link's state ("connected", "the bridge refused the token", …).
+- **The bridge** (`thrift_agent/bridge.py`, in the poster process; stdlib asyncio, a hand-written RFC 6455): only
+  127.0.0.1:8765; the token (`bridge.token_file`, `~/thrift/var/ext_token`, made once by `mac_setup.sh`, chmod 600,
+  never rotated by a deploy) on every request, the WebSocket from a `chrome-extension://` origin only, a request whose
+  Host isn't 127.0.0.1 / localhost refused (DNS rebinding). Jobs one at a time in all (the extension runs one); a job
+  called off (the driver gave up) gets a `cancel` and the next waits for its end (≤ 90 s, `DRAIN`). `GET /photos/<item>
+  /<n>.jpg` (the listing's own prepared photos, cover first) with `Access-Control-Allow-Origin` only for the two sites;
+  `GET /health`. Screenshots and HTML kept next to the job's evidence path (`failed/shots/<item>-<mp>-<time>.png` is the
+  filled form, `…-after-publish.png`, `…-login.png` …). The watch (`watch_tick`, every 15 s): no extension for 2 min
+  with the lid open → `services.sh start chrome` (event `thrift_chrome_started`); 5 min → ONE ops line a window
+  (`MISSING_LINE`, kv `ext_missing_said`); kv `ext_link` {connected, at} for `thrift status` and the daily window
+  (`crosslist.reachable`: an extension marketplace counts as "still to publish" only while it is connected). No token
+  / the port taken → the extension marketplaces off for that run (an ops line), Poshmark goes on.
+- **The driver** (`post/ext_driver.py:ExtensionPoster`): WO30's poster interface (`post`, `find_live`, `verify_live`,
+  `listing_address`, `available`) + the WO32 names (`check_login`, `dry_run`, `publish`, `delist`). post(): the job
+  (§2 below) → `ready` / `result` → the read-back diffed with WO30's plan (`DepopPoster` / `VintedPoster.expected`) → a
+  dry run ends (nothing saved) → a publish needs `PUBLISH_NEEDS` {submit} (supervised) / `AUTOPUBLISH_NEEDS` {submit,
+  after_publish} verified in `ext/selectors.json`, exactly one Post / Upload button seen, the owner's POST when
+  supervised → ONE `submit` → the listing page → its title / price / size / photos compared (a difference: an ops
+  note). Not taken in 150 s (`PICKUP_TIMEOUT`) → PosterError before anything opened; past 6 min (`JOB_TIMEOUT`) before
+  the click → failed, nothing submitted; after the click without a listing page → the shop (`find` job on
+  `marketplaces.<m>.shop`, the one listing with the title's first words; several → never a guess) → else unconfirmed.
+  The loop takes an extension marketplace's jobs only while the extension is connected (`runner.ready_cross`).
+  `delist`: Vinted's Hide / Depop's Mark as sold (never delete), refused until `hide` / `mark_sold` is verified — for
+  WO31. `post/depop_api.py:DepopApiPoster` (driver `api`): `product_request` builds the PUT
+  `/api/v1/products/{sku}` from `data/depop_catalog.json` (department, group, product type, size set; photos by URL);
+  it sends nothing (no `DEPOP_API_KEY` yet), and the poster says once that its listings wait.
+- **The job (WO32 §2):** bridge → extension `{"job_id", "site", "mode": check_login | dry_run | publish | verify | find
+  | delist, "fields", "copy": {"title", "description"}, "price", "photos": [bridge URLs], "listing_url", "shop",
+  "pace"}`; extension → bridge `{"event": "step", "name", "ok"}`, `{"event": "screenshot", "label", "png_b64", "html"}`,
+  `{"event": "ready", "seen", …}` (publish: the filled form, waiting), `{"event": "result", "url", "live" | "seen" |
+  "listings"}`, `{"event": "error", "stage", "message", "page": login | block | captcha | verify | form | unknown}`;
+  bridge → extension `{"type": "submit" | "cancel", "job_id"}`. `GET /jobs/next` returns the same job; `POST /events`
+  answers with the job's commands.
+- **Stops:** a login / CAPTCHA / block / verification page stops that site for the window with ONE plain group line by
+  what it showed (`crosslist.ALERTS`, `AccountBlocked.page`): "Vinted needs you to log in on the Mac." / "… shows a
+  CAPTCHA — solve it in its Chrome window on the Mac." / "… turned the Mac away for now — I'll try again next time the
+  Mac is open." / "… asks for a check — open it on the Mac." The code never solves a CAPTCHA; a person may, there.
+- **Around it:** `thrift crosslist --check-login` (the sell pages opened in the Thrift Chrome: an ops line each, or the
+  stop); `thrift crosslist --dry-run` without the poster running starts its own bridge; `--publish-first --marketplace
+  vinted|depop` runs its bridge (the poster service stopped: the port) and waits ≤ 2 min for the extension;
+  `mark-posted` reads the page in the Thrift Chrome; `thrift login --site vinted|depop` says to log in in the Thrift
+  Chrome; the catalog refresh never takes the poster profile to an extension site (WO30's weekly refresh and `thrift
+  catalogs refresh` skip it: the saved catalogs stay); `thrift status` prints "extension: connected / not connected".
+- **Tests:** `tests/js/content.test.mjs` — jsdom on the stand-in forms (`npm ci --prefix tests/js`; Node ≥ 22.22;
+  `tests/test_ext_js.py` runs it, skipped without Node — the Mac has none); `tests/test_ext_integration.py` —
+  Playwright's own Chromium with the unpacked extension (`--disable-extensions-except` / `--load-extension`), the real
+  bridge on 8765, the stand-ins answered by the router and every other host unresolvable (`--host-resolver-rules`:
+  nothing can reach a real site), skipped without `python -m playwright install chromium`: a dry run with a real
+  capture, publishes that click once, login / block / CAPTCHA, the timeout called off, a refused token, the alarm's
+  poll with the socket down; `tests/test_bridge.py` — the bridge and the driver with a scripted stand-in extension
+  (`tests/ext_fake.py`); `tests/test_crosslist_flow.py` — every WO30 loop test runs with both drivers.
+- **Owner steps (once, at the Mac):** load `~/thrift-agent/ext` unpacked in the Thrift Chrome (Developer mode; Cancel a
+  "Disable developer mode extensions" prompt), paste `cat ~/thrift/var/ext_token` in its options, log in to
+  vinted.com and depop.com there (the iPhone hotspot if Vinted still flags the home Wi-Fi), turn both sites on in
+  `settings.local.yaml` (`enabled: true`) and restart the poster; then CC runs `thrift crosslist --dry-run <item>` (the
+  two filled-form screenshots in the ops chat) and records the selectors from that evidence; then WO30's supervised
+  `--publish-first --marketplace vinted|depop` and `marketplaces.<m>.autopublish: true`.
 
 ## Kids clothing sizes (WO23)
 A kids label that gives the child's height ("104 cm", "Gr. 104", "104") or age ("4 ans", "4A", "5-6 Y", "18 mois") is

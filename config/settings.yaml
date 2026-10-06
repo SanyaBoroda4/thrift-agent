@@ -104,14 +104,18 @@ marketplaces:
   # publishes only with BOTH poster keys (poster.dry_run false + poster.autopublish_confirmed true) AND its own
   # autopublish; else a dry run (the form filled, the screenshot and the mapped fields to the ops chat, the tab
   # closed). shop: the shop / member page name, for the shop check after an interrupted publish (private settings).
+  # WO32: driver — extension (the default: the Thrift Chrome, the seller's own Chrome, through ext/), playwright (WO30's
+  # poster profile: Depop and Vinted turn a driven browser away) or, Depop only, api (a stub until its key arrives).
   depop:
     enabled: true
+    driver: extension
     autopublish: false     # the owner turns it on after the supervised --publish-first (owner steps, WO30)
     daily_cap: 25          # new listings a day on Depop (dry runs count: they fill the real form)
     max_photos: 8
     shop: ""               # depop.com/<shop>/
   vinted:
     enabled: true
+    driver: extension
     autopublish: false
     daily_cap: 25
     max_photos: 20
@@ -119,7 +123,11 @@ marketplaces:
 
 crosslist:
   gap_seconds: [30, 90]    # between an item's marketplaces (Poshmark -> Depop -> Vinted), then the human gap
-  refresh_days: 7          # the catalogs re-read from the logged-in sites this often, in the daily window
+  refresh_days: 7          # the catalogs re-read from the logged-in sites this often, in the daily window (Playwright
+                           # driver only: on the extension driver the poster profile never visits the site, WO32)
+
+bridge:                    # WO32: the extension's link to the poster, on 127.0.0.1:8765 (fixed: ext/background.js has it)
+  token_file: ~/thrift/var/ext_token   # made by deploy/mac_setup.sh; pasted once into the extension's options
 
 schedule:
   timezone: America/New_York

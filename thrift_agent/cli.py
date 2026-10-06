@@ -627,9 +627,14 @@ def poster(once: bool = False, dry_run: bool = False,
 @app.command()
 def login(site: str = "poshmark") -> None:
     """Open the poster Chrome profile to log in by hand (once per site). Stop the poster service first."""
+    from thrift_agent import crosslist as cl
     from thrift_agent.post.base import open_browser
     urls = {"poshmark": "https://poshmark.com/login", "depop": "https://www.depop.com/login/",
             "vinted": "https://www.vinted.com/"}
+    if site in cl.CROSS and cl.driver(settings(), site) == "extension":
+        print(f"{site} is logged in by hand in the Thrift Chrome window (WO32: its own Dock icon, the second Chrome), "
+              f"not in the poster profile. Open {urls[site]} there and log in the normal way.")
+        return
 
     async def go():
         s = settings()
@@ -664,6 +669,10 @@ def status() -> None:
     for mp in crosslist.CROSS:
         if why := crosslist.blocked(db, mp):
             print(f"[red]{mp} stopped for this window[/]: {escape(why)}")
+    link = loads(db.kv_get(crosslist.EXT_LINK)) or {}
+    if link:                                           # WO32: the Thrift Chrome's extension, as the poster last saw it
+        print(f"extension: {'connected' if link.get('connected') else '[yellow]not connected[/]'} "
+              f"(the poster's view at {str(link.get('at', ''))[:16].replace('T', ' ')} UTC)")
     # Shares that haven't become items: waiting for the worker, waiting for the contact-sheet answer, or failed.
     open_batches = db.conn.execute("SELECT * FROM batches WHERE status IN ('new', 'needs_confirm', 'failed') "
                                    "ORDER BY created_at DESC LIMIT 20").fetchall()
@@ -739,6 +748,8 @@ def crosslist(item_id: str = typer.Argument(None, metavar="[ITEM]"),
               dry_run: bool = typer.Option(False, "--dry-run", help="Fill the forms, screenshot to the ops chat, "
                                                                     "publish nothing (with --backfill: only list)"),
               backfill: bool = typer.Option(False, "--backfill", help="Queue every item still live on Poshmark"),
+              check_login: bool = typer.Option(False, "--check-login", help="Open the sell pages in the Thrift "
+                                                                            "Chrome: logged in? (WO32)"),
               mp: str = MARKETPLACE) -> None:
     """Cross-list on Depop and Vinted (WO30). `thrift crosslist <item>` queues an item already live on Poshmark;
     `--dry-run <item>` fills both forms (the running poster does it between listings), the screenshots and the mapped
@@ -750,6 +761,18 @@ def crosslist(item_id: str = typer.Argument(None, metavar="[ITEM]"),
     bad = [m for m in mps if m not in cl.enabled(s)]
     if bad:
         raise typer.BadParameter(f"{', '.join(bad)}: not enabled, or its catalog doesn't load (thrift catalogs check)")
+    if check_login:
+        from thrift_agent.post import runner
+        if daily.poster_now(db).running:
+            runner.request_check_login(db, mps)
+            print(f"[green]asked[/] the running poster to open the sell pages of {', '.join(mps)} in the Thrift Chrome: "
+                  "the answer goes to the ops chat")
+            return
+        if not s.is_prod:
+            raise typer.BadParameter("the dev machine never opens the marketplaces: run it on the Mac")
+        for line in asyncio.run(_check_logins(s, db, mps)):
+            print(escape(line))
+        return
     if backfill:
         rows = cl.backfill(s, db, mps, check=not s.get("crosslist.skip_live_check", False), dry=dry_run)
         for iid, verdict in rows:
@@ -781,20 +804,46 @@ def crosslist(item_id: str = typer.Argument(None, metavar="[ITEM]"),
           f"{item_id}: already has a row on {', '.join(mps)} (thrift requeue {item_id} --marketplace <m>)")
 
 
+async def _check_logins(s, db, mps: list[str]) -> list[str]:
+    from thrift_agent.post import runner
+    ps = {mp: p for mp, p in runner.posters(s).items() if mp in mps and getattr(p, "driver", "") == "extension"}
+    b, _ = await runner.open_bridge(s, None, ps, watch=False)
+    try:
+        if b is None or not ps:
+            return ["no extension-driven marketplace to check (or the bridge didn't start: see the ops chat)"]
+        if not await next(iter(ps.values())).wait_connected(120):
+            return ["the Thrift Chrome extension didn't connect in 2 minutes — is the Thrift Chrome open?"]
+        return await runner.check_logins(db, ps, list(ps))
+    finally:
+        await runner.close_bridge(b, None)
+
+
 async def _crosslist_dry_run(s, db, iid: str, mps: list[str]) -> None:
-    """The dry run in this process (the poster isn't running): its Chrome profile, the forms filled, nothing saved."""
+    """The dry run in this process (the poster isn't running): the Thrift Chrome's extension through a bridge here
+    (WO32), or the poster's Chrome profile for a Playwright-driven marketplace; the forms filled, nothing saved."""
     from thrift_agent.post import runner
     from thrift_agent.post.base import open_browser
-    ps = runner.posters(s)
-    pw, ctx = await open_browser(s.path("chrome_profile"), s["schedule"]["timezone"])
+    ps = {mp: p for mp, p in runner.posters(s).items() if mp in mps}
+    b, _ = await runner.open_bridge(s, None, ps, watch=False)
+    pw = ctx = None
     try:
+        if runner.uses_browser(ps):
+            pw, ctx = await open_browser(s.path("chrome_profile"), s["schedule"]["timezone"])
         for mp in mps:
+            if mp not in ps:
+                print(f"{mp}: off (see the ops chat)")
+                continue
+            if getattr(ps[mp], "driver", "") == "extension" and not await ps[mp].wait_connected(120):
+                print(f"{mp}: the Thrift Chrome extension didn't connect in 2 minutes — is the Thrift Chrome open?")
+                continue
             out = await runner.run_cross(s, db, ps, ctx, iid, mp, dry=True, request=True)
-            print(f"{mp}: {out.status if out else 'not mapped (see the ops chat)'}"
+            print(f"{mp}: {out.status if out else 'not done (see the ops chat)'}"
                   + (f" — {out.screenshot}" if out and out.screenshot else ""))
     finally:
-        await ctx.close()
-        await pw.stop()
+        if ctx is not None:
+            await ctx.close()
+            await pw.stop()
+        await runner.close_bridge(b, None)
 
 
 catalogs_app = typer.Typer(help="The marketplaces' listing-form catalogs (data/*_catalog.json, WO30)")
@@ -821,9 +870,16 @@ def catalogs_refresh(depop: bool = typer.Option(False, "--depop"), vinted: bool 
                      ) -> None:
     """Re-read the catalogs from the Mac's logged-in Chrome (read-only APIs) and rewrite data/*_catalog.json in the
     same format; the diff goes to the ops chat. The running poster does it between listings."""
+    from thrift_agent import crosslist as cl
     from thrift_agent.catalogs import refresh as cat_refresh
     s, db = settings(), _db()
     mps = [m for m, on in (("depop", depop), ("vinted", vinted)) if on] or ["depop", "vinted"]
+    if ext := [m for m in mps if cl.driver(s, m) != "playwright"]:
+        print(f"[yellow]not refreshed[/] {', '.join(ext)}: on the extension driver (WO32) the poster profile never "
+              "visits the site — the saved catalogs stay")
+        mps = [m for m in mps if m not in ext]
+        if not mps:
+            return
     if daily.poster_now(db).running:
         cat_refresh.request(db, mps)
         print(f"[green]asked[/] the running poster to refresh {', '.join(mps)}: the diff goes to the ops chat")

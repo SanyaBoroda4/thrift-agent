@@ -20,3 +20,5 @@ data/category_map_learned.json
 data/vinted_package_sizes.json
 data/catalog_raw/
 data/*.new.json
+# the content-script tests' dev dependency (WO32): npm ci --prefix tests/js
+tests/js/node_modules/

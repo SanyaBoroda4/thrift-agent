@@ -11,6 +11,8 @@ from thrift_agent.db import DB, loads
 from thrift_agent.post import runner
 from thrift_agent.post.base import AccountBlocked, Outcome, PosterError
 from thrift_agent.post.depop import DepopPoster
+from thrift_agent.post.depop_api import DepopApiPoster
+from thrift_agent.post.ext_driver import ExtensionPoster
 from thrift_agent.post.poshmark import PoshmarkPoster
 from thrift_agent.schema import Render
 
@@ -55,9 +57,19 @@ def _ready_item(db: DB, seq: int = 1, decision: str = "publish", price: int | No
 # ---------------------------------------------------------------- posters
 
 def test_posters_builds_one_per_enabled_marketplace(tmp_path):
+    """WO32: Depop and Vinted go through the extension by default; WO30's Playwright poster on request."""
     ps = runner.posters(_settings(tmp_path, depop=True))
-    assert isinstance(ps["poshmark"], PoshmarkPoster) and isinstance(ps["depop"], DepopPoster)
+    assert isinstance(ps["poshmark"], PoshmarkPoster) and isinstance(ps["depop"], ExtensionPoster)
+    assert ps["depop"].driver == "extension" and ps["depop"].name == "depop"
     assert list(runner.posters(_settings(tmp_path, depop=False))) == ["poshmark"]
+    s = _settings(tmp_path, depop=True)
+    s.data["marketplaces"]["depop"]["driver"] = "playwright"
+    assert isinstance(runner.posters(s)["depop"], DepopPoster)
+    s.data["marketplaces"]["depop"]["driver"] = "api"
+    assert isinstance(runner.posters(s)["depop"], DepopApiPoster)
+    s.data["marketplaces"]["depop"]["driver"] = "selenium"
+    with pytest.raises(ValueError, match="marketplaces.depop.driver must be one of extension, playwright, api"):
+        runner.posters(s)
 
 
 @pytest.mark.parametrize("username", ["", "   ", None])

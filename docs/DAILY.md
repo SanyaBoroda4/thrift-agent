@@ -37,9 +37,15 @@ technical messages (errors, progress, the Mac waking up) go to Alex privately.
   card is waiting. Close the lid.
 
 **Things to do something about** (each comes once)
-- **"Depop needs you to log in on the Mac."** / **"Vinted asks for a check — open it on the Mac."** — open Chrome on
-  the Mac, go to that site, log in or answer its check. Poshmark goes on meanwhile; that site is tried again the next
+- **"Depop needs you to log in on the Mac."** / **"Vinted needs you to log in on the Mac."** — on the Mac, open the
+  **Thrift Chrome** (the second Chrome icon in the Dock, the one Depop and Vinted are listed from — not your own
+  Chrome), go to that site and log in the normal way. Poshmark goes on meanwhile; that site is tried again the next
   time the Mac is open.
+- **"… shows a CAPTCHA — solve it in its Chrome window on the Mac."** / **"… asks for a check — open it on the
+  Mac."** — the same Thrift Chrome window: the site's tab is left open there; do what it asks. The Mac never does
+  this part.
+- **"… turned the Mac away for now"** — nothing to do; that site is tried again the next time the Mac is open. If it
+  keeps coming, tell Alex.
 - **"🔋 Mac battery low — plug in or I'll pause; nothing will be lost"** — plug the charger in. The Mac finishes
   the listing it is on and waits until it is charging (or above 20%).
 - **"⚠️ <title>: the Mac went to sleep while publishing and I can't see it in the closet."** (or **"… I pressed List
@@ -52,6 +58,12 @@ technical messages (errors, progress, the Mac waking up) go to Alex privately.
   Security → Files & Folders → python3.14 → turn iCloud Drive on. Then it continues by itself.
 - **"⏸ Not published automatically: <title> — its text needs a look first."** — it was not put up. Tell Alex.
 - **"⏭ <title> was skipped: Poshmark's form doesn't take one of its details."** — nothing was saved. Tell Alex.
+
+## The Thrift Chrome
+
+The second Chrome on the Mac (its own icon in the Dock) is where Depop and Vinted are listed from. Leave it open: it
+can sit behind other windows, but don't minimize it. If you quit it by accident, the Mac opens it again within a few
+minutes. Don't use it for your own browsing — use your normal Chrome for that.
 
 ## The emergency brake
 
