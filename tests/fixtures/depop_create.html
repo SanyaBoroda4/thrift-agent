@@ -1,0 +1,108 @@
+<!doctype html>
+<!-- A stand-in for Depop's create-listing form (WO30), as the poster expects it until a Mac dry run records the real
+one: Downshift-style comboboxes "<id>" + "<id-without -input>-menu" whose options are filtered by the typed text, a
+size menu that lags after the category changes, Depop Shipping's package sizes, Boost off, a Post button. Clicking
+Post sends /api/post-click and goes to /products/<shop>-<words>/ (window.__FIXTURE.land overrides the landing path). -->
+<html><head><meta charset="utf-8"><title>Sell an item | Depop</title>
+<style>ul{list-style:none;margin:0;padding:0;min-height:2px} [role=option]{padding:2px 4px;cursor:pointer}
+.field{margin:6px 0} img{width:40px;height:40px}</style></head>
+<body><main>
+<form id="form">
+  <input type="file" id="photos" multiple accept="image/*">
+  <div data-testid="photo-tiles" id="tiles"></div>
+  <div class="field"><label for="description">Description</label><textarea id="description" name="description"></textarea></div>
+  <div class="field"><input id="group-input" role="combobox" autocomplete="off"><ul id="group-menu" role="listbox"></ul></div>
+  <div class="field"><input id="variants-input" role="combobox" autocomplete="off"><ul id="variants-menu" role="listbox"></ul></div>
+  <div class="field"><input id="brand-input" role="combobox" autocomplete="off"><ul id="brand-menu" role="listbox"></ul></div>
+  <div class="field"><input id="condition-input" role="combobox" autocomplete="off"><ul id="condition-menu" role="listbox"></ul></div>
+  <div class="field"><input id="colour-input" role="combobox" autocomplete="off"><ul id="colour-menu" role="listbox"></ul></div>
+  <div class="field"><input id="source-input" role="combobox" autocomplete="off"><ul id="source-menu" role="listbox"></ul></div>
+  <div class="field"><input id="age-input" role="combobox" autocomplete="off"><ul id="age-menu" role="listbox"></ul></div>
+  <div class="field"><input id="attributes.material-input" role="combobox" autocomplete="off"><ul id="attributes.material-menu" role="listbox"></ul></div>
+  <div class="field"><input id="attributes.dress-length-input" role="combobox" autocomplete="off"><ul id="attributes.dress-length-menu" role="listbox"></ul></div>
+  <div class="field"><label for="price">Price</label><input id="price" name="price" inputmode="decimal"></div>
+  <div class="field"><input id="shippingMethods-input" role="combobox" autocomplete="off"><ul id="shippingMethods-menu" role="listbox"></ul></div>
+  <div class="field" id="parcels"></div>
+  <div class="field"><label><input type="checkbox" name="boost"> Boost my listing</label></div>
+  <button type="submit">Post</button>
+</form>
+</main>
+<script>
+const F = window.__FIXTURE || {};
+const OPTIONS = {
+  "group-input": ["Women > Bottoms > Skirts", "Kids > Bottoms > Skirts", "Men > Bottoms > Skirts",
+                  "Women > Footwear > Ballet shoes", "Women > Bottoms > Pants"],
+  "brand-input": ["Tory Burch", "Tory Sport", "J. Crew", "J. Crew Factory"],
+  "condition-input": ["Brand new", "Like new", "Used - Excellent", "Used - Good", "Used - Fair"],
+  "colour-input": ["Black", "Grey", "Red", "Blue", "White"],
+  "source-input": ["Vintage", "Preloved"],
+  "age-input": ["Modern", "90s"],
+  "attributes.material-input": ["Cotton", "Silk"],
+  "attributes.dress-length-input": ["Maxi", "Midi", "Mini"],
+  "shippingMethods-input": ["Depop Shipping", "Ship yourself"],
+};
+const SIZES = {"Women > Footwear > Ballet shoes": ["One size", "US 7", "US 7.5", "US 8"],
+               "Women > Bottoms > Skirts": ["One size", "4", "6", "S", "M"]};
+let category = null, categoryAt = 0;
+function optionsFor(id) {
+  if (id === "variants-input") {
+    if (!category || Date.now() - categoryAt < (F.sizeLag ?? 700)) return ["One size", "XS", "S"];   // the old set
+    return SIZES[category] || [];
+  }
+  return OPTIONS[id] || [];
+}
+function wire(id) {
+  const input = document.getElementById(id);
+  const menu = document.getElementById(id.replace(/-input$/, "") + "-menu");
+  const render = () => {
+    const q = input.value.trim().toLowerCase();
+    menu.innerHTML = "";
+    for (const o of optionsFor(id).filter(o => !q || o.toLowerCase().includes(q))) {
+      const li = document.createElement("li");
+      li.setAttribute("role", "option");
+      li.textContent = o;
+      li.addEventListener("click", () => choose(o));
+      menu.appendChild(li);
+    }
+  };
+  const choose = (o) => {
+    input.value = o;
+    menu.innerHTML = "";
+    if (id === "group-input") { category = o; categoryAt = Date.now(); }
+    if (id === "shippingMethods-input" && o === "Depop Shipping") parcels();
+  };
+  input.addEventListener("click", render);
+  input.addEventListener("input", render);
+  input.addEventListener("keydown", (e) => { if (e.key === "Escape") menu.innerHTML = ""; });
+}
+Object.keys(OPTIONS).concat(["variants-input"]).forEach(wire);
+function parcels() {
+  const box = document.getElementById("parcels");
+  box.innerHTML = "";
+  [["xs", "Extra small (up to 8 oz)"], ["s", "Small (up to 12 oz)"], ["m", "Medium (up to 1 lb)"],
+   ["l", "Large (up to 2 lb)"], ["xl", "Extra large (up to 10 lb)"]].forEach(([k, text]) => {
+    const r = document.createElement("input");
+    r.type = "radio"; r.name = "parcelSize"; r.id = "parcel-" + k;
+    const l = document.createElement("label");
+    l.setAttribute("for", r.id); l.textContent = text;
+    box.appendChild(r); box.appendChild(l);
+  });
+}
+document.getElementById("photos").addEventListener("change", (e) => {
+  for (const f of e.target.files) {
+    setTimeout(() => {
+      const img = document.createElement("img");
+      img.alt = f.name;
+      document.getElementById("tiles").appendChild(img);
+    }, 50);
+  }
+});
+document.getElementById("form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  fetch("/api/post-click").catch(() => {});
+  const words = document.getElementById("description").value.split("\n")[0].toLowerCase()
+    .replace(/[^a-z0-9 ]/g, "").trim().split(/\s+/).join("-");
+  setTimeout(() => { location.href = F.land || ("/products/shopname-" + words + "/"); }, 100);
+});
+</script>
+</body></html>

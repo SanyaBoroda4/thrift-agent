@@ -1,0 +1,115 @@
+<!doctype html>
+<!-- A stand-in for Vinted's upload form (WO30), as the poster expects it until a Mac dry run records the real one:
+inputs by data-testid, dropdowns that open rows ([role=option]) in one popup — the category as a tree walked level by
+level (a leaf row carries id="catalog-<id>"), the brand with a search box — package size radios, an Upload button.
+Clicking Upload sends /api/upload-click and goes to /items/9876543210-<words> (window.__FIXTURE.land overrides it);
+window.__FIXTURE.verify shows a verification wall instead of the form. -->
+<html><head><meta charset="utf-8"><title>Sell an item | Vinted</title>
+<style>[role=option]{padding:2px 4px;cursor:pointer} img{width:40px;height:40px}</style></head>
+<body><main id="main">
+  <input type="file" multiple accept="image/*" data-testid="photo-uploader-input">
+  <div data-testid="photo-uploader-tiles" id="tiles"></div>
+  <input data-testid="title--input" id="title">
+  <textarea data-testid="description--input" id="description"></textarea>
+  <input data-testid="catalog-select-dropdown-input" readonly>
+  <input data-testid="brand-select-dropdown-input" readonly>
+  <input data-testid="size-select-dropdown-input" readonly>
+  <input data-testid="condition-select-dropdown-input" readonly>
+  <input data-testid="color-select-dropdown-input" readonly>
+  <input data-testid="material-select-dropdown-input" readonly>
+  <input data-testid="price-input--input" id="price">
+  <div id="packages"></div>
+  <div id="popup"></div>
+  <button data-testid="upload-form-save-button" type="button">Upload</button>
+</main>
+<script>
+const F = window.__FIXTURE || {};
+if (F.verify) {
+  document.getElementById("main").innerHTML = "<h1>Verify your phone number before you list</h1>";
+}
+const TREE = {"Women": {"Shoes": {"Ballerinas": 2955, "Sneakers": 2632}, "Clothing": {"Skirts": 5523}},
+              "Men": {"Shoes": {"Sneakers": 1242}}, "Kids": {}};
+const FIELDS = {
+  "size": ["One size", "6.5", "7", "7.5", "8", "S / US 4-6"],
+  "condition": ["New with tags", "New without tags", "Very good", "Good", "Satisfactory"],
+  "color": ["Black", "Gray", "Red", "Blue", "White"],
+  "material": ["Cotton", "Leather", "Suede"],
+};
+const BRANDS = ["Tory Burch", "Tory Sport", "J. Crew"];
+const popup = document.getElementById("popup");
+function rows(items, testid, onPick) {
+  popup.innerHTML = "";
+  for (const [text, extra] of items) {
+    const d = document.createElement("div");
+    d.setAttribute("role", "option");
+    d.setAttribute("data-testid", testid + "-dropdown-row" + (extra && extra.id ? "-" + extra.id : ""));
+    if (extra && extra.leaf) d.id = "catalog-" + extra.leaf;
+    d.textContent = text;
+    d.addEventListener("click", () => onPick(text, extra));
+    popup.appendChild(d);
+  }
+}
+function catalogLevel(node, trail, input) {
+  rows(Object.entries(node).map(([k, v]) => [k, typeof v === "number" ? {leaf: v, id: v} : null]), "catalog-select",
+       (text, extra) => {
+         if (extra && extra.leaf) { input.value = [...trail, text].join(" > "); popup.innerHTML = ""; packages(extra.leaf); }
+         else catalogLevel(node[text], [...trail, text], input);
+       });
+}
+function packages(leaf) {
+  const box = document.getElementById("packages");
+  box.innerHTML = "";
+  const offered = leaf === 2955 ? ["Small", "Medium", "Large"] : ["Extra small", "Small", "Medium", "Large"];
+  offered.forEach((text, i) => {
+    const r = document.createElement("input");
+    r.type = "radio"; r.name = "package_size"; r.id = "pkg-" + i;
+    const l = document.createElement("label");
+    l.setAttribute("for", r.id); l.textContent = text;
+    box.appendChild(r); box.appendChild(l);
+  });
+}
+document.querySelectorAll('[data-testid$="-select-dropdown-input"]').forEach((input) => {
+  const name = input.getAttribute("data-testid").replace("-select-dropdown-input", "");
+  input.addEventListener("click", () => {
+    if (name === "catalog") return catalogLevel(TREE, [], input);
+    if (name === "brand") {
+      popup.innerHTML = '<input data-testid="brand-select-dropdown-search-input">';
+      const search = popup.querySelector("input");
+      search.addEventListener("input", () => {
+        const q = search.value.toLowerCase();
+        [...popup.querySelectorAll("[role=option]")].forEach((x) => x.remove());
+        BRANDS.filter((b) => b.toLowerCase().includes(q)).forEach((b) => {
+          const d = document.createElement("div");
+          d.setAttribute("role", "option"); d.textContent = b;
+          d.addEventListener("click", () => { input.value = b; popup.innerHTML = ""; });
+          popup.appendChild(d);
+        });
+      });
+      return;
+    }
+    rows((FIELDS[name] || []).map((t) => [t, null]), name + "-select", (text) => {
+      input.value = input.value && (name === "color" || name === "material") ? input.value + ", " + text : text;
+      popup.innerHTML = "";
+    });
+  });
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") popup.innerHTML = ""; });
+const photos = document.querySelector('input[type="file"]');
+if (photos) photos.addEventListener("change", (e) => {
+  for (const f of e.target.files) {
+    setTimeout(() => {
+      const img = document.createElement("img");
+      img.alt = f.name;
+      document.getElementById("tiles").appendChild(img);
+    }, 50);
+  }
+});
+const upload = document.querySelector('[data-testid="upload-form-save-button"]');
+if (upload) upload.addEventListener("click", () => {
+  fetch("/api/upload-click").catch(() => {});
+  const words = document.getElementById("title").value.toLowerCase().replace(/[^a-z0-9 ]/g, "").trim()
+    .split(/\s+/).join("-");
+  setTimeout(() => { location.href = F.land || ("/items/9876543210-" + words); }, 100);
+});
+</script>
+</body></html>

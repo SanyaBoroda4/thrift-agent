@@ -84,10 +84,17 @@ iCloud Posh/inbox/<ts>/ (+ _done) ─► register batch ─► prep (HEIC→JPEG
       — check: …"; a required field nothing comes close to → the item skipped, nothing saved, reported)
      (the daily window, WO28: no new listing with the lid closed or below 15% on battery; the Mac kept from idle
       sleep while listings remain; a listing the Mac slept through is looked for in the closet before "unconfirmed")
+  ─► cross-list (WO30): live on Poshmark → Depop → Vinted, 30–90 s apart, the same approved price; every value mapped
+     from the saved catalogs (data/*_catalog.json); a dry run unless the marketplace's autopublish is on; then ONE
+     "Posted ✓ <title> — $X · Poshmark <url> · Depop <url> · Vinted <url>" line for the item
 ```
 Item statuses: `new` → (`awaiting_condition` →) `awaiting_price` | `needs_info` → `ready` → `posting` → `posted` |
 `drafted` | `failed`; `needs_owner` only for an item a poster from before WO27 parked (`thrift requeue` takes it
-back); `dropped` (a re-share the owner called the same item). Nothing publishes without price approval.
+back); `dropped` (a re-share the owner called the same item). Nothing publishes without price approval. The item is
+`posted` once Poshmark is (WO30); each marketplace is a row of `listings` (item_id, marketplace, status, url,
+listing_id, price, fields_json, posted_at, error, attempts, updated_at): queued → posting → posted | failed | skipped
+(later delisted | sold), plus dryrun / drafted; unique per (item, marketplace). It replaced the `posts` table, whose
+rows were copied in once (kv `listings_migrated`); `posts` is left as it was.
 
 ## Invariants — do not break these
 1. **Facts before prose.** `extract` never writes copy; `copy` may only restate Facts. Null facts are omitted.
@@ -241,7 +248,8 @@ back); `dropped` (a re-share the owner called the same item). Nothing publishes 
   the panel must read "Promote My Closet Off"; anything else stops before List — the first publish passed through the
   one-checkbox path); where Save Draft lands
   (`draft_saved`); the size field and Done for adult sizes (the values and tabs are the catalog's, WO25); the
-  CAPTCHA wording; all of Depop. Record them from the evidence in
+  CAPTCHA wording; every `SEL` entry of Depop's and Vinted's posters (WO30, `post/depop.py`, `post/vinted.py`:
+  only Depop's combobox ids came from its logged-in form). Record them from the evidence in
   `failed/shots/` (`.png`/`.html`/`.json` per run, `<item>-review.json`, `…-after-list.*`) or with
   `playwright codegen --channel chrome https://poshmark.com/create-listing` on the Mac.
 
@@ -272,6 +280,9 @@ item's open card is sent again only when what it shows changed (text, price, cov
 cover's hash, before vs after); otherwise it stays as the owner has it. The line printed says which ("card sent again"
 / "card changed (goes out when its turn comes)" / "card unchanged (not sent again)").
 `thrift requeue <item> [marketplace] | requeue <batch> | mark-posted <item> <marketplace> <url> | status | show <item>`
+`thrift crosslist <item> | crosslist --dry-run <item> | crosslist --backfill [--dry-run]` (WO30, see "Cross-listing")
+`thrift catalogs check | catalogs refresh [--depop] [--vinted]`; `--marketplace poshmark|depop|vinted` on
+`poster --publish-first`, `retry`, `mark-posted` and `requeue`
 `thrift retry <item> [marketplace]` (WO28): an "unconfirmed publish" the owner checked and is NOT on the marketplace goes
 back in line (the twin of the reply 'retry'); `thrift status` shows the poster's state and the window's status message.
 `thrift poster [--once] [--dry-run] [--stage form|review] [--publish-first <item>] [--allow-dev-browser]`
@@ -433,9 +444,12 @@ The owner shares retailer screenshots (product page with price, style name, colo
   restart re-sends only the open message; older unanswered copies are closed (their buttons still work). Info-only
   messages are not queued; a successful dry-run says nothing unless `poster.notify_dry_runs`.
 - **A quiet group (owner rule, WO29).** The GROUP (`TELEGRAM_CHAT_ID`) gets only: (a) the cards and the allowed
-  questions; (b) "Posted ✓ <title> — $X · <url>" (+ " — check: …" when the poster guessed), and on the window's LAST
-  listing (`daily.all_done`: nothing to process, no card waiting, nothing left to publish) a second line "✓ All done
-  — safe to close the Mac."; (c) action-needed alerts, one plain sentence each, once per episode: 🔋 battery low; the
+  questions; (b) ONE line per item when its marketplaces are done (WO30, `crosslist.announce`): "Posted ✓ <title> —
+  $X · Poshmark <url> · Depop <url> · Vinted <url>" (+ " — check: …" when a poster guessed; a marketplace that failed
+  or was skipped is left out), and on the window's LAST one (`daily.all_done`: nothing to process, no card waiting,
+  nothing left to publish on ANY marketplace) a second line "✓ All done — safe to close the Mac."; (c) action-needed
+  alerts, one plain sentence each, once per episode: "Depop needs you to log in on the Mac." / "Vinted asks for a
+  check — open it on the Mac." (WO30); 🔋 battery low; the
   Mac slept while publishing / "I pressed List but can't see it" (reply `posted <url>` / `retry`); "Can't read the
   iCloud inbox" (past 10 min); "⏸ Not published automatically: <title> — its text needs a look first."; "⏭ <title> was
   skipped: Poshmark's form doesn't take one of its details." — plus plain replies to the owner's own messages ("No
@@ -543,7 +557,8 @@ The owner shares retailer screenshots (product page with price, style name, colo
   Girls/Boys asked below 0.70, a quieter contact sheet, `thrift redo <batch>`.
 - **M4 Airtable + n8n + My Sales sync** — business view, sale email → sold + delist elsewhere, shipping watchdog
   (`HOLD_UNSHIPPED`), local HTTP API over Tailscale, daily read-only order-status sync.
-- **M5 Depop** adapter.
+- **M5 Depop** — WO30: Depop and Vinted cross-listing built (catalogs, mapping, posters, the loop); their forms'
+  selectors are recorded from the Mac's dry runs, then the owner's supervised `--publish-first` per marketplace.
 - **M6 sold-comps pricing** — tune `private/brand_tiers.yaml` from new sales.
 
 ## The daily window (WO28)
@@ -587,6 +602,62 @@ photos are shared from the iPhone any time, prices approved in Telegram, then th
   `.Name.icloud` placeholders and current macOS's dataless files (`SF_DATALESS`) are asked for (`brctl download`, the
   folder and each file) — and `_done` is there; past 5 minutes, ONE line "Waiting for iCloud to finish downloading
   the photos…" per share (kv `icloud_waiting`).
+
+## Cross-listing on Depop and Vinted (WO30)
+Every item live on Poshmark goes on Depop, then Vinted — the same approved price (no markup), no extra questions.
+- **Catalogs** (`thrift_agent/catalogs/`, read-only reference data): `data/depop_catalog.json` (322 categories with
+  their attributes, the value lists, the 13 US size sets and the product type → size set map, the form's combobox ids),
+  `data/vinted_catalog.json` (573 leaves id → path → fields with required flags and option libraries, 29 colours, the
+  package sizes), next to `data/poshmark_catalog.json`. Validated when loaded (`catalogs.check()` at the poster's
+  start; `thrift catalogs check`): a file that doesn't validate turns only that marketplace off (an ops line).
+- **Mapping** (`catalogs/depop.py:map_depop`, `catalogs/vinted.py:map_vinted`; every value one of the catalog's):
+  - Category: a deterministic table (`catalogs/categories.py:TABLE`, Poshmark department / category / subcategory →
+    Depop path + Vinted leaf; REFINE splits one by the item's words, e.g. romper / jumpsuit; Kids rows name the Girls
+    and the Boys leaf — unisex goes on Girls) covering every Poshmark clothing, shoe, bag and accessory subcategory;
+    no row → Opus picks from the ENUMERATED leaves of the department (`models.crosslist`; the tool's input is an enum)
+    and the answer is cached in `private/category_map_learned.json`.
+  - Size (`catalogs/sizes.py`): from Poshmark's menu value. Vinted: the leaf's library — women's numeric 00→XXXS, 0→XXS,
+    2→XS, 4/6→S, 8/10→M, 12/14→L, 16/18→XL, 20/22→XXL; women's denim waist → US first (24→00 … 32→14, 33→16, 34→18);
+    men's waist `W<n>` (size_9), neck (size_11); shoes the US number; kids size_16; kids shoes size_17 (a half size the
+    menu lacks goes up one and is reported). Depop: the size set of the product type (letters stay letters, numbers
+    numbers, waists `NN"`, shoes "US 8.5", kids "N years" / "N-M months"). One size / Other only when the item is one
+    size; never an invented size — a required size that doesn't fit skips that marketplace only.
+  - Condition (never Fair): Vinted NWT→6, NWOT→1, like new / excellent→2 (Very good), good (and a fair reading)→3;
+    Depop NWT→Brand new, NWOT / like new / excellent→Like new, good→Used - Good. Colours ≤ 2 by a fixed table
+    (Gray→Grey on Depop, Tan→Beige on Vinted, olive→Khaki, teal→Turquoise on Vinted / Green on Depop, navy→Navy).
+    Material only from a read label (Vinted ≤ 3, Depop ≤ 4). Vinted's Skirts need a skirt length (the facts, else the
+    model with the enum). Depop: Source Preloved (Vintage only with the label's vintage cue), Age Modern unless a
+    decade, optional attributes only the facts support (material, dress-length, bottom-style, body-fit). Package size
+    from a weight class (X_SMALL only where the Vinted leaf offers it).
+  - Brand at fill time: Vinted's brands API / Depop's brand menu, exact or normalised only (`brands.strict_pick`);
+    none → empty, said in "Posted ✓ … — check:"; a Vinted brand flagged for authenticity / luxury: listed, ops note.
+  - Copy: Depop — the Poshmark title as the first line, a blank line, the Poshmark description, ≤ 5 hashtags (brand,
+    item, style, colour, era), ≤ 1000 characters (only the body is trimmed). Vinted — Poshmark's title and
+    description. Photos: Depop ≤ 8 (the front cover first, every flaw photo kept), Vinted ≤ 20 (Poshmark's order).
+  - The mapped fields are saved to `listings.fields_json` before the form opens; a mapping failure skips only that
+    marketplace (status skipped, ops note).
+- **Posters** (`post/depop.py`, `post/vinted.py` on `post/cross.py`): the same browser and profile, a tab each; a dry
+  run fills every field (one that won't fill is recorded and the read-back fails it, the whole form kept as evidence)
+  and closes the tab — never the publish button; a publish presses it once, records everything after it, takes the
+  address of the page it lands on (else the shop's one new listing with this title; several → never a guess), and
+  compares the live page with the fields (a difference → ops note, the listing stays up). Every selector is
+  UNVERIFIED until a Mac dry run records it: `submit()` publishes only when the publish button is recorded (the
+  supervised `--publish-first`); the unattended loop also needs the landing page (AUTOPUBLISH_NEEDS).
+- **The loop** (`runner.run`, `crosslist`): per item Poshmark → Depop → Vinted, 30–90 s apart
+  (`crosslist.gap_seconds`), then the human gap; within the hours; `marketplaces.<m>.daily_cap` (25) each, dry runs
+  included. Safety switches: both poster keys AND `marketplaces.<m>.autopublish` (default false = dry run: the
+  screenshot and the mapped fields to the ops chat). A logged-out / CAPTCHA / verification page stops that marketplace
+  for the window (the group's one plain line; kv `crosslist_blocked`); 3 failures in a row too. A failure before the
+  publish button: `failed`, retried next window, 3 attempts, then `skipped` with an ops note. Interrupted after it:
+  the shop is looked at (WO28's way), never published again blind; else "unconfirmed" and the owner's 'posted <url>' /
+  'retry' (outbox ref `<item>:<marketplace>`).
+- **`thrift crosslist`**: `<item>` queues one already live on Poshmark; `--dry-run <item>` asks the running poster to
+  fill both forms (screenshots + fields to the ops chat, nothing saved); `--backfill` queues every item still for sale
+  on Poshmark (its public page checked first), oldest first (`--dry-run`: lists them only).
+- **Catalog refresh** (`catalogs/refresh.py`): `thrift catalogs refresh` and once a week in the daily window, the poster
+  re-reads the same read-only APIs from its logged-in Chrome; a catalog is rewritten only when the new one validates;
+  the diff, and a ❗ line for a table row whose target has gone (that row then goes to the model), go to the ops chat.
+  The raw answers are kept in `data/catalog_raw/` (git-ignored).
 
 ## Kids clothing sizes (WO23)
 A kids label that gives the child's height ("104 cm", "Gr. 104", "104") or age ("4 ans", "4A", "5-6 Y", "18 mois") is

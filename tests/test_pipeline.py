@@ -345,13 +345,13 @@ def test_answer_forgets_dry_runs_so_the_corrected_listing_is_tried_again(tmp_pat
     db = DB(s.path("db"))
     iid = _new_item(s, db)
     db.set_item(iid, status="ready", note="size 7")
-    db.upsert_post(iid, "poshmark", status="dryrun", mode="draft")
-    db.upsert_post(iid, "depop", status="drafted", url="https://depop.com/x")
+    db.upsert_listing(iid, "poshmark", status="dryrun")
+    db.upsert_listing(iid, "depop", status="drafted", url="https://depop.com/x")
     pipeline.answer(s, db, iid, "actually size 8")
     it = db.item(iid)
     assert it["status"] == "new" and it["note"] == "size 7; actually size 8"
-    assert db.post(iid, "poshmark") is None                                    # next_job will dry-run it again
-    assert db.post(iid, "depop")["status"] == "drafted"                        # real history is never erased
+    assert db.listing(iid, "poshmark") is None                                    # next_job will dry-run it again
+    assert db.listing(iid, "depop")["status"] == "drafted"                        # real history is never erased
 
 
 def test_register_share_without_photos_fails_and_archives(tmp_path, monkeypatch):
@@ -600,18 +600,18 @@ def test_requeue_only_failed_or_dryrun_rows_without_a_url(tmp_path):
     db.set_item(iid, status="ready")
     with pytest.raises(ValueError, match="nothing to requeue"):
         pipeline.requeue(s, db, iid)
-    db.upsert_post(iid, "poshmark", status="failed", last_error="Mismatch")
+    db.upsert_listing(iid, "poshmark", status="failed", error="Mismatch")
     assert pipeline.requeue(s, db, iid) == ["poshmark"]
-    assert db.post(iid, "poshmark")["status"] == "queued" and db.post(iid, "poshmark")["last_error"] is None
-    db.upsert_post(iid, "poshmark", status="dryrun")
+    assert db.listing(iid, "poshmark")["status"] == "queued" and db.listing(iid, "poshmark")["error"] is None
+    db.upsert_listing(iid, "poshmark", status="dryrun")
     assert pipeline.requeue(s, db, iid, "poshmark") == ["poshmark"]
-    db.upsert_post(iid, "poshmark", status="failed", url="https://example.invalid/listing/1")
+    db.upsert_listing(iid, "poshmark", status="failed", url="https://example.invalid/listing/1")
     with pytest.raises(ValueError, match="listing URL"):                  # it reached the site: reconcile by hand
         pipeline.requeue(s, db, iid)
-    db.upsert_post(iid, "poshmark", status="posted", url=None)
+    db.upsert_listing(iid, "poshmark", status="posted", url=None)
     with pytest.raises(ValueError, match="only failed/dryrun rows"):
         pipeline.requeue(s, db, iid)
-    db.upsert_post(iid, "poshmark", status="failed")
+    db.upsert_listing(iid, "poshmark", status="failed")
     db.set_item(iid, status="needs_info")
     with pytest.raises(ValueError, match="not ready"):
         pipeline.requeue(s, db, iid)
@@ -626,11 +626,11 @@ def test_requeue_takes_back_an_item_the_poster_parked_with_a_question(tmp_path):
     db = DB(s.path("db"))
     iid = db.add_item(_split(db, "share", 1), 1, str(tmp_path / "item"))
     db.set_item(iid, status="needs_owner")
-    db.upsert_post(iid, "poshmark", status="queued", last_error="needs owner: Poshmark opened a dialog ...")
+    db.upsert_listing(iid, "poshmark", status="queued", error="needs owner: Poshmark opened a dialog ...")
     db.add_outbox("-100", 7, "owner_q", iid, text="Poshmark opened a dialog ...")
     assert pipeline.requeue(s, db, iid) == ["poshmark"]
-    row, it = db.post(iid, "poshmark"), db.item(iid)
-    assert (row["status"], row["last_error"], it["status"]) == ("queued", None, "ready")
+    row, it = db.listing(iid, "poshmark"), db.item(iid)
+    assert (row["status"], row["error"], it["status"]) == ("queued", None, "ready")
     assert db.outbox_pending() == []                                       # the question is never re-sent
     assert loads(db.conn.execute("SELECT detail FROM events WHERE kind='requeued'").fetchone()[0])["from"] == \
         "needs_owner"
@@ -639,7 +639,7 @@ def test_requeue_takes_back_an_item_the_poster_parked_with_a_question(tmp_path):
     with pytest.raises(ValueError, match="only failed/dryrun rows"):
         pipeline.requeue(s, db, iid)
     db.set_item(iid, status="ready")                                     # a plain queued row: nothing to requeue
-    db.upsert_post(iid, "poshmark", status="queued", last_error="needs owner: which brand?")
+    db.upsert_listing(iid, "poshmark", status="queued", error="needs owner: which brand?")
     with pytest.raises(ValueError, match="only failed/dryrun rows"):
         pipeline.requeue(s, db, iid)
 
@@ -1338,13 +1338,13 @@ def test_redo_rebuilds_what_never_reached_the_site_and_leaves_the_rest(tmp_path,
     bid = _split(db, "share", 18)
     priced = {"list_price": 40, "source": "owner"}
     ready = _redo_item(tmp_path, db, bid, 1, "ready", owner_price=40, owner_condition="NWOT", price=priced)
-    db.upsert_post(ready, "poshmark", status="dryrun")
+    db.upsert_listing(ready, "poshmark", status="dryrun")
     waiting = _redo_item(tmp_path, db, bid, 2, "awaiting_price")
     db.add_outbox("-100", 7, "item", waiting)
     posted = _redo_item(tmp_path, db, bid, 3, "posted")
-    db.upsert_post(posted, "poshmark", status="posted", url="https://example.invalid/listing/x")
+    db.upsert_listing(posted, "poshmark", status="posted", url="https://example.invalid/listing/x")
     unsure = _redo_item(tmp_path, db, bid, 4, "failed")
-    db.upsert_post(unsure, "poshmark", status="failed", last_error="unconfirmed publish: no URL after Next")
+    db.upsert_listing(unsure, "poshmark", status="failed", error="unconfirmed publish: no URL after Next")
     dropped = _redo_item(tmp_path, db, bid, 5, "dropped")
     broken = _redo_item(tmp_path, db, bid, 6, "failed")                    # processing failed: rebuilt too
 
@@ -1355,9 +1355,9 @@ def test_redo_rebuilds_what_never_reached_the_site_and_leaves_the_rest(tmp_path,
         it = db.item(iid)
         assert (it["status"], it["owner_price"], it["price"], it["renders"]) == ("new", None, None, None)
     assert db.item(ready)["owner_condition"] == "NWOT"                   # an answer about the item itself stays
-    assert db.post(ready, "poshmark") is None and db.outbox_pending() == []
-    assert db.post(posted, "poshmark")["status"] == "posted" and db.item(posted)["status"] == "posted"
-    assert db.post(unsure, "poshmark")["last_error"].startswith("unconfirmed publish")
+    assert db.listing(ready, "poshmark") is None and db.outbox_pending() == []
+    assert db.listing(posted, "poshmark")["status"] == "posted" and db.item(posted)["status"] == "posted"
+    assert db.listing(unsure, "poshmark")["error"].startswith("unconfirmed publish")
 
     for iid in rebuilt:                                                   # the worker, from the confirmed grouping:
         pipeline.process_item(s, db, iid)

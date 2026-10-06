@@ -47,6 +47,15 @@ def isolated_settings(monkeypatch, tmp_path):
     scrub_secrets()                          # ... and this one must not leak either
 
 
+@pytest.fixture(autouse=True)
+def learned_categories(monkeypatch, tmp_path):
+    """The cross-lister's learned category answers (WO30) go to a file of the test's own, never the repo's data/ or
+    private/."""
+    path = tmp_path / "category_map_learned.json"
+    monkeypatch.setattr("thrift_agent.catalogs.categories.learned_path", lambda: path)
+    return path
+
+
 @pytest.fixture
 def settings_override():
     """Opt in to non-default settings for one test, e.g. settings_override(machine_role="prod", telegram={"enabled": True}).

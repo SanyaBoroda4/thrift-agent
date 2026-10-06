@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -21,10 +22,10 @@ CREATE TABLE IF NOT EXISTS items (
   note TEXT, facts TEXT, price TEXT, renders TEXT, gate TEXT,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL, cover_hash TEXT
 );
-CREATE TABLE IF NOT EXISTS posts (
+CREATE TABLE IF NOT EXISTS listings (
   item_id TEXT NOT NULL REFERENCES items(id), marketplace TEXT NOT NULL,
-  status TEXT NOT NULL, mode TEXT, url TEXT, attempts INTEGER NOT NULL DEFAULT 0,
-  last_error TEXT, posted_at TEXT, updated_at TEXT NOT NULL,
+  status TEXT NOT NULL, url TEXT, listing_id TEXT, price INTEGER, fields_json TEXT,
+  posted_at TEXT, error TEXT, attempts INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL,
   PRIMARY KEY (item_id, marketplace)
 );
 CREATE TABLE IF NOT EXISTS events (
@@ -44,7 +45,11 @@ CREATE TABLE IF NOT EXISTS kv (
 # item:  new → awaiting_price | needs_info → ready → (posting → posted | drafted | failed) → sold
 #        needs_owner: the poster asked the owner a question; the reply reprocesses the item
 #        dropped: the owner confirmed a held re-share is the same garment as an existing item
-# post:  queued → posting → posted | drafted | failed | dryrun   (failed/dryrun with no URL → queued via `thrift requeue`)
+# listing (WO30, one row per item and marketplace — poshmark | depop | vinted; it replaced the `posts` table, whose
+#        rows were copied in once and which is left as it was):
+#        queued → posting → posted | failed | skipped, later delisted | sold; also dryrun (a dry-run filled the form)
+#        and drafted. failed / skipped / dryrun with no URL → queued via `thrift requeue`. `fields_json` holds the
+#        values mapped for the site's form before it opens; `price` the approved price it listed at.
 # outbox: every Telegram message the agent sent that expects a reply (kind batch | condition | kids | item | owner_q),
 #        so a reply or a button press can be mapped back to its batch/item. At most one is open at a time (WO20,
 #        approve.pump); the dev print is recorded under chat 'dev'. kv holds the getUpdates offset, the queue's
@@ -67,6 +72,27 @@ def new_id(prefix: str) -> str:
     return f"{prefix}_{datetime.now().strftime('%y%m%d')}_{uuid.uuid4().hex[:6]}"
 
 
+LISTINGS_MIGRATED = "listings_migrated"      # kv: when the old `posts` rows were copied into `listings` (once)
+_POSH_ID = re.compile(r"-([0-9a-f]{24})/?$")
+
+
+def listing_id_from(mp: str, url: str | None) -> str | None:
+    """The site's own id of a listing, from its address: Poshmark's 24-hex id, Vinted's number, Depop's slug."""
+    if not url:
+        return None
+    path = url.split("?")[0].rstrip("/")
+    if mp == "poshmark":
+        m = _POSH_ID.search(path)
+        return m.group(1) if m else None
+    if mp == "vinted":
+        m = re.search(r"/items/(\d+)", path)
+        return m.group(1) if m else None
+    if mp == "depop":
+        m = re.search(r"/products/([a-z0-9]+(?:-[a-z0-9]+)+)$", path)    # <shop>-<words>, never "create"
+        return m.group(1) if m else None
+    return None
+
+
 class DB:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -79,6 +105,35 @@ class DB:
             for col, typ in cols.items():
                 if col not in have:
                     self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+        self._migrate_posts()
+
+    def _migrate_posts(self) -> None:
+        """WO30: the old per-marketplace `posts` rows become `listings` rows, once — every Poshmark-posted item keeps
+        its poshmark/posted row and URL. A skip (failed + "skipped: …") becomes the status 'skipped'. The old table
+        is left as it was (a code rollback still finds it)."""
+        if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='posts'").fetchone():
+            return
+        with self.tx() as c:
+            if c.execute("SELECT 1 FROM kv WHERE key=?", (LISTINGS_MIGRATED,)).fetchone():
+                return
+            n = 0
+            for row in c.execute("SELECT * FROM posts").fetchall():
+                status, error = row["status"], row["last_error"]
+                if status == "failed" and (error or "").startswith("skipped: "):
+                    status = "skipped"
+                item = c.execute("SELECT owner_price, renders FROM items WHERE id=?", (row["item_id"],)).fetchone()
+                render = ((loads(item["renders"]) or {}).get(row["marketplace"]) or {}) if item else {}
+                price = (item["owner_price"] if item else None) or render.get("price")
+                cur = c.execute(
+                    "INSERT OR IGNORE INTO listings (item_id, marketplace, status, url, listing_id, price, posted_at, "
+                    "error, attempts, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (row["item_id"], row["marketplace"], status, row["url"],
+                     listing_id_from(row["marketplace"], row["url"]), price, row["posted_at"], error,
+                     row["attempts"], row["updated_at"]))
+                n += cur.rowcount
+            c.execute("INSERT INTO kv (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                      (LISTINGS_MIGRATED, now()))
+            c.execute("INSERT INTO events VALUES (?,?,?,?)", (now(), None, "listings_migrated", json.dumps({"rows": n})))
 
     @contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:
@@ -133,8 +188,11 @@ class DB:
             "SELECT id, cover_hash, renders FROM items WHERE cover_hash IS NOT NULL AND created_at >= ? AND id != ? "
             "ORDER BY created_at DESC", (since_iso, exclude or "")).fetchall()
 
-    def posts_for(self, iid: str) -> list[sqlite3.Row]:
-        return self.conn.execute("SELECT * FROM posts WHERE item_id=? ORDER BY marketplace", (iid,)).fetchall()
+    def listings_for(self, iid: str) -> list[sqlite3.Row]:
+        """The item's rows, in the order the poster takes the marketplaces: Poshmark, Depop, Vinted."""
+        return self.conn.execute(
+            "SELECT * FROM listings WHERE item_id=? ORDER BY CASE marketplace WHEN 'poshmark' THEN 0 WHEN 'depop' THEN 1 "
+            "WHEN 'vinted' THEN 2 ELSE 3 END", (iid,)).fetchall()
 
     # key/value (the Telegram getUpdates offset)
     def kv_get(self, key: str, default: str | None = None) -> str | None:
@@ -167,41 +225,52 @@ class DB:
         self.conn.execute("UPDATE outbox SET resolved_at=? WHERE kind=? AND ref=? AND resolved_at IS NULL",
                           (now(), kind, ref))
 
-    # posts
-    def post(self, iid: str, mp: str) -> sqlite3.Row | None:
-        return self.conn.execute("SELECT * FROM posts WHERE item_id=? AND marketplace=?", (iid, mp)).fetchone()
+    # listings (WO30): one row per item and marketplace
+    def listing(self, iid: str, mp: str) -> sqlite3.Row | None:
+        return self.conn.execute("SELECT * FROM listings WHERE item_id=? AND marketplace=?", (iid, mp)).fetchone()
 
-    def upsert_post(self, iid: str, mp: str, **fields: Any) -> None:
+    def upsert_listing(self, iid: str, mp: str, **fields: Any) -> None:
         """Create the row if needed, then set `fields`. With no fields it is just a touch of updated_at."""
-        if self.post(iid, mp) is None:
-            self.conn.execute("INSERT INTO posts (item_id, marketplace, status, updated_at) VALUES (?,?,?,?)",
+        if self.listing(iid, mp) is None:
+            self.conn.execute("INSERT INTO listings (item_id, marketplace, status, updated_at) VALUES (?,?,?,?)",
                               (iid, mp, fields.get("status", "queued"), now()))
+        vals = [json.dumps(v, default=str) if isinstance(v, (dict, list)) else v for v in fields.values()]
         sets = ", ".join(f"{k}=?" for k in [*fields, "updated_at"])
-        self.conn.execute(f"UPDATE posts SET {sets} WHERE item_id=? AND marketplace=?",
-                          (*fields.values(), now(), iid, mp))
+        self.conn.execute(f"UPDATE listings SET {sets} WHERE item_id=? AND marketplace=?",
+                          (*vals, now(), iid, mp))
 
-    def claim_post(self, iid: str, mp: str, mode: str) -> bool:
+    def claim_listing(self, iid: str, mp: str) -> bool:
         """Atomically take (item, marketplace) for posting: True for exactly one caller.
 
         The single conditional UPDATE is the lock — two poster processes can never both open the form for one
         item (invariant 4). Only 'queued' and 'dryrun' rows are claimable; 'posting' (crashed mid-form),
-        'posted', 'drafted' and 'failed' rows are refused and need a human to reconcile against the closet.
+        'posted', 'drafted', 'failed' and 'skipped' rows are refused and need a human to reconcile against the closet.
         """
         self.conn.execute(
-            "INSERT OR IGNORE INTO posts (item_id, marketplace, status, updated_at) VALUES (?,?,'queued',?)",
+            "INSERT OR IGNORE INTO listings (item_id, marketplace, status, updated_at) VALUES (?,?,'queued',?)",
             (iid, mp, now()))
         cur = self.conn.execute(
-            "UPDATE posts SET status='posting', mode=?, attempts=attempts+1, last_error=NULL, updated_at=? "
+            "UPDATE listings SET status='posting', attempts=attempts+1, error=NULL, updated_at=? "
             "WHERE item_id=? AND marketplace=? AND status IN ('queued','dryrun')",
-            (mode, now(), iid, mp))
+            (now(), iid, mp))
         return cur.rowcount == 1
 
-    def posted_since(self, since_iso: str) -> int:
-        """Rows that hit the site since `since_iso` — dry-runs included. A dry-run fills the real create form,
-        photo uploads and all, so it must count against per_hour_max / daily_cap like a publish (invariant 6)."""
-        return self.conn.execute(
-            "SELECT COUNT(*) FROM posts WHERE status IN ('posted','drafted','dryrun') AND posted_at >= ?",
-            (since_iso,)).fetchone()[0]
+    def listed_since(self, since_iso: str, mp: str | None = None) -> int:
+        """Rows that hit the site since `since_iso` — dry-runs included — on `mp`, or on all marketplaces. A dry-run
+        fills the real create form, photo uploads and all, so it counts against the caps like a publish (invariant
+        6). WO30: the caps are per marketplace."""
+        sql = "SELECT COUNT(*) FROM listings WHERE status IN ('posted','drafted','dryrun') AND posted_at >= ?"
+        args: tuple = (since_iso,)
+        if mp is not None:
+            sql, args = sql + " AND marketplace=?", (since_iso, mp)
+        return self.conn.execute(sql, args).fetchone()[0]
+
+    def counts_by_marketplace(self) -> dict[str, dict[str, int]]:
+        """{marketplace: {status: n}} for `thrift status` (WO30)."""
+        out: dict[str, dict[str, int]] = {}
+        for mp, st, n in self.conn.execute("SELECT marketplace, status, COUNT(*) FROM listings GROUP BY 1, 2"):
+            out.setdefault(mp, {})[st] = n
+        return out
 
     def _update(self, table: str, key: str, value: str, fields: dict[str, Any]) -> None:
         if not fields:

@@ -6,20 +6,24 @@ a listing, looks for it in the closet before calling it "unconfirmed"."""
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import signal
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from thrift_agent import approve, brands, daily, notify, pipeline, power
+from thrift_agent import approve, brands, catalogs, crosslist, daily, notify, pipeline, power
 from thrift_agent.brain.copy import NEGATIVE_WORDS, STYLE_HEMS, USED, USED_CLAIMS
+from thrift_agent.catalogs import CatalogError, refresh
+from thrift_agent.catalogs.common import ItemView, MappingError
 from thrift_agent.config import Settings
-from thrift_agent.db import DB, loads
+from thrift_agent.db import DB, listing_id_from, loads
 from thrift_agent.post.base import STAGES, AccountBlocked, Outcome, Poster, keep_evidence, open_browser
 from thrift_agent.post import poshmark
 from thrift_agent.post.depop import DepopPoster
 from thrift_agent.post.poshmark import PoshmarkPoster
+from thrift_agent.post.vinted import VintedPoster
 from thrift_agent.scheduler import can_post, next_gap, windows
 from thrift_agent.schema import Render
 
@@ -28,25 +32,30 @@ DEV_BROWSER_MSG = ("machine_role is 'dev': the dev machine never touches the sho
                    "Chrome, visits the create-listing page and uploads photos. Pass --allow-dev-browser to do that on "
                    "purpose; it stays a dry-run.")
 HOLD_REASON = "unshipped orders — publish held (drafts and dry-runs still run)"
-# last_error of a failed post whose final click (List This Item) happened but whose listing URL wasn't found: the
+# error of a failed post whose final click (List This Item) happened but whose listing URL wasn't found: the
 # listing may be live, so nothing re-posts it — not the poster, not `thrift requeue` (invariant 4).
 UNCONFIRMED = "unconfirmed publish: "
-SKIPPED = "skipped: "            # last_error of an item the form couldn't take (a required field): requeue it once fixed
-SLEPT = "interrupted by sleep: "   # last_error of a listing the Mac slept through before its final click: requeued
+SKIPPED = "skipped: "            # error of an item the form couldn't take (a required field): requeue it once fixed
+SLEPT = "interrupted by sleep: "   # error of a listing the Mac slept through before its final click: requeued
 SLEEP_RETRIES = 3                  # ... at most this many attempts in all; then it is an ordinary failure
 ASK = "Check Poshmark: if it's there, reply 'posted <url>'; if not, reply 'retry'."
+PRESSED = {"poshmark": ("List", "closet"), "depop": ("Post", "shop"), "vinted": ("Upload", "closet")}
 
 
 def posters(s: Settings) -> dict[str, Poster]:
+    """Poshmark (its closet name is required: the account check reads it) and the cross-list marketplaces that are on
+    and whose catalog loads (WO30; their shop name is optional: only the closet check after an interrupted publish
+    needs it)."""
     out: dict[str, Poster] = {}
-    for mp in ("poshmark", "depop"):
-        if not s.get(f"marketplaces.{mp}.enabled", False):
-            continue
-        username = str(s.get(f"marketplaces.{mp}.username") or "").strip()
+    if s.get("marketplaces.poshmark.enabled", False):
+        username = str(s.get("marketplaces.poshmark.username") or "").strip()
         if not username:
-            raise ValueError(f"marketplaces.{mp}.username is empty — set it in private/settings.yaml "
+            raise ValueError("marketplaces.poshmark.username is empty — set it in private/settings.yaml "
                              "(the poster checks the closet page to detect a logged-out or restricted account)")
-        out[mp] = PoshmarkPoster(username, brands.for_settings(s)) if mp == "poshmark" else DepopPoster()
+        out["poshmark"] = PoshmarkPoster(username, brands.for_settings(s))
+    for mp in crosslist.enabled(s):
+        shop = str(s.get(f"marketplaces.{mp}.shop") or s.get(f"marketplaces.{mp}.username") or "")
+        out[mp] = DepopPoster(shop, brands.for_settings(s)) if mp == "depop" else VintedPoster(shop)
     return out
 
 
@@ -65,13 +74,13 @@ def next_job(s: Settings, db: DB, enabled: list[str], dry: bool,
             continue            # the owner is fixing this batch's photos ([Wrong photos]): not until the fix
         gate = loads(it["gate"]) or {}
         renders = loads(it["renders"]) or {}
-        for mp in enabled:
+        for mp in [m for m in enabled if m == "poshmark"]:   # Depop and Vinted follow Poshmark (crosslist, WO30)
             if mp not in renders:
                 continue
             if not approved(it, renders[mp]):
                 continue        # nothing publishes without the owner's approved price
-            post = db.post(it["id"], mp)
-            if post and post["status"] in ("posted", "drafted", "posting", "failed"):
+            post = db.listing(it["id"], mp)
+            if post and post["status"] in ("posted", "drafted", "posting", "failed", "skipped"):
                 continue        # 'posting' after a crash = check the closet by hand, never re-post blindly
             if post and post["status"] == "dryrun" and dry:
                 continue
@@ -121,8 +130,8 @@ def publishable(s: Settings, db: DB, enabled: list[str]) -> list[tuple[str, str]
         if batch is not None and batch["status"] == "regroup":
             continue
         gate, renders = loads(it["gate"]) or {}, loads(it["renders"]) or {}
-        for mp in enabled:
-            post = db.post(it["id"], mp)
+        for mp in [m for m in enabled if m == "poshmark"]:
+            post = db.listing(it["id"], mp)
             if mp in renders and approved(it, renders[mp]) and gate.get("decision") == "publish" \
                     and s.get(f"marketplaces.{mp}.autopublish", False) and s.is_prod \
                     and (post is None or post["status"] in ("queued", "dryrun")):
@@ -148,8 +157,8 @@ def held(s: Settings, db: DB, enabled: list[str]) -> list[tuple[str, str, list[s
     out = []
     for it in db.items("ready"):
         gate, renders = loads(it["gate"]) or {}, loads(it["renders"]) or {}
-        for mp in enabled:
-            post = db.post(it["id"], mp)
+        for mp in [m for m in enabled if m == "poshmark"]:
+            post = db.listing(it["id"], mp)
             if mp not in renders or not approved(it, renders[mp]) or (post and post["status"] not in ("queued",
                                                                                                     "dryrun")):
                 continue
@@ -207,11 +216,15 @@ def posted_message(render: Render, out: Outcome, checks: list[str] = (), done: b
     return text + (f"\n{ALL_DONE_LINE}" if done else "")
 
 
-def unconfirmed_text(title: str, slept: bool) -> str:
+def unconfirmed_text(title: str, slept: bool, mp: str = "poshmark") -> str:
     """The ONE message for a listing that may be live (WO28 §3); a reply 'posted <url>' or 'retry' answers it."""
+    site = crosslist.LABEL[mp]
+    button, shop = PRESSED[mp]
+    ask = ASK if mp == "poshmark" else f"Check {site}: if it's there, reply 'posted <url>'; if not, reply 'retry'."
+    where = "" if mp == "poshmark" else f" on {site}"
     if slept:
-        return f"⚠️ {title}: the Mac went to sleep while publishing and I can't see it in the closet. {ASK}"
-    return f"⚠️ {title}: I pressed List on Poshmark but can't see it in the closet. {ASK}"
+        return f"⚠️ {title}: the Mac went to sleep while publishing{where} and I can't see it in the {shop}. {ask}"
+    return f"⚠️ {title}: I pressed {button} on {site} but can't see it in the {shop}. {ask}"
 
 
 def ask_unconfirmed(db: DB, iid: str, mp: str, text: str) -> None:
@@ -227,30 +240,36 @@ def ask_unconfirmed(db: DB, iid: str, mp: str, text: str) -> None:
     except Exception as e:  # noqa: BLE001 — the row is written; the CLI twins work without the message
         db.log(iid, "error", f"unconfirmed message: {type(e).__name__}: {e}")
         return
-    db.add_outbox(bot.chat_id, mid, "unconfirmed", iid, text=text)
+    db.add_outbox(bot.chat_id, mid, "unconfirmed", crosslist.unconfirmed_ref(iid, mp), text=text)
 
 
 def record_outcome(db: DB, iid: str, mp: str, render: Render, out: Outcome, marketplaces: list[str],
                    stage: str = "form", say_dry_run: bool = True, checks: list[str] = (),
-                   seconds: float | None = None, slept: bool = False, s: Settings | None = None) -> None:
+                   seconds: float | None = None, slept: bool = False, s: Settings | None = None,
+                   announce: bool = True) -> None:
     """The post row, the event, the owner's message and the item's status for one Outcome.
 
     posted_at = when this row last hit the site. A dry-run fills the real form (uploads included), so it gets a stamp
-    too and counts against the pacing caps in posted_since(). A cancelled supervised publish never reached the site:
+    too and counts against the pacing caps in listed_since(). A cancelled supervised publish never reached the site:
     the row goes back to 'queued'. A failed publish after the final click without a URL is "unconfirmed": the listing
     may be live, so `thrift requeue` refuses it until the closet is checked by hand (invariant 4).
 
     WO29: the group hears "Posted ✓" (with "✓ All done …" on the window's last listing, `s` given), the ⚠️ of an
-    unconfirmed publish and a plain "⏭ … was skipped"; failures, dry-runs and the details go to the ops chat."""
+    unconfirmed publish and a plain "⏭ … was skipped"; failures, dry-runs and the details go to the ops chat.
+    WO30: a Poshmark listing that went live queues the item on Depop and Vinted (`s` given) and keeps its "check:"
+    notes on its row; its "Posted ✓" line is crosslist.announce's — at once (`announce`), or from the poster loop
+    once the item's other marketplaces are done."""
     stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
     error = out.error
     if out.status == "failed" and out.clicked and not out.url:
         error = UNCONFIRMED + (error or "")
     if out.status == "skipped":                     # nothing was saved; never retried until the owner requeues it
         error = SKIPPED + (error or "")
-    status = {"cancelled": "queued", "skipped": "failed"}.get(out.status, out.status)
-    db.upsert_post(iid, mp, status=status, url=out.url, last_error=error if out.status != "cancelled" else out.note,
-                   posted_at=stamp if out.status in ("posted", "drafted", "dryrun") else None)
+    status = {"cancelled": "queued"}.get(out.status, out.status)
+    db.upsert_listing(iid, mp, status=status, url=out.url, error=error if out.status != "cancelled" else out.note,
+                      posted_at=stamp if out.status in ("posted", "drafted", "dryrun") else None,
+                      listing_id=listing_id_from(mp, out.url),
+                      price=render.price, fields_json={"guesses": list(out.guesses), "checks": list(checks)})
     db.log(iid, f"post_{out.status}", {"mp": mp, "url": out.url, "error": error, "shot": out.screenshot,
                                        "note": out.note, "draft_left": out.draft_left, "clicked": out.clicked,
                                        "guesses": out.guesses, "seconds": round(seconds, 1) if seconds else None,
@@ -273,7 +292,10 @@ def record_outcome(db: DB, iid: str, mp: str, render: Render, out: Outcome, mark
         notify.say(f"↩️ not published on {mp} ({iid}): {render.title}{note}")
     elif out.status == "posted":
         _settle_item(db, iid, marketplaces)
-        notify.group(posted_message(render, out, checks, done=s is not None and daily.all_done(s, db)))
+        if s is not None and mp == "poshmark":
+            crosslist.queue(s, db, iid)                    # then Depop and Vinted (WO30)
+        if announce:
+            crosslist.announce(s, db, iid)
         if out.note:
             notify.say(f"{iid} posted: {out.note}")
     else:
@@ -281,11 +303,12 @@ def record_outcome(db: DB, iid: str, mp: str, render: Render, out: Outcome, mark
     _settle_item(db, iid, marketplaces)
 
 
-def _settle_item(db: DB, iid: str, marketplaces: list[str]) -> None:
-    """The item is done once every enabled marketplace holds it; 'drafted' until all of them went live."""
-    statuses = [(db.post(iid, m) or {"status": ""})["status"] for m in marketplaces]
-    if all(st in ("posted", "drafted") for st in statuses):
-        db.set_item(iid, status="posted" if all(st == "posted" for st in statuses) else "drafted")
+def _settle_item(db: DB, iid: str, marketplaces: list[str] = ()) -> None:
+    """WO30: the item counts as posted once Poshmark is ('drafted' while Poshmark only holds a draft); Depop and
+    Vinted are extra rows that never change the item's status."""
+    row = db.listing(iid, "poshmark")
+    if row is not None and row["status"] in ("posted", "drafted"):
+        db.set_item(iid, status=row["status"])
 
 
 async def terminal_confirm(r: Render, panel: str) -> bool:
@@ -296,11 +319,25 @@ async def terminal_confirm(r: Render, panel: str) -> bool:
     return answer.strip() == "LIST"
 
 
-async def publish_first(s: Settings, db: DB, iid: str, confirm=terminal_confirm) -> Outcome:
+async def terminal_confirm_cross(fields, site: str) -> bool:
+    """The supervised publish on Depop / Vinted (WO30): the filled form is in the Chrome window, the owner types POST."""
+    print(f"\nReady to publish on {site}: {getattr(fields, 'title', None) or fields.description.splitlines()[0]}\n"
+          f"  ${fields.price} · {fields.size or 'no size'} · {fields.condition} · "
+          f"{getattr(fields, 'category', None) or getattr(fields, 'category_path', '')}\n"
+          f"  The form is filled in the Chrome window.")
+    answer = await asyncio.to_thread(input, "Type POST to publish (anything else cancels): ")
+    return answer.strip() == "POST"
+
+
+async def publish_first(s: Settings, db: DB, iid: str, confirm=terminal_confirm, mp: str = "poshmark") -> Outcome:
     """The supervised first publish (WO15): this one item on Poshmark, on prod, at the owner-approved price, with the
     owner typing LIST at the Share Listing panel. poster.dry_run is ignored for this one call; autopublish stays off.
     Fills, reads back and diffs as usual, presses List This Item exactly once, records everything after the click,
-    finds and checks the listing, records the post. Never retried automatically."""
+    finds and checks the listing, records the post. Never retried automatically. WO30: `mp` depop / vinted publishes
+    the item there the same way (it must be live on Poshmark; the owner types POST)."""
+    if mp != "poshmark":
+        return await publish_first_cross(s, db, iid, mp, terminal_confirm_cross if confirm is terminal_confirm
+                                         else confirm)
     if not s.is_prod:
         raise RuntimeError("the supervised publish runs on the Mac only (machine_role: prod); the dev machine never "
                            "touches the shop")
@@ -318,11 +355,11 @@ async def publish_first(s: Settings, db: DB, iid: str, confirm=terminal_confirm)
     if broken := condition_rule_breaks(render):
         raise ValueError(f"item {iid}'s listing text was written before the condition rule ({', '.join(broken)}): "
                          f"reprocess it first — thrift answer {iid} \"recheck\" (the price is kept)")
-    row = db.post(iid, "poshmark")
+    row = db.listing(iid, "poshmark")
     if row and (row["status"] in ("posted", "posting", "drafted") or row["url"]):
         raise ValueError(f"poshmark: status {row['status']}{' with ' + row['url'] if row['url'] else ''} — it reached "
                          "the site: check the closet, never post it twice")
-    if row and (row["last_error"] or "").startswith(UNCONFIRMED):
+    if row and (row["error"] or "").startswith(UNCONFIRMED):
         raise ValueError("poshmark: an earlier List This Item may have gone live — check the closet, then "
                          f"`thrift mark-posted {iid} poshmark <url>`")
     if row and row["status"] == "failed":
@@ -331,7 +368,7 @@ async def publish_first(s: Settings, db: DB, iid: str, confirm=terminal_confirm)
     if s.flag_set("HOLD_UNSHIPPED"):
         raise ValueError(HOLD_REASON)
     hour_ago, midnight = windows(tz=s["schedule"]["timezone"])
-    ok, why = can_post(s, db.posted_since(hour_ago), db.posted_since(midnight))
+    ok, why = can_post(s, db.listed_since(hour_ago), db.listed_since(midnight))
     if not ok:
         raise ValueError(f"not now: {why}")
     ps = posters(s)
@@ -345,12 +382,12 @@ async def publish_first(s: Settings, db: DB, iid: str, confirm=terminal_confirm)
         raise RuntimeError(f"Chrome didn't open ({type(e).__name__}) — is the poster service still running? Stop it "
                            "first: bash deploy/services.sh stop") from e
     try:
-        if not db.claim_post(iid, "poshmark", "publish"):     # 'posting' before the form opens (invariant 4)
+        if not db.claim_listing(iid, "poshmark"):     # 'posting' before the form opens (invariant 4)
             raise ValueError(f"poshmark: could not claim {iid} (another poster has it?)")
         try:
             out = await poster.post(ctx, render, "publish", False, s.path("failed") / "shots")
         except AccountBlocked as e:
-            db.upsert_post(iid, "poshmark", status="queued", last_error=str(e))
+            db.upsert_listing(iid, "poshmark", status="queued", error=str(e))
             _halt(s, str(e), f"⛔ Poster paused: {e}\nFix it in the poster Chrome window, then delete the PAUSE file.")
             raise
     finally:
@@ -368,22 +405,23 @@ async def confirm_live(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, ur
     it = db.item(iid)
     if it is None:
         raise ValueError(f"unknown item {iid}")
-    row = db.post(iid, mp)
-    if row is None or row["status"] != "failed" or row["url"] or not (row["last_error"] or "").startswith(UNCONFIRMED):
+    row = db.listing(iid, mp)
+    if row is None or row["status"] != "failed" or row["url"] or not (row["error"] or "").startswith(UNCONFIRMED):
         state = "no post" if row is None else f"status {row['status']}" + (f" with {row['url']}" if row["url"] else "")
         raise ValueError(f"{mp}: only a post in 'unconfirmed publish' can be marked posted ({iid} has {state})")
     renders = loads(it["renders"]) or {}
-    if mp not in renders:
+    if "poshmark" not in renders or (mp == "poshmark" and mp not in renders):
         raise ValueError(f"item {iid} has no {mp} listing")
-    render = Render.model_validate(renders[mp])
+    render = cross_render_of(db, iid, mp) if mp != "poshmark" else Render.model_validate(renders[mp])
     poster = ps.get(mp)
     if poster is None:
         raise ValueError(f"marketplaces.{mp} is not enabled")
     address = poster.listing_address(url)
     if address is None:
-        raise ValueError(f"not a {mp} listing address: {url!r} (expected e.g. https://poshmark.com/listing/"
-                         "<title-words>-<24 hex id>)")
-    if (other := db.conn.execute("SELECT item_id FROM posts WHERE url=? AND NOT (item_id=? AND marketplace=?)",
+        raise ValueError(f"not a {mp} listing address: {url!r}" + (" (expected e.g. https://poshmark.com/listing/"
+                                                                  "<title-words>-<24 hex id>)" if mp == "poshmark"
+                                                                  else ""))
+    if (other := db.conn.execute("SELECT item_id FROM listings WHERE url=? AND NOT (item_id=? AND marketplace=?)",
                                  (address, iid, mp)).fetchone()) is not None:
         raise ValueError(f"{address} is already recorded for item {other['item_id']}")
     shots = s.path("failed") / "shots"
@@ -405,11 +443,14 @@ async def confirm_live(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, ur
             except Exception:  # noqa: BLE001
                 pass
     # posted_at: when the listing went live, as near as the row knows it (the failed attempt's last update).
-    db.upsert_post(iid, mp, status="posted", url=address, last_error=None, posted_at=row["updated_at"])
-    db.log(iid, "post_confirmed", {"mp": mp, "url": address, "was": row["last_error"]})
-    db.outbox_resolve("unconfirmed", iid)
+    db.upsert_listing(iid, mp, status="posted", url=address, error=None, posted_at=row["updated_at"],
+                      listing_id=listing_id_from(mp, address))
+    db.log(iid, "post_confirmed", {"mp": mp, "url": address, "was": row["error"]})
+    db.outbox_resolve("unconfirmed", crosslist.unconfirmed_ref(iid, mp))
     _settle_item(db, iid, list(ps))
-    notify.group(posted_message(render, Outcome("posted", url=address), done=daily.all_done(s, db)))   # WO29
+    if mp == "poshmark":
+        crosslist.queue(s, db, iid)
+    crosslist.announce(s, db, iid)                                                     # WO29, WO30
     notify.say(f"✅ {iid} confirmed live on {mp} (the owner's link): {address}")
     return address
 
@@ -436,6 +477,172 @@ async def mark_posted(s: Settings, db: DB, iid: str, mp: str, url: str) -> str:
     finally:
         await ctx.close()
         await pw.stop()
+
+
+def cross_render_of(db: DB, iid: str, mp: str, fields=None) -> Render:
+    """The Render a Depop / Vinted post goes by: Poshmark's title and the approved price, the mapped description, size,
+    colours and photos (`fields`, else the row's fields_json)."""
+    it = db.item(iid)
+    posh = Render.model_validate((loads(it["renders"]) or {})["poshmark"])
+    f = fields.model_dump() if hasattr(fields, "model_dump") else (fields or loads((db.listing(iid, mp) or {})["fields_json"]
+                                                                                  if db.listing(iid, mp) else None) or {})
+    return Render(marketplace=mp, title=posh.title, description=f.get("description") or posh.description,
+                  tags=f.get("hashtags") or [], brand=posh.brand, department=posh.department,
+                  category=f.get("category") or f.get("category_path") or posh.category, subcategory=None,
+                  size=f.get("size"), colors=f.get("colors") or posh.colors, condition=posh.condition,
+                  price=int(it["owner_price"] or posh.price), photos=f.get("photos") or posh.photos, sku=iid)
+
+
+def map_fields(mp: str, view: ItemView):
+    from thrift_agent.catalogs.depop import map_depop
+    from thrift_agent.catalogs.vinted import map_vinted
+    return map_depop(view) if mp == "depop" else map_vinted(view)
+
+
+async def run_cross(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, *, dry: bool, hold: bool = False,
+                    request: bool = False) -> Outcome | None:
+    """One item on Depop or Vinted (WO30): map its values from the catalogs (a value that can't be mapped skips this
+    marketplace only), keep them on the row, take the row ('posting' before the form opens, invariant 4), fill the
+    form — a dry run leaves without publishing — and record what happened. A logged-out / CAPTCHA / verification wall
+    stops the marketplace for the window. `request`: an explicit dry run (`thrift crosslist --dry-run`): the row is
+    neither taken nor changed, only the screenshot and the fields go to the ops chat."""
+    it = db.item(iid)
+    title = ((loads(it["renders"]) or {}).get("poshmark") or {}).get("title") or iid
+    try:
+        view = ItemView.from_row(it)
+        fields = map_fields(mp, view)
+    except MappingError as e:
+        if request:
+            notify.say(f"⏭ {crosslist.LABEL[mp]} dry run ({iid}): {title}\ncan't map: {e}")
+        else:
+            crosslist.skip_unmappable(db, iid, mp, title, str(e))
+        return None
+    except CatalogError as e:
+        crosslist.block(db, mp, f"failures: catalog — {e}")
+        return None
+    render = cross_render_of(db, iid, mp, fields)
+    poster = ps[mp]
+    poster.fields, poster.confirm, poster.strict = fields, None, not dry
+    shots = s.path("failed") / "shots"
+    if request:
+        out = await poster.post(ctx, render, "publish", True, shots)
+        db.log(iid, "crosslist_dry_run", {"mp": mp, "status": out.status, "shot": out.screenshot, "error": out.error})
+        notify.ops_photo(Path(out.screenshot or ""),
+                         f"🧪 dry-run {crosslist.LABEL[mp]} ({iid}): {title} — ${fields.price} [{out.status}]\n"
+                         f"{crosslist.fields_summary(fields.model_dump())}"
+                         + (f"\n{out.error}" if out.error else "") + (f"\n{out.note}" if out.note else ""))
+        return out
+    db.upsert_listing(iid, mp, fields_json=fields.model_dump(), price=fields.price)
+    if not db.claim_listing(iid, mp):
+        return None
+    t0, m0, k0 = time.time(), time.monotonic(), power.last_wake()
+    try:
+        out = await poster.post(ctx, render, "publish", dry or hold, shots)
+    except AccountBlocked as e:
+        row = db.listing(iid, mp)
+        db.upsert_listing(iid, mp, status="queued", error=str(e), attempts=max(0, (row["attempts"] or 1) - 1))
+        crosslist.block(db, mp, str(e))
+        return None
+    except Exception as e:  # noqa: BLE001 — before the form: nothing submitted; this marketplace stops for the window
+        db.upsert_listing(iid, mp, status="queued", error=f"{type(e).__name__}: {e}")
+        crosslist.block(db, mp, f"failures: {type(e).__name__}: {e}")
+        return None
+    seconds, slept = time.monotonic() - m0, power.slept_since(t0, k0, m0)
+    if slept:
+        out, requeued = await after_sleep(db, ps, ctx, iid, mp, render, out, t0)
+        if requeued:
+            return out
+    crosslist.record(s, db, iid, mp, title, out, fields.model_dump(), seconds=seconds, slept=slept)
+    crosslist.failure(db, mp, out.status == "failed", int(s.get("poster.max_consecutive_failures", 3)))
+    return out
+
+
+async def publish_first_cross(s: Settings, db: DB, iid: str, mp: str, confirm) -> Outcome:
+    """`thrift poster --publish-first <item> --marketplace depop|vinted` (WO30): the supervised first publish there —
+    on the Mac, the poster service stopped, an item already live on Poshmark, at its approved price; the owner types
+    POST at the filled form. Never retried automatically."""
+    if not s.is_prod:
+        raise RuntimeError("the supervised publish runs on the Mac only (machine_role: prod); the dev machine never "
+                           "touches the shop")
+    if mp not in crosslist.CROSS:
+        raise ValueError(f"unknown marketplace {mp!r}")
+    it = db.item(iid)
+    if it is None:
+        raise ValueError(f"unknown item {iid}")
+    posh = db.listing(iid, "poshmark")
+    if posh is None or posh["status"] != "posted":
+        raise ValueError(f"item {iid} isn't live on Poshmark: cross-listing follows Poshmark")
+    row = db.listing(iid, mp)
+    if row and (row["status"] in ("posted", "posting") or row["url"]):
+        raise ValueError(f"{mp}: status {row['status']}{' with ' + row['url'] if row['url'] else ''} — it reached "
+                         "the site: never post it twice")
+    if row and (row["error"] or "").startswith(UNCONFIRMED):
+        raise ValueError(f"{mp}: an earlier publish may have gone live — check the shop, then "
+                         f"`thrift mark-posted {iid} {mp} <url>`")
+    if s.flag_set("HOLD_UNSHIPPED"):
+        raise ValueError(HOLD_REASON)
+    if row is None:
+        crosslist.queue(s, db, iid, [mp], why="publish-first")
+    elif row["status"] in ("failed", "skipped", "dryrun"):
+        db.upsert_listing(iid, mp, status="queued")
+    view = ItemView.from_row(it)
+    fields = map_fields(mp, view)
+    ps = posters(s)
+    poster = ps.get(mp)
+    if poster is None:
+        raise ValueError(f"marketplaces.{mp} is not enabled (or its catalog doesn't load)")
+    try:
+        pw, ctx = await open_browser(s.path("chrome_profile"), s["schedule"]["timezone"])
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"Chrome didn't open ({type(e).__name__}) — is the poster service still running? Stop it "
+                           "first: bash deploy/services.sh stop poster") from e
+    render = cross_render_of(db, iid, mp, fields)
+    try:
+        db.upsert_listing(iid, mp, fields_json=fields.model_dump(), price=fields.price)
+        if not db.claim_listing(iid, mp):
+            raise ValueError(f"{mp}: could not claim {iid}")
+        poster.fields, poster.confirm, poster.strict = fields, confirm, True
+        try:
+            out = await poster.post(ctx, render, "publish", False, s.path("failed") / "shots")
+        except AccountBlocked as e:
+            db.upsert_listing(iid, mp, status="queued", error=str(e))
+            notify.say(f"⛔ {crosslist.LABEL[mp]}: {e}")
+            raise
+    finally:
+        await ctx.close()
+        await pw.stop()
+    crosslist.record(s, db, iid, mp, view.render.title, out, fields.model_dump())
+    crosslist.announce(s, db, iid)
+    return out
+
+
+CROSSLIST_REQUESTS = "crosslist_requests"     # kv: [{"item", "mps", "at"}]: dry runs asked for by `thrift crosslist`
+
+
+def request_dry_run(db: DB, iid: str, mps: list[str]) -> None:
+    """`thrift crosslist --dry-run <item>` while the poster runs: the poster fills those forms between listings."""
+    with db.tx():
+        reqs = [r for r in (loads(db.kv_get(CROSSLIST_REQUESTS)) or []) if r.get("item") != iid]
+        db.kv_set(CROSSLIST_REQUESTS, json.dumps([*reqs, {"item": iid, "mps": mps, "at": datetime.now(timezone.utc)
+                                                           .isoformat(timespec="seconds")}]))
+        db.log(iid, "crosslist_dry_run_requested", {"mps": mps})
+
+
+async def serve_cross_requests(s: Settings, db: DB, ps: dict, ctx) -> list[str]:
+    """The dry runs `thrift crosslist --dry-run` asked for: each marketplace's form filled for the item, the screenshot
+    and the mapped fields to the ops chat, the tab closed — nothing published, no row changed."""
+    with db.tx():
+        reqs = loads(db.kv_get(CROSSLIST_REQUESTS)) or []
+        if reqs:
+            db.kv_set(CROSSLIST_REQUESTS, "[]")
+    done = []
+    for req in reqs:
+        iid = req.get("item")
+        for mp in req.get("mps") or []:
+            if mp in ps and db.item(iid) is not None:
+                await run_cross(s, db, ps, ctx, iid, mp, dry=True, request=True)
+        done.append(iid)
+    return done
 
 
 def _checks(it) -> list[str]:
@@ -479,6 +686,10 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, 
     db.log(None, "poster_started", {"live": not dry, "stage": None if not dry else stage, "pid": os.getpid()})
     awake = power.Awake()
     failures = 0
+    cross = [mp for mp in ps if mp in crosslist.CROSS]
+    if bad := {mp: why for mp, why in catalogs.check().items() if why}:
+        notify.say("❗ cross-listing off: " + "; ".join(f"{mp}: {why}" for mp, why in bad.items()))
+    last: str | None = None                              # the item in hand: its next marketplace comes first (WO30)
     try:
         await reconcile_stale(s, db, ps, ctx)            # a listing the Mac (or a crash) cut short: the closet first
         while True:
@@ -487,36 +698,61 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, 
                 print("stop requested — exiting between items")
                 return
             await serve_requests(s, db, ps, ctx)         # the owner's "posted <url>" replies, checked between items
+            if cross:
+                crosslist.new_window(s, db)              # a new window: blocks lifted, failures retried (WO30)
+                if not _paused(db):
+                    await serve_cross_requests(s, db, ps, ctx)
+                    if asked := refresh.take_requests(db):             # `thrift catalogs refresh`
+                        await refresh.run(s, db, ctx, asked)
             hour_ago, midnight = windows(tz=s["schedule"]["timezone"])
-            ok, why = can_post(s, db.posted_since(hour_ago), db.posted_since(midnight))
+            ok, why = can_post(s, db.listed_since(hour_ago, "poshmark"), db.listed_since(midnight, "poshmark"))
+            hours_ok, _ = can_post(s, 0, 0)              # PAUSE and the hours: the cross-list jobs' own caps apply
             # HOLD_UNSHIPPED (invariant 8) holds publishing only: drafts and dry-runs never reach a buyer, and the
             # flag can appear mid-run (n8n sees a late order), so it is re-read every time round the loop.
             hold = s.flag_set("HOLD_UNSHIPPED")
-            job = next_job(s, db, list(ps), dry, allow_publish=not hold) if ok else None
+            # Per item: Poshmark → Depop → Vinted, then the next item (WO30) — the item in hand goes on first.
+            cont = crosslist.next_job(s, db, prefer=last) if cross and hours_ok and last and not dry else None
+            cont = cont if cont and cont[0] == last else None
+            job = next_job(s, db, list(ps), dry, allow_publish=not hold) if ok and cont is None else None
+            cjob = cont or (crosslist.next_job(s, db) if cross and hours_ok and job is None and not dry else None)
             if not dry:
                 _tell_held(s, db, list(ps))              # approved items it won't publish: told once each
-            if job is not None and (paused := _paused(db)):
+            if (job is not None or cjob is not None) and (paused := _paused(db)):
                 daily.poster_beat(db, paused=paused)     # lid closed / battery low: no new listing (WO28 §3, §5)
-                job = None
+                job = cjob = None
                 why = f"paused: {paused}"
+            if job is None and cjob is not None:
+                iid, mp = cjob
+                last = iid
+                awake.hold(True)
+                daily.poster_beat(db, busy=iid)
+                await run_cross(s, db, ps, ctx, iid, mp, dry=not crosslist.live(s, mp), hold=hold)
+                if once:
+                    crosslist.announce(s, db, iid)
+                    return
+                await _pause(stop, await _between(s, db, iid, awake, stop, hours_ok and not dry))
+                continue
             if job is None:
                 awake.hold(False)
                 if once:
                     print(f"nothing to do ({HOLD_REASON if ok and hold else why})")
                     return
+                if cross and not _paused(db) and (due := [m for m in cross if refresh.due(s, db, m)]):
+                    await refresh.run(s, db, ctx, due)   # once a week, while idle in the daily window (WO30 §8)
                 await _pause(stop, 60)
                 continue
 
             iid, mp, render, mode = job
-            if not db.claim_post(iid, mp, mode):    # another poster process took it, or its status moved under us
+            if not db.claim_listing(iid, mp):    # another poster process took it, or its status moved under us
                 continue
+            last = iid
             awake.hold(True)                            # no idle sleep in the middle of a listing (WO28 §5)
             daily.poster_beat(db, busy=iid)
             t0, m0, k0 = time.time(), time.monotonic(), power.last_wake()
             try:
                 out = await ps[mp].post(ctx, render, mode, dry, s.path("failed") / "shots", stage=stage)
             except AccountBlocked as e:
-                db.upsert_post(iid, mp, status="queued", last_error=str(e))
+                db.upsert_listing(iid, mp, status="queued", error=str(e))
                 _halt(s, str(e), f"⛔ Poster paused: {e}\nFix it in the poster Chrome window, then delete the PAUSE file.")
                 return
             except Exception as e:  # noqa: BLE001
@@ -524,7 +760,7 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, 
                 # here came from before the form was touched — nothing was submitted, and 'queued' cannot
                 # double-post. It is still an unknown failure mode, so pause rather than retry (invariant 5).
                 err = f"{type(e).__name__}: {e}"
-                db.upsert_post(iid, mp, status="queued", last_error=err)
+                db.upsert_listing(iid, mp, status="queued", error=err)
                 _halt(s, err, f"⛔ Poster paused: {mp} raised before the form ({err}).\nFix it, then delete the PAUSE file.")
                 return
 
@@ -535,7 +771,8 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, 
                 out, requeued = await after_sleep(db, ps, ctx, iid, mp, render, out, t0)
             if not requeued:
                 record_outcome(db, iid, mp, render, out, list(ps), stage,
-                               bool(s.get("poster.notify_dry_runs", False)), seconds=seconds, slept=slept, s=s)
+                               bool(s.get("poster.notify_dry_runs", False)), seconds=seconds, slept=slept, s=s,
+                               announce=False)
                 # Circuit breaker: N failures in a row means the form, the account or the network changed, not
                 # the items. Every further attempt is 16 uploads of noise on the account, so stop and ask. A skipped
                 # item is not one: the form and the account are fine, the item is unusual (WO27). Nor is a listing
@@ -547,17 +784,32 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, 
                           f"Fix it, then delete the PAUSE file.")
                     return
             if once:
+                crosslist.announce(s, db, iid)
                 return
-            gap = next_gap(s["schedule"])
-            more = next_job(s, db, list(ps), dry, allow_publish=not s.flag_set("HOLD_UNSHIPPED")) is not None
-            awake.hold(more)                            # awake through the human pause only if a listing follows
-            daily.poster_beat(db, busy=None, next_at=daily.in_seconds(gap) if more else None)
-            await _pause(stop, gap)
+            await _pause(stop, await _between(s, db, iid, awake, stop, cross and hours_ok and not dry))
     finally:
         awake.hold(False)
         daily.poster_beat(db, stopped=True, busy=None, next_at=None)
         await ctx.close()
         await pw.stop()
+
+
+async def _between(s: Settings, db: DB, iid: str, awake, stop, cross_ok: bool) -> float:
+    """After a listing: the item's next marketplace follows in 30–90 s (Poshmark → Depop → Vinted, WO30); else the
+    item's round is over — its one "Posted ✓" line — and the human pause before the next item."""
+    following = crosslist.next_job(s, db, prefer=iid) if cross_ok else None
+    if following and following[0] == iid:
+        gap = crosslist.gap(s)
+        awake.hold(True)
+        daily.poster_beat(db, busy=None, next_at=daily.in_seconds(gap))
+        return gap
+    crosslist.announce(s, db, iid)
+    gap = next_gap(s["schedule"])
+    more = (next_job(s, db, ["poshmark"], False, allow_publish=not s.flag_set("HOLD_UNSHIPPED")) is not None
+            or (cross_ok and crosslist.next_job(s, db) is not None))
+    awake.hold(more)                            # awake through the human pause only if a listing follows
+    daily.poster_beat(db, busy=None, next_at=daily.in_seconds(gap) if more else None)
+    return gap
 
 
 def _paused(db: DB) -> str | None:
@@ -590,9 +842,9 @@ async def after_sleep(db: DB, ps: dict, ctx, iid: str, mp: str, render: Render, 
             return Outcome("posted", url=url, screenshot=out.screenshot, clicked=True, note=note,
                            guesses=out.guesses, created_id=out.created_id), False
         return out, False
-    row = db.post(iid, mp)
+    row = db.listing(iid, mp)
     if not out.clicked and row is not None and row["attempts"] < SLEEP_RETRIES:
-        db.upsert_post(iid, mp, status="queued", last_error=SLEPT + (out.error or ""))
+        db.upsert_listing(iid, mp, status="queued", error=SLEPT + (out.error or ""))
         db.log(iid, "post_requeued_after_sleep", {"mp": mp, "error": out.error, "attempts": row["attempts"]})
         return out, True
     return out, False
@@ -604,13 +856,13 @@ async def reconcile_stale(s: Settings, db: DB, ps: dict, ctx) -> list[str]:
     4): the closet is looked at — found, it is posted with its URL; not found (or unknown), it is "unconfirmed" and
     the owner gets the ONE message. Returns the items looked at."""
     done = []
-    for row in db.conn.execute("SELECT * FROM posts WHERE status='posting'").fetchall():
+    for row in db.conn.execute("SELECT * FROM listings WHERE status='posting'").fetchall():
         iid, mp = row["item_id"], row["marketplace"]
         it, poster = db.item(iid), ps.get(mp)
         renders = (loads(it["renders"]) or {}) if it is not None else {}
-        if poster is None or mp not in renders:
+        if poster is None or "poshmark" not in renders:
             continue
-        render = Render.model_validate(renders[mp])
+        render = Render.model_validate(renders["poshmark"]) if mp == "poshmark" else cross_render_of(db, iid, mp)
         since = datetime.fromisoformat(row["updated_at"]).timestamp()        # the claim: just before the form
         try:
             url, seen = await poster.find_live(ctx, render, since=since)
@@ -622,7 +874,11 @@ async def reconcile_stale(s: Settings, db: DB, ps: dict, ctx) -> list[str]:
                       "stopped) in the middle of this listing") if url else \
             Outcome("failed", clicked=True, error="the Mac slept (or the poster stopped) in the middle of this listing "
                     "and it isn't in the closet")
-        record_outcome(db, iid, mp, render, out, list(ps), slept=True, s=s)
+        if mp == "poshmark":
+            record_outcome(db, iid, mp, render, out, list(ps), slept=True, s=s)
+        else:
+            crosslist.record(s, db, iid, mp, render.title, out, loads(row["fields_json"]) or {}, slept=True)
+            crosslist.announce(s, db, iid)
         done.append(iid)
     return done
 

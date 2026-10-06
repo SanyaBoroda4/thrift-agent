@@ -5,7 +5,8 @@
 An AI listing agent for a resale closet: shoot items on an iPhone, tap **Share → New Item**, and the agent
 splits the photo roll into items, reads brand/size/condition from the photos with evidence for every fact,
 prices from the seller's own sales history, writes the listing in the seller's style, checks it for
-unsupported claims, and posts it to Poshmark (Depop next) through a real, paced browser session.
+unsupported claims, and posts it to Poshmark — then cross-lists it on Depop and Vinted — through a real, paced
+browser session.
 
 - **Pipeline:** iCloud Drive inbox → segmentation → vision extraction → pricing → copy → verifier + lint → gate → Telegram price approval → poster
 - **Stack:** Python 3.14, Claude API (vision + tool use), Pydantic, Playwright (real Chrome), SQLite, launchd
@@ -307,6 +308,30 @@ the module docstring.
   The owner gets ONE message to reply to — "⚠️ <title>: … I can't see it in the closet. Check Poshmark: if it's there,
   reply 'posted <url>'; if not, reply 'retry'." — or uses the CLI twins `thrift mark-posted` / `thrift retry`.
 
+## Cross-listing on Depop and Vinted (WO30)
+Every item live on Poshmark goes on Depop, then Vinted, at the same approved price — no extra questions, every
+dropdown value from the saved catalogs (`data/depop_catalog.json`, `data/vinted_catalog.json`, read from the
+logged-in forms and APIs; `thrift catalogs check` validates them, `thrift catalogs refresh` re-reads them — weekly by
+itself — with the diff in the ops chat).
+- **Mapping** (`thrift_agent/catalogs/`): a deterministic table Poshmark → Depop path / Vinted leaf (every clothing,
+  shoe, bag and accessory subcategory), else Opus picks from the catalog's enumerated leaves and the answer is cached;
+  sizes onto each site's own menus (never invented), condition never Fair, colours by a fixed table, material from the
+  label only, the package size by weight. Saved to `listings.fields_json` before the form opens; a value that can't be
+  mapped skips only that marketplace.
+- **Copy:** Depop — the title as the first line, the Poshmark description, ≤ 5 hashtags, ≤ 1000 characters (only the
+  body trimmed), ≤ 8 photos; Vinted — the same title and description, ≤ 20 photos.
+- **Posting:** Poshmark → Depop → Vinted per item, 30–90 s apart, 25 new listings a day per marketplace. Each site
+  publishes only with the poster's two keys AND `marketplaces.<m>.autopublish`; otherwise a dry run: the whole form
+  filled, the screenshot and the mapped fields to the ops chat, the tab closed. A logged-out / CAPTCHA / verification
+  page stops that site for the window (one plain line in the group); a failure before publishing is retried next window
+  (3 attempts, then skipped); an interrupted publish is looked for in the shop, never published again blind.
+- **Commands:** `thrift crosslist <item>` (queue one already on Poshmark), `thrift crosslist --dry-run <item>` (both
+  forms filled by the running poster, screenshots to the ops chat), `thrift crosslist --backfill [--dry-run]` (every
+  item still for sale on Poshmark, oldest first), `--marketplace depop|vinted` on `poster --publish-first`, `retry`,
+  `mark-posted` and `requeue`; `thrift status` counts each marketplace's listings, `thrift show <item>` lists them.
+- **Not yet recorded:** Depop's and Vinted's form selectors are UNVERIFIED until a Mac dry run records them; until then
+  nothing is published there (the first publish on each is the owner's supervised `--publish-first`).
+
 ## The daily window (WO28)
 The Mac is mostly closed. About once a day it is opened (often on battery) for ~30 minutes; photos are shared from the
 iPhone any time and prices approved in Telegram. The owner's one-page guide is [docs/DAILY.md](docs/DAILY.md).
@@ -367,9 +392,11 @@ private chat with the bot it always does.
    checks it. Without it the technical messages are only logged.
 
 ### A quiet group (WO29)
-The group gets only: the cards and the allowed questions; "Posted ✓ <title> — $35 · <url>" (+ " — check: …" when the
-poster had to guess), with "✓ All done — safe to close the Mac." under the window's last one; and, once per episode,
-the alerts that need the owner, each one plain sentence — battery low, the Mac slept while publishing (reply
+The group gets only: the cards and the allowed questions; ONE line per item, "Posted ✓ <title> — $35 · Poshmark <url>
+· Depop <url> · Vinted <url>" (+ " — check: …" when a poster had to guess; WO30), with "✓ All done — safe to close the
+Mac." under the window's last one (nothing left on any marketplace); and, once per episode, the alerts that need the
+owner, each one plain sentence — "Depop needs you to log in on the Mac." / "Vinted asks for a check — open it on the
+Mac.", battery low, the Mac slept while publishing (reply
 `posted <url>` / `retry`), the iCloud inbox unreadable for 10 minutes, "⏸ Not published automatically", "⏭ skipped".
 No item ids, no error text. An answered card is edited instead of answered: its buttons become one inert button
 showing the answer ("✓ $35 — queued"). Everything else — the status message, "Back online", "Poster started (LIVE)",

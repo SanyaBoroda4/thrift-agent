@@ -411,7 +411,7 @@ def test_a_plain_reply_to_an_old_brand_question_is_the_brand(env, tmp_path, fact
     iid = _item(db, tmp_path, facts, status="needs_owner", renders={"poshmark": listing},
                 brand=Ev(value="J.Crew", photos=[1], source="photo", confidence=0.9))
     db.set_item(iid, owner_price=85)
-    db.upsert_post(iid, "poshmark", status="queued", last_error="needs owner: Poshmark's brand list has no match")
+    db.upsert_listing(iid, "poshmark", status="queued", error="needs owner: Poshmark's brand list has no match")
     _asked_before(db, iid, "Poshmark's brand list has no match for 'J.Crew' (it offers: J. Crew, J. Crew Factory). "
                            "Which brand should I pick? (reply e.g. 'brand Vince')")
     assert handle_update(s, db, bot, _reply("J. Crew", reply_to=11)).startswith(f"brand {iid}: 'J. Crew'")
@@ -668,8 +668,8 @@ def test_the_whole_flow_tap_then_the_price_card_with_the_new_price(env, tmp_path
 # ---------- WO28: the Mac sleeps between windows ----------
 
 def _unconfirmed_post(db, iid):
-    db.upsert_post(iid, "poshmark", status="failed", mode="publish",
-                   last_error="unconfirmed publish: the Mac went to sleep while publishing")
+    db.upsert_listing(iid, "poshmark", status="failed",
+                   error="unconfirmed publish: the Mac went to sleep while publishing")
     db.add_outbox(CHAT, 77, "unconfirmed", iid, text="⚠️ … Check Poshmark: …")
 
 
@@ -690,7 +690,7 @@ def test_replies_to_the_unconfirmed_message_posted_url_and_retry(env, tmp_path, 
     assert handle_update(s, db, bot, _reply("hmm?", reply_to=77)) == f"unconfirmed {iid}: unreadable reply 'hmm?'"
     assert bot.texts()[-1] == approve.UNCONFIRMED_HINT
     assert handle_update(s, db, bot, _reply("Retry", reply_to=77)) == f"unconfirmed {iid}: retry"
-    assert db.post(iid, "poshmark")["status"] == "queued" and db.item(iid)["status"] == "ready"
+    assert db.listing(iid, "poshmark")["status"] == "queued" and db.item(iid)["status"] == "ready"
     assert _outbox(db, iid)[0]["resolved_at"] is not None
     assert handle_update(s, db, bot, _reply("retry", reply_to=77)).startswith(f"unconfirmed {iid}: retry rejected")
 

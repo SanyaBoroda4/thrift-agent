@@ -125,7 +125,7 @@ def compare(seen: dict, expected: dict) -> dict:
     diff = {}
     for k, want in expected.items():
         got = seen.get(k)
-        if isinstance(want, Contains):
+        if isinstance(want, Contains) or callable(getattr(want, "matches", None)):
             ok = want.matches(got)
         elif k == "original_price":
             # Poshmark's form holds "0" for an Original Price left empty (Mac dry-run #3): no price, "" and 0 are one.

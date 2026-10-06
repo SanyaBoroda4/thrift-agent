@@ -513,13 +513,17 @@ def telegram_test(text: str = typer.Option("thrift-agent: test message — the b
     print(f"[green]sent[/] message {mid} to {'the ops chat' if ops else 'the group'} ({bot.chat_id})")
 
 
+MARKETPLACE = typer.Option(None, "--marketplace", metavar="poshmark|depop|vinted", help="Which marketplace (WO30)")
+
+
 @app.command()
-def requeue(item_id: str, marketplace: str = typer.Argument(None)) -> None:
-    """Queue a failed or dry-run post again, or an item the poster parked with a question, as it is (only rows with
-    NO listing URL: anything that reached the site is reconciled by hand, never re-posted). A failed batch (b_...)
-    goes back to the worker, which splits it again on its next tick.
-    e.g.  thrift requeue i_...  |  thrift requeue i_... poshmark  |  thrift requeue b_..."""
+def requeue(item_id: str, marketplace: str = typer.Argument(None), mp: str = MARKETPLACE) -> None:
+    """Queue a failed, skipped or dry-run listing again, or an item the poster parked with a question, as it is (only
+    rows with NO listing URL: anything that reached the site is reconciled by hand, never re-posted). A failed batch
+    (b_...) goes back to the worker, which splits it again on its next tick.
+    e.g.  thrift requeue i_...  |  thrift requeue i_... --marketplace depop  |  thrift requeue b_..."""
     s, db = settings(), _db()
+    marketplace = mp or marketplace
     if item_id.startswith("b_"):
         try:
             pipeline.requeue_batch(s, db, item_id)
@@ -533,13 +537,17 @@ def requeue(item_id: str, marketplace: str = typer.Argument(None)) -> None:
 
 
 @app.command("mark-posted")
-def mark_posted(item_id: str, marketplace: str, url: str) -> None:
-    """Record a listing that went live while the poster couldn't find its address (a post in "unconfirmed publish"):
-    checks that the page shows the item's title and price, then marks the post posted with that address. Mac only;
-    stop the poster service first. e.g.  thrift mark-posted i_... poshmark https://poshmark.com/listing/...-<id>"""
+def mark_posted(item_id: str, first: str = typer.Argument(..., metavar="[MARKETPLACE] URL"),
+                second: str = typer.Argument(None, hidden=True), mp: str = MARKETPLACE) -> None:
+    """Record a listing that went live while the poster couldn't find its address (a listing in "unconfirmed
+    publish"): checks that the page shows the item's title and price, then marks it posted with that address. Mac
+    only. e.g.  thrift mark-posted i_... poshmark https://poshmark.com/listing/...-<id>
+          thrift mark-posted i_... https://www.depop.com/products/.../ --marketplace depop"""
     from thrift_agent.post.base import PosterError
     from thrift_agent.post.runner import mark_posted as run_mark_posted
     s, db = settings(), _db()
+    marketplace, url = (first, second) if second is not None else ((mp or "poshmark"), first)
+    marketplace = mp or marketplace
     if s.is_prod:
         notify.check(s)
     if daily.poster_now(db).running:                     # the poster service has Chrome: it checks the page (WO28)
@@ -560,11 +568,12 @@ def mark_posted(item_id: str, marketplace: str, url: str) -> None:
 
 
 @app.command()
-def retry(item_id: str, marketplace: str = typer.Argument("poshmark")) -> None:
+def retry(item_id: str, marketplace: str = typer.Argument("poshmark"), mp: str = MARKETPLACE) -> None:
     """A listing that may be live ("unconfirmed publish": the Mac slept while publishing, or its address wasn't found)
     that you checked on the marketplace and is NOT there: it goes back in line and is listed again. The twin of the
     reply 'retry' (WO28). If it IS there: thrift mark-posted <item> <marketplace> <url>."""
     s, db = settings(), _db()
+    marketplace = mp or marketplace
     try:
         pipeline.retry_unconfirmed(s, db, item_id, marketplace)
     except ValueError as e:
@@ -586,9 +595,10 @@ def poster(once: bool = False, dry_run: bool = False,
                                           "poster.dry_run_stage. Never publishes."),
            publish_first: str = typer.Option(None, "--publish-first", metavar="ITEM",
                                              help="Publish this one item, supervised: on the Mac, at the owner-"
-                                                  "approved price, after you type LIST in this terminal. Ignores "
-                                                  "poster.dry_run for this call; stop the poster service first.")
-           ) -> None:
+                                                  "approved price, after you type LIST (Poshmark) or POST (Depop, "
+                                                  "Vinted) in this terminal. Ignores poster.dry_run for this call; "
+                                                  "stop the poster service first."),
+           mp: str = MARKETPLACE) -> None:
     """Run the Chrome poster (the poster service on the Mac)."""
     from thrift_agent.post.runner import dry_run_stage, publish_first as run_publish_first, run as run_poster
     s = settings()
@@ -597,7 +607,7 @@ def poster(once: bool = False, dry_run: bool = False,
         if s.is_prod:
             notify.check(s)
         try:
-            out = asyncio.run(run_publish_first(s, _db(), publish_first))
+            out = asyncio.run(run_publish_first(s, _db(), publish_first, mp=mp or "poshmark"))
         except (ValueError, RuntimeError, PosterError) as e:
             print(f"[red]not published[/] {publish_first}: {e}")
             raise typer.Exit(1) from None
@@ -618,7 +628,8 @@ def poster(once: bool = False, dry_run: bool = False,
 def login(site: str = "poshmark") -> None:
     """Open the poster Chrome profile to log in by hand (once per site). Stop the poster service first."""
     from thrift_agent.post.base import open_browser
-    urls = {"poshmark": "https://poshmark.com/login", "depop": "https://www.depop.com/login/"}
+    urls = {"poshmark": "https://poshmark.com/login", "depop": "https://www.depop.com/login/",
+            "vinted": "https://www.vinted.com/member/signup/select_type"}
 
     async def go():
         s = settings()
@@ -636,15 +647,23 @@ def login(site: str = "poshmark") -> None:
 def status() -> None:
     """What's in the pipeline."""
     db = _db()
-    t = Table("item", "status", "title", "price", "gate", "posts")
+    t = Table("item", "status", "title", "price", "gate", "listings")
     for row in db.conn.execute("SELECT * FROM items ORDER BY created_at DESC LIMIT 30"):
         renders, gate, pr = loads(row["renders"]) or {}, loads(row["gate"]) or {}, loads(row["price"]) or {}
-        posts = ", ".join(f"{p['marketplace']}:{p['status']}" for p in
-                          db.conn.execute("SELECT * FROM posts WHERE item_id=?", (row["id"],)))
+        posts = ", ".join(f"{p['marketplace']}:{p['status']}" for p in db.listings_for(row["id"]))
         title = next(iter(renders.values()), {}).get("title", "")
         t.add_row(row["id"], row["status"], title[:50], str(pr.get("list_price") or ""),
                   gate.get("decision", ""), posts)
     print(t)
+    # Per marketplace (WO30): every listing row by status, and a marketplace stopped for this window.
+    from thrift_agent import crosslist
+    counts = db.counts_by_marketplace()
+    if counts:
+        print("listings: " + " · ".join(f"{mp} " + ", ".join(f"{st} {n}" for st, n in sorted(counts[mp].items()))
+                                        for mp in crosslist.ORDER if mp in counts))
+    for mp in crosslist.CROSS:
+        if why := crosslist.blocked(db, mp):
+            print(f"[red]{mp} stopped for this window[/]: {escape(why)}")
     # Shares that haven't become items: waiting for the worker, waiting for the contact-sheet answer, or failed.
     open_batches = db.conn.execute("SELECT * FROM batches WHERE status IN ('new', 'needs_confirm', 'failed') "
                                    "ORDER BY created_at DESC LIMIT 20").fetchall()
@@ -697,11 +716,122 @@ def status() -> None:
 
 @app.command()
 def show(item_id: str) -> None:
-    """Print an item's facts, price, gate and renders."""
-    row = _db().item(item_id)
+    """Print an item's facts, price, gate and renders, and its listing on each marketplace (WO30)."""
+    db = _db()
+    row = db.item(item_id)
     if row is None:
         raise typer.BadParameter(f"unknown item {item_id}")
     print(json.dumps({k: loads(row[k]) for k in ("facts", "price", "gate", "renders")}, indent=1))
+    t = Table("marketplace", "status", "price", "url", "listing id", "attempts", "error")
+    for mp in ("poshmark", "depop", "vinted"):
+        r = db.listing(item_id, mp)
+        t.add_row(mp, *(["—"] * 6) if r is None else
+                  (r["status"], str(r["price"] or ""), r["url"] or "", r["listing_id"] or "", str(r["attempts"]),
+                   escape((r["error"] or "")[:80])))
+    print(t)
+    for mp in ("depop", "vinted"):
+        if (r := db.listing(item_id, mp)) is not None and r["fields_json"]:
+            print(f"{mp} fields: " + escape(json.dumps(loads(r["fields_json"]), ensure_ascii=False)[:1500]))
+
+
+@app.command()
+def crosslist(item_id: str = typer.Argument(None, metavar="[ITEM]"),
+              dry_run: bool = typer.Option(False, "--dry-run", help="Fill the forms, screenshot to the ops chat, "
+                                                                    "publish nothing (with --backfill: only list)"),
+              backfill: bool = typer.Option(False, "--backfill", help="Queue every item still live on Poshmark"),
+              mp: str = MARKETPLACE) -> None:
+    """Cross-list on Depop and Vinted (WO30). `thrift crosslist <item>` queues an item already live on Poshmark;
+    `--dry-run <item>` fills both forms (the running poster does it between listings), the screenshots and the mapped
+    fields go to the ops chat, nothing is published; `--backfill` queues every item still live on Poshmark (checked
+    first), oldest first — the poster takes 25 a day per marketplace (`--dry-run`: only lists them)."""
+    from thrift_agent import crosslist as cl
+    s, db = settings(), _db()
+    mps = [mp] if mp else cl.enabled(s)
+    bad = [m for m in mps if m not in cl.enabled(s)]
+    if bad:
+        raise typer.BadParameter(f"{', '.join(bad)}: not enabled, or its catalog doesn't load (thrift catalogs check)")
+    if backfill:
+        rows = cl.backfill(s, db, mps, check=not s.get("crosslist.skip_live_check", False), dry=dry_run)
+        for iid, verdict in rows:
+            print(f"{'[green]' if verdict.startswith(('queued', 'would')) else '[yellow]'}{iid}[/] {escape(verdict)}")
+        caps = ", ".join(f"{m} {cl.daily_cap(s, m)}" for m in mps)
+        print(f"{sum(v.startswith(('queued', 'would')) for _, v in rows)} of {len(rows)} "
+              f"{'would be ' if dry_run else ''}queued; the poster takes {caps} a day")
+        return
+    if not item_id:
+        raise typer.BadParameter("give an item, or --backfill")
+    if db.item(item_id) is None:
+        raise typer.BadParameter(f"unknown item {item_id}")
+    posh = db.listing(item_id, "poshmark")
+    if posh is None or posh["status"] != "posted":
+        raise typer.BadParameter(f"{item_id} isn't live on Poshmark: cross-listing follows Poshmark")
+    if dry_run:
+        from thrift_agent.post import runner
+        if daily.poster_now(db).running:
+            runner.request_dry_run(db, item_id, mps)
+            print(f"[green]asked[/] the running poster for a dry run of {item_id} on {', '.join(mps)}: it fills the "
+                  "forms between listings and sends the screenshots and the fields to the ops chat")
+            return
+        if not s.is_prod:
+            raise typer.BadParameter("the dev machine never opens the marketplaces: run it on the Mac")
+        asyncio.run(_crosslist_dry_run(s, db, item_id, mps))
+        return
+    queued = cl.queue(s, db, item_id, mps, why="thrift crosslist")
+    print(f"[green]queued[/] {item_id}: {', '.join(queued)}" if queued else
+          f"{item_id}: already has a row on {', '.join(mps)} (thrift requeue {item_id} --marketplace <m>)")
+
+
+async def _crosslist_dry_run(s, db, iid: str, mps: list[str]) -> None:
+    """The dry run in this process (the poster isn't running): its Chrome profile, the forms filled, nothing saved."""
+    from thrift_agent.post import runner
+    from thrift_agent.post.base import open_browser
+    ps = runner.posters(s)
+    pw, ctx = await open_browser(s.path("chrome_profile"), s["schedule"]["timezone"])
+    try:
+        for mp in mps:
+            out = await runner.run_cross(s, db, ps, ctx, iid, mp, dry=True, request=True)
+            print(f"{mp}: {out.status if out else 'not mapped (see the ops chat)'}"
+                  + (f" — {out.screenshot}" if out and out.screenshot else ""))
+    finally:
+        await ctx.close()
+        await pw.stop()
+
+
+catalogs_app = typer.Typer(help="The marketplaces' listing-form catalogs (data/*_catalog.json, WO30)")
+app.add_typer(catalogs_app, name="catalogs")
+
+
+@catalogs_app.command("check")
+def catalogs_check() -> None:
+    """Load and validate the Depop and Vinted catalogs (the startup check)."""
+    from thrift_agent import catalogs as cats
+    problems = cats.check()
+    for mp, why in problems.items():
+        if why:
+            print(f"[red]{mp}[/]: {escape(why)}")
+        else:
+            c = cats.load(mp)
+            print(f"[green]{mp}[/]: {len(c.categories)} categories")
+    if any(problems.values()):
+        raise typer.Exit(1)
+
+
+@catalogs_app.command("refresh")
+def catalogs_refresh(depop: bool = typer.Option(False, "--depop"), vinted: bool = typer.Option(False, "--vinted"),
+                     ) -> None:
+    """Re-read the catalogs from the Mac's logged-in Chrome (read-only APIs) and rewrite data/*_catalog.json in the
+    same format; the diff goes to the ops chat. The running poster does it between listings."""
+    from thrift_agent.catalogs import refresh as cat_refresh
+    s, db = settings(), _db()
+    mps = [m for m, on in (("depop", depop), ("vinted", vinted)) if on] or ["depop", "vinted"]
+    if daily.poster_now(db).running:
+        cat_refresh.request(db, mps)
+        print(f"[green]asked[/] the running poster to refresh {', '.join(mps)}: the diff goes to the ops chat")
+        return
+    if not s.is_prod:
+        raise typer.BadParameter("the dev machine never opens the marketplaces: run it on the Mac")
+    for line in asyncio.run(cat_refresh.run_standalone(s, db, mps)):
+        print(escape(line))
 
 
 @app.command()

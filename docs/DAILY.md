@@ -28,14 +28,18 @@ technical messages (errors, progress, the Mac waking up) go to Alex privately.
   No other reply comes; that's how you know it was taken.
 
 **After publishing**
-- **"Posted ✓ <title> — $35 · <link>"** — the item is live on Poshmark.
-- **"Posted ✓ <title> — $35 · <link> — check: brand set to 'J. Crew' (from 'J.Crew')"** — it's live, but Poshmark's
-  list didn't have exactly what the listing said, so the Mac picked the closest thing. Have a quick look on Poshmark
-  and fix it there if it isn't right.
+- **"Posted ✓ <title> — $35 · Poshmark <link> · Depop <link> · Vinted <link>"** — the item is live on each site the
+  line names (one line per item, once its sites are done). A site that couldn't take it is simply not in the line.
+- **"… — check: brand set to 'J. Crew' (from 'J.Crew')"** at the end of the line — it's live, but the site's list
+  didn't have exactly what the listing said, so the Mac picked the closest thing (or left the brand empty). Have a
+  quick look on that site and fix it there if it isn't right.
 - **"✓ All done — safe to close the Mac."** under a "Posted ✓" — that was the last one: everything is listed and no
   card is waiting. Close the lid.
 
 **Things to do something about** (each comes once)
+- **"Depop needs you to log in on the Mac."** / **"Vinted asks for a check — open it on the Mac."** — open Chrome on
+  the Mac, go to that site, log in or answer its check. Poshmark goes on meanwhile; that site is tried again the next
+  time the Mac is open.
 - **"🔋 Mac battery low — plug in or I'll pause; nothing will be lost"** — plug the charger in. The Mac finishes
   the listing it is on and waits until it is charging (or above 20%).
 - **"⚠️ <title>: the Mac went to sleep while publishing and I can't see it in the closet."** (or **"… I pressed List

@@ -283,7 +283,7 @@ def test_cover_n_typed_while_the_card_is_open_and_its_limits(tmp_path, facts, mo
     assert approve.handle_update(s, db, bot, _msg("cover 9")).startswith(f"cover {iid}: rejected 9")
     assert "has photos 0..3 — no photo 9" in bot.texts()[-1]
     db.set_item(iid, status="posted")
-    db.upsert_post(iid, "poshmark", status="posted", url="https://poshmark.com/listing/x-0000000000000000000000a1")
+    db.upsert_listing(iid, "poshmark", status="posted", url="https://poshmark.com/listing/x-0000000000000000000000a1")
     with pytest.raises(ValueError, match="already on the marketplace"):
         pipeline.set_cover(s, db, iid, 1)
 

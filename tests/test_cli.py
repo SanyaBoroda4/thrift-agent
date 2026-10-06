@@ -296,7 +296,7 @@ def test_poster_publish_first_runs_the_supervised_publish(monkeypatch):
     from thrift_agent.post.base import Outcome
     seen = {}
 
-    async def fake_publish_first(s, db, iid):
+    async def fake_publish_first(s, db, iid, mp="poshmark"):
         seen["iid"] = iid
         return Outcome("posted", url="https://poshmark.com/listing/x")
 
@@ -315,10 +315,10 @@ def test_poster_publish_first_says_why_it_refused_and_exits_1(monkeypatch):
     import thrift_agent.post.runner as runner
     from thrift_agent.post.base import Outcome
 
-    async def refused(s, db, iid):
+    async def refused(s, db, iid, mp="poshmark"):
         raise ValueError(f"item {iid} has no owner-approved price (approve it in Telegram or `thrift price`)")
 
-    async def failed(s, db, iid):
+    async def failed(s, db, iid, mp="poshmark"):
         return Outcome("failed", error="unconfirmed publish: PosterError: after List This Item no listing address")
     monkeypatch.setattr(cli, "_db", lambda: object())
     for fake, says in ((refused, "has no owner-approved price"), (failed, "failed: unconfirmed publish")):

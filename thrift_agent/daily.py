@@ -75,7 +75,9 @@ def work(s: Settings, db: DB) -> Work:
     enabled = [mp for mp, c in (s.get("marketplaces") or {}).items() if (c or {}).get("enabled")]
     publishable = {iid for iid, _ in runner.publishable(s, db, enabled)} if live(s) else set()
     if live(s):                                        # the one being published right now is still to publish
-        publishable |= {r[0] for r in db.conn.execute("SELECT item_id FROM posts WHERE status='posting'")}
+        publishable |= {r[0] for r in db.conn.execute("SELECT item_id FROM listings WHERE status='posting'")}
+        from thrift_agent import crosslist              # WO30: Depop and Vinted still to do count as work
+        publishable |= {iid for iid, _ in crosslist.pending(s, db)}
     approved = {it["id"] for it in db.items("ready") if it["owner_price"]}
     held = {iid for iid, _, _ in runner.held(s, db, enabled)} if live(s) else approved - publishable
     return Work(new_shares=sum(1 for kind, _ in q if kind == approve.NEW_BATCH),
@@ -158,7 +160,7 @@ def blocked(s: Settings, db: DB, now: datetime | None = None) -> tuple[bool, str
     if db.kv_get(power.BATTERY_KEY):
         return hours_open, "the battery is low — they go on once the Mac is charging", opens
     hour_ago, midnight = windows(now, sch["timezone"])
-    ok, why = can_post(s, db.posted_since(hour_ago), db.posted_since(midnight), now)
+    ok, why = can_post(s, db.listed_since(hour_ago), db.listed_since(midnight), now)
     if not ok and why == "daily cap reached":
         return False, None, opens
     return hours_open, None, opens

@@ -16,3 +16,7 @@ reports/
 .private.bundle
 # the poster's learned brand spellings (WO27): written at runtime on the Mac
 data/brand_aliases.yaml
+data/category_map_learned.json
+data/vinted_package_sizes.json
+data/catalog_raw/
+data/*.new.json

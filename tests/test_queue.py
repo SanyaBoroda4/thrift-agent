@@ -399,7 +399,7 @@ def test_wrong_photos_never_touches_an_item_on_the_marketplace(env, tmp_path, fa
     s, db, bot = env
     bid, (i1, i2, i3) = _split_batch(s, db, tmp_path, facts, [[0, 1, 2], [3, 4], [5]], 6)
     db.set_item(i3, status="posted")
-    db.upsert_post(i3, "poshmark", status="posted", url="https://poshmark.com/listing/x-0000000000000000000000a1")
+    db.upsert_listing(i3, "poshmark", status="posted", url="https://poshmark.com/listing/x-0000000000000000000000a1")
     out = handle_update(s, db, bot, _callback(f"regroup:{i3}"))
     assert out.startswith(f"regroup {i3}: rejected")
     assert any("already on the marketplace (poshmark posted)" in m for m in bot.texts())

@@ -490,7 +490,7 @@ def test_the_listing_being_published_keeps_the_window_working(tmp_path):
     s = _settings(tmp_path)
     db = DB(s.path("db"))
     iid = _ready(db, 1)
-    db.claim_post(iid, "poshmark", "publish")                                # the last one, being published now
+    db.claim_listing(iid, "poshmark")                                # the last one, being published now
     w = daily.work(s, db)
     assert w.to_publish == 1
     daily.poster_beat(db, live=True, busy=iid)

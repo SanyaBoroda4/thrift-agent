@@ -23,6 +23,7 @@ models:
                                # Opus: the live floral skirt 3 of 3 runs right, Sonnet 2 of 3 (~$0.03 an item)
   upright: claude-sonnet-5     # the cover turned four ways, pick the upright one: same answer twice on 10 live items
   labels: claude-opus-5-5      # the labels and tags read closely for premium details (WO26): one call an item with labels
+  crosslist: claude-opus-5-5   # WO30: a category the table doesn't have, picked from the catalog's enum (cached after)
 
 images:
   work_long_edge: 2048
@@ -99,11 +100,26 @@ marketplaces:
     username: ""             # set in private/settings.yaml
     autopublish: false     # flip after the dry-run week
     max_photos: 16
+  # WO30: every item live on Poshmark is cross-listed on Depop, then Vinted, at the same approved price. Each one
+  # publishes only with BOTH poster keys (poster.dry_run false + poster.autopublish_confirmed true) AND its own
+  # autopublish; else a dry run (the form filled, the screenshot and the mapped fields to the ops chat, the tab
+  # closed). shop: the shop / member page name, for the shop check after an interrupted publish (private settings).
   depop:
-    enabled: false         # turn on after the Poshmark poster is stable
-    username: ""           # set in private/settings.yaml; posters() fails fast when an enabled marketplace has none
+    enabled: true
+    autopublish: false     # the owner turns it on after the supervised --publish-first (owner steps, WO30)
+    daily_cap: 25          # new listings a day on Depop (dry runs count: they fill the real form)
+    max_photos: 8
+    shop: ""               # depop.com/<shop>/
+  vinted:
+    enabled: true
     autopublish: false
-    max_photos: 8          # verify against the live form
+    daily_cap: 25
+    max_photos: 20
+    shop: ""               # vinted.com/member/<shop> (the member page's path)
+
+crosslist:
+  gap_seconds: [30, 90]    # between an item's marketplaces (Poshmark -> Depop -> Vinted), then the human gap
+  refresh_days: 7          # the catalogs re-read from the logged-in sites this often, in the daily window
 
 schedule:
   timezone: America/New_York

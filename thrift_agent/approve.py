@@ -715,29 +715,32 @@ def _route(s: Settings, db: DB, bot: Bot, update: dict) -> str:
     return f"ignored: unknown outbox kind {kind}"
 
 
-def _reply_unconfirmed(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int | None) -> str:
+def _reply_unconfirmed(s: Settings, db: DB, bot: Bot, ref: str, text: str, mid: int | None) -> str:
     """A listing that may be live (the Mac slept while publishing, or its address wasn't found; WO28 §3). "posted
     <url>": queued for the poster, which opens the page between listings and records it (✅ confirmed live). "retry":
-    the owner looked and it isn't there — it goes back in line. The CLI twins: `thrift mark-posted`, `thrift retry`."""
-    from thrift_agent import daily
+    the owner looked and it isn't there — it goes back in line. The CLI twins: `thrift mark-posted`, `thrift retry`.
+    WO30: the message's ref names the marketplace when it isn't Poshmark ("<item>:depop")."""
+    from thrift_agent import crosslist, daily
+    iid, mp = crosslist.split_ref(ref)
+    site = crosslist.LABEL.get(mp, mp)
     if m := POSTED_CMD.match(text or ""):
         try:
-            address = pipeline.request_posted(s, db, iid, m[1])
+            address = pipeline.request_posted(s, db, iid, m[1], mp)
         except ValueError as e:
-            _tell(bot, mid, "That isn't a Poshmark listing link for this item — open the listing, copy its link and "
+            _tell(bot, mid, f"That isn't a {site} listing link for this item — open the listing, copy its link and "
                             "reply 'posted <link>' again" if "listing address" in str(e) else str(e))
             return f"unconfirmed {iid}: rejected {m[1]!r}: {e}"
-        _ack(db, bot, "unconfirmed", iid, "✓ link received — checking it")
+        _ack(db, bot, "unconfirmed", ref, "✓ link received — checking it")
         if not daily.poster_now(db).running:
             notify.say(f"{iid}: 'posted {address}' queued — the poster isn't running, it checks when it starts")
         return f"unconfirmed {iid}: posted {address} (queued for the poster)"
     if RETRY_CMD.match(text or ""):
         try:
-            pipeline.retry_unconfirmed(s, db, iid)
+            pipeline.retry_unconfirmed(s, db, iid, mp)
         except ValueError as e:
             _tell(bot, mid, str(e))
             return f"unconfirmed {iid}: retry rejected: {e}"
-        _ack(db, bot, "unconfirmed", iid, "✓ retry — it goes back in line")
+        _ack(db, bot, "unconfirmed", ref, "✓ retry — it goes back in line")
         return f"unconfirmed {iid}: retry"
     bot.send_message(UNCONFIRMED_HINT, reply_to=mid)
     return f"unconfirmed {iid}: unreadable reply {text!r}"

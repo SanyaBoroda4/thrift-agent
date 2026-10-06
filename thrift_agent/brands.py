@@ -64,6 +64,20 @@ def pick(ours: str, options: list[str]) -> tuple[str | None, str | None]:
     return None, f"brand left empty: Poshmark's list has no '{ours}'{offered}"
 
 
+def strict_pick(ours: str, options: list[str]) -> tuple[str | None, str | None]:
+    """WO30 (Depop, Vinted): only the same name normalised, or the shorter clean form without a qualifier we don't have
+    ("J. Crew" for "J.Crew") — nothing looser. (None, why) otherwise: the brand is left empty and the "Posted ✓" check
+    says so."""
+    mine = set(_words(ours))
+    usable = [o for o in dict.fromkeys(options) if o and not (set(_words(o)) - mine) & QUALIFIERS]
+    if same := [o for o in usable if key(o) == key(ours)]:
+        return same[0], None if same[0] == ours else f"brand set to '{same[0]}' (from '{ours}')"
+    base = key(" ".join(w for w in _words(ours) if w not in QUALIFIERS))
+    if base and (plain := [o for o in usable if key(o) == base]):
+        return plain[0], f"brand set to '{plain[0]}' (from '{ours}')"
+    return None, f"brand left empty (no '{ours}' in its brand list)"
+
+
 def for_settings(s) -> "Aliases":
     """The aliases of these settings' file (paths.brand_aliases), or the seed alone when none is set."""
     return Aliases(s.path("brand_aliases") if s.get("paths.brand_aliases") else None)

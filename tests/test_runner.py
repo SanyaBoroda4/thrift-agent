@@ -60,15 +60,22 @@ def test_posters_builds_one_per_enabled_marketplace(tmp_path):
     assert list(runner.posters(_settings(tmp_path, depop=False))) == ["poshmark"]
 
 
-@pytest.mark.parametrize("mp", ["poshmark", "depop"])
 @pytest.mark.parametrize("username", ["", "   ", None])
-def test_posters_require_a_username_for_each_enabled_marketplace(tmp_path, mp, username):
+def test_posters_require_a_username_for_poshmark(tmp_path, username):
     s = _settings(tmp_path, depop=True)
-    s.data["marketplaces"][mp]["username"] = username
-    with pytest.raises(ValueError, match=rf"marketplaces\.{mp}\.username is empty .* private/settings\.yaml"):
+    s.data["marketplaces"]["poshmark"]["username"] = username
+    with pytest.raises(ValueError, match=r"marketplaces\.poshmark\.username is empty .* private/settings\.yaml"):
         runner.posters(s)
-    s.data["marketplaces"][mp]["enabled"] = False                # a disabled marketplace needs no username
-    assert mp not in runner.posters(s)
+    s.data["marketplaces"]["poshmark"]["enabled"] = False         # a disabled marketplace needs no username
+    assert "poshmark" not in runner.posters(s)
+
+
+def test_depop_and_vinted_need_no_shop_name(tmp_path):
+    """WO30: their shop name only serves the shop check after an interrupted publish."""
+    s = _settings(tmp_path, depop=True)
+    s.data["marketplaces"]["depop"]["username"] = ""
+    s.data["marketplaces"]["vinted"] = {"enabled": True}
+    assert set(runner.posters(s)) == {"poshmark", "depop", "vinted"}
 
 
 # ---------------------------------------------------------------- next_job
@@ -83,7 +90,7 @@ def test_next_job_status_matrix(tmp_path, status, dry, expect_job):
     db = DB(s.path("db"))
     iid = _ready_item(db)
     if status:
-        db.upsert_post(iid, "poshmark", status=status)
+        db.upsert_listing(iid, "poshmark", status=status)
     job = runner.next_job(s, db, ["poshmark"], dry)
     if expect_job:
         assert job is not None and job[0] == iid and job[1] == "poshmark" and job[2].title == RENDER.title
@@ -136,7 +143,7 @@ def test_next_job_hold_skips_publish_but_still_returns_drafts(tmp_path, monkeypa
     assert runner.next_job(s, db, ["poshmark"], False)[0] == live               # no hold: the publish goes first
     job = runner.next_job(s, db, ["poshmark"], False, allow_publish=False)
     assert job is not None and (job[0], job[3]) == (draft, "draft")
-    db.upsert_post(draft, "poshmark", status="drafted")
+    db.upsert_listing(draft, "poshmark", status="drafted")
     assert runner.next_job(s, db, ["poshmark"], False, allow_publish=False) is None
     assert db.item(live)["status"] == "ready"
 
@@ -262,15 +269,16 @@ def test_run_records_a_posted_outcome(tmp_path, monkeypatch, harness):
     _run(monkeypatch, s, db, poster, once=True)
 
     assert poster.calls == [("i_1", "publish", False)]
-    row = db.post(iid, "poshmark")
-    assert (row["status"], row["attempts"], row["mode"]) == ("posted", 1, "publish")
+    row = db.listing(iid, "poshmark")
+    assert (row["status"], row["attempts"]) == ("posted", 1)
     assert row["url"] == "https://poshmark.com/listing/abc"
-    assert row["posted_at"] and db.posted_since("2000-01-01T00:00:00+00:00") == 1
+    assert row["posted_at"] and db.listed_since("2000-01-01T00:00:00+00:00") == 1
     assert db.item(iid)["status"] == "posted"
-    assert said.group == [f"Posted ✓ {RENDER.title} — $85 · https://poshmark.com/listing/abc\n"   # nothing guessed:
+    assert said.group == [f"Posted ✓ {RENDER.title} — $85 · Poshmark https://poshmark.com/listing/abc\n"   # nothing guessed:
                           "✓ All done — safe to close the Mac."]                          # no "check"; the last one
     assert not s.flag("PAUSE").exists()
-    assert [e["kind"] for e in db.conn.execute("SELECT kind FROM events WHERE ref=?", (iid,))] == ["post_posted"]
+    assert [e["kind"] for e in db.conn.execute("SELECT kind FROM events WHERE ref=?", (iid,))] == [
+        "post_posted", "posted_announced"]                    # its one "Posted ✓" line (WO30) was said
 
 
 def test_the_posted_message_lists_the_posters_guesses(tmp_path, monkeypatch, harness):
@@ -282,7 +290,7 @@ def test_the_posted_message_lists_the_posters_guesses(tmp_path, monkeypatch, har
     guesses = ["brand set to 'J. Crew' (from 'J.Crew')", "size set to '12' (from '12.5')"]
     _run(monkeypatch, s, db, StubPoster(Outcome("posted", url="https://poshmark.com/listing/abc", guesses=guesses)),
          once=True)
-    assert said.group == [f"Posted ✓ {RENDER.title} — $85 · https://poshmark.com/listing/abc — check: brand set to "
+    assert said.group == [f"Posted ✓ {RENDER.title} — $85 · Poshmark https://poshmark.com/listing/abc — check: brand set to "
                           "'J. Crew' (from 'J.Crew'); size set to '12' (from '12.5')\n✓ All done — safe to close the "
                           "Mac."]
     detail = loads(db.conn.execute("SELECT detail FROM events WHERE ref=? AND kind='post_posted'", (iid,)).fetchone()[0])
@@ -300,9 +308,9 @@ def test_run_records_a_drafted_outcome(tmp_path, monkeypatch, harness):
     _run(monkeypatch, s, db, poster, once=True)
 
     assert poster.calls == [("i_1", "draft", False)]
-    row = db.post(iid, "poshmark")
-    assert (row["status"], row["mode"], row["url"]) == ("drafted", "draft", "https://poshmark.com/listing/draft1")
-    assert row["posted_at"] and db.posted_since("2000-01-01T00:00:00+00:00") == 1
+    row = db.listing(iid, "poshmark")
+    assert (row["status"], row["url"]) == ("drafted", "https://poshmark.com/listing/draft1")
+    assert row["posted_at"] and db.listed_since("2000-01-01T00:00:00+00:00") == 1
     assert db.item(iid)["status"] == "drafted"                # not 'posted': nothing is live yet
     assert any("drafted on poshmark" in m for m in said)
 
@@ -315,7 +323,7 @@ def test_run_hold_unshipped_holds_publish_and_says_so_when_idle(tmp_path, monkey
     poster = StubPoster(Outcome("posted", url="https://poshmark.com/listing/abc"))
     _run(monkeypatch, s, db, poster, once=True)
 
-    assert poster.calls == [] and db.post(iid, "poshmark") is None and db.item(iid)["status"] == "ready"
+    assert poster.calls == [] and db.listing(iid, "poshmark") is None and db.item(iid)["status"] == "ready"
     assert "nothing to do (unshipped orders — publish held (drafts and dry-runs still run))" in capsys.readouterr().out
 
     s.flag("HOLD_UNSHIPPED").unlink()                         # shipped: the same item now goes live
@@ -331,9 +339,9 @@ def test_run_dry_run_is_stamped_and_counts_toward_pacing(tmp_path, monkeypatch, 
     _run(monkeypatch, s, db, poster, once=True)
 
     assert poster.calls == [("i_1", "draft", True)]
-    row = db.post(iid, "poshmark")
+    row = db.listing(iid, "poshmark")
     assert row["status"] == "dryrun" and row["posted_at"]     # it hit the real form: the caps must see it
-    assert db.posted_since("2000-01-01T00:00:00+00:00") == 1
+    assert db.listed_since("2000-01-01T00:00:00+00:00") == 1
     assert db.item(iid)["status"] == "ready"
     assert loads(db.conn.execute("SELECT detail FROM events WHERE kind='post_dryrun'").fetchone()[0])["mp"] == "poshmark"
 
@@ -347,8 +355,8 @@ def test_run_pauses_after_consecutive_failures(tmp_path, monkeypatch, harness):
     _run(monkeypatch, s, db, poster, once=False)
 
     assert len(poster.calls) == 3
-    assert [db.post(i, "poshmark")["status"] for i in ids[:3]] == ["failed"] * 3
-    assert all(db.post(i, "poshmark") is None for i in ids[3:])
+    assert [db.listing(i, "poshmark")["status"] for i in ids[:3]] == ["failed"] * 3
+    assert all(db.listing(i, "poshmark") is None for i in ids[3:])
     assert all(db.item(i)["status"] == "ready" for i in ids)
     pause = s.flag("PAUSE").read_text(encoding="utf-8")
     assert "3 consecutive failures" in pause and "Mismatch" in pause
@@ -373,7 +381,7 @@ def test_run_failure_counter_resets_on_success(tmp_path, monkeypatch, harness):
     monkeypatch.setattr(runner, "_pause", stop_on_fourth_pause)
     _run(monkeypatch, s, db, poster, once=False)
 
-    assert [db.post(i, "poshmark")["status"] for i in ids] == ["failed", "dryrun", "failed", "dryrun"]
+    assert [db.listing(i, "poshmark")["status"] for i in ids] == ["failed", "dryrun", "failed", "dryrun"]
     assert not s.flag("PAUSE").exists()                       # never two failures in a row
 
 
@@ -385,8 +393,8 @@ def test_run_unexpected_exception_requeues_and_pauses(tmp_path, monkeypatch, har
     poster = StubPoster(RuntimeError("kaboom"))
     _run(monkeypatch, s, db, poster, once=True)
 
-    row = db.post(iid, "poshmark")
-    assert row["status"] == "queued" and "RuntimeError: kaboom" in row["last_error"] and row["attempts"] == 1
+    row = db.listing(iid, "poshmark")
+    assert row["status"] == "queued" and "RuntimeError: kaboom" in row["error"] and row["attempts"] == 1
     assert "kaboom" in s.flag("PAUSE").read_text(encoding="utf-8")
     assert sum("Poster paused" in m for m in said) == 1
     assert db.item(iid)["status"] == "ready"
@@ -401,7 +409,7 @@ def test_run_account_blocked_requeues_and_pauses(tmp_path, monkeypatch, harness)
     _run(monkeypatch, s, db, poster, once=False)
 
     assert len(poster.calls) == 1                              # the whole poster stops, not just this item
-    assert db.post(ids[0], "poshmark")["status"] == "queued" and db.post(ids[1], "poshmark") is None
+    assert db.listing(ids[0], "poshmark")["status"] == "queued" and db.listing(ids[1], "poshmark") is None
     assert "not logged in" in s.flag("PAUSE").read_text(encoding="utf-8")
     assert sum("Poster paused" in m for m in said) == 1
 
@@ -427,10 +435,10 @@ def test_a_skipped_item_saves_nothing_is_reported_and_the_loop_goes_on(tmp_path,
     _run(monkeypatch, s, db, poster, once=False)
 
     assert len(poster.calls) == 2                              # B was not held up by A
-    row = db.post(a, "poshmark")
-    assert (row["status"], row["last_error"], row["url"], row["posted_at"]) == ("failed", runner.SKIPPED + SKIP,
+    row = db.listing(a, "poshmark")
+    assert (row["status"], row["error"], row["url"], row["posted_at"]) == ("skipped", runner.SKIPPED + SKIP,
                                                                                  None, None)
-    assert db.item(a)["status"] == "ready" and db.post(b, "poshmark")["status"] == "posted"
+    assert db.item(a)["status"] == "ready" and db.listing(b, "poshmark")["status"] == "posted"
     assert any(m.startswith(f"⏭ skipped on poshmark ({a}): {RENDER.title}\n{SKIP}\nFix the listing, then: thrift "
                             f"requeue {a}") for m in said)
     assert not s.flag("PAUSE").exists() and not any("paused" in m.lower() for m in said)   # max_fail=1: not a failure
@@ -446,7 +454,7 @@ def test_a_skip_leaves_the_failure_counter_alone(tmp_path, monkeypatch, harness)
     _run(monkeypatch, s, db, poster, once=False)
 
     assert len(poster.calls) == 3
-    assert [db.post(i, "poshmark")["last_error"] for i in ids] == ["a", runner.SKIPPED + SKIP, "b"]
+    assert [db.listing(i, "poshmark")["error"] for i in ids] == ["a", runner.SKIPPED + SKIP, "b"]
     assert "2 consecutive failures: b" in s.flag("PAUSE").read_text(encoding="utf-8")
 
 
@@ -460,7 +468,7 @@ def test_a_draft_gated_item_is_held_and_told_once_never_filled(tmp_path, monkeyp
     poster = StubPoster(Outcome("posted", url="https://poshmark.com/listing/x"))
     _run(monkeypatch, s, db, poster, once=True)
     _run(monkeypatch, s, db, poster, once=True)
-    assert poster.calls == [] and db.post(iid, "poshmark") is None and db.item(iid)["status"] == "ready"
+    assert poster.calls == [] and db.listing(iid, "poshmark") is None and db.item(iid)["status"] == "ready"
     assert said.group == [f"⏸ Not published automatically: {RENDER.title} — its text needs a look first."]   # plain
     told = [m for m in said if m.startswith(f"⏸ {iid} held")]                     # the detail: the ops chat, once
     assert told == [f"⏸ {iid} held: {RENDER.title}\nthe copy needs a look: material word without a label: wool\n"
@@ -493,37 +501,37 @@ def test_the_live_loop_end_to_end(tmp_path, monkeypatch, harness):
     _run(monkeypatch, s, db, poster, once=False)
 
     assert [c[1:] for c in poster.calls] == [("publish", False)] * 2
-    assert [db.post(i, "poshmark")["url"] for i in (first, second)] == ["https://poshmark.com/listing/1",
+    assert [db.listing(i, "poshmark")["url"] for i in (first, second)] == ["https://poshmark.com/listing/1",
                                                                           "https://poshmark.com/listing/2"]
     assert all(150 <= g <= 4 * 420 for g in gaps[:2]) and gaps[2] == 60   # human gaps (now and then a longer
     #                                                                        break, next_gap), then the idle minute
-    assert db.post(unpriced, "poshmark") is None and db.post(gated, "poshmark") is None
+    assert db.listing(unpriced, "poshmark") is None and db.listing(gated, "poshmark") is None
     started = [m for m in said if m.startswith("Poster started")]
     assert started and all("LIVE" in m for m in started)
     posted = [m for m in said.group if m.startswith("Posted ✓")]
-    assert posted == [f"Posted ✓ {RENDER.title} — $85 · https://poshmark.com/listing/1 — check: colour 'Teal' left out",
-                      f"Posted ✓ {RENDER.title} — $85 · https://poshmark.com/listing/2"]   # a held one is left: no
+    assert posted == [f"Posted ✓ {RENDER.title} — $85 · Poshmark https://poshmark.com/listing/1 — check: colour 'Teal' left out",
+                      f"Posted ✓ {RENDER.title} — $85 · Poshmark https://poshmark.com/listing/2"]   # a held one is left: no
     #                                                                                         "All done" line
     assert sum(m.startswith("⏸ Not published automatically") for m in said) == 1
 
 
 def test_run_skips_a_job_another_poster_claimed(tmp_path, monkeypatch, harness):
-    """SELECT-then-UPDATE let two poster processes take the same item; claim_post is the lock."""
+    """SELECT-then-UPDATE let two poster processes take the same item; claim_listing is the lock."""
     s = _settings(tmp_path)
     db = DB(s.path("db"))
     ids = [_ready_item(db, seq=i) for i in range(1, 3)]
     poster = StubPoster(Outcome("dryrun"))
-    real_claim = db.claim_post
+    real_claim = db.claim_listing
 
-    def racing_claim(iid, mp, mode):
+    def racing_claim(iid, mp):
         if iid == ids[0]:
-            db.upsert_post(iid, mp, status="posting")          # the other process got there first
-        return real_claim(iid, mp, mode)
+            db.upsert_listing(iid, mp, status="posting")          # the other process got there first
+        return real_claim(iid, mp)
 
-    monkeypatch.setattr(db, "claim_post", racing_claim)
+    monkeypatch.setattr(db, "claim_listing", racing_claim)
     _run(monkeypatch, s, db, poster, once=True)
     assert len(poster.calls) == 1                              # the claimed item was never opened by us
-    assert db.post(ids[0], "poshmark")["status"] == "posting" and db.post(ids[1], "poshmark")["status"] == "dryrun"
+    assert db.listing(ids[0], "poshmark")["status"] == "posting" and db.listing(ids[1], "poshmark")["status"] == "dryrun"
 
 
 def test_run_stop_finishes_the_current_item_then_exits(tmp_path, monkeypatch, harness):
@@ -539,7 +547,7 @@ def test_run_stop_finishes_the_current_item_then_exits(tmp_path, monkeypatch, ha
     monkeypatch.setattr(runner, "_pause", stop_during_gap)
     _run(monkeypatch, s, db, poster, once=False)
     assert len(poster.calls) == 1
-    assert db.post(ids[0], "poshmark")["status"] == "dryrun" and db.post(ids[1], "poshmark") is None
+    assert db.listing(ids[0], "poshmark")["status"] == "dryrun" and db.listing(ids[1], "poshmark") is None
 
 
 def test_run_passes_the_dry_run_stage_and_reports_the_note(tmp_path, monkeypatch, harness):
@@ -637,19 +645,19 @@ def test_publish_first_runs_on_the_mac_only(tmp_path, monkeypatch, harness):
     poster = StubPoster(Outcome("posted", url="https://poshmark.com/listing/x"))
     with pytest.raises(RuntimeError, match="runs on the Mac only"):
         _first(monkeypatch, s, db, poster, iid)
-    assert poster.calls == [] and db.post(iid, "poshmark") is None
+    assert poster.calls == [] and db.listing(iid, "poshmark") is None
 
 
 @pytest.mark.parametrize("setup,why", [
     (lambda db, iid: db.set_item(iid, owner_price=None), "no owner-approved price"),
     (lambda db, iid: db.set_item(iid, owner_price=80), "no owner-approved price"),            # 85 on the listing
     (lambda db, iid: db.set_item(iid, status="awaiting_price"), "is awaiting_price, not ready"),
-    (lambda db, iid: db.upsert_post(iid, "poshmark", status="posting"), "it reached the site"),
-    (lambda db, iid: db.upsert_post(iid, "poshmark", status="failed", url="https://poshmark.com/listing/x"),
+    (lambda db, iid: db.upsert_listing(iid, "poshmark", status="posting"), "it reached the site"),
+    (lambda db, iid: db.upsert_listing(iid, "poshmark", status="failed", url="https://poshmark.com/listing/x"),
      "it reached the site"),
-    (lambda db, iid: db.upsert_post(iid, "poshmark", status="failed",
-                                    last_error=runner.UNCONFIRMED + "no address"), "may have gone live"),
-    (lambda db, iid: db.upsert_post(iid, "poshmark", status="failed", last_error="Mismatch"),
+    (lambda db, iid: db.upsert_listing(iid, "poshmark", status="failed",
+                                    error=runner.UNCONFIRMED + "no address"), "may have gone live"),
+    (lambda db, iid: db.upsert_listing(iid, "poshmark", status="failed", error="Mismatch"),
      r"thrift requeue i_\w+` first"),
 ])
 def test_publish_first_refuses_what_it_must_not_publish(tmp_path, monkeypatch, harness, setup, why):
@@ -675,7 +683,7 @@ def test_publish_first_respects_the_shipping_hold_and_the_hours(tmp_path, monkey
     monkeypatch.setattr(runner, "can_post", lambda s_, hour, day: (False, "outside posting hours"))
     with pytest.raises(ValueError, match="not now: outside posting hours"):
         _first(monkeypatch, s, db, poster, iid)
-    assert poster.calls == [] and db.post(iid, "poshmark") is None
+    assert poster.calls == [] and db.listing(iid, "poshmark") is None
 
 
 def test_publish_first_publishes_once_and_records_the_listing(tmp_path, monkeypatch, harness):
@@ -687,8 +695,8 @@ def test_publish_first_publishes_once_and_records_the_listing(tmp_path, monkeypa
     out = _first(monkeypatch, s, db, poster, iid, confirm="the LIST prompt")
     assert out.status == "posted" and poster.calls == [("i_1", "publish", False)]
     assert poster.confirm == "the LIST prompt"
-    row = db.post(iid, "poshmark")
-    assert (row["status"], row["mode"], row["url"]) == ("posted", "publish", "https://poshmark.com/listing/naturino-6ad")
+    row = db.listing(iid, "poshmark")
+    assert (row["status"], row["url"]) == ("posted", "https://poshmark.com/listing/naturino-6ad")
     assert db.item(iid)["status"] == "posted" and any(m.startswith(f"Posted ✓ {RENDER.title}") for m in said)
 
 
@@ -698,7 +706,7 @@ def test_publish_first_cancelled_at_the_prompt_goes_back_to_the_queue(tmp_path, 
     iid = _approved(db)
     poster = StubPoster(Outcome("cancelled", note="not published: LIST wasn't typed"))
     assert _first(monkeypatch, s, db, poster, iid).status == "cancelled"
-    row = db.post(iid, "poshmark")
+    row = db.listing(iid, "poshmark")
     assert (row["status"], row["url"], row["posted_at"]) == ("queued", None, None)
     assert db.item(iid)["status"] == "ready"
 
@@ -711,8 +719,8 @@ def test_a_publish_that_clicked_but_found_no_listing_is_never_requeued(tmp_path,
     iid = _approved(db)
     poster = StubPoster(Outcome("failed", error="PosterError: after List This Item no listing address", clicked=True))
     _first(monkeypatch, s, db, poster, iid)
-    row = db.post(iid, "poshmark")
-    assert row["status"] == "failed" and row["last_error"].startswith(runner.UNCONFIRMED) and row["url"] is None
+    row = db.listing(iid, "poshmark")
+    assert row["status"] == "failed" and row["error"].startswith(runner.UNCONFIRMED) and row["url"] is None
     assert any(m.startswith(runner.unconfirmed_text(RENDER.title, slept=False)) for m in said)   # ONE reply-able
     assert not any(m.startswith("❌") for m in said)                                    # message (WO28), no ❌
     with pytest.raises(ValueError, match="may be live"):
@@ -738,17 +746,19 @@ def test_publish_first_with_chrome_still_held_by_the_poster_service_claims_nothi
     poster = StubPoster(Outcome("posted", url="https://poshmark.com/listing/x"))
     with pytest.raises(RuntimeError, match="services.sh stop"):
         _first(monkeypatch, s, db, poster, iid)
-    assert poster.calls == [] and db.post(iid, "poshmark") is None          # never left in 'posting'
+    assert poster.calls == [] and db.listing(iid, "poshmark") is None          # never left in 'posting'
 
 
-def test_publish_first_leaves_the_item_ready_while_another_marketplace_still_waits(tmp_path, monkeypatch, harness):
-    s = _settings(tmp_path, role="prod")
+def test_publish_first_posts_the_item_and_queues_depop(tmp_path, monkeypatch, harness):
+    """WO30: the item counts as posted once Poshmark is; Depop (and Vinted) are extra rows, queued to follow."""
+    s = _settings(tmp_path, role="prod", depop=True)
     db = DB(s.path("db"))
     iid = _approved(db)
     poster = StubPoster(Outcome("posted", url="https://poshmark.com/listing/x", clicked=True))
     monkeypatch.setattr(runner, "posters", lambda s_: {"poshmark": poster, "depop": StubPoster(Outcome("posted"))})
     asyncio.run(runner.publish_first(s, db, iid, confirm="confirm"))
-    assert db.post(iid, "poshmark")["status"] == "posted" and db.item(iid)["status"] == "ready"
+    assert db.listing(iid, "poshmark")["status"] == "posted" and db.item(iid)["status"] == "posted"
+    assert db.listing(iid, "depop")["status"] == "queued"
 
 
 # ---------------------------------------------------------------- WO16: two keys, and mark-posted
@@ -792,8 +802,8 @@ def _seeing(shows=True) -> PoshmarkPoster:
 
 
 def _unconfirmed(db: DB, iid: str) -> None:
-    db.upsert_post(iid, "poshmark", status="failed", mode="publish",
-                   last_error=runner.UNCONFIRMED + "PosterError: after List This Item no listing address")
+    db.upsert_listing(iid, "poshmark", status="failed",
+                   error=runner.UNCONFIRMED + "PosterError: after List This Item no listing address")
 
 
 def _mark(monkeypatch, s, db, iid, url=LIVE_URL, poster=None):
@@ -812,14 +822,14 @@ def test_mark_posted_records_a_listing_found_by_hand(tmp_path, monkeypatch, harn
     db = DB(s.path("db"))
     iid = _approved(db)
     _unconfirmed(db, iid)
-    before = db.post(iid, "poshmark")
+    before = db.listing(iid, "poshmark")
     address, poster = _mark(monkeypatch, s, db, iid, url=LIVE_URL + "?utm_source=share")
     assert address == LIVE_URL and poster.seen == (LIVE_URL, RENDER.title, 85)
-    row = db.post(iid, "poshmark")
-    assert (row["status"], row["url"], row["last_error"]) == ("posted", LIVE_URL, None)
+    row = db.listing(iid, "poshmark")
+    assert (row["status"], row["url"], row["error"]) == ("posted", LIVE_URL, None)
     assert row["posted_at"] == before["updated_at"]                     # when it went live, as near as known
     assert db.item(iid)["status"] == "posted"
-    assert said.group == [f"Posted ✓ {RENDER.title} — $85 · {LIVE_URL}\n✓ All done — safe to close the Mac."]
+    assert said.group == [f"Posted ✓ {RENDER.title} — $85 · Poshmark {LIVE_URL}\n✓ All done — safe to close the Mac."]
     assert f"✅ {iid} confirmed live on poshmark (the owner's link): {LIVE_URL}" in said      # the ops chat
     assert "post_confirmed" in [e["kind"] for e in db.conn.execute("SELECT kind FROM events WHERE ref=?", (iid,))]
     assert list((s.path("failed") / "shots").glob(f"{iid}-poshmark-*-confirm.json"))   # the evidence of the check
@@ -828,11 +838,11 @@ def test_mark_posted_records_a_listing_found_by_hand(tmp_path, monkeypatch, harn
 @pytest.mark.parametrize("setup,url,why", [
     (lambda db, iid: None, LIVE_URL, r"only a post in 'unconfirmed publish' can be marked posted or retried "
                                      r"\(i_\w+ has no post\)"),
-    (lambda db, iid: db.upsert_post(iid, "poshmark", status="failed", last_error="Mismatch: title"), LIVE_URL,
+    (lambda db, iid: db.upsert_listing(iid, "poshmark", status="failed", error="Mismatch: title"), LIVE_URL,
      "only a post in 'unconfirmed publish'"),
-    (lambda db, iid: db.upsert_post(iid, "poshmark", status="posted", url=LIVE_URL), LIVE_URL,
+    (lambda db, iid: db.upsert_listing(iid, "poshmark", status="posted", url=LIVE_URL), LIVE_URL,
      "has status posted with https://poshmark.com/listing/"),
-    (lambda db, iid: db.upsert_post(iid, "poshmark", status="dryrun"), LIVE_URL, "has status dryrun"),
+    (lambda db, iid: db.upsert_listing(iid, "poshmark", status="dryrun"), LIVE_URL, "has status dryrun"),
     (_unconfirmed, "https://poshmark.com/closet/someone", "not a poshmark listing address"),
     (_unconfirmed, "https://poshmark.com/listing/x-6ac11149", "not a poshmark listing address"),
 ])
@@ -841,10 +851,10 @@ def test_mark_posted_refuses_anything_else(tmp_path, monkeypatch, harness, setup
     db = DB(s.path("db"))
     iid = _approved(db)
     setup(db, iid)
-    before = dict(db.post(iid, "poshmark") or {})
+    before = dict(db.listing(iid, "poshmark") or {})
     with pytest.raises(ValueError, match=why):
         _mark(monkeypatch, s, db, iid, url=url)
-    assert dict(db.post(iid, "poshmark") or {}) == before                  # nothing changed
+    assert dict(db.listing(iid, "poshmark") or {}) == before                  # nothing changed
 
 
 def test_mark_posted_refuses_an_address_another_item_holds_or_a_page_without_the_item(tmp_path, monkeypatch, harness):
@@ -853,14 +863,14 @@ def test_mark_posted_refuses_an_address_another_item_holds_or_a_page_without_the
     db = DB(s.path("db"))
     iid, other = _approved(db), _ready_item(db, seq=2)
     _unconfirmed(db, iid)
-    db.upsert_post(other, "poshmark", status="posted", url=LIVE_URL)
+    db.upsert_listing(other, "poshmark", status="posted", url=LIVE_URL)
     with pytest.raises(ValueError, match=f"already recorded for item {other}"):
         _mark(monkeypatch, s, db, iid)
-    db.upsert_post(other, "poshmark", url="https://poshmark.com/listing/y-6ac111490000000000000a02")
+    db.upsert_listing(other, "poshmark", url="https://poshmark.com/listing/y-6ac111490000000000000a02")
     with pytest.raises(ValueError, match="doesn't show this item .*nothing changed"):
         _mark(monkeypatch, s, db, iid, poster=_seeing(shows=False))
-    row = db.post(iid, "poshmark")
-    assert row["status"] == "failed" and row["last_error"].startswith(runner.UNCONFIRMED) and row["url"] is None
+    row = db.listing(iid, "poshmark")
+    assert row["status"] == "failed" and row["error"].startswith(runner.UNCONFIRMED) and row["url"] is None
     assert not any("confirmed live" in m for m in said)
 
 
@@ -883,7 +893,7 @@ def test_publish_first_refuses_a_listing_written_before_the_condition_rule(tmp_p
     with pytest.raises(ValueError, match=r"written before the condition rule \(excellent, light wear\): reprocess it "
                                          rf"first — thrift answer {iid} \"recheck\""):
         _first(monkeypatch, s, db, poster, iid)
-    assert poster.calls == [] and db.post(iid, "poshmark") is None
+    assert poster.calls == [] and db.listing(iid, "poshmark") is None
     assert runner.condition_rule_breaks(RENDER) == []
 
 
@@ -965,7 +975,7 @@ def test_a_closed_lid_or_a_low_battery_starts_no_listing_and_it_resumes(tmp_path
     poster = StubPoster(Outcome("posted", url="https://poshmark.com/listing/a"))
     mac["lid"] = True
     _run(monkeypatch, s, db, poster, once=True)
-    assert poster.calls == [] and db.post(iid, "poshmark") is None             # a maintenance wake: nothing started
+    assert poster.calls == [] and db.listing(iid, "poshmark") is None             # a maintenance wake: nothing started
     mac["lid"], mac["battery"] = False, power.Battery(12, False)
     _run(monkeypatch, s, db, poster, once=True)
     _run(monkeypatch, s, db, poster, once=True)
@@ -989,8 +999,8 @@ def test_a_publish_the_mac_slept_through_is_found_in_the_closet_and_posted(tmp_p
     mac["slept"] = True
     _run(monkeypatch, s, db, poster, once=True)
     assert poster.looked == [("i_1", "6ac111490000000000000a01")]                # created_listing_id first
-    row = db.post(iid, "poshmark")
-    assert (row["status"], row["url"], row["last_error"]) == ("posted", url, None)
+    row = db.listing(iid, "poshmark")
+    assert (row["status"], row["url"], row["error"]) == ("posted", url, None)
     assert db.item(iid)["status"] == "posted"
     assert any(m.startswith(f"Posted ✓ {RENDER.title}") and url in m for m in said)   # the normal message
     assert not any(m.startswith("⚠️") for m in said)
@@ -1004,8 +1014,8 @@ def test_a_publish_the_mac_slept_through_and_not_in_the_closet_asks_once(tmp_pat
     poster = Finding(Outcome("failed", error="PosterError: after List This Item no listing address", clicked=True))
     mac["slept"] = True
     _run(monkeypatch, s, db, poster, once=True)
-    row = db.post(iid, "poshmark")
-    assert row["status"] == "failed" and row["last_error"].startswith(runner.UNCONFIRMED) and row["url"] is None
+    row = db.listing(iid, "poshmark")
+    assert row["status"] == "failed" and row["error"].startswith(runner.UNCONFIRMED) and row["url"] is None
     ask = runner.unconfirmed_text(RENDER.title, slept=True)
     assert ask == (f"⚠️ {RENDER.title}: the Mac went to sleep while publishing and I can't see it in the closet. "
                    "Check Poshmark: if it's there, reply 'posted <url>'; if not, reply 'retry'.")
@@ -1013,7 +1023,7 @@ def test_a_publish_the_mac_slept_through_and_not_in_the_closet_asks_once(tmp_pat
                                                          f"retry {iid})"]
     assert runner.next_job(s, db, ["poshmark"], False) is None                 # never retried by itself
     assert pipeline.retry_unconfirmed(s, db, iid) == "ready"                    # the owner's 'retry'
-    assert db.post(iid, "poshmark")["status"] == "queued" and runner.next_job(s, db, ["poshmark"], False)[0] == iid
+    assert db.listing(iid, "poshmark")["status"] == "queued" and runner.next_job(s, db, ["poshmark"], False)[0] == iid
 
 
 def test_a_listing_the_mac_slept_through_before_its_final_click_simply_goes_again(tmp_path, monkeypatch, harness,
@@ -1026,12 +1036,12 @@ def test_a_listing_the_mac_slept_through_before_its_final_click_simply_goes_agai
                      Outcome("posted", url="https://poshmark.com/listing/a"))
     mac["slept"] = True
     _run(monkeypatch, s, db, poster, once=True)
-    row = db.post(iid, "poshmark")
-    assert row["status"] == "queued" and row["last_error"].startswith(runner.SLEPT)    # nothing was submitted
+    row = db.listing(iid, "poshmark")
+    assert row["status"] == "queued" and row["error"].startswith(runner.SLEPT)    # nothing was submitted
     assert not any(m.startswith("❌") for m in said) and not s.flag("PAUSE").exists()  # not a failure (max_fail=1)
     mac["slept"] = False
     _run(monkeypatch, s, db, poster, once=True)
-    assert db.post(iid, "poshmark")["status"] == "posted" and len(poster.calls) == 2
+    assert db.listing(iid, "poshmark")["status"] == "posted" and len(poster.calls) == 2
 
 
 def test_a_listing_still_posting_at_start_is_looked_for_in_the_closet(tmp_path, monkeypatch, harness, mac):
@@ -1040,7 +1050,7 @@ def test_a_listing_still_posting_at_start_is_looked_for_in_the_closet(tmp_path, 
     db = DB(s.path("db"))
     found, lost = _ready_item(db, seq=1), _ready_item(db, seq=2)
     for iid in (found, lost):
-        db.claim_post(iid, "poshmark", "publish")                               # the Mac slept for good mid-listing
+        db.claim_listing(iid, "poshmark")                               # the Mac slept for good mid-listing
     url = "https://poshmark.com/listing/Tory-Burch-Red-Flats-size-75-6ac111490000000000000a02"
 
     class Closet(Finding):
@@ -1050,9 +1060,9 @@ def test_a_listing_still_posting_at_start_is_looked_for_in_the_closet(tmp_path, 
 
     poster = Closet(Outcome("dryrun"))
     asyncio.run(runner.reconcile_stale(s, db, {"poshmark": poster}, FakeCtx()))
-    assert db.post(found, "poshmark")["status"] == "posted" and db.post(found, "poshmark")["url"] == url
-    row = db.post(lost, "poshmark")
-    assert row["status"] == "failed" and row["last_error"].startswith(runner.UNCONFIRMED)   # never retried
+    assert db.listing(found, "poshmark")["status"] == "posted" and db.listing(found, "poshmark")["url"] == url
+    row = db.listing(lost, "poshmark")
+    assert row["status"] == "failed" and row["error"].startswith(runner.UNCONFIRMED)   # never retried
     assert any(m.startswith("Posted ✓") for m in said) and sum(m.startswith("⚠️") for m in said) == 1
 
 
@@ -1067,8 +1077,8 @@ def test_the_owners_posted_url_is_checked_by_the_poster_between_listings(tmp_pat
     assert pipeline.request_posted(s, db, iid, LIVE_URL + "?share=1") == LIVE_URL
     poster = _seeing()
     done = asyncio.run(runner.serve_requests(s, db, {"poshmark": poster}, PageCtx()))
-    assert done == [iid] and db.post(iid, "poshmark")["url"] == LIVE_URL and db.item(iid)["status"] == "posted"
-    assert any(m.startswith(f"Posted ✓ {RENDER.title} — $85 · {LIVE_URL}") for m in said.group)
+    assert done == [iid] and db.listing(iid, "poshmark")["url"] == LIVE_URL and db.item(iid)["status"] == "posted"
+    assert any(m.startswith(f"Posted ✓ {RENDER.title} — $85 · Poshmark {LIVE_URL}") for m in said.group)
     assert pipeline.take_requests(db) == []                                     # taken once
 
     other = _ready_item(db, seq=2)
@@ -1076,5 +1086,5 @@ def test_the_owners_posted_url_is_checked_by_the_poster_between_listings(tmp_pat
     _unconfirmed(db, other)
     pipeline.request_posted(s, db, other, LIVE_URL.replace("0a01", "0a09"))
     asyncio.run(runner.serve_requests(s, db, {"poshmark": _seeing(shows=False)}, PageCtx()))
-    assert db.post(other, "poshmark")["status"] == "failed"                      # nothing changed
+    assert db.listing(other, "poshmark")["status"] == "failed"                      # nothing changed
     assert any(m.startswith("⚠️") and "doesn't show this item" in m for m in said)   # the owner can reply again

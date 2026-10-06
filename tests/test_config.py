@@ -73,8 +73,10 @@ def test_shipped_defaults_have_duplicate_and_depop_settings():
     s = Settings(_shipped("settings.yaml"))
     assert isinstance(s.get("duplicates.lookback_days"), int) and s.get("duplicates.lookback_days") > 0
     assert isinstance(s.get("duplicates.max_distance"), int) and 0 < s.get("duplicates.max_distance") <= 64
-    for mp in ("poshmark", "depop"):
-        assert s.get(f"marketplaces.{mp}.username") == ""       # present but empty: posters() fails fast if enabled
+    assert s.get("marketplaces.poshmark.username") == ""      # present but empty: posters() fails fast if enabled
+    for mp in ("depop", "vinted"):                               # WO30: on, never publishing on their own
+        assert s.get(f"marketplaces.{mp}.enabled") is True and s.get(f"marketplaces.{mp}.autopublish") is False
+        assert s.get(f"marketplaces.{mp}.daily_cap") == 25 and s.get(f"marketplaces.{mp}.shop") == ""
 
 
 # --- load_yaml ---------------------------------------------------------------------------------------------

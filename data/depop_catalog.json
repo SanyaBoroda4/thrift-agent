@@ -1,0 +1,3544 @@
+{
+ "_about": "Depop US listing-form catalog for the Thrift Agent. Read from the logged-in create page and Depop web APIs on 2026-10-06 (read-only, nothing saved).",
+ "source_apis": {
+  "size_mapping": "GET https://webapi.depop.com/presentation/api/v1/attributes/categories/size-mapping/",
+  "size_sets": "GET https://webapi.depop.com/presentation/api/v1/search/filters/size/"
+ },
+ "form": {
+  "photos": {
+   "max": 8,
+   "slot_hints": [
+    "Cover",
+    "Front",
+    "Back",
+    "Side",
+    "Label",
+    "Detail",
+    "Flaw"
+   ]
+  },
+  "title": "none - Depop has no title field; the first line of the description acts as the title",
+  "description": {
+   "max_chars": 1000,
+   "max_hashtags": 5
+  },
+  "category": "Downshift combobox id group-input: pick \"Department > Group > Category\" (the 3-level path keys of categories below)",
+  "comboboxes": {
+   "brand": "brand-input",
+   "condition": "condition-input",
+   "size": "variants-input",
+   "color": "colour-input",
+   "source": "source-input",
+   "age": "age-input",
+   "style": "style-input",
+   "shipping": "shippingMethods-input",
+   "attribute": "attributes.<name>-input",
+   "menu": "<id>-menu"
+  },
+  "quantity_and_sku": "optional fields",
+  "fees": "No selling fees (US); optional Boost costs 12% - never enable",
+  "shipping": "Depop Shipping (USPS) with a package size"
+ },
+ "condition": [
+  "Brand new",
+  "Like new",
+  "Used - Excellent",
+  "Used - Good",
+  "Used - Fair"
+ ],
+ "condition_map_from_agent": {
+  "NWT": "Brand new",
+  "Like New": "Like new",
+  "Excellent": "Like new",
+  "Good": "Used - Good",
+  "never use": "Used - Fair"
+ },
+ "color": {
+  "max": 2,
+  "values": [
+   "Black",
+   "Grey",
+   "White",
+   "Brown",
+   "Tan",
+   "Cream",
+   "Yellow",
+   "Red",
+   "Burgundy",
+   "Orange",
+   "Pink",
+   "Purple",
+   "Blue",
+   "Navy",
+   "Green",
+   "Khaki",
+   "Multi",
+   "Silver",
+   "Gold"
+  ]
+ },
+ "source": {
+  "max": 2,
+  "values": [
+   "Vintage",
+   "Preloved",
+   "Reworked / Upcycled",
+   "Custom",
+   "Handmade",
+   "Deadstock",
+   "Designer",
+   "Repaired"
+  ],
+  "default": "Preloved"
+ },
+ "age": {
+  "max": 1,
+  "values": [
+   "Modern",
+   "00s",
+   "90s",
+   "80s",
+   "70s",
+   "60s",
+   "50s",
+   "Antique"
+  ],
+  "default": "Modern"
+ },
+ "style": {
+  "max": 3,
+  "note": "32 values (Streetwear ... Whimsygoth) - optional; leave empty unless obvious"
+ },
+ "package_sizes": [
+  {
+   "name": "Extra small",
+   "max": "8 oz"
+  },
+  {
+   "name": "Small",
+   "max": "12 oz"
+  },
+  {
+   "name": "Medium",
+   "max": "1 lb"
+  },
+  {
+   "name": "Large",
+   "max": "2 lb"
+  },
+  {
+   "name": "Extra large",
+   "max": "10 lb"
+  }
+ ],
+ "attribute_limits": {
+  "occasion": 3,
+  "material": 4,
+  "body-fit": 2
+ },
+ "attribute_values": {
+  "occasion": [
+   "Casual",
+   "Festival",
+   "Gifting",
+   "Going out",
+   "Outdoors",
+   "Party",
+   "Relaxation",
+   "School",
+   "Ski",
+   "Special Occasion",
+   "Summer",
+   "Holiday",
+   "Winter",
+   "Work",
+   "Workout"
+  ],
+  "material": [
+   "Acrylic",
+   "Canvas",
+   "Cashmere",
+   "Corduroy",
+   "Cotton",
+   "Cotton - Organic",
+   "Cotton - Recycled",
+   "Crochet",
+   "Denim",
+   "Elastane / Lycra / Spandex",
+   "Embellished",
+   "Faux fur",
+   "Faux leather",
+   "Fleece",
+   "Hemp",
+   "Jersey",
+   "Knitted",
+   "Lace",
+   "Leather",
+   "Linen",
+   "Lyocell",
+   "Modal",
+   "Nylon",
+   "Polyester",
+   "Polyester - Recycled",
+   "Rayon",
+   "Rubber",
+   "Silk",
+   "Suede",
+   "Tweed",
+   "Velvet",
+   "Viscose",
+   "Wool"
+  ],
+  "body-fit": [
+   "Maternity",
+   "Petite",
+   "Plus size",
+   "Tall"
+  ],
+  "bottom-fit": [
+   "Acid-washed",
+   "Bleached",
+   "Capri",
+   "Cargo",
+   "Chino",
+   "Distressed",
+   "Embellished",
+   "Embroidered",
+   "Faded",
+   "Painted",
+   "Patched",
+   "Printed",
+   "Ripped",
+   "Stone-washed"
+  ],
+  "bottom-style": [
+   "Bootcut",
+   "Flare",
+   "High waisted",
+   "Low rise",
+   "Skinny",
+   "Slim",
+   "Straight leg",
+   "Tailored",
+   "Wide leg"
+  ],
+  "coat-type": [
+   "Duffle",
+   "Overcoat",
+   "Parka",
+   "Peacoat",
+   "Puffer",
+   "Raincoat",
+   "Teddy",
+   "Trench"
+  ],
+  "jacket-type": [
+   "Blazer",
+   "Bomber",
+   "Cape",
+   "Duster",
+   "Lightweight",
+   "Poncho",
+   "Puffer",
+   "Shacket",
+   "Varsity",
+   "Windbreaker"
+  ],
+  "jacket-type_1": [
+   "Bomber",
+   "Cape",
+   "Duster",
+   "Lightweight",
+   "Poncho",
+   "Puffer",
+   "Shacket",
+   "Varsity",
+   "Windbreaker"
+  ],
+  "jumpssuit-type": [
+   "Palazzo",
+   "Skinny",
+   "Straight leg"
+  ],
+  "dungarees-type": [
+   "Trouser",
+   "Shorts",
+   "Skirt"
+  ],
+  "trainers-type": [
+   "Basketball",
+   "Embellished",
+   "Gym",
+   "Lifestyle",
+   "Running",
+   "Skateboarding",
+   "Football",
+   "Tennis"
+  ],
+  "heel-type": [
+   "Block",
+   "Flat",
+   "High",
+   "Kitten",
+   "Mid"
+  ],
+  "shoe-type": [
+   "Buckle",
+   "Chunky",
+   "Embellished",
+   "Embossed",
+   "Lace up",
+   "Open and peep toe",
+   "Plain",
+   "Platform"
+  ],
+  "boot-type": [
+   "Ankle",
+   "Biker",
+   "Chelsea",
+   "Military",
+   "Knee high",
+   "Lace up",
+   "Mid calf",
+   "Over the knee",
+   "Platform",
+   "Sock"
+  ],
+  "boot-type_1": [
+   "Ankle",
+   "Biker",
+   "Chelsea",
+   "Military"
+  ],
+  "bag-type": [
+   "Backpacks",
+   "Beach bags",
+   "Clutch bags",
+   "Crossbody bags",
+   "Nappy bags",
+   "Bum bags and belt bags",
+   "Luggage and travel",
+   "Makeup and wash bags",
+   "Pencil cases",
+   "Satchels",
+   "Shoulder bags",
+   "Tote bags"
+  ],
+  "bag-type_1": [
+   "Backpacks",
+   "Clutch bags",
+   "Crossbody bags",
+   "Nappy bags",
+   "Bum bags and belt bags",
+   "Pencil cases",
+   "Shoulder bags"
+  ],
+  "hat-type": [
+   "Beanies",
+   "Berets",
+   "Bucket hats",
+   "Caps",
+   "Straw hats"
+  ],
+  "hat-type_1": [
+   "Beanies",
+   "Caps"
+  ],
+  "gloves-and-mittens-type": [
+   "Gloves",
+   "Mittens"
+  ],
+  "sunglasses-type": [
+   "Aviator",
+   "Cat eye",
+   "Oversized",
+   "Round",
+   "Square",
+   "Wayfarer"
+  ],
+  "wallet-type": [
+   "Cardholders",
+   "Purses and pouches",
+   "Money clips",
+   "Wallets"
+  ],
+  "jewellery-type": [
+   "Body jewellery",
+   "Bracelets and anklets",
+   "Brooches and pins",
+   "Earrings and ear cuffs",
+   "Necklaces",
+   "Rings"
+  ],
+  "jewellery-type_1": [
+   "Bracelets and anklets",
+   "Earrings and ear cuffs",
+   "Necklaces",
+   "Rings"
+  ],
+  "watches-type": [
+   "Analogue",
+   "Digital"
+  ],
+  "pajamas-type": [
+   "2 piece",
+   "Bottoms",
+   "Button up",
+   "Camis",
+   "Chemises and slips",
+   "Shorts"
+  ],
+  "boxers-type": [
+   "Boxers",
+   "Briefs",
+   "Thongs",
+   "Trunks"
+  ],
+  "vest-type": [
+   "Cami",
+   "Cropped",
+   "Tank top"
+  ],
+  "fancy-dress-type": [
+   "1960s",
+   "1970s",
+   "2 piece",
+   "Animals and nature",
+   "Christmas",
+   "Halloween",
+   "Superhero",
+   "TV, books and film"
+  ],
+  "dress-length": [
+   "Maxi",
+   "Midi",
+   "Mini"
+  ],
+  "dress-type": [
+   "A-line",
+   "Babydoll",
+   "Blazer",
+   "Bodycon",
+   "Fishtail",
+   "Pencil",
+   "Pleated",
+   "Shirt",
+   "Slip"
+  ],
+  "dress-type_1": [
+   "Shirt"
+  ],
+  "hair-accesories-type": [
+   "Hair accessories",
+   "Hair extensions and wigs"
+  ],
+  "bra-type": [
+   "Balconette",
+   "Bralette",
+   "Padded",
+   "Racerback",
+   "Sports",
+   "Strapless",
+   "T-shirt",
+   "Wireless"
+  ],
+  "panties-type": [
+   "Bikini",
+   "Boyshort",
+   "G-string",
+   "High waisted",
+   "Hipster",
+   "Thong"
+  ],
+  "shapewear-type": [
+   "Bodysuits",
+   "Shorts and panties",
+   "Slips",
+   "Tops"
+  ],
+  "sleepsuit-type": [
+   "Bodysuits",
+   "Sleepsuits"
+  ],
+  "bath-body-type": [
+   "Bath soaks and bubble bath",
+   "Body wash",
+   "Exfoliants and scrubs",
+   "Hand and footcare",
+   "Hand soap",
+   "Moisturisers and body oils",
+   "Suncare and tanning"
+  ],
+  "fragrance-type": [
+   "Body spray",
+   "Deodourant",
+   "Perfume and cologne"
+  ],
+  "hair-product-type": [
+   "Colour",
+   "Conditioner",
+   "Hairspray",
+   "Heat protection",
+   "Shampoo",
+   "Styling",
+   "Treatments and masks"
+  ],
+  "makeup-type": [
+   "Blusher",
+   "Bronzer and contour",
+   "Brushes and tools",
+   "Concealer",
+   "Eye primer",
+   "Eyebrows",
+   "Eyeliner",
+   "Eyeshadow",
+   "Foundation",
+   "Lipstick",
+   "Mascara",
+   "Primer"
+  ],
+  "nails-type": [
+   "False nails",
+   "Nail art",
+   "Nail brushes",
+   "Nail clippers",
+   "Nail files",
+   "Nail polish",
+   "Nail treatments"
+  ],
+  "grooming-type": [
+   "Grooming products",
+   "Grooming tools",
+   "Hair removal"
+  ],
+  "skincare-type": [
+   "Acne and blemish",
+   "Cleanser and exfoliant",
+   "Eye cream",
+   "Makeup remover",
+   "Masks",
+   "Moisturisers",
+   "Peels"
+  ],
+  "tools-type": [
+   "Appliances",
+   "Brushes",
+   "Tools"
+  ],
+  "home": [
+   "Bathroom",
+   "Bedroom",
+   "Dining",
+   "Garden",
+   "Kitchen",
+   "Office"
+  ],
+  "cameras-and-accessories-type": [
+   "Accessories",
+   "Action cameras",
+   "Binoculars",
+   "Camcorders",
+   "DVD",
+   "Digital cameras",
+   "Dummy cameras",
+   "Film cameras",
+   "Instant cameras",
+   "Telescopes and optics",
+   "VHS"
+  ],
+  "cds-and-vinyl-type": [
+   "Blues",
+   "Children's music",
+   "Classical",
+   "Country",
+   "Dance and electronic",
+   "Easy listening",
+   "Folk",
+   "Plays and stories"
+  ],
+  "musical-instruments-and-dj-type": [
+   "Bass guitars and accessories",
+   "Drums and percussion",
+   "Guitars and accessories"
+  ],
+  "camping-hiking-type": [
+   "Bags and packs",
+   "Camping furniture",
+   "Camping kitchens",
+   "Camping shelters",
+   "Child carriers",
+   "Hand and foot warmers",
+   "Navigation",
+   "Sleeping bags"
+  ],
+  "cycling-type": [
+   "Bike tools and equipment",
+   "Bikes",
+   "Components and parts",
+   "Helmets and accessories",
+   "Kids' bikes and accessories",
+   "Protective gear",
+   "Reflectors"
+  ],
+  "fitness-type": [
+   "Balance training",
+   "Pilates",
+   "Strength training",
+   "Trampolines and accessories"
+  ],
+  "golf-type": [
+   "Golf balls",
+   "Golf cart accessories",
+   "Golf carts",
+   "Golf club bag accessories",
+   "Golf club bags",
+   "Golf club organisers",
+   "Golf club parts",
+   "Golf clubs"
+  ],
+  "skates-skateboards-scooters-type": [
+   "Inline and roller skating",
+   "Protective gear",
+   "Scooters",
+   "Skateboarding"
+  ],
+  "water-sports-type": [
+   "Boating",
+   "Canoeing",
+   "Diving and snorkelling",
+   "Kayaking",
+   "Kitesurfing",
+   "Rowing",
+   "Sailing"
+  ],
+  "winter-sports-type": [
+   "Curling",
+   "Ice hockey",
+   "Ice skating",
+   "Skiing",
+   "Sledding",
+   "Snowboarding",
+   "Snowshoeing"
+  ]
+ },
+ "attribute_values_note": "A key ending _1 is a shorter variant list used by some categories (e.g. Kids). Attributes are optional.",
+ "size_sets_US": {
+  "4": {
+   "path": "Women > Tops > US",
+   "sizes": [
+    "One size",
+    "00",
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "14",
+    "16",
+    "18",
+    "20",
+    "22",
+    "24",
+    "26",
+    "28",
+    "30",
+    "32",
+    "34",
+    "36",
+    "XXS",
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL",
+    "XXL",
+    "3XL",
+    "4XL",
+    "5XL",
+    "6XL",
+    "Other"
+   ]
+  },
+  "22": {
+   "path": "Women > Bottoms > US",
+   "sizes": [
+    "One size",
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "14",
+    "16",
+    "18",
+    "20",
+    "22",
+    "24",
+    "26",
+    "28",
+    "30",
+    "32",
+    "34",
+    "36",
+    "21\"",
+    "22\"",
+    "23\"",
+    "24\"",
+    "25\"",
+    "26\"",
+    "27\"",
+    "28\"",
+    "29\"",
+    "30\"",
+    "31\"",
+    "32\"",
+    "33\"",
+    "34\"",
+    "35\"",
+    "36\"",
+    "37\"",
+    "38\"",
+    "39\"",
+    "40\"",
+    "42\"",
+    "44\"",
+    "46\"",
+    "48\"",
+    "50\"",
+    "51\"",
+    "52\"",
+    "53\"",
+    "54\"",
+    "55\"",
+    "56\"",
+    "57\"",
+    "58\"",
+    "59\"",
+    "60\"",
+    "61\"",
+    "62\"",
+    "63\"",
+    "64\"",
+    "65\"",
+    "66\"",
+    "67\"",
+    "68\"",
+    "XXS",
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL",
+    "XXL",
+    "3XL",
+    "4XL",
+    "5XL",
+    "6XL",
+    "Other"
+   ]
+  },
+  "30": {
+   "path": "Women > Lingerie > US",
+   "sizes": [
+    "One size",
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "28D",
+    "30A",
+    "30B",
+    "30C",
+    "30D",
+    "30DD",
+    "30E",
+    "32A",
+    "32B",
+    "32C",
+    "32D",
+    "32DD",
+    "32E",
+    "34A",
+    "34B",
+    "34C",
+    "34D",
+    "34DD",
+    "34E",
+    "36A",
+    "36B",
+    "36C",
+    "36D",
+    "36DD",
+    "36E",
+    "36F",
+    "36G",
+    "38A",
+    "38B",
+    "38C",
+    "38D",
+    "38DD",
+    "38E",
+    "38F",
+    "38G",
+    "A cup",
+    "B cup",
+    "C cup",
+    "D cup",
+    "DD cup",
+    "XXS",
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL",
+    "XXL",
+    "3XL",
+    "4XL",
+    "Other"
+   ]
+  },
+  "38": {
+   "path": "Women > Outerwear > US",
+   "sizes": [
+    "One size",
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "14",
+    "16",
+    "18",
+    "20",
+    "22",
+    "24",
+    "26",
+    "28",
+    "30",
+    "32",
+    "34",
+    "36",
+    "XXS",
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL",
+    "XXL",
+    "3XL",
+    "4XL",
+    "5XL",
+    "6XL",
+    "Other"
+   ]
+  },
+  "46": {
+   "path": "Women > Shoes > US",
+   "sizes": [
+    "One size",
+    "US 3",
+    "US 3.5",
+    "US 4",
+    "US 4.5",
+    "US 5",
+    "US 5.5",
+    "US 6",
+    "US 6.5",
+    "US 7",
+    "US 7.5",
+    "US 8",
+    "US 8.5",
+    "US 9",
+    "US 9.5",
+    "US 10",
+    "US 10.5",
+    "US 11",
+    "US 11.5",
+    "US 12",
+    "US 12.5",
+    "US 13",
+    "US 13.5",
+    "US 14",
+    "Other"
+   ]
+  },
+  "54": {
+   "path": "Men > Tops > US",
+   "sizes": [
+    "One size",
+    "3XS",
+    "XXS",
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL",
+    "XXL",
+    "3XL",
+    "4XL",
+    "5XL",
+    "6XL",
+    "Other"
+   ]
+  },
+  "60": {
+   "path": "Men > Bottoms > US",
+   "sizes": [
+    "One size",
+    "3XS",
+    "XXS",
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL",
+    "XXL",
+    "3XL",
+    "4XL",
+    "5XL",
+    "6XL",
+    "26\"",
+    "27\"",
+    "28\"",
+    "29\"",
+    "30\"",
+    "31\"",
+    "32\"",
+    "33\"",
+    "34\"",
+    "35\"",
+    "36\"",
+    "37\"",
+    "38\"",
+    "39\"",
+    "40\"",
+    "41\"",
+    "42\"",
+    "43\"",
+    "44\"",
+    "45\"",
+    "46\"",
+    "47\"",
+    "48\"",
+    "49\"",
+    "50\"",
+    "51\"",
+    "52\"",
+    "53\"",
+    "54\"",
+    "55\"",
+    "56\"",
+    "57\"",
+    "58\"",
+    "59\"",
+    "60\"",
+    "61\"",
+    "Other"
+   ]
+  },
+  "77": {
+   "path": "Men > Shoes > US",
+   "sizes": [
+    "One size",
+    "US 3",
+    "US 4",
+    "US 5",
+    "US 6",
+    "US 6.5",
+    "US 7",
+    "US 7.5",
+    "US 8",
+    "US 8.5",
+    "US 9",
+    "US 9.5",
+    "US 10",
+    "US 10.5",
+    "US 11",
+    "US 11.5",
+    "US 12",
+    "US 12.5",
+    "US 13",
+    "US 13.5",
+    "US 14",
+    "US 14.5",
+    "US 15",
+    "US 15.5",
+    "US 16",
+    "Other"
+   ]
+  },
+  "84": {
+   "path": "Women > Dresses > US",
+   "sizes": [
+    "One size",
+    "00",
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "14",
+    "16",
+    "18",
+    "20",
+    "22",
+    "24",
+    "26",
+    "28",
+    "30",
+    "32",
+    "34",
+    "36",
+    "XXS",
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL",
+    "XXL",
+    "3XL",
+    "4XL",
+    "5XL",
+    "6XL",
+    "Other"
+   ]
+  },
+  "89": {
+   "path": "Men > Underwear > US",
+   "sizes": [
+    "One size",
+    "3XS",
+    "XXS",
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL",
+    "XXL",
+    "3XL",
+    "4XL",
+    "5XL",
+    "6XL",
+    "Other"
+   ]
+  },
+  "95": {
+   "path": "Men > Outerwear > US",
+   "sizes": [
+    "One size",
+    "3XS",
+    "XXS",
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL",
+    "XXL",
+    "3XL",
+    "4XL",
+    "5XL",
+    "6XL",
+    "Other"
+   ]
+  },
+  "100": {
+   "path": "Kids > Clothing > US",
+   "sizes": [
+    "One size",
+    "0-3 months",
+    "3-6 months",
+    "6-9 months",
+    "9-12 months",
+    "12-18 months",
+    "18-24 months",
+    "2 years",
+    "3 years",
+    "4 years",
+    "5 years",
+    "6 years",
+    "7 years",
+    "8 years",
+    "9 years",
+    "10 years",
+    "11 years",
+    "12 years",
+    "13 years",
+    "14 years",
+    "15 years",
+    "16 years",
+    "Other"
+   ]
+  },
+  "103": {
+   "path": "Kids > Shoes > US",
+   "sizes": [
+    "0-0.5 (newborn)",
+    "1-1.5 (baby)",
+    "2-2.5",
+    "3-3.5",
+    "4-4.5",
+    "5-5.5",
+    "6-6.5",
+    "7-7.5",
+    "8",
+    "8.5",
+    "9-9.5",
+    "10-10.5",
+    "11",
+    "11.5",
+    "12-12.5",
+    "13-13.5",
+    "1-1.5 (adult)",
+    "2-2.5 (adult)",
+    "3 (adult)",
+    "3.5 (adult)",
+    "4 (adult)",
+    "5 (adult)",
+    "6 (adult)",
+    "7 (adult)",
+    "7.5 (adult)",
+    "Other"
+   ]
+  }
+ },
+ "product_types_by_department": {
+  "menswear": [
+   "accessories/other-accessories=-",
+   "bottoms/jeans=60",
+   "footwear/sandals=77",
+   "tops/jerseys=54",
+   "footwear/slides=77",
+   "tops/other-tops=54",
+   "accessories/jewellery=-",
+   "footwear/mules=77",
+   "footwear/ballet-shoes=77",
+   "swim-beach-wear/bikini-and-tankini-tops=89",
+   "footwear/trainers=77",
+   "footwear/courts=77",
+   "footwear/flipflops=77",
+   "nightwear/other-nightwear=89",
+   "swim-beach-wear/other-swim-beach-wear=89",
+   "tops/hoodies=54",
+   "nightwear/pajamas=89",
+   "tops/cardigans=54",
+   "underwear/shapewear=89",
+   "fancy-dress/fancy-dress=-",
+   "tops/bodysuits=54",
+   "footwear/boat-shoes=77",
+   "tops/shirts=54",
+   "footwear/loafers=77",
+   "suits/tailored-jackets=95",
+   "underwear/bandeaus=89",
+   "swim-beach-wear/bikinis-and-tankini-sets=89",
+   "underwear/hosiery-tights=89",
+   "underwear/bras=89",
+   "suits/suits=95",
+   "footwear/oxfords=77",
+   "tops/corsets=54",
+   "accessories/scarf-wraps=-",
+   "suits/tailored-trousers=95",
+   "suits/waistcoats-vests=95",
+   "bottoms/shorts=60",
+   "tops/blouses=54",
+   "underwear/panties=89",
+   "coats-jackets/gilets=95",
+   "accessories/hair-accessories=-",
+   "coats-jackets/coats=95",
+   "jumpsuit-and-playsuit/dungarees-overalls=60",
+   "suits/tuxedos=95",
+   "swim-beach-wear/swimsuit-one-piece=89",
+   "suits/other-suits=95",
+   "footwear/boots=77",
+   "swim-beach-wear/cover-ups=89",
+   "underwear/socks=-",
+   "accessories/hat=-",
+   "swim-beach-wear/bikini-and-tankini-bottoms=89",
+   "accessories/gloves=-",
+   "bottoms/other-bottoms=60",
+   "swim-beach-wear/swim-briefs-shorts=89",
+   "tops/sweatshirts=54",
+   "jumpsuit-and-playsuit/other-jumpsuit-and-playsuit=60",
+   "bottoms/trousers=60",
+   "bottoms/joggers-tracksuits=60",
+   "tops/jumpers=54",
+   "footwear/slippers=77",
+   "underwear/other-underwear=89",
+   "nightwear/robes=89",
+   "accessories/sunglasses=-",
+   "underwear/vest-undershirts=89",
+   "footwear/brogues=77",
+   "coats-jackets/other-coats-jackets=95",
+   "footwear/first-shoes-baby-shoes=-",
+   "footwear/espadrilles=77",
+   "tops/crop-top=54",
+   "coats-jackets/jackets=95",
+   "accessories/belt=-",
+   "jumpsuit-and-playsuit/jumpsuit=60",
+   "accessories/bag=-",
+   "accessories/wallet-purses=-",
+   "bottoms/leggings=60",
+   "jumpsuit-and-playsuit/playsuit-romper=60",
+   "bottoms/skirts=60",
+   "underwear/boxers-and-briefs=89",
+   "footwear/other-footwear=77",
+   "tops/tshirts=54",
+   "tops/polo-shirts=54",
+   "tops/vests-tanks-camis=54",
+   "footwear/clogs=77",
+   "accessories/watch=-"
+  ],
+  "womenswear": [
+   "dresses/dresses=84",
+   "fancy-dress/fancy-dress=-",
+   "bottoms/joggers-tracksuits=22",
+   "coats-jackets/coats=38",
+   "tops/blouses=4",
+   "bottoms/other-bottoms=22",
+   "bottoms/trousers=22",
+   "tops/hoodies=4",
+   "accessories/hat=-",
+   "jumpsuit-and-playsuit/playsuit-romper=22",
+   "accessories/hair-accessories=-",
+   "tops/corsets=4",
+   "footwear/espadrilles=46",
+   "underwear/socks=-",
+   "accessories/belt=-",
+   "underwear/bras=30",
+   "bottoms/shorts=22",
+   "bottoms/skirts=22",
+   "footwear/flipflops=46",
+   "footwear/clogs=46",
+   "jumpsuit-and-playsuit/jumpsuit=22",
+   "accessories/scarf-wraps=-",
+   "underwear/hosiery-tights=-",
+   "footwear/sandals=46",
+   "footwear/brogues=46",
+   "jumpsuit-and-playsuit/dungarees-overalls=22",
+   "dresses/other-dresses=84",
+   "underwear/shapewear=30",
+   "footwear/slippers=46",
+   "underwear/vest-undershirts=30",
+   "tops/bodysuits=4",
+   "dresses/going-out-dresses=84",
+   "dresses/shift-dresses=84",
+   "suits/other-suits=84",
+   "coats-jackets/gilets=38",
+   "tops/jerseys=4",
+   "dresses/babydoll-dresses=84",
+   "swim-beach-wear/bikini-and-tankini-bottoms=30",
+   "tops/sweatshirts=4",
+   "swim-beach-wear/cover-ups=30",
+   "suits/waistcoats-vests=4",
+   "dresses/prom-dresses=84",
+   "swim-beach-wear/bikinis-and-tankini-sets=30",
+   "footwear/courts=46",
+   "accessories/bag=-",
+   "dresses/work-dresses=84",
+   "tops/shirts=4",
+   "tops/other-tops=4",
+   "coats-jackets/jackets=38",
+   "suits/tuxedos=84",
+   "tops/cardigans=4",
+   "tops/tshirts=4",
+   "nightwear/pajamas=30",
+   "accessories/jewellery=-",
+   "footwear/boat-shoes=46",
+   "suits/suits=84",
+   "bottoms/jeans=22",
+   "nightwear/robes=30",
+   "tops/crop-top=4",
+   "accessories/gloves=-",
+   "accessories/wallet-purses=-",
+   "underwear/panties=30",
+   "tops/polo-shirts=4",
+   "tops/vests-tanks-camis=4",
+   "dresses/wedding-dresses=84",
+   "dresses/formal-dresses=84",
+   "suits/tailored-trousers=22",
+   "accessories/other-accessories=-",
+   "footwear/other-footwear=46",
+   "footwear/boots=46",
+   "swim-beach-wear/swim-briefs-shorts=30",
+   "nightwear/other-nightwear=30",
+   "dresses/casual-dresses=84",
+   "dresses/bodycon-dresses=84",
+   "swim-beach-wear/other-swim-beach-wear=30",
+   "tops/jumpers=4",
+   "jumpsuit-and-playsuit/other-jumpsuit-and-playsuit=22",
+   "swim-beach-wear/bikini-and-tankini-tops=30",
+   "footwear/mules=46",
+   "swim-beach-wear/swimsuit-one-piece=30",
+   "dresses/wrap-dresses=84",
+   "accessories/watch=-",
+   "footwear/ballet-shoes=46",
+   "dresses/summer-dresses=84",
+   "footwear/trainers=46",
+   "footwear/loafers=46",
+   "coats-jackets/other-coats-jackets=38",
+   "footwear/first-shoes-baby-shoes=-",
+   "footwear/slides=46",
+   "underwear/bandeaus=30",
+   "underwear/other-underwear=30",
+   "suits/tailored-jackets=38",
+   "bottoms/leggings=22",
+   "accessories/sunglasses=-",
+   "footwear/oxfords=46",
+   "dresses/shirt-dresses=84",
+   "underwear/boxers-and-briefs=30"
+  ],
+  "kidswear": [
+   "dresses/casual-dresses=100",
+   "swim-beach-wear/bikini-and-tankini-tops=-",
+   "dresses/bodycon-dresses=100",
+   "bottoms/skirts=100",
+   "footwear/clogs=103",
+   "bottoms/leggings=100",
+   "dresses/shirt-dresses=100",
+   "jumpsuit-and-playsuit/dungarees-overalls=100",
+   "footwear/flipflops=103",
+   "tops/hoodies=100",
+   "footwear/trainers=103",
+   "footwear/brogues=103",
+   "tops/jerseys=100",
+   "bundles/bundles=100",
+   "bottoms/shorts=100",
+   "dresses/babydoll-dresses=100",
+   "jumpsuit-and-playsuit/other-jumpsuit-and-playsuit=100",
+   "footwear/loafers=103",
+   "jumpsuit-and-playsuit/jumpsuit=100",
+   "footwear/slippers=103",
+   "bottoms/other-bottoms=100",
+   "footwear/espadrilles=103",
+   "tops/shirts=100",
+   "accessories/scarf-wraps=-",
+   "suits/tuxedos=100",
+   "accessories/gloves=-",
+   "accessories/jewellery=-",
+   "dresses/dresses=100",
+   "coats-jackets/gilets=100",
+   "accessories/hat=-",
+   "tops/blouses=100",
+   "suits/waistcoats-vests=100",
+   "accessories/belt=-",
+   "fancy-dress/fancy-dress=-",
+   "dresses/other-dresses=100",
+   "accessories/watch=-",
+   "tops/corsets=100",
+   "footwear/ballet-shoes=103",
+   "footwear/other-footwear=103",
+   "suits/other-suits=100",
+   "accessories/wallet-purses=-",
+   "nightwear/pajamas=-",
+   "dresses/prom-dresses=100",
+   "accessories/bag=-",
+   "tops/sweatshirts=100",
+   "footwear/slides=103",
+   "footwear/mules=103",
+   "coats-jackets/jackets=100",
+   "tops/crop-top=100",
+   "dresses/work-dresses=100",
+   "accessories/sunglasses=-",
+   "bottoms/joggers-tracksuits=100",
+   "footwear/courts=103",
+   "tops/bodysuits=100",
+   "accessories/hair-accessories=-",
+   "tops/jumpers=100",
+   "tops/other-tops=100",
+   "coats-jackets/other-coats-jackets=100",
+   "footwear/boat-shoes=103",
+   "tops/vests-tanks-camis=100",
+   "bottoms/jeans=100",
+   "swim-beach-wear/swim-briefs-shorts=-",
+   "swim-beach-wear/cover-ups=-",
+   "dresses/formal-dresses=100",
+   "swim-beach-wear/other-swim-beach-wear=-",
+   "nightwear/robes=-",
+   "dresses/shift-dresses=100",
+   "bottoms/trousers=100",
+   "jumpsuit-and-playsuit/playsuit-romper=100",
+   "dresses/wedding-dresses=100",
+   "coats-jackets/coats=100",
+   "swim-beach-wear/bikini-and-tankini-bottoms=-",
+   "tops/polo-shirts=100",
+   "suits/tailored-jackets=100",
+   "footwear/boots=103",
+   "tops/tshirts=100",
+   "dresses/going-out-dresses=100",
+   "nightwear/other-nightwear=-",
+   "footwear/oxfords=103",
+   "sleepsuits-and-bodysuits/sleepsuits-babygrows=100",
+   "swim-beach-wear/swimsuit-one-piece=-",
+   "footwear/sandals=103",
+   "dresses/summer-dresses=100",
+   "swim-beach-wear/bikinis-and-tankini-sets=-",
+   "dresses/wrap-dresses=100",
+   "suits/suits=100",
+   "footwear/first-shoes-baby-shoes=103",
+   "suits/tailored-trousers=100",
+   "accessories/other-accessories=-",
+   "tops/cardigans=100"
+  ]
+ },
+ "product_types_note": "\"group/product_type=N\": N is the US size set id; \"-\" means no size field.",
+ "ui_name_to_slug": {
+  "Sneakers": "trainers",
+  "Sweaters": "jumpers",
+  "Pumps": "courts",
+  "Vests (coats and jackets)": "gilets",
+  "Tank tops and camis": "vests-tanks-camis",
+  "Overalls": "dungarees-overalls",
+  "Rompers": "playsuit-romper",
+  "Sweatpants": "joggers-tracksuits",
+  "Pants": "trousers",
+  "Tights": "hosiery-tights",
+  "Undershirts": "vest-undershirts",
+  "Baby shoes": "first-shoes-baby-shoes",
+  "Swimsuits": "swimsuit-one-piece",
+  "Crop tops": "crop-top",
+  "T-shirts": "tshirts",
+  "Robes": "robes",
+  "Pajamas": "pajamas"
+ },
+ "known_gaps": [
+  "Kids > Sleepwear > Robes attributes not read (assume none)",
+  "The UI size dropdown lags after a category change; use size_sets_US via product_types_by_department, then pick the matching visible option"
+ ],
+ "categories": {
+  "Men > Tops > T-shirts": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Tops > Jerseys": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Tops > Hoodies": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Tops > Sweatshirts": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Tops > Sweaters": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Tops > Cardigans": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Tops > Shirts": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Tops > Polo shirts": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Tops > Blouses": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Tops > Crop tops": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Tops > Tank tops and camis": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Tops > Corsets": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Tops > Bodysuits": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Tops > Other": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Bottoms > Jeans": {
+   "attributes": [
+    "body-fit",
+    "bottom-fit",
+    "bottom-style",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Bottoms > Sweatpants": {
+   "attributes": [
+    "body-fit",
+    "bottom-fit",
+    "bottom-style",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Bottoms > Pants": {
+   "attributes": [
+    "body-fit",
+    "bottom-fit",
+    "bottom-style",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Bottoms > Shorts": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Bottoms > Leggings": {
+   "attributes": [
+    "body-fit",
+    "bottom-fit",
+    "bottom-style",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Bottoms > Skirts": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Bottoms > Other": {
+   "attributes": [
+    "body-fit",
+    "bottom-fit",
+    "bottom-style",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Coats and jackets > Coats": {
+   "attributes": [
+    "body-fit",
+    "coat-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Coats and jackets > Jackets": {
+   "attributes": [
+    "body-fit",
+    "jacket-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Coats and jackets > Vests": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Coats and jackets > Other": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Jumpsuits and rompers > Jumpsuits": {
+   "attributes": [
+    "body-fit",
+    "jumpssuit-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Jumpsuits and rompers > Rompers": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Jumpsuits and rompers > Overalls": {
+   "attributes": [
+    "body-fit",
+    "dungarees-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Jumpsuits and rompers > Other": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Suits > Suits": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Suits > Tailored jackets": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Suits > Tailored trousers": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Suits > Vests": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Suits > Tuxedos": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Suits > Other": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Footwear > Sneakers": {
+   "attributes": [
+    "material",
+    "occasion",
+    "trainers-type"
+   ]
+  },
+  "Men > Footwear > Slides": {
+   "attributes": [
+    "heel-type",
+    "material",
+    "occasion",
+    "shoe-type"
+   ]
+  },
+  "Men > Footwear > Sandals": {
+   "attributes": [
+    "material",
+    "occasion",
+    "shoe-type"
+   ]
+  },
+  "Men > Footwear > Flip flops": {
+   "attributes": [
+    "heel-type",
+    "material",
+    "occasion",
+    "shoe-type"
+   ]
+  },
+  "Men > Footwear > Slippers": {
+   "attributes": [
+    "heel-type",
+    "material",
+    "occasion",
+    "shoe-type"
+   ]
+  },
+  "Men > Footwear > Brogues": {
+   "attributes": [
+    "material",
+    "occasion",
+    "shoe-type"
+   ]
+  },
+  "Men > Footwear > Oxfords": {
+   "attributes": [
+    "material",
+    "occasion",
+    "shoe-type"
+   ]
+  },
+  "Men > Footwear > Loafers": {
+   "attributes": [
+    "material",
+    "occasion",
+    "shoe-type"
+   ]
+  },
+  "Men > Footwear > Boots": {
+   "attributes": [
+    "boot-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Footwear > Boat shoes": {
+   "attributes": [
+    "material",
+    "occasion",
+    "shoe-type"
+   ]
+  },
+  "Men > Footwear > Espadrilles": {
+   "attributes": [
+    "heel-type",
+    "material",
+    "occasion",
+    "shoe-type"
+   ]
+  },
+  "Men > Footwear > Ballet shoes": {
+   "attributes": [
+    "heel-type",
+    "material",
+    "occasion",
+    "shoe-type"
+   ]
+  },
+  "Men > Footwear > Clogs": {
+   "attributes": [
+    "heel-type",
+    "material",
+    "occasion",
+    "shoe-type"
+   ]
+  },
+  "Men > Footwear > Pumps": {
+   "attributes": [
+    "heel-type",
+    "material",
+    "occasion",
+    "shoe-type"
+   ]
+  },
+  "Men > Footwear > Mules": {
+   "attributes": [
+    "material",
+    "occasion",
+    "shoe-type"
+   ]
+  },
+  "Men > Footwear > Baby shoes": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Footwear > Other": {
+   "attributes": [
+    "heel-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Accessories > Bags": {
+   "attributes": [
+    "bag-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Accessories > Belts": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Accessories > Hats and caps": {
+   "attributes": [
+    "hat-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Accessories > Gloves": {
+   "attributes": [
+    "gloves-and-mittens-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Accessories > Scarves and wraps": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Accessories > Sunglasses": {
+   "attributes": [
+    "material",
+    "occasion",
+    "sunglasses-type"
+   ]
+  },
+  "Men > Accessories > Wallets and cardholders": {
+   "attributes": [
+    "material",
+    "occasion",
+    "wallet-type"
+   ]
+  },
+  "Men > Accessories > Jewelry": {
+   "attributes": [
+    "jewellery-type",
+    "occasion"
+   ]
+  },
+  "Men > Accessories > Watches": {
+   "attributes": [
+    "occasion",
+    "watches-type"
+   ]
+  },
+  "Men > Accessories > Hair accessories": {
+   "attributes": [
+    "occasion"
+   ]
+  },
+  "Men > Accessories > Other": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Sleepwear > Pajamas": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion",
+    "pajamas-type"
+   ]
+  },
+  "Men > Sleepwear > Robes": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Sleepwear > Other": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Underwear > Bandeaus": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Underwear > Bras": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Underwear > Panties": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Underwear > Shapewear": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Underwear > Boxers and briefs": {
+   "attributes": [
+    "body-fit",
+    "boxers-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Underwear > Undershirts": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion",
+    "vest-type"
+   ]
+  },
+  "Men > Underwear > Socks": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Underwear > Tights": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Underwear > Other": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Swimwear > Bikini and tankini sets": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Swimwear > Bikini and tankini tops": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Swimwear > Bikini and tankini bottoms": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Swimwear > Swimsuits": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Swimwear > Swim briefs and shorts": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Swimwear > Cover ups": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Swimwear > Other": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Men > Costume > Costume": {
+   "attributes": [
+    "body-fit",
+    "fancy-dress-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Tops > T-shirts": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Tops > Jerseys": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Tops > Hoodies": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Tops > Sweatshirts": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Tops > Sweaters": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Tops > Cardigans": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Tops > Shirts": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Tops > Polo shirts": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Tops > Blouses": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Tops > Crop tops": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Tops > Tank tops and camis": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Tops > Corsets": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Tops > Bodysuits": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Tops > Other": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Bottoms > Jeans": {
+   "attributes": [
+    "body-fit",
+    "bottom-fit",
+    "bottom-style",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Bottoms > Sweatpants": {
+   "attributes": [
+    "body-fit",
+    "bottom-fit",
+    "bottom-style",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Bottoms > Pants": {
+   "attributes": [
+    "body-fit",
+    "bottom-fit",
+    "bottom-style",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Bottoms > Shorts": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Bottoms > Leggings": {
+   "attributes": [
+    "body-fit",
+    "bottom-fit",
+    "bottom-style",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Bottoms > Skirts": {
+   "attributes": [
+    "body-fit",
+    "dress-length",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Bottoms > Other": {
+   "attributes": [
+    "body-fit",
+    "bottom-fit",
+    "bottom-style",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Dresses > Casual dresses": {
+   "attributes": [
+    "dress-length"
+   ]
+  },
+  "Women > Dresses > Formal dresses": {
+   "attributes": [
+    "dress-length"
+   ]
+  },
+  "Women > Dresses > Going out dresses": {
+   "attributes": [
+    "dress-length"
+   ]
+  },
+  "Women > Dresses > Prom dresses": {
+   "attributes": [
+    "dress-length"
+   ]
+  },
+  "Women > Dresses > Summer dresses": {
+   "attributes": [
+    "dress-length"
+   ]
+  },
+  "Women > Dresses > Shift dresses": {
+   "attributes": [
+    "dress-length"
+   ]
+  },
+  "Women > Dresses > Shirt dresses": {
+   "attributes": [
+    "dress-length"
+   ]
+  },
+  "Women > Dresses > Wrap dresses": {
+   "attributes": [
+    "dress-length"
+   ]
+  },
+  "Women > Dresses > Babydoll dresses": {
+   "attributes": [
+    "dress-length"
+   ]
+  },
+  "Women > Dresses > Bodycon dresses": {
+   "attributes": [
+    "dress-length"
+   ]
+  },
+  "Women > Dresses > Work dresses": {
+   "attributes": [
+    "dress-length"
+   ]
+  },
+  "Women > Dresses > Wedding dresses": {
+   "attributes": [
+    "dress-length"
+   ]
+  },
+  "Women > Dresses > Other": {
+   "attributes": [
+    "dress-length"
+   ]
+  },
+  "Women > Dresses > Dresses": {
+   "attributes": [
+    "body-fit",
+    "dress-length",
+    "dress-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Coats and jackets > Coats": {
+   "attributes": [
+    "body-fit",
+    "coat-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Coats and jackets > Jackets": {
+   "attributes": [
+    "body-fit",
+    "jacket-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Coats and jackets > Vests": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Coats and jackets > Other": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Jumpsuits and rompers > Jumpsuits": {
+   "attributes": [
+    "body-fit",
+    "jumpssuit-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Jumpsuits and rompers > Rompers": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Jumpsuits and rompers > Overalls": {
+   "attributes": [
+    "body-fit",
+    "dungarees-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Jumpsuits and rompers > Other": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Suits > Suits": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Suits > Tailored jackets": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Suits > Tailored trousers": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Suits > Vests": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Suits > Tuxedos": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Suits > Other": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Footwear > Sneakers": {
+   "attributes": [
+    "material",
+    "occasion",
+    "trainers-type"
+   ]
+  },
+  "Women > Footwear > Slides": {
+   "attributes": [
+    "heel-type",
+    "material",
+    "occasion",
+    "shoe-type"
+   ]
+  },
+  "Women > Footwear > Sandals": {
+   "attributes": [
+    "material",
+    "occasion",
+    "shoe-type"
+   ]
+  },
+  "Women > Footwear > Flip flops": {
+   "attributes": [
+    "heel-type",
+    "material",
+    "occasion",
+    "shoe-type"
+   ]
+  },
+  "Women > Footwear > Slippers": {
+   "attributes": [
+    "heel-type",
+    "material",
+    "occasion",
+    "shoe-type"
+   ]
+  },
+  "Women > Footwear > Brogues": {
+   "attributes": [
+    "material",
+    "occasion",
+    "shoe-type"
+   ]
+  },
+  "Women > Footwear > Oxfords": {
+   "attributes": [
+    "material",
+    "occasion",
+    "shoe-type"
+   ]
+  },
+  "Women > Footwear > Loafers": {
+   "attributes": [
+    "material",
+    "occasion",
+    "shoe-type"
+   ]
+  },
+  "Women > Footwear > Boots": {
+   "attributes": [
+    "boot-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Footwear > Boat shoes": {
+   "attributes": [
+    "material",
+    "occasion",
+    "shoe-type"
+   ]
+  },
+  "Women > Footwear > Espadrilles": {
+   "attributes": [
+    "heel-type",
+    "material",
+    "occasion",
+    "shoe-type"
+   ]
+  },
+  "Women > Footwear > Ballet shoes": {
+   "attributes": [
+    "heel-type",
+    "material",
+    "occasion",
+    "shoe-type"
+   ]
+  },
+  "Women > Footwear > Clogs": {
+   "attributes": [
+    "heel-type",
+    "material",
+    "occasion",
+    "shoe-type"
+   ]
+  },
+  "Women > Footwear > Pumps": {
+   "attributes": [
+    "heel-type",
+    "material",
+    "occasion",
+    "shoe-type"
+   ]
+  },
+  "Women > Footwear > Mules": {
+   "attributes": [
+    "material",
+    "occasion",
+    "shoe-type"
+   ]
+  },
+  "Women > Footwear > Baby shoes": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Footwear > Other": {
+   "attributes": [
+    "heel-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Accessories > Bags": {
+   "attributes": [
+    "bag-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Accessories > Belts": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Accessories > Hats and caps": {
+   "attributes": [
+    "hat-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Accessories > Gloves": {
+   "attributes": [
+    "gloves-and-mittens-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Accessories > Scarves and wraps": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Accessories > Sunglasses": {
+   "attributes": [
+    "material",
+    "occasion",
+    "sunglasses-type"
+   ]
+  },
+  "Women > Accessories > Wallets and cardholders": {
+   "attributes": [
+    "material",
+    "occasion",
+    "wallet-type"
+   ]
+  },
+  "Women > Accessories > Jewelry": {
+   "attributes": [
+    "jewellery-type",
+    "occasion"
+   ]
+  },
+  "Women > Accessories > Watches": {
+   "attributes": [
+    "occasion",
+    "watches-type"
+   ]
+  },
+  "Women > Accessories > Hair accessories": {
+   "attributes": [
+    "hair-accesories-type",
+    "occasion"
+   ]
+  },
+  "Women > Accessories > Other": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Sleepwear > Pajamas": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion",
+    "pajamas-type"
+   ]
+  },
+  "Women > Sleepwear > Robes": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Sleepwear > Other": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Underwear > Bandeaus": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Underwear > Bras": {
+   "attributes": [
+    "body-fit",
+    "bra-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Underwear > Panties": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion",
+    "panties-type"
+   ]
+  },
+  "Women > Underwear > Shapewear": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion",
+    "shapewear-type"
+   ]
+  },
+  "Women > Underwear > Boxers and briefs": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Underwear > Undershirts": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion",
+    "vest-type"
+   ]
+  },
+  "Women > Underwear > Socks": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Underwear > Tights": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Underwear > Other": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Swimwear > Bikini and tankini sets": {
+   "attributes": [
+    "body-fit",
+    "bra-type",
+    "material",
+    "occasion",
+    "panties-type"
+   ]
+  },
+  "Women > Swimwear > Bikini and tankini tops": {
+   "attributes": [
+    "body-fit",
+    "bra-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Swimwear > Bikini and tankini bottoms": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion",
+    "panties-type"
+   ]
+  },
+  "Women > Swimwear > Swimsuits": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Swimwear > Swim briefs and shorts": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Swimwear > Cover ups": {
+   "attributes": [
+    "body-fit",
+    "dress-length",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Swimwear > Other": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Women > Costume > Costume": {
+   "attributes": [
+    "body-fit",
+    "fancy-dress-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Tops > T-shirts": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Tops > Jerseys": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Tops > Hoodies": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Tops > Sweatshirts": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Tops > Sweaters": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Tops > Cardigans": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Tops > Shirts": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Tops > Polo shirts": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Tops > Blouses": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Tops > Crop tops": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Tops > Tank tops and camis": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Tops > Corsets": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Tops > Bodysuits": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Tops > Other": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Bottoms > Jeans": {
+   "attributes": [
+    "body-fit",
+    "bottom-style",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Bottoms > Sweatpants": {
+   "attributes": [
+    "body-fit",
+    "bottom-style",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Bottoms > Pants": {
+   "attributes": [
+    "body-fit",
+    "bottom-style",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Bottoms > Shorts": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Bottoms > Leggings": {
+   "attributes": [
+    "body-fit",
+    "bottom-style",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Bottoms > Skirts": {
+   "attributes": [
+    "body-fit",
+    "dress-length",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Bottoms > Other": {
+   "attributes": [
+    "body-fit",
+    "bottom-style",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Dresses > Casual dresses": {
+   "attributes": [
+    "dress-length"
+   ]
+  },
+  "Kids > Dresses > Formal dresses": {
+   "attributes": [
+    "dress-length"
+   ]
+  },
+  "Kids > Dresses > Going out dresses": {
+   "attributes": [
+    "dress-length"
+   ]
+  },
+  "Kids > Dresses > Prom dresses": {
+   "attributes": [
+    "dress-length"
+   ]
+  },
+  "Kids > Dresses > Summer dresses": {
+   "attributes": [
+    "dress-length"
+   ]
+  },
+  "Kids > Dresses > Shift dresses": {
+   "attributes": [
+    "dress-length"
+   ]
+  },
+  "Kids > Dresses > Shirt dresses": {
+   "attributes": [
+    "dress-length"
+   ]
+  },
+  "Kids > Dresses > Wrap dresses": {
+   "attributes": [
+    "dress-length"
+   ]
+  },
+  "Kids > Dresses > Babydoll dresses": {
+   "attributes": [
+    "dress-length"
+   ]
+  },
+  "Kids > Dresses > Bodycon dresses": {
+   "attributes": [
+    "dress-length"
+   ]
+  },
+  "Kids > Dresses > Work dresses": {
+   "attributes": [
+    "dress-length"
+   ]
+  },
+  "Kids > Dresses > Wedding dresses": {
+   "attributes": [
+    "dress-length"
+   ]
+  },
+  "Kids > Dresses > Other": {
+   "attributes": [
+    "dress-length"
+   ]
+  },
+  "Kids > Dresses > Dresses": {
+   "attributes": [
+    "body-fit",
+    "dress-length",
+    "dress-type_1",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Coats and jackets > Coats": {
+   "attributes": [
+    "body-fit",
+    "coat-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Coats and jackets > Jackets": {
+   "attributes": [
+    "body-fit",
+    "jacket-type_1",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Coats and jackets > Vests": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Coats and jackets > Other": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Jumpsuits and rompers > Jumpsuits": {
+   "attributes": [
+    "body-fit",
+    "jumpssuit-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Jumpsuits and rompers > Rompers": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Jumpsuits and rompers > Overalls": {
+   "attributes": [
+    "body-fit",
+    "dungarees-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Jumpsuits and rompers > Other": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Suits > Suits": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Suits > Tailored jackets": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Suits > Tailored trousers": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Suits > Vests": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Suits > Tuxedos": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Suits > Other": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Footwear > Sneakers": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Footwear > Slides": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Footwear > Sandals": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Footwear > Flip flops": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Footwear > Slippers": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Footwear > Brogues": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Footwear > Oxfords": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Footwear > Loafers": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Footwear > Boots": {
+   "attributes": [
+    "boot-type_1",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Footwear > Boat shoes": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Footwear > Espadrilles": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Footwear > Ballet shoes": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Footwear > Clogs": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Footwear > Pumps": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Footwear > Mules": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Footwear > Baby shoes": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Footwear > Other": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Accessories > Bags": {
+   "attributes": [
+    "bag-type_1",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Accessories > Belts": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Accessories > Hats and caps": {
+   "attributes": [
+    "hat-type_1",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Accessories > Gloves": {
+   "attributes": [
+    "gloves-and-mittens-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Accessories > Scarves and wraps": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Accessories > Sunglasses": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Accessories > Wallets and cardholders": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Accessories > Jewelry": {
+   "attributes": [
+    "jewellery-type_1",
+    "occasion"
+   ]
+  },
+  "Kids > Accessories > Watches": {
+   "attributes": [
+    "occasion"
+   ]
+  },
+  "Kids > Accessories > Hair accessories": {
+   "attributes": [
+    "occasion"
+   ]
+  },
+  "Kids > Accessories > Other": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Sleepwear > Pajamas": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion",
+    "pajamas-type"
+   ]
+  },
+  "Kids > Sleepwear > Robes": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ],
+   "note": "not read by the scan; assumed like the other Kids sleepwear"
+  },
+  "Kids > Sleepwear > Other": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Swimwear > Bikini and tankini sets": {
+   "attributes": [
+    "body-fit",
+    "bra-type",
+    "material",
+    "occasion",
+    "panties-type"
+   ]
+  },
+  "Kids > Swimwear > Bikini and tankini tops": {
+   "attributes": [
+    "body-fit",
+    "bra-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Swimwear > Bikini and tankini bottoms": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion",
+    "panties-type"
+   ]
+  },
+  "Kids > Swimwear > Swimsuits": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Swimwear > Swim briefs and shorts": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Swimwear > Cover ups": {
+   "attributes": [
+    "body-fit",
+    "dress-length",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Swimwear > Other": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Costume > Costume": {
+   "attributes": [
+    "body-fit",
+    "fancy-dress-type",
+    "material",
+    "occasion"
+   ]
+  },
+  "Kids > Onesies and sleepers > Onesies and sleepers": {
+   "attributes": [
+    "body-fit",
+    "material",
+    "occasion",
+    "sleepsuit-type"
+   ]
+  },
+  "Kids > Clothing bundles > Clothing bundles": {
+   "attributes": []
+  },
+  "Everything else > Beauty > Bath and body": {
+   "attributes": [
+    "bath-body-type"
+   ]
+  },
+  "Everything else > Beauty > Fragrance": {
+   "attributes": [
+    "fragrance-type"
+   ]
+  },
+  "Everything else > Beauty > Haircare": {
+   "attributes": [
+    "hair-product-type"
+   ]
+  },
+  "Everything else > Beauty > Makeup": {
+   "attributes": [
+    "makeup-type"
+   ]
+  },
+  "Everything else > Beauty > Nails": {
+   "attributes": [
+    "nails-type"
+   ]
+  },
+  "Everything else > Beauty > Grooming": {
+   "attributes": [
+    "grooming-type"
+   ]
+  },
+  "Everything else > Beauty > Skincare": {
+   "attributes": [
+    "skincare-type"
+   ]
+  },
+  "Everything else > Beauty > Tools and brushes": {
+   "attributes": [
+    "tools-type"
+   ]
+  },
+  "Everything else > Face masks and coverings > Face masks and coverings": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Everything else > Home > Dinnerware": {
+   "attributes": [
+    "home"
+   ]
+  },
+  "Everything else > Home > Furniture": {
+   "attributes": [
+    "home"
+   ]
+  },
+  "Everything else > Home > Home accessories": {
+   "attributes": [
+    "home"
+   ]
+  },
+  "Everything else > Home > Soft furnishings and textiles": {
+   "attributes": [
+    "home"
+   ]
+  },
+  "Everything else > Home > Storage and organisation": {
+   "attributes": [
+    "home"
+   ]
+  },
+  "Everything else > Tech accessories > Laptop bags and cases": {
+   "attributes": [
+    "material",
+    "occasion"
+   ]
+  },
+  "Everything else > Tech accessories > Phone cases": {
+   "attributes": []
+  },
+  "Everything else > Cameras and film > Cameras and film": {
+   "attributes": [
+    "cameras-and-accessories-type"
+   ]
+  },
+  "Everything else > Art > Collectibles": {
+   "attributes": []
+  },
+  "Everything else > Art > Drawings and illustrations": {
+   "attributes": []
+  },
+  "Everything else > Art > Mixed media": {
+   "attributes": []
+  },
+  "Everything else > Art > Paintings": {
+   "attributes": []
+  },
+  "Everything else > Art > Photography": {
+   "attributes": []
+  },
+  "Everything else > Art > Prints": {
+   "attributes": []
+  },
+  "Everything else > Art > Sculptures": {
+   "attributes": []
+  },
+  "Everything else > Art > Stickers": {
+   "attributes": []
+  },
+  "Everything else > Books and magazines > Books": {
+   "attributes": []
+  },
+  "Everything else > Books and magazines > Magazines": {
+   "attributes": []
+  },
+  "Everything else > Music > CDs and vinyl": {
+   "attributes": [
+    "cds-and-vinyl-type"
+   ]
+  },
+  "Everything else > Music > Musical instruments": {
+   "attributes": [
+    "musical-instruments-and-dj-type"
+   ]
+  },
+  "Everything else > Party supplies > Cake decorating": {
+   "attributes": []
+  },
+  "Everything else > Party supplies > Cards, invitations, gift wrap": {
+   "attributes": []
+  },
+  "Everything else > Party supplies > Decorations": {
+   "attributes": []
+  },
+  "Everything else > Party supplies > Party favors": {
+   "attributes": []
+  },
+  "Everything else > Party supplies > Party hats": {
+   "attributes": []
+  },
+  "Everything else > Sports equipment > Ball sports": {
+   "attributes": [
+    "occasion"
+   ]
+  },
+  "Everything else > Sports equipment > Camping and hiking": {
+   "attributes": [
+    "camping-hiking-type",
+    "occasion"
+   ]
+  },
+  "Everything else > Sports equipment > Cycling": {
+   "attributes": [
+    "cycling-type",
+    "occasion"
+   ]
+  },
+  "Everything else > Sports equipment > Fitness": {
+   "attributes": [
+    "fitness-type",
+    "occasion"
+   ]
+  },
+  "Everything else > Sports equipment > Golf": {
+   "attributes": [
+    "golf-type",
+    "occasion"
+   ]
+  },
+  "Everything else > Sports equipment > Skates, skateboards and scooters": {
+   "attributes": [
+    "occasion",
+    "skates-skateboards-scooters-type"
+   ]
+  },
+  "Everything else > Sports equipment > Racket sports": {
+   "attributes": [
+    "occasion"
+   ]
+  },
+  "Everything else > Sports equipment > Water sports": {
+   "attributes": [
+    "occasion",
+    "water-sports-type"
+   ]
+  },
+  "Everything else > Sports equipment > Winter sports": {
+   "attributes": [
+    "occasion",
+    "winter-sports-type"
+   ]
+  },
+  "Everything else > Toys > Action figures and playsets": {
+   "attributes": []
+  },
+  "Everything else > Toys > Building sets and blocks": {
+   "attributes": []
+  },
+  "Everything else > Toys > Cars and vehicles": {
+   "attributes": []
+  },
+  "Everything else > Toys > Dolls and accessories": {
+   "attributes": []
+  },
+  "Everything else > Toys > Learning toys": {
+   "attributes": []
+  },
+  "Everything else > Toys > Puzzles and games": {
+   "attributes": []
+  },
+  "Everything else > Toys > Stuffed animals": {
+   "attributes": []
+  },
+  "Everything else > Toys > Trading cards": {
+   "attributes": []
+  },
+  "Everything else > Umbrellas > Umbrellas": {
+   "attributes": [
+    "occasion"
+   ]
+  }
+ }
+}

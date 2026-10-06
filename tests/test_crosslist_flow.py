@@ -1,0 +1,324 @@
+"""WO30 cross-listing through the poster loop, with stub posters (no browser, no network, no model): Poshmark → Depop
+→ Vinted per item, 30–90 s apart; ONE "Posted ✓" line per item naming every marketplace; "All done" only when nothing
+is left on any of them; a dry run's screenshot and fields to the ops chat; a logged-out marketplace stopped for the
+window with one plain line; failures retried next window, 3 attempts; the daily cap; the backfill."""
+import asyncio
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from thrift_agent import approve, crosslist, daily, notify, pipeline
+from thrift_agent.catalogs.common import MappingError
+from thrift_agent.config import Settings
+from thrift_agent.db import DB
+from thrift_agent.post import runner
+from thrift_agent.post.base import AccountBlocked, Outcome
+from thrift_agent.schema import Render
+
+TITLE = "Tory Burch Red Ballet Flats size 7.5"
+RENDER = Render(marketplace="poshmark", title=TITLE, description="Red flats.", tags=[], brand="Tory Burch",
+                department="Women", category="Shoes", subcategory="Flats & Loafers", size="7.5", colors=["Red"],
+                condition="good", price=85, photos=[], sku="i_1")
+
+
+def _settings(tmp_path, depop_live=True, vinted_live=True, cap=25) -> Settings:
+    paths = {k: str(tmp_path / k) for k in ("inbox", "work", "archive", "failed", "chrome_profile", "control")}
+    s = Settings({
+        "machine_role": "prod",
+        "paths": {**paths, "db": str(tmp_path / "state.db")},
+        "poster": {"dry_run": False, "autopublish_confirmed": True, "max_consecutive_failures": 3},
+        "schedule": {"timezone": "America/New_York", "hours": ["00:00", "23:59"], "per_hour_max": 10, "daily_cap": 25,
+                     "gap_seconds": [150, 420]},
+        "marketplaces": {"poshmark": {"enabled": True, "username": "closet", "autopublish": True, "max_photos": 16},
+                         "depop": {"enabled": True, "autopublish": depop_live, "daily_cap": cap},
+                         "vinted": {"enabled": True, "autopublish": vinted_live, "daily_cap": cap}},
+        "crosslist": {"gap_seconds": [30, 90]},
+        "models": {},
+    })
+    s.ensure_dirs()
+    return s
+
+
+def _item(db: DB, seq: int = 1) -> str:
+    bid = db.add_batch(f"share_{seq}", 3)
+    db.set_batch(bid, status="split")
+    iid = db.add_item(bid, seq, f"work/{seq}")
+    db.set_item(iid, status="ready", owner_price=85, gate={"decision": "publish", "reasons": []},
+                renders={"poshmark": RENDER.model_copy(update={"sku": iid}).model_dump()})
+    return iid
+
+
+class Stub:
+    """A poster: each post() returns the next Outcome (an Exception instance is raised)."""
+
+    def __init__(self, name, *results):
+        self.name, self.results, self.calls = name, list(results), []
+        self.fields = self.confirm = None
+        self.strict = False
+
+    async def post(self, ctx, r, mode, dry_run, shots, stage="form"):
+        self.calls.append((r.sku, dry_run))
+        res = self.results.pop(0) if len(self.results) > 1 else self.results[0]
+        if isinstance(res, Exception):
+            raise res
+        url = (res.url or "").replace("{iid}", r.sku).replace("{slug}", r.sku.replace("_", "-"))
+        res = Outcome(res.status, url=url or None, error=res.error,
+                      clicked=res.clicked, guesses=list(res.guesses))
+        shots.mkdir(parents=True, exist_ok=True)
+        res.screenshot = str(shots / f"{r.sku}-{self.name}.png")
+        Path(res.screenshot).write_bytes(b"png")
+        return res
+
+    async def find_live(self, ctx, r, since, created=None):
+        return None, {}
+
+    def listing_address(self, url):
+        return url
+
+
+class Fields(SimpleNamespace):
+    def model_dump(self):
+        return dict(self.__dict__)
+
+
+def fields_for(mp):
+    return Fields(price=85, photos=["/w/cover.jpg"], description=f"{TITLE}\n\nRed flats.", size="US 7.5",
+                  condition="Used - Good" if mp == "depop" else "Good", colors=["Red"], guesses=[],
+                  category="Women > Footwear > Ballet shoes" if mp == "depop" else None,
+                  category_path="Women > Shoes > Ballerinas" if mp == "vinted" else None,
+                  title=TITLE if mp == "vinted" else None, hashtags=[])
+
+
+@pytest.fixture
+def loop(monkeypatch):
+    """The poster loop with its browser, pacing and Telegram stubbed. Returns (said, run)."""
+    said = SimpleNamespace(group=[], ops=[], pauses=[])
+
+    class Ctx:
+        async def close(self):
+            pass
+
+    class PW:
+        async def stop(self):
+            pass
+
+    async def browser(profile, tz):
+        return PW(), Ctx()
+
+    async def pause(stop, seconds):
+        said.pauses.append(seconds)
+        if seconds == 60 or len(said.pauses) > 40:
+            stop.set()
+
+    monkeypatch.setattr(runner, "open_browser", browser)
+    monkeypatch.setattr(runner, "_pause", pause)
+    monkeypatch.setattr(runner, "_paused", lambda db: None)
+    monkeypatch.setattr(runner, "map_fields", lambda mp, view: fields_for(mp))
+    monkeypatch.setattr(runner.ItemView, "from_row", classmethod(lambda cls, it: SimpleNamespace(
+        render=SimpleNamespace(title=TITLE))))
+    monkeypatch.setattr(notify, "group", lambda text: said.group.append(text))
+    monkeypatch.setattr(notify, "group_photo", lambda path, caption: said.group.append(caption))
+    monkeypatch.setattr(notify, "say", lambda text: said.ops.append(text))
+    monkeypatch.setattr(notify, "photo", lambda path, caption: said.ops.append(caption))
+    monkeypatch.setattr(notify, "ops_photo", lambda path, caption: said.ops.append(caption))
+    monkeypatch.setattr("thrift_agent.catalogs.refresh.due", lambda s, db, mp, now=None: False)
+
+    def run(s, db, posters):
+        monkeypatch.setattr(runner, "posters", lambda s_: posters)
+        asyncio.run(runner.run(s, db))
+    return said, run
+
+
+def _posters(posh=None, depop=None, vinted=None):
+    return {"poshmark": posh or Stub("poshmark", Outcome("posted", url="https://poshmark.com/listing/{iid}")),
+            "depop": depop or Stub("depop", Outcome("posted", url="https://www.depop.com/products/shop-{slug}/")),
+            "vinted": vinted or Stub("vinted", Outcome("posted", url="https://www.vinted.com/items/{iid}"))}
+
+
+def test_one_item_on_three_marketplaces_one_line(tmp_path, loop):
+    said, run = loop
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid = _item(db)
+    ps = _posters()
+    run(s, db, ps)
+    assert [len(p.calls) for p in ps.values()] == [1, 1, 1]
+    assert said.group == [f"Posted ✓ {TITLE} — $85 · Poshmark https://poshmark.com/listing/{iid} · Depop "
+                          f"https://www.depop.com/products/shop-{iid.replace('_', '-')}/ · Vinted https://www.vinted.com/items/{iid}\n"
+                          "✓ All done — safe to close the Mac."]
+    assert all(30 <= p <= 90 for p in said.pauses[:2]) and said.pauses[2] >= 150      # then the human gap
+    rows = {r["marketplace"]: r for r in db.listings_for(iid)}
+    assert [rows[m]["status"] for m in ("poshmark", "depop", "vinted")] == ["posted"] * 3
+    assert rows["depop"]["listing_id"] == f"shop-{iid.replace('_', '-')}" and rows["vinted"]["price"] == 85
+    assert json.loads(rows["vinted"]["fields_json"])["condition"] == "Good"
+    assert db.item(iid)["status"] == "posted"
+
+
+def test_dry_run_marketplaces_send_their_screenshot_to_the_ops_chat(tmp_path, loop):
+    said, run = loop
+    s = _settings(tmp_path, depop_live=False, vinted_live=False)
+    db = DB(s.path("db"))
+    iid = _item(db)
+    ps = _posters(depop=Stub("depop", Outcome("dryrun")), vinted=Stub("vinted", Outcome("dryrun")))
+    run(s, db, ps)
+    assert ps["depop"].calls == [(iid, True)] and ps["vinted"].calls == [(iid, True)]   # dry: never published
+    assert said.group == [f"Posted ✓ {TITLE} — $85 · Poshmark https://poshmark.com/listing/{iid}\n"
+                          "✓ All done — safe to close the Mac."]
+    dry = [m for m in said.ops if m.startswith("🧪 dry-run")]
+    assert len(dry) == 2 and "condition: Used - Good" in dry[0] and "category: Women > Footwear" in dry[0]
+    assert [r["status"] for r in db.listings_for(iid)] == ["posted", "dryrun", "dryrun"]
+
+
+def test_all_done_only_when_no_marketplace_has_anything_left(tmp_path, loop):
+    said, run = loop
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    a, b = _item(db, 1), _item(db, 2)
+    run(s, db, _posters())
+    assert len(said.group) == 2
+    assert "All done" not in said.group[0] and said.group[0].startswith(f"Posted ✓ {TITLE} — $85 · Poshmark ")
+    assert said.group[1].endswith("✓ All done — safe to close the Mac.") and f"/listing/{b}" in said.group[1]
+    assert f"/listing/{a}" in said.group[0]
+
+
+def test_a_value_that_cant_be_mapped_skips_only_that_marketplace(tmp_path, loop, monkeypatch):
+    said, run = loop
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid = _item(db)
+
+    def mapping(mp, view):
+        if mp == "depop":
+            raise MappingError("size 'XL' isn't on Depop's Kids > Clothing > US sizes")
+        return fields_for(mp)
+    monkeypatch.setattr(runner, "map_fields", mapping)
+    ps = _posters()
+    run(s, db, ps)
+    assert ps["depop"].calls == [] and db.listing(iid, "depop")["status"] == "skipped"
+    assert said.group[0].startswith(f"Posted ✓ {TITLE} — $85 · Poshmark https://poshmark.com/listing/{iid} · Vinted ")
+    assert any(m.startswith(f"⏭ Depop skipped ({iid})") and "can't map" in m for m in said.ops)
+
+
+def test_a_logged_out_marketplace_stops_for_the_window_with_one_plain_line(tmp_path, loop):
+    said, run = loop
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    a, b = _item(db, 1), _item(db, 2)
+    ps = _posters(depop=Stub("depop", AccountBlocked("Depop: not logged in in the poster profile")))
+    run(s, db, ps)
+    assert said.group.count("Depop needs you to log in on the Mac.") == 1
+    assert len(ps["depop"].calls) == 1                                     # not tried again this window
+    assert [db.listing(i, "depop")["status"] for i in (a, b)] == ["queued", "queued"]
+    assert all(" · Vinted " in line for line in said.group if line.startswith("Posted ✓"))
+    assert crosslist.blocked(db, "depop")
+    db.kv_set(daily.SESSION_KEY, "next-window")                           # the Mac opened again
+    ps["depop"] = Stub("depop", Outcome("posted", url="https://www.depop.com/products/shop-{slug}/"))
+    run(s, db, ps)
+    assert [db.listing(i, "depop")["status"] for i in (a, b)] == ["posted", "posted"]
+    assert not crosslist.blocked(db, "depop")
+
+
+def test_a_failure_before_publishing_is_retried_next_window_three_times(tmp_path, loop):
+    said, run = loop
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid = _item(db)
+    ps = _posters(vinted=Stub("vinted", Outcome("failed", error="PosterError: no row 'Ballerinas'")))
+    for window in ("w1", "w2", "w3"):
+        db.kv_set(daily.SESSION_KEY, window)
+        run(s, db, ps)
+    assert len(ps["vinted"].calls) == 3 and db.listing(iid, "vinted")["status"] == "failed"
+    db.kv_set(daily.SESSION_KEY, "w4")
+    run(s, db, ps)
+    row = db.listing(iid, "vinted")
+    assert len(ps["vinted"].calls) == 3 and row["status"] == "skipped" and "3 attempts" in row["error"]
+    assert any(m.startswith(f"⏭ Vinted skipped for {iid} after 3 attempts") for m in said.ops)
+    assert not any("Vinted" in m for m in said.group if not m.startswith("Posted ✓"))   # the group never hears it
+
+
+def test_an_unconfirmed_publish_is_asked_and_never_published_again(tmp_path, loop, monkeypatch):
+    said, run = loop
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid = _item(db)
+    asked = []
+    monkeypatch.setattr(runner, "ask_unconfirmed", lambda db_, i, mp, text: asked.append((i, mp, text)))
+    ps = _posters(depop=Stub("depop", Outcome("failed", clicked=True, error="PosterError: no product address")))
+    run(s, db, ps)
+    assert asked == [(iid, "depop", f"⚠️ {TITLE}: I pressed Post on Depop but can't see it in the shop. Check Depop: "
+                                    "if it's there, reply 'posted <url>'; if not, reply 'retry'.")]
+    db.kv_set(daily.SESSION_KEY, "next")
+    run(s, db, ps)
+    assert len(ps["depop"].calls) == 1                                    # never retried blind (invariant 4)
+    assert db.listing(iid, "depop")["error"].startswith("unconfirmed publish: ")
+
+
+def test_the_daily_cap_is_per_marketplace(tmp_path, loop):
+    said, run = loop
+    s = _settings(tmp_path, cap=1)
+    db = DB(s.path("db"))
+    _a, b = _item(db, 1), _item(db, 2)
+    ps = _posters()
+    run(s, db, ps)
+    assert [len(p.calls) for p in ps.values()] == [2, 1, 1]               # Poshmark has its own cap
+    assert db.listing(b, "depop")["status"] == "queued" and said.group[-1].endswith("safe to close the Mac.")
+
+
+def test_the_unconfirmed_reply_names_its_marketplace(tmp_path, monkeypatch):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid = _item(db)
+    db.upsert_listing(iid, "poshmark", status="posted", url="https://poshmark.com/listing/x")
+    db.upsert_listing(iid, "depop", status="failed", error="unconfirmed publish: no product address")
+    db.add_outbox("100", 77, "unconfirmed", crosslist.unconfirmed_ref(iid, "depop"))
+    seen = []
+    monkeypatch.setattr(pipeline, "request_posted", lambda s_, db_, i, url, mp="poshmark": seen.append((i, url, mp))
+                        or url)
+    bot = SimpleNamespace(chat_id="100", calls=[], call=lambda m, **p: True, send_message=lambda *a, **k: 1)
+    monkeypatch.setattr(approve, "_ack", lambda *a, **k: None)
+    out = approve._reply_unconfirmed(s, db, bot, f"{iid}:depop", "posted https://www.depop.com/products/shop-x/", 77)
+    assert seen == [(iid, "https://www.depop.com/products/shop-x/", "depop")] and "queued" in out
+    assert pipeline.listing_address("depop", "https://www.depop.com/products/shop-x") == \
+        "https://www.depop.com/products/shop-x/"
+    assert pipeline.listing_address("vinted", "https://www.vinted.com/items/123-tee?ref=1") == \
+        "https://www.vinted.com/items/123"
+    pipeline.retry_unconfirmed(s, db, iid, "depop")
+    assert db.listing(iid, "depop")["status"] == "queued" and db.item(iid)["status"] == "ready"   # item unchanged
+
+
+def test_backfill_queues_what_is_still_live_oldest_first(tmp_path):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    old, sold, odd, new = (_item(db, i) for i in range(1, 5))
+    for n, iid in enumerate((old, sold, odd, new)):
+        db.upsert_listing(iid, "poshmark", status="posted", url=f"https://poshmark.com/listing/x-{iid}",
+                          posted_at=f"2026-10-0{n + 1}T10:00:00+00:00")
+    db.upsert_listing(new, "depop", status="posted", url="https://www.depop.com/products/a/")
+    states = {old: True, sold: False, odd: None, new: True}
+    live = lambda url: states[url.rsplit("-", 1)[-1]]   # noqa: E731
+    dry = crosslist.backfill(s, db, ["depop", "vinted"], dry=True, live=live)
+    assert dry == [(old, "would queue depop, vinted"), (sold, "no longer for sale on Poshmark: left out"),
+                   (odd, "couldn't read its Poshmark page: left out"), (new, "would queue vinted")]
+    assert db.listing(old, "depop") is None                              # --dry-run writes nothing
+    done = crosslist.backfill(s, db, ["depop", "vinted"], live=live)
+    assert [v for _, v in done] == ["queued depop, vinted", "no longer for sale on Poshmark: left out",
+                                    "couldn't read its Poshmark page: left out", "queued vinted"]
+    assert crosslist.next_job(s, db) == (old, "depop")
+
+
+def test_a_new_window_lifts_blocks_and_never_retries_an_unconfirmed_publish(tmp_path):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid = _item(db)
+    db.upsert_listing(iid, "depop", status="failed", error="unconfirmed publish: x", attempts=1)
+    db.upsert_listing(iid, "vinted", status="failed", error="PosterError: y", attempts=1)
+    db.kv_set(daily.SESSION_KEY, "w1")
+    assert crosslist.new_window(s, db) is True and crosslist.new_window(s, db) is False
+    assert db.listing(iid, "depop")["status"] == "failed" and db.listing(iid, "vinted")["status"] == "queued"
+    crosslist.block(db, "vinted", "Vinted: a verification (first listing / account check) is asked")
+    assert crosslist.blocked(db, "vinted") and crosslist.pending(s, db) == []
+    db.kv_set(daily.SESSION_KEY, "w2")
+    assert crosslist.new_window(s, db) and not crosslist.blocked(db, "vinted")
+    assert crosslist.pending(s, db) == [(iid, "vinted")]

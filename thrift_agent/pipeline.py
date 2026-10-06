@@ -27,8 +27,8 @@ from thrift_agent.schema import ITEM_ALONE, CopyOut, Ev, Facts, FrontOut, Premiu
 MAX_SEGMENT_PHOTOS = 90        # the Messages API takes at most 100 image blocks per request; keep headroom
 ANSWERABLE = ("needs_info", "ready", "failed", "new", "awaiting_price", "needs_owner",   # a note resets these to 'new'
               "awaiting_condition")
-REQUEUEABLE = ("failed", "dryrun")                      # post statuses `thrift requeue` may send back to the queue
-PARKED = "needs owner: "                                # last_error of a row the poster parked with a question
+REQUEUEABLE = ("failed", "dryrun", "skipped")           # listing statuses `thrift requeue` may send back to the queue
+PARKED = "needs owner: "                                # error of a row the poster parked with a question
 PRICEABLE = ("awaiting_price", "needs_info", "ready", "needs_owner")   # item statuses an owner price may be set on
 MANIFEST = "photos.json"                                # per item: which photos are the seller's own vs retail screenshots
 NOT_A_DUPLICATE = re.compile(r"different item|not a duplicate", re.I)   # owner's reply that clears the re-share hold
@@ -291,7 +291,7 @@ def item_group(it) -> list[int]:
 def reached_site(db: DB, it) -> list[str]:
     """Why an item counts as on the marketplace — posting, posted, drafted, a post with a URL, an unconfirmed
     publish — in words ("poshmark posted"); empty when it never got there."""
-    posts = db.conn.execute("SELECT * FROM posts WHERE item_id=?", (it["id"],)).fetchall()
+    posts = db.conn.execute("SELECT * FROM listings WHERE item_id=?", (it["id"],)).fetchall()
     why = [f"{p['marketplace']}: unconfirmed publish" if unconfirmed_publish(p) else f"{p['marketplace']} {p['status']}"
            for p in posts if p["status"] in REDO_KEEP or p["url"] or unconfirmed_publish(p)]
     return why or ([it["status"]] if it["status"] in REDO_KEEP else [])
@@ -384,7 +384,7 @@ def regroup(s: Settings, db: DB, bid: str, cmd: str) -> dict[str, list[str]]:
     out = {"kept": [], "rebuilt": [], "created": [], "removed": []}
     with db.tx():
         for it in removed:
-            db.conn.execute("DELETE FROM posts WHERE item_id=?", (it["id"],))
+            db.conn.execute("DELETE FROM listings WHERE item_id=?", (it["id"],))
             db.conn.execute("DELETE FROM items WHERE id=?", (it["id"],))
             db.log(it["id"], "regroup_removed", {"batch": bid})
             out["removed"].append(it["id"])
@@ -394,7 +394,7 @@ def regroup(s: Settings, db: DB, bid: str, cmd: str) -> dict[str, list[str]]:
                 out["kept"].append(kept[k]["id"])
             elif k in rebuilt:
                 iid = rebuilt[k]["id"]
-                db.conn.execute("DELETE FROM posts WHERE item_id=?", (iid,))
+                db.conn.execute("DELETE FROM listings WHERE item_id=?", (iid,))
                 db.set_item(iid, seq=k + 1, status="new", facts=None, price=None, renders=None, gate=None,
                             owner_price=None, deferred_at=None, cover_hash=None)
                 db.log(iid, "regroup_rebuilt", {"batch": bid, "photos": g})
@@ -1141,7 +1141,7 @@ def set_no_brand(s: Settings, db: DB, iid: str) -> str:
     facts = Facts.model_validate(loads(it["facts"]))
     if facts.brand.value:
         with db.tx():
-            db.conn.execute("DELETE FROM posts WHERE item_id=? AND status IN ('dryrun','queued')", (iid,))
+            db.conn.execute("DELETE FROM listings WHERE item_id=? AND status IN ('dryrun','queued')", (iid,))
             db.set_item(iid, owner_brand=NO_BRAND, status="new")
             db.log(iid, "brand_set", {"brand": None, "from": it["status"], "reprocess": True})
         return "new"
@@ -1240,7 +1240,7 @@ def set_category(s: Settings, db: DB, iid: str, path: dict) -> str:
         raise ValueError(f"Poshmark has no category {taxonomy.path_label(path)!r} — reply e.g. 'Skirts › Skirt Sets'")
     if placed != {"department": facts.department, "category": facts.category, "subcategory": facts.subcategory}:
         with db.tx():
-            db.conn.execute("DELETE FROM posts WHERE item_id=? AND status IN ('dryrun','queued')", (iid,))
+            db.conn.execute("DELETE FROM listings WHERE item_id=? AND status IN ('dryrun','queued')", (iid,))
             db.set_item(iid, owner_category=placed, status="new")
             db.log(iid, "category_set", {"category": placed, "from": it["status"], "reprocess": True})
         return "new"
@@ -1271,7 +1271,7 @@ def reprocess(s: Settings, db: DB, iid: str) -> dict:
     if it["status"] not in REPROCESSABLE:
         raise ValueError(f"item {iid} is {it['status']} — only an item waiting for the owner, or ready, is reprocessed")
     with db.tx():
-        db.conn.execute("DELETE FROM posts WHERE item_id=? AND status IN ('dryrun','queued')", (iid,))
+        db.conn.execute("DELETE FROM listings WHERE item_id=? AND status IN ('dryrun','queued')", (iid,))
         db.log(iid, "reprocess", {"from": it["status"]})
     out = process_item(s, db, iid)
     after = db.item(iid)
@@ -1294,27 +1294,31 @@ def requeue(s: Settings, db: DB, iid: str, marketplace: str | None = None) -> li
     if it is None:
         raise ValueError(f"unknown item {iid}")
     parked = it["status"] == "needs_owner"
-    rows = [r for r in db.posts_for(iid) if marketplace is None or r["marketplace"] == marketplace]
+    rows = [r for r in db.listings_for(iid) if marketplace is None or r["marketplace"] == marketplace]
     if not rows:
         raise ValueError(f"item {iid} has no {marketplace or ''} post rows — nothing to requeue".replace("  ", " "))
     for r in rows:
-        waiting = parked and r["status"] == "queued" and (r["last_error"] or "").startswith(PARKED)
+        waiting = parked and r["status"] == "queued" and (r["error"] or "").startswith(PARKED)
         if r["status"] not in REQUEUEABLE and not waiting:
             raise ValueError(f"{r['marketplace']}: status is {r['status']} — only failed/dryrun rows (or a poster "
                              "question) can be requeued")
         if r["url"]:
             raise ValueError(f"{r['marketplace']}: has a listing URL ({r['url']}) — it reached the site; "
                              "check the closet and fix it by hand")
-        if (r["last_error"] or "").startswith("unconfirmed publish: "):
+        if (r["error"] or "").startswith("unconfirmed publish: "):
             raise ValueError(f"{r['marketplace']}: List This Item was pressed and no listing address was found — it "
                              f"may be live; check the closet, then `thrift mark-posted {iid} {r['marketplace']} <url>` "
                              f"(it is there) or `thrift retry {iid}` (it is not)")
-    if it["status"] not in ("ready", "drafted", "needs_owner"):
+    cross_only = all(r["marketplace"] != "poshmark" for r in rows)     # Depop / Vinted rows (WO30)
+    if cross_only and (db.listing(iid, "poshmark") or {"status": ""})["status"] != "posted":
+        raise ValueError(f"item {iid} isn't live on Poshmark: Depop and Vinted follow Poshmark")
+    if not cross_only and it["status"] not in ("ready", "drafted", "needs_owner"):
         raise ValueError(f"item {iid} is {it['status']}, not ready — fix the item first (thrift answer)")
     with db.tx():
         for r in rows:
-            db.upsert_post(iid, r["marketplace"], status="queued", last_error=None)
-        if it["status"] != "ready":
+            db.upsert_listing(iid, r["marketplace"], status="queued", error=None,
+                              attempts=0 if r["marketplace"] != "poshmark" else r["attempts"])
+        if not cross_only and it["status"] != "ready":
             db.set_item(iid, status="ready")
         if parked:
             db.outbox_resolve("owner_q", iid)            # the question is moot: never re-sent after a sleep
@@ -1399,7 +1403,7 @@ REDO_KEEP = ("posting", "posted", "drafted")      # item and post statuses that 
 
 def unconfirmed_publish(post) -> bool:
     """A publish that may have gone live although its address was never found (thrift mark-posted settles it)."""
-    return (post["last_error"] or "").startswith("unconfirmed publish: ")
+    return (post["error"] or "").startswith("unconfirmed publish: ")
 
 
 POSTER_REQUESTS = "poster_requests"   # kv: the owner's "posted <url>", for the poster to check between listings
@@ -1410,12 +1414,26 @@ def check_unconfirmed(db: DB, iid: str, mp: str = "poshmark"):
     ValueError saying what the row is."""
     if db.item(iid) is None:
         raise ValueError(f"unknown item {iid}")
-    row = db.post(iid, mp)
+    row = db.listing(iid, mp)
     if row is None or row["status"] != "failed" or row["url"] or not unconfirmed_publish(row):
         state = "no post" if row is None else f"status {row['status']}" + (f" with {row['url']}" if row["url"] else "")
         raise ValueError(f"{mp}: only a post in 'unconfirmed publish' can be marked posted or retried ({iid} has "
                          f"{state})")
     return row
+
+
+def listing_address(mp: str, url: str) -> str | None:
+    """The canonical address of a listing page of `mp` (WO30: Poshmark, Depop, Vinted), else None."""
+    if mp == "poshmark":
+        from thrift_agent.post.poshmark import listing_address as posh    # Playwright's module: only when needed
+        return posh(url)
+    if mp == "depop":
+        from thrift_agent.post.depop import listing_address as depop
+        return depop(url)
+    if mp == "vinted":
+        from thrift_agent.post.vinted import listing_address as vinted
+        return vinted(url)
+    return None
 
 
 def request_posted(s: Settings, db: DB, iid: str, url: str, mp: str = "poshmark") -> str:
@@ -1424,12 +1442,11 @@ def request_posted(s: Settings, db: DB, iid: str, url: str, mp: str = "poshmark"
     it is queued for the poster, which opens the page (the item's title and price) between listings and records it.
     Returns the canonical address."""
     check_unconfirmed(db, iid, mp)
-    from thrift_agent.post.poshmark import listing_address    # Playwright's module: only when it is needed
-    address = listing_address(url) if mp == "poshmark" else None
+    address = listing_address(mp, url)
     if address is None:
-        raise ValueError(f"not a {mp} listing address: {url!r} (e.g. https://poshmark.com/listing/<title-words>-<24 "
-                         "hex id>)")
-    if (other := db.conn.execute("SELECT item_id FROM posts WHERE url=? AND item_id != ?", (address, iid)).fetchone()):
+        raise ValueError(f"not a {mp} listing address: {url!r}" + (" (e.g. https://poshmark.com/listing/<title-words>-"
+                                                                  "<24 hex id>)" if mp == "poshmark" else ""))
+    if (other := db.conn.execute("SELECT item_id FROM listings WHERE url=? AND item_id != ?", (address, iid)).fetchone()):
         raise ValueError(f"{address} is already recorded for item {other['item_id']}")
     with db.tx():
         reqs = [r for r in (loads(db.kv_get(POSTER_REQUESTS)) or []) if (r.get("item"), r.get("mp")) != (iid, mp)]
@@ -1452,13 +1469,14 @@ def retry_unconfirmed(s: Settings, db: DB, iid: str, mp: str = "poshmark") -> st
     not on the marketplace — so it goes back in line and the poster lists it again. Only for an unconfirmed publish:
     the code never decides that by itself (invariant 4). Returns the item's status."""
     check_unconfirmed(db, iid, mp)
+    from thrift_agent import crosslist
     with db.tx():
-        db.upsert_post(iid, mp, status="queued", last_error=None)
-        if db.item(iid)["status"] != "ready":
-            db.set_item(iid, status="ready")
-        db.outbox_resolve("unconfirmed", iid)
+        db.upsert_listing(iid, mp, status="queued", error=None)
+        if mp == "poshmark" and db.item(iid)["status"] != "ready":
+            db.set_item(iid, status="ready")       # Depop / Vinted rows never move the item (WO30)
+        db.outbox_resolve("unconfirmed", crosslist.unconfirmed_ref(iid, mp))
         db.log(iid, "post_retry", {"mp": mp, "by": "owner"})
-    return "ready"
+    return db.item(iid)["status"]
 
 
 def redo_batch(s: Settings, db: DB, bid: str) -> tuple[list[str], list[str]]:
@@ -1483,7 +1501,7 @@ def redo_batch(s: Settings, db: DB, bid: str) -> tuple[list[str], list[str]]:
             kept.append(f"{it['id']} ({', '.join(reached) or it['status']})")
             continue
         with db.tx():
-            db.conn.execute("DELETE FROM posts WHERE item_id=?", (it["id"],))
+            db.conn.execute("DELETE FROM listings WHERE item_id=?", (it["id"],))
             db.conn.execute("UPDATE outbox SET resolved_at=? WHERE ref=? AND resolved_at IS NULL",
                             (datetime.now(timezone.utc).isoformat(timespec="seconds"), it["id"]))
             db.set_item(it["id"], status="new", facts=None, price=None, renders=None, gate=None, owner_price=None,
@@ -1544,7 +1562,7 @@ def set_condition(s: Settings, db: DB, iid: str, choice: str) -> str:
         raise ValueError(f"item {iid} is {it['status']} — its condition can't be changed now")
     with db.tx():
         # As with a note: earlier dry-runs and queue entries are forgotten, real post history stays.
-        db.conn.execute("DELETE FROM posts WHERE item_id=? AND status IN ('dryrun','queued')", (iid,))
+        db.conn.execute("DELETE FROM listings WHERE item_id=? AND status IN ('dryrun','queued')", (iid,))
         db.set_item(iid, owner_condition=condition, status="new")
         db.log(iid, "condition_set", {"condition": condition, "from": it["status"]})
     return "new"
@@ -1571,7 +1589,7 @@ def answer(s: Settings, db: DB, iid: str, note: str) -> str:
     with db.tx():
         # Forget earlier dry-runs / queue entries, or next_job would skip the corrected listing (dryrun + dry).
         # posting/posted/drafted/failed rows stay: those are history the poster must never repeat blindly.
-        db.conn.execute("DELETE FROM posts WHERE item_id=? AND status IN ('dryrun','queued')", (iid,))
+        db.conn.execute("DELETE FROM listings WHERE item_id=? AND status IN ('dryrun','queued')", (iid,))
         db.set_item(iid, note=merged, status="new")
         db.log(iid, "answered", {"note": note})
     return "new"
@@ -1711,8 +1729,8 @@ def build_renders(s: Settings, iid: str, d: Path, photos: list[Path], facts: Fac
                   original_price=_dollars(facts.retail_price.value) or pr.original_price)   # screenshot beats note
     out = {}
     for mp, mcfg in s["marketplaces"].items():
-        if not mcfg.get("enabled"):
-            continue
+        if not mcfg.get("enabled") or mp != "poshmark":
+            continue                        # Depop and Vinted: mapped from the catalogs when cross-listed (WO30)
         is_posh = mp == "poshmark"
         out[mp] = Render(
             marketplace=mp,
