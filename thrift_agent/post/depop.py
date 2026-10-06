@@ -105,8 +105,14 @@ class DepopPoster(CrossPoster):
         super().__init__(shop, strict)
         self.aliases = aliases or brands.Aliases(None)
 
-    async def _account(self, page: Page) -> None:
-        if "/login" in page.url or "/signup" in page.url or await SEL["login_wall"](page).count():
+    async def _account(self, page: Page, status: int | None = None) -> None:
+        """Recorded live (2026-10-06, the poster's profile): a login page titled "Log in" ("Sign up or log in",
+        "Continue with email") and Depop's block page ("Sorry, not authorized. 403 Forbidden")."""
+        text = await self._page_text(page)
+        if why := self._blocked(status, text):
+            raise AccountBlocked(why)
+        if "/login" in page.url or "/signup" in page.url or await SEL["login_wall"](page).count() or \
+                re.search(r"^\s*log in\s*$|sign up or log in|continue with email", text, re.I | re.M):
             raise AccountBlocked("Depop: not logged in in the poster profile")
         if await SEL["captcha"](page).count():
             raise AccountBlocked("Depop: a CAPTCHA is shown — solve it by hand in the poster window")

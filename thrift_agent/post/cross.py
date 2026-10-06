@@ -89,18 +89,35 @@ class CrossPoster(Poster):
     # ---------------------------------------------------------------- the account
 
     async def check_account(self, page: Page) -> None:
-        await page.goto(self.create_url)
+        response = await page.goto(self.create_url)
         await page.wait_for_load_state("domcontentloaded")
-        await self._account(page)
+        await self._account(page, response.status if response is not None else None)
         self._started = time.time()
         try:
             self._shop_before = set(await self._shop_listings(page.context))
         except Exception:  # noqa: BLE001 — the shop is only for the closet check after an interrupted publish
             self._shop_before = set()
 
-    async def _account(self, page: Page) -> None:
-        """Raise AccountBlocked for a login page, a CAPTCHA or a verification wall."""
+    async def _account(self, page: Page, status: int | None = None) -> None:
+        """Raise AccountBlocked for a login page, a CAPTCHA, a verification wall or a page the site blocked us with."""
         raise NotImplementedError
+
+    async def _page_text(self, page: Page) -> str:
+        """The page's title and visible text, for the account checks (recorded live, WO30 deploy)."""
+        try:
+            return f"{await page.title()}\n{(await page.inner_text('body'))[:4000]}"
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _blocked(self, status: int | None, text: str) -> str | None:
+        """The site turned the poster's browser away: an HTTP 401 / 403 / 429 on the create page, or its block page
+        ("Sorry, not authorized. 403 Forbidden … you were blocked", Depop, 2026-10-06). Invariant 5: stop, never retry
+        within the window."""
+        if status in (401, 403, 429) or re.search(r"not authorized|were blocked|access denied|unusual (?:activity|"
+                                                  r"traffic)|403 forbidden", text, re.I):
+            return f"{self.site}: the site turned the poster's browser away (HTTP {status or '?'}: " \
+                   f"{' '.join(text.split())[:120]!r})"
+        return None
 
     async def _shop_listings(self, ctx: BrowserContext) -> dict[str, str]:
         """{listing address: its text (title)} on the shop page; {} when there is no shop to look at."""

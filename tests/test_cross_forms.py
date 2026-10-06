@@ -56,8 +56,20 @@ def chrome():
 class Site:
     """Depop's and Vinted's hosts, answered from the fixtures; `clicks` counts the publish buttons pressed."""
 
-    def __init__(self, logged_out=False, shop_after_click=()):
+    # The pages the poster's profile met on the Mac (2026-10-06), reduced to what the account checks read.
+    DEPOP_LOGIN = ("<html><head><title>Log in</title></head><body><h1>Sign up or log in</h1>"
+                   "<a href='#'>Continue with email</a></body></html>")
+    DEPOP_403 = ("<html><head><title>Forbidden - Depop</title></head><body><h1>Sorry, not authorized.</h1>"
+                 "<p>403 Forbidden</p><p>If the problem persists, contact Depop support to let us know you were "
+                 "blocked.</p></body></html>")
+    VINTED_OUT = ("<html><head><title>Join and sell pre-loved clothes with no fees | Vinted</title></head><body>"
+                  "<button data-testid='header--login-button'>Sign up | Log in</button><h1>Join and sell pre-loved "
+                  "clothes with no fees</h1><p>Already have an account? <a href='/member/login'>Log in</a></p>"
+                  "</body></html>")
+
+    def __init__(self, logged_out=False, shop_after_click=(), depop_page=None, vinted_page=None):
         self.logged_out, self.clicks, self.urls = logged_out, 0, []
+        self.depop_page, self.vinted_page = depop_page, vinted_page
         self.shop: list[str] = []
         self.shop_after_click = list(shop_after_click)
 
@@ -71,6 +83,10 @@ class Site:
         host, path = u.netloc, u.path
         if host == "www.depop.com":
             if path == "/products/create/":
+                if self.depop_page == "blocked":
+                    return await route.fulfill(status=403, content_type="text/html", body=self.DEPOP_403)
+                if self.depop_page == "login":
+                    return await self._html(route, self.DEPOP_LOGIN)
                 if self.logged_out:
                     return await self._html(route, '<form action="/login/"><input autocomplete="username"></form>')
                 return await self._html(route, (FIX / "depop_create.html").read_text(encoding="utf-8"))
@@ -87,6 +103,8 @@ class Site:
             return await self._html(route, "<html><body>home</body></html>")
         if host == "www.vinted.com":
             if path == "/items/new":
+                if self.vinted_page == "logged_out":
+                    return await self._html(route, self.VINTED_OUT)
                 return await self._html(route, (FIX / "vinted_new_item.html").read_text(encoding="utf-8"))
             if path == "/api/upload-click":
                 self.clicks += 1
@@ -279,3 +297,22 @@ def test_vinted_verification_wall_stops_vinted(chrome, photos, tmp_path):
     with pytest.raises(AccountBlocked, match="verification"):
         drive(chrome, lambda ctx, s: poster.post(ctx, render(photos, "vinted"), "publish", True, tmp_path / "shots"),
               verify=True)
+
+
+
+@pytest.mark.parametrize("page,match", [("login", "Depop: not logged in"),
+                                        ("blocked", "Depop: the site turned the poster's browser away")])
+def test_depop_login_and_block_pages_stop_depop(chrome, photos, tmp_path, page, match):
+    """Live, the poster's profile met Depop's login page, then its 403 block page (2026-10-06): both stop Depop for the
+    window — never a form filled on them (invariant 5)."""
+    poster = _depop(depop_fields(photos))
+    with pytest.raises(AccountBlocked, match=match):
+        drive(chrome, lambda ctx, s: poster.post(ctx, render(photos, "depop"), "publish", True, tmp_path / "shots"),
+              site=Site(depop_page=page))
+
+
+def test_vinted_logged_out_page_stops_vinted(chrome, photos, tmp_path):
+    poster = _vinted(vinted_fields(photos))
+    with pytest.raises(AccountBlocked, match="Vinted: not logged in"):
+        drive(chrome, lambda ctx, s: poster.post(ctx, render(photos, "vinted"), "publish", True, tmp_path / "shots"),
+              site=Site(vinted_page="logged_out"))

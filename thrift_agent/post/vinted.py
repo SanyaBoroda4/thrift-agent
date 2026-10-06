@@ -48,8 +48,8 @@ SEL = {
                                        '[role="dialog"] button[aria-label*="close" i]'),
     "verify_wall": lambda p: p.get_by_text(re.compile(r"verify (your|this) (account|phone|email)|confirm your "
                                                       r"(phone|email)|before you (list|upload)", re.I)),
-    "login_wall": lambda p: p.locator('[data-testid*="auth" i] form, form[action*="session" i], '
-                                      'input[name="login"], input[name="username"][type="text"]'),
+    "login_wall": lambda p: p.locator('[data-testid="header--login-button"], a[href^="/member/signup"], '
+                                      '[data-testid*="auth" i] form'),
     "captcha": lambda p: p.locator('iframe[src*="captcha" i], iframe[title*="captcha" i], #px-captcha, '
                                    'iframe[src*="datadome" i]'),
     "shop_links": lambda p: p.locator('a[href*="/items/"]'),
@@ -95,8 +95,14 @@ class VintedPoster(CrossPoster):
     publish_needs = PUBLISH_NEEDS
     autopublish_needs = AUTOPUBLISH_NEEDS
 
-    async def _account(self, page: Page) -> None:
-        if any(x in page.url for x in ("/signup", "/login", "/member/signup")) or await SEL["login_wall"](page).count():
+    async def _account(self, page: Page, status: int | None = None) -> None:
+        """Recorded live (2026-10-06, the poster's profile): logged out, /items/new shows "Join and sell pre-loved
+        clothes with no fees" with the header's [data-testid=header--login-button] and /member/signup links."""
+        text = await self._page_text(page)
+        if why := self._blocked(status, text):
+            raise AccountBlocked(why)
+        if any(x in page.url for x in ("/signup", "/login", "/member/signup")) or await SEL["login_wall"](page).count() \
+                or re.search(r"join and sell|already have an account\??\s*log in", text, re.I):
             raise AccountBlocked("Vinted: not logged in in the poster profile")
         if await SEL["captcha"](page).count():
             raise AccountBlocked("Vinted: a CAPTCHA is shown — solve it by hand in the poster window")

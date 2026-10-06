@@ -244,6 +244,12 @@ rows were copied in once (kv `listings_migrated`); `posts` is left as it was.
   "One-Shoulder" → "OneShoulder"); the id's first 8 hex digits are its creation time (when the form opened). Matching:
   new since the post started, the tile's title AND the slug are this title's, and it is the id Poshmark named (else an
   id created since the post started); several → never a guess.
+- Seen in the first cross-list dry runs on the Mac (2026-10-06, WO30, the poster's own Chrome profile): neither Depop
+  nor Vinted is logged in there. Depop's create page answered first with its login page (title "Log in", "Sign up or
+  log in", "Continue with email"), 35 minutes later with its block page (HTTP 403, title "Forbidden - Depop", "Sorry,
+  not authorized … let us know you were blocked") — the site turning the automated browser away; Vinted's /items/new
+  showed "Join and sell pre-loved clothes with no fees" with `[data-testid=header--login-button]`. All three now stop
+  that marketplace for the window (AccountBlocked: the group's one plain line); the code never works around a block.
 - **UNVERIFIED:** the Promote My Closet toggle's markup (`promote_toggle`: one checkbox → must be unchecked; none →
   the panel must read "Promote My Closet Off"; anything else stops before List — the first publish passed through the
   one-checkbox path); where Save Draft lands
