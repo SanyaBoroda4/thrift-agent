@@ -57,8 +57,11 @@ def depop_fields():
 
 @pytest.fixture
 def selectors(tmp_path):
-    """A copy of ext/selectors.json; `verify(*steps)` marks steps recorded for both sites."""
+    """A copy of ext/selectors.json with nothing recorded yet; `verify(*steps)` marks steps recorded for both sites."""
     data = json.loads((bm.EXT_DIR / "selectors.json").read_text(encoding="utf-8"))
+    for site in ("vinted", "depop"):
+        for step in data[site]["steps"].values():
+            step["verified"] = False
     path = tmp_path / "selectors.json"
 
     def verify(*steps):
@@ -671,5 +674,8 @@ def test_verified_steps_carry_their_evidence_and_the_publish_gate_stays_closed()
         for name, step in [*data[site]["steps"].items(), *data[site]["pages"].items()]:
             if step.get("verified"):
                 assert step.get("seen"), f"{site} {name}: verified without its evidence"
-        assert ext_driver.unverified(site) >= {"submit", "after_publish"}
+        # The live dry runs (2026-10-06) recorded the forms and their one publish button: the owner's supervised publish
+        # may go; the unattended loop waits for a real publish to record the page after the click.
+        assert not (ext_driver.PUBLISH_NEEDS & ext_driver.unverified(site))
+        assert ext_driver.AUTOPUBLISH_NEEDS & ext_driver.unverified(site) == {"after_publish"}
         assert data[site]["pages"]["login"]["verified"]

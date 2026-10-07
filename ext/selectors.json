@@ -1,5 +1,5 @@
 {
-  "_about": "Every page and step the extension recognises or fills (WO32): site -> pages / steps -> selector(s) -> how it is checked. A step is UNVERIFIED (\"verified\": false) until a dry run on the Mac recorded it working; the Python driver publishes only when the steps it needs are verified (same gate as WO30). Pages marked verified were seen live, with when and how. The first dry run (2026-10-06) recorded what is marked verified, with what it saw ('seen').",
+  "_about": "Every page and step the extension recognises or fills (WO32): site -> pages / steps -> selector(s) -> how it is checked. A step is UNVERIFIED (\"verified\": false) until a dry run on the Mac recorded it working, with what it saw ('seen'). The Python driver publishes only when the steps it needs are verified (same gate as WO30): the supervised publish needs 'submit' (the button, seen exactly once in a successful dry run), the unattended loop also 'after_publish' (the listing page after the click: only a real publish shows it).",
   "vinted": {
     "sell_url": "https://www.vinted.com/items/new",
     "listing_url": "^https://www\\.vinted\\.com/items/(\\d+)(?:-[^/?#]*)?/?(?:[?#].*)?$",
@@ -58,7 +58,7 @@
         ],
         "how": "the input is hidden (class u-hidden): found without the visible test, files set on it; the thumbnails counted in the upload grid",
         "verified": true,
-        "seen": "2026-10-06, the first extension dry run on the Mac: input[data-testid=add-photos-input].u-hidden (accept jpeg/gif/png/webp, multiple), [data-testid=dropzone], an empty [data-testid=media-upload-grid]; 2026-10-06, the second extension dry run on the Mac: 6 of 6 photos in the grid"
+        "seen": "2026-10-06, the first extension dry run on the Mac: input[data-testid=add-photos-input].u-hidden (accept jpeg/gif/png/webp, multiple), [data-testid=dropzone], an empty [data-testid=media-upload-grid]; 2026-10-06, the second extension dry run on the Mac: 6 of 6 photos in the grid; 2026-10-06, the fourth extension dry run on the Mac: the whole form read back as planned, 6 of 6 photos displayed"
       },
       "title": {
         "selectors": [
@@ -108,8 +108,8 @@
           "input#size",
           "input[name='size']"
         ],
-        "verified": false,
-        "seen": "2026-10-06, the third extension dry run on the Mac: [data-testid=category-size-single-grid-input] opens [data-testid=category-size-single-grid-content]: a grid of div[role=checkbox][aria-label='S / US 4-6'] (a Suggested group, then 'Women's items')"
+        "verified": true,
+        "seen": "2026-10-06, the third extension dry run on the Mac: [data-testid=category-size-single-grid-input] opens [data-testid=category-size-single-grid-content]: a grid of div[role=checkbox][aria-label='S / US 4-6'] (a Suggested group, then 'Women's items'); 2026-10-06, the fourth extension dry run on the Mac: the whole form read back as planned, 6 of 6 photos displayed (S / US 4-6)"
       },
       "condition": {
         "selectors": [
@@ -117,8 +117,8 @@
           "input#condition",
           "input[name='condition']"
         ],
-        "verified": false,
-        "seen": "2026-10-06, the third extension dry run on the Mac: [data-testid=category-condition-single-list-input] opens a list of div#condition-<id>[role=radio] rows (condition-6 New with tags, condition-1 New without tags …)"
+        "verified": true,
+        "seen": "2026-10-06, the third extension dry run on the Mac: [data-testid=category-condition-single-list-input] opens a list of div#condition-<id>[role=radio] rows (condition-6 New with tags, condition-1 New without tags …); 2026-10-06, the fourth extension dry run on the Mac: the whole form read back as planned, 6 of 6 photos displayed (New without tags)"
       },
       "color": {
         "selectors": [
@@ -126,8 +126,8 @@
           "input#color",
           "input[name='color']"
         ],
-        "verified": false,
-        "seen": "2026-10-06, the third extension dry run on the Mac: [data-testid=color-select-dropdown-input] ('Select up to 2 colors') opens [role=checkbox] rows (Suggested: suggested-color-20 Cream, then 'Select colors')"
+        "verified": true,
+        "seen": "2026-10-06, the third extension dry run on the Mac: [data-testid=color-select-dropdown-input] ('Select up to 2 colors') opens [role=checkbox] rows (Suggested: suggested-color-20 Cream, then 'Select colors'); 2026-10-06, the fourth extension dry run on the Mac: the whole form read back as planned, 6 of 6 photos displayed (Cream)"
       },
       "material": {
         "selectors": [
@@ -135,8 +135,8 @@
           "input#material",
           "input[name='material']"
         ],
-        "verified": false,
-        "seen": "2026-10-06, the third extension dry run on the Mac: [data-testid=category-material-multi-list-input] opens [role=checkbox] rows (Suggested, then All)"
+        "verified": true,
+        "seen": "2026-10-06, the third extension dry run on the Mac: [data-testid=category-material-multi-list-input] opens [role=checkbox] rows (Suggested, then All); 2026-10-06, the fourth extension dry run on the Mac: the whole form read back as planned, 6 of 6 photos displayed (Wool)"
       },
       "skirt_length": {
         "selectors": [
@@ -163,8 +163,8 @@
           ".web_ui__Cell__title"
         ],
         "how": "the rows of the open panel by their title's exact text (a size by its own text); a row already chosen (aria-checked=true) is left alone",
-        "verified": false,
-        "seen": "2026-10-06, the first extension dry run on the Mac: the category rows are [role=button] cells, title in .web_ui__Cell__title (the other dropdowns appear only once a category is chosen: not seen yet); 2026-10-06, the second extension dry run on the Mac: a leaf row is div#catalog-<id>[role=radio][aria-checked] with a radio inside, a branch row [role=button]; the walk reached Women › Clothing › Pants & leggings; 2026-10-06, the third extension dry run on the Mac: size/condition/colour/material rows are [role=checkbox] / [role=radio] inside *-grid-content / *-list-content / *-dropdown-content panels"
+        "verified": true,
+        "seen": "2026-10-06, the first extension dry run on the Mac: the category rows are [role=button] cells, title in .web_ui__Cell__title (the other dropdowns appear only once a category is chosen: not seen yet); 2026-10-06, the second extension dry run on the Mac: a leaf row is div#catalog-<id>[role=radio][aria-checked] with a radio inside, a branch row [role=button]; the walk reached Women › Clothing › Pants & leggings; 2026-10-06, the third extension dry run on the Mac: size/condition/colour/material rows are [role=checkbox] / [role=radio] inside *-grid-content / *-list-content / *-dropdown-content panels; 2026-10-06, the fourth extension dry run on the Mac: the whole form read back as planned, 6 of 6 photos displayed"
       },
       "price": {
         "selectors": [
@@ -186,8 +186,8 @@
           "input[type='radio']"
         ],
         "how": "the cell whose title span is the size name; its radio's checked state is the choice",
-        "verified": false,
-        "seen": "2026-10-06, the third extension dry run on the Mac: div#package-size-<n>[data-testid=<n>-package-size--cell] with a 'Recommended' badge and input#package_type_selector_<n>; Small / Medium / Large; Vinted moved its own choice Small → Medium (the chosen cell is role=presentation)"
+        "verified": true,
+        "seen": "2026-10-06, the third extension dry run on the Mac: div#package-size-<n>[data-testid=<n>-package-size--cell] with a 'Recommended' badge and input#package_type_selector_<n>; Small / Medium / Large; Vinted moved its own choice Small → Medium (the chosen cell is role=presentation); 2026-10-06, the fourth extension dry run on the Mac: the whole form read back as planned, 6 of 6 photos displayed (Medium, Vinted's own Recommended choice, one of ours: left as it was)"
       },
       "promo_close": {
         "selectors": [
@@ -201,8 +201,8 @@
           "[data-testid='upload-form-save-button']"
         ],
         "text": "^upload$",
-        "verified": false,
-        "seen": "2026-10-06, the first extension dry run on the Mac: exactly one [data-testid=upload-form-save-button] reading Upload (never clicked); next to it [data-testid=upload-form-save-draft-button], never clicked either"
+        "verified": true,
+        "seen": "2026-10-06, the first extension dry run on the Mac: exactly one [data-testid=upload-form-save-button] reading Upload (never clicked); next to it [data-testid=upload-form-save-draft-button], never clicked either; 2026-10-06, the fourth extension dry run on the Mac: the whole form read back as planned, 6 of 6 photos displayed: still exactly one, never clicked — verified for the supervised publish only"
       },
       "after_publish": {
         "how": "the tab lands on listing_url within 60 s",
@@ -248,6 +248,14 @@
           "a[href*='/items/']"
         ],
         "verified": false
+      },
+      "details_view": {
+        "selectors": [
+          "[data-testid='catalog-select-dropdown-input']"
+        ],
+        "how": "scrolled to the top of the window before the form's screenshot: the filled details show",
+        "verified": true,
+        "seen": "2026-10-06, the fourth extension dry run on the Mac: the whole form read back as planned, 6 of 6 photos displayed"
       }
     }
   },
@@ -300,8 +308,8 @@
           "[aria-roledescription='sortable'] img[src*='media-photos.depop.com']"
         ],
         "how": "files set on the input; Depop uploads each at once: its thumbnails are the sortable tiles' media-photos.depop.com images (the page shows other Depop images too)",
-        "verified": false,
-        "seen": "2026-10-06, the first extension dry run on the Mac: 6 of 6 photos uploaded (6 media-photos.depop.com/b1/<user>/<id>/P2.jpg thumbnails); 2026-10-06, the second extension dry run on the Mac: 6 sortable tiles (div[role=button][aria-roledescription=sortable], the first marked Cover) — 26 media-photos images on the page in all; 2026-10-06, the third extension dry run on the Mac: the whole form read back as planned (no diff) — but every tile's image kept the class 'thumbnailError' and showed blank: the photos' loading is now read back (photos_loaded)"
+        "verified": true,
+        "seen": "2026-10-06, the first extension dry run on the Mac: 6 of 6 photos uploaded (6 media-photos.depop.com/b1/<user>/<id>/P2.jpg thumbnails); 2026-10-06, the second extension dry run on the Mac: 6 sortable tiles (div[role=button][aria-roledescription=sortable], the first marked Cover) — 26 media-photos images on the page in all; 2026-10-06, the third extension dry run on the Mac: the whole form read back as planned (no diff) — but every tile's image kept the class 'thumbnailError' and showed blank: the photos' loading is now read back (photos_loaded); 2026-10-06, the fourth extension dry run on the Mac: the whole form read back as planned, 6 of 6 photos displayed (the thumbnailError class is only Depop's style while each loads)"
       },
       "description": {
         "selectors": [
@@ -328,7 +336,7 @@
         },
         "how": "Downshift comboboxes (role=combobox, aria-controls=<id>-menu): cleared, typed, the option whose text IS the value; the category's options are its names, listed once per department (\"Pants\" under Women, Men, Kids): the one under the item's department heading. shippingMethods-input is the PACKAGE SIZE menu (label 'Package size'), picked by the size's first word. A multi-select's choices are chips next to its input, each with a button[aria-label='Remove <value>']. Depop fills some fields by itself once the photos are up",
         "verified": true,
-        "seen": "2026-10-06, the first extension dry run on the Mac: condition-input → 'Like new', colour-input → 'Cream', source-input → 'Preloved', age-input → 'Modern' picked; group-input offered 'Sweatpants, Pants' three times for 'Pants'; 2026-10-06, the second extension dry run on the Mac: the category picked under 'Women > Bottoms' (the headings 'Men > Bottoms', 'Women > Bottoms', 'Kids > Bottoms'), size S, Like new, Cream, Preloved, Modern, Wool, Wide leg, package Large — and by itself Depop had added the colour chips Cream + Grey, the brand J.Crew and the package Medium; 'J. Crew' typed found only 'Other'; 2026-10-06, the third extension dry run on the Mac: the whole form read back as planned (no diff)",
+        "seen": "2026-10-06, the first extension dry run on the Mac: condition-input → 'Like new', colour-input → 'Cream', source-input → 'Preloved', age-input → 'Modern' picked; group-input offered 'Sweatpants, Pants' three times for 'Pants'; 2026-10-06, the second extension dry run on the Mac: the category picked under 'Women > Bottoms' (the headings 'Men > Bottoms', 'Women > Bottoms', 'Kids > Bottoms'), size S, Like new, Cream, Preloved, Modern, Wool, Wide leg, package Large — and by itself Depop had added the colour chips Cream + Grey, the brand J.Crew and the package Medium; 'J. Crew' typed found only 'Other'; 2026-10-06, the third extension dry run on the Mac: the whole form read back as planned (no diff); 2026-10-06, the fourth extension dry run on the Mac: the whole form read back as planned, 6 of 6 photos displayed",
         "chip_remove": "button[aria-label^='Remove ']"
       },
       "price": {
@@ -354,8 +362,8 @@
           "button[type='submit']"
         ],
         "text": "^post$",
-        "verified": false,
-        "seen": "2026-10-06, the first extension dry run on the Mac: exactly one submit button reading Post (never clicked); 'Save as a draft' and 'Post and add another' next to it, never touched"
+        "verified": true,
+        "seen": "2026-10-06, the first extension dry run on the Mac: exactly one submit button reading Post (never clicked); 'Save as a draft' and 'Post and add another' next to it, never touched; 2026-10-06, the fourth extension dry run on the Mac: the whole form read back as planned, 6 of 6 photos displayed: still exactly one, never clicked — verified for the supervised publish only"
       },
       "after_publish": {
         "how": "the tab lands on listing_url within 60 s",

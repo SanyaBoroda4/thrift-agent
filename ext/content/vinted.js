@@ -138,6 +138,8 @@
       await T.dismiss(S().promo_close.selectors);
       st.photosLoadedEnd = await T.waitLoaded(S().photos.thumbs, Math.min(files.length, 20), 20000);
       await T.screenshot("photos-end");
+      T.$(S().details_view?.selectors)?.scrollIntoView?.({ block: "start" });   // the form's screenshot: the details
+      await T.sleep(500);
     },
 
     readBack(job, st) {
