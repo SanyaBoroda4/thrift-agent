@@ -41,7 +41,7 @@
           "input#title"
         ],
         "verified": true,
-        "seen": "2026-10-06, the first extension dry run on the Mac (i_261004_15f109): the upload form, logged in"
+        "seen": "2026-10-06, the first extension dry run on the Mac: the upload form, logged in"
       }
     },
     "steps": {
@@ -58,7 +58,7 @@
         ],
         "how": "the input is hidden (class u-hidden): found without the visible test, files set on it; the thumbnails counted in the upload grid",
         "verified": false,
-        "seen": "2026-10-06, the first extension dry run on the Mac (i_261004_15f109): input[data-testid=add-photos-input].u-hidden (accept jpeg/gif/png/webp, multiple), [data-testid=dropzone], an empty [data-testid=media-upload-grid]"
+        "seen": "2026-10-06, the first extension dry run on the Mac: input[data-testid=add-photos-input].u-hidden (accept jpeg/gif/png/webp, multiple), [data-testid=dropzone], an empty [data-testid=media-upload-grid]"
       },
       "title": {
         "selectors": [
@@ -66,7 +66,7 @@
           "input#title"
         ],
         "verified": true,
-        "seen": "2026-10-06, the first extension dry run on the Mac (i_261004_15f109): filled and read back"
+        "seen": "2026-10-06, the first extension dry run on the Mac: filled and read back"
       },
       "description": {
         "selectors": [
@@ -74,7 +74,7 @@
           "textarea#description"
         ],
         "verified": true,
-        "seen": "2026-10-06, the first extension dry run on the Mac (i_261004_15f109): filled and read back"
+        "seen": "2026-10-06, the first extension dry run on the Mac: filled and read back"
       },
       "category": {
         "selectors": [
@@ -86,7 +86,7 @@
         ],
         "how": "the input opens [data-testid=catalog-select-dropdown-content]: a search box and ul[data-testid=category-list] of div#catalog-<id>[role=button] rows (the title in .web_ui__Cell__title); the leaf by its id when shown, else the path walked row by row",
         "verified": false,
-        "seen": "2026-10-06, the first extension dry run on the Mac (i_261004_15f109): the dropdown open with Women (catalog-1904), Men (5), Kids (1193), Home (1918) …"
+        "seen": "2026-10-06, the first extension dry run on the Mac: the dropdown open with Women (catalog-1904), Men (5), Kids (1193), Home (1918) …"
       },
       "brand": {
         "selectors": [
@@ -145,7 +145,7 @@
         ],
         "how": "the rows of the open dropdown, picked by their title's exact text",
         "verified": false,
-        "seen": "2026-10-06, the first extension dry run on the Mac (i_261004_15f109): the category rows are [role=button] cells, title in .web_ui__Cell__title (the other dropdowns appear only once a category is chosen: not seen yet)"
+        "seen": "2026-10-06, the first extension dry run on the Mac: the category rows are [role=button] cells, title in .web_ui__Cell__title (the other dropdowns appear only once a category is chosen: not seen yet)"
       },
       "price": {
         "selectors": [
@@ -155,7 +155,7 @@
           "input[name='price']"
         ],
         "verified": false,
-        "seen": "2026-10-06, the first extension dry run on the Mac (i_261004_15f109): not on the form before a category is chosen"
+        "seen": "2026-10-06, the first extension dry run on the Mac: not on the form before a category is chosen"
       },
       "package": {
         "selectors": [
@@ -177,7 +177,7 @@
         ],
         "text": "^upload$",
         "verified": false,
-        "seen": "2026-10-06, the first extension dry run on the Mac (i_261004_15f109): exactly one [data-testid=upload-form-save-button] reading Upload (never clicked); next to it [data-testid=upload-form-save-draft-button], never clicked either"
+        "seen": "2026-10-06, the first extension dry run on the Mac: exactly one [data-testid=upload-form-save-button] reading Upload (never clicked); next to it [data-testid=upload-form-save-draft-button], never clicked either"
       },
       "after_publish": {
         "how": "the tab lands on listing_url within 60 s",
@@ -260,7 +260,7 @@
           "[id='group-input']"
         ],
         "verified": true,
-        "seen": "2026-10-06, the first extension dry run on the Mac (i_261004_15f109): the create form, logged in"
+        "seen": "2026-10-06, the first extension dry run on the Mac: the create form, logged in"
       }
     },
     "steps": {
@@ -276,7 +276,7 @@
         ],
         "how": "files set on the input; Depop uploads each at once: its thumbnails are media-photos.depop.com images",
         "verified": true,
-        "seen": "2026-10-06, the first extension dry run on the Mac (i_261004_15f109): 6 of 6 photos uploaded (6 media-photos.depop.com/b1/<user>/<id>/P2.jpg thumbnails)"
+        "seen": "2026-10-06, the first extension dry run on the Mac: 6 of 6 photos uploaded (6 media-photos.depop.com/b1/<user>/<id>/P2.jpg thumbnails)"
       },
       "description": {
         "selectors": [
@@ -284,7 +284,7 @@
           "textarea[name='description']"
         ],
         "verified": true,
-        "seen": "2026-10-06, the first extension dry run on the Mac (i_261004_15f109): filled and read back"
+        "seen": "2026-10-06, the first extension dry run on the Mac: filled and read back"
       },
       "combo": {
         "menu": "{id}-menu",
@@ -303,7 +303,7 @@
         },
         "how": "Downshift comboboxes (role=combobox, aria-controls=<id>-menu): cleared, typed, the option whose text IS the value; the category's options are its names, listed once per department (\"Pants\" under Women, Men, Kids): the one under the item's department heading. shippingMethods-input is the PACKAGE SIZE menu (label 'Package size'), picked by the size's first word",
         "verified": false,
-        "seen": "2026-10-06, the first extension dry run on the Mac (i_261004_15f109): condition-input → 'Like new', colour-input → 'Cream', source-input → 'Preloved', age-input → 'Modern' picked; group-input offered 'Sweatpants, Pants' three times for 'Pants'"
+        "seen": "2026-10-06, the first extension dry run on the Mac: condition-input → 'Like new', colour-input → 'Cream', source-input → 'Preloved', age-input → 'Modern' picked; group-input offered 'Sweatpants, Pants' three times for 'Pants'"
       },
       "price": {
         "selectors": [
@@ -311,7 +311,7 @@
           "#priceAmount__input"
         ],
         "verified": false,
-        "seen": "2026-10-06, the first extension dry run on the Mac (i_261004_15f109): input#priceAmount__input[type=number][aria-label='Item price'], value 0.00"
+        "seen": "2026-10-06, the first extension dry run on the Mac: input#priceAmount__input[type=number][aria-label='Item price'], value 0.00"
       },
       "boost": {
         "selectors": [
@@ -321,7 +321,7 @@
         "text": "promote your item|extra \\d+% fee|boost",
         "how": "must read unchecked; turned off if on; never turned on",
         "verified": true,
-        "seen": "2026-10-06, the first extension dry run on the Mac (i_261004_15f109): label[data-testid=switch-label] 'Promote your item in search to help it sell faster. Pay an extra 12% fee, only if you sell.', unchecked"
+        "seen": "2026-10-06, the first extension dry run on the Mac: label[data-testid=switch-label] 'Promote your item in search to help it sell faster. Pay an extra 12% fee, only if you sell.', unchecked"
       },
       "submit": {
         "selectors": [
@@ -329,7 +329,7 @@
         ],
         "text": "^post$",
         "verified": false,
-        "seen": "2026-10-06, the first extension dry run on the Mac (i_261004_15f109): exactly one submit button reading Post (never clicked); 'Save as a draft' and 'Post and add another' next to it, never touched"
+        "seen": "2026-10-06, the first extension dry run on the Mac: exactly one submit button reading Post (never clicked); 'Save as a draft' and 'Post and add another' next to it, never touched"
       },
       "after_publish": {
         "how": "the tab lands on listing_url within 60 s",
@@ -380,7 +380,7 @@
           "[data-testid='brandButton__clear']"
         ],
         "verified": true,
-        "seen": "2026-10-06, the first extension dry run on the Mac (i_261004_15f109): the brand field's clear button"
+        "seen": "2026-10-06, the first extension dry run on the Mac: the brand field's clear button"
       },
       "shipping": {
         "selectors": [
@@ -389,7 +389,7 @@
         ],
         "how": "Depop Shipping (via USPS): a radio, on by default; 'Other' (manual) is never chosen",
         "verified": true,
-        "seen": "2026-10-06, the first extension dry run on the Mac (i_261004_15f109): radio name=shipping value=USPS checked; MANUAL the other"
+        "seen": "2026-10-06, the first extension dry run on the Mac: radio name=shipping value=USPS checked; MANUAL the other"
       }
     }
   }
