@@ -3,7 +3,7 @@
 the hidden file input [data-testid=add-photos-input].u-hidden with its [data-testid=media-upload-grid], title / description
 by data-testid, and the category dropdown — [data-testid=catalog-select-dropdown-input] opening
 [data-testid=catalog-select-dropdown-content] with ul[data-testid=category-list] of div#catalog-<id>[role=button] rows
-(the title in .web_ui__Cell__title), walked level by level. The other fields appear only once a category is chosen,
+(the title in .web_ui__Cell__title) for a branch, div#catalog-<id>[role=radio] for a leaf, walked level by level. The other fields appear only once a category is chosen,
 as on the live form; their markup is not recorded yet and modelled like the category's (rows [role=button] in
 [data-testid=<name>-select-dropdown-content]). Clicking Upload sends /api/upload-click and goes to
 /items/9876543210-<words> (window.__FIXTURE.land overrides it). -->
@@ -54,10 +54,11 @@ const FIELDS = {
 };
 const BRANDS = ["J.Crew", "J.Crew Factory", "Tory Burch"];
 let seq = 100;
-function cell(title, id) {
+function cell(title, id, leaf) {
   const li = document.createElement("li");
   const d = document.createElement("div");
-  d.setAttribute("role", "button");
+  d.setAttribute("role", leaf ? "radio" : "button");   // recorded: a leaf row is a radio, a branch a button
+  if (leaf) d.setAttribute("aria-checked", "false");
   d.id = id || ("row-" + (seq++));
   d.innerHTML = '<div class="web_ui__Cell__content"><div class="web_ui__Cell__title"></div></div>';
   d.querySelector(".web_ui__Cell__title").textContent = title;
@@ -70,7 +71,7 @@ function level(node, trail) {
   const ul = box.querySelector("ul");
   for (const [name, sub] of Object.entries(node)) {
     const id = typeof sub === "number" ? "catalog-" + sub : (IDS[name] ? "catalog-" + IDS[name] : undefined);
-    const [li, d] = cell(name, id);
+    const [li, d] = cell(name, id, typeof sub === "number");
     d.addEventListener("click", () => {
       if (typeof sub === "number") {
         document.getElementById("category").value = name;

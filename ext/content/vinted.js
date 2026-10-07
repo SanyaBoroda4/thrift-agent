@@ -62,15 +62,23 @@
       await T.step("title", st, async () => T.type(await T.need(S().title.selectors, "title"), job.copy.title));
       await T.step("description", st, async () =>
         T.type(await T.need(S().description.selectors, "description"), job.copy.description));
+      // The tree, level by level; at every level the leaf by its id when it shows (a leaf row is a radio, a branch a
+      // button: recorded 2026-10-06).
       await T.step("category", st, async () => {
         await open("category");
-        const leaf = T.$(S().category.leaf.map((s) => s.replace("{id}", f.category_id)));
-        if (leaf && T.visible(leaf)) {
-          await T.click(leaf);
-        } else {
-          for (const part of f.category_path.split(" > ")) await clickRow(part);
+        const leafSel = S().category.leaf.map((s) => s.replace("{id}", f.category_id));
+        const parts = f.category_path.split(" > ");
+        for (let k = 0; ; k++) {
+          const leaf = T.$(leafSel);
+          if (leaf && T.visible(leaf)) {
+            await T.click(leaf);
+            break;
+          }
+          if (k >= parts.length) throw new Error(`the leaf ${f.category_id} isn't under ${f.category_path}`);
+          await clickRow(parts[k]);
         }
-        T.picked(st, "category", f.category_path, String(f.category_id));
+        await T.sleep(800);
+        T.picked(st, "category", f.category_path, T.$(S().category.selectors)?.value || "");
         escape();
       });
       if (f.brand) {
@@ -125,11 +133,16 @@
         const el = T.$(sel);
         return el ? el.value : null;
       };
-      return {
+      const seen = {
         title: value(S().title.selectors), description: value(S().description.selectors),
         price: value(S().price.selectors), photos: String(T.$$(S().photos.thumbs).length),
         package: st.package || null, ...st.picked,
       };
+      // The category input shows the leaf's name: our path only when it is that name.
+      const cat = value(S().category.selectors) || "";
+      const leaf = String(job.fields.category_path || "").split(" > ").pop();
+      seen.category = cat ? [T.norm(cat) === T.norm(leaf) ? job.fields.category_path : cat] : [];
+      return seen;
     },
 
     submitButtons() {

@@ -5,7 +5,11 @@
 // menu filters by the typed text) and the option whose text IS the catalog value is picked. The category menu lists a
 // name once per department ("Pants" under Women, Men, Kids): the one under the item's department is taken, never a
 // guess. Then the price, Depop Shipping (the USPS radio) and its package size (the shippingMethods-input menu, recorded
-// 2026-10-06). Boost ("Promote your item … Pay an extra 12% fee") is never turned on. Selectors: selectors.json → depop.
+// 2026-10-06). Boost ("Promote your item … Pay an extra 12% fee") is never turned on. Depop fills fields by itself once
+// the photos are up (recorded: colour chips Cream + Grey, the brand, a package size): a multi-select keeps only our values
+// (its other chips removed), a value already chosen is never clicked again (that would unselect it), and the form is read
+// back from its own state — the inputs' values and the chips — not from what was clicked. Selectors: selectors.json →
+// depop.
 (function () {
   const T = globalThis.Thrift;
   const S = () => T.selectors.depop.steps;
@@ -66,9 +70,25 @@
   };
   const DEPARTMENT = { women: /\bwom[ae]n/i, men: /\bmen/i, kids: /\bkid/i };
 
+  // A multi-select's chosen values: its chips, each with a "Remove <value>" button (recorded 2026-10-06).
+  const chipButtons = (cid) => {
+    const box = document.getElementById(cid);
+    return box ? [...box.parentElement.querySelectorAll(S().combo.chip_remove)] : [];
+  };
+  const chipValue = (b) => (b.getAttribute("aria-label") || "").replace(/^remove\s+/i, "").trim();
+  T.chipsOf = (cid) => chipButtons(cid).map(chipValue);
+  const single = (cid) => {
+    const ids = S().combo.ids;
+    return [ids.category, ids.brand, ids.condition, ids.size, ids.package].includes(cid);
+  };
+
   async function choose(st, cid, value, { typed = null, category = false, optional = false, prefix = false } = {}) {
     if (optional && !document.getElementById(cid)) {
       st.notes.push(`${cid}: not on this form, left out`);
+      return;
+    }
+    if (!single(cid) && T.chipsOf(cid).some((c) => T.norm(c) === T.norm(value))) {
+      T.picked(st, cid, value, value);                   // chosen already (Depop's own suggestion): never clicked again
       return;
     }
     const box = await open(cid);
@@ -119,33 +139,67 @@
 
   // Depop's brand menu answers the typed text from its server: read it until our brand (or its clean form) is offered,
   // 8 seconds at most. None → the field cleared (its clear button), never a nearby brand left selected.
+  // Its search matches the typed text as written ("J. Crew" finds only "Other", "J.Crew" finds J.Crew: recorded
+  // 2026-10-06), so the spellings are tried in turn: ours, without the space after a dot, without punctuation.
+  T.brandSpellings = (value, typed) => [...new Set([typed, value, String(value).replace(/\.\s+/g, "."),
+                                                    String(value).replace(/[^A-Za-z0-9& ]+/g, "").replace(/\s+/g, " ")]
+                                                   .filter(Boolean))];
+
   async function brand(st, value, typed) {
     const cid = S().combo.ids.brand;
-    const box = await open(cid);
-    await T.type(box, typed || value);
-    const end = Date.now() + 8000 * T.timeoutScale;
-    let opts = [], texts = [], pick = { choice: null, guess: null };
-    for (;;) {
-      opts = optionsOf(menuOf(cid));
-      texts = opts.map(textOf);
-      pick = T.strictPick(value, texts);
-      if (pick.choice || Date.now() > end) break;
-      await new Promise((r) => setTimeout(r, 300));
-    }
-    const { choice, guess } = pick;
-    if (!choice) {
-      await T.screenshot(`menu-${cid}`);
-      T.setValue(box, "");
-      escape(box);
-      const clear = T.$(S().brand_clear.selectors);
-      if (clear && T.visible(clear)) await T.click(clear);
-      st.guesses.push(`brand left empty (Depop has no '${value}')`);
+    const box = document.getElementById(cid);
+    const already = box && box.value && T.strictPick(value, [box.value]);
+    if (already && already.choice) {                    // Depop filled our brand in by itself
+      T.picked(st, cid, value, box.value);
+      if (already.guess) st.guesses.push(already.guess);
       return;
     }
-    await T.click(opts[texts.indexOf(choice)]);
-    T.picked(st, cid, value, choice);
-    if (guess) st.guesses.push(guess);
+    for (const spelling of T.brandSpellings(value, typed)) {
+      await open(cid);
+      await T.type(box, spelling);
+      const end = Date.now() + 5000 * T.timeoutScale;
+      let opts = [], texts = [], pick = { choice: null, guess: null };
+      for (;;) {
+        opts = optionsOf(menuOf(cid));
+        texts = opts.map(textOf);
+        pick = T.strictPick(value, texts);
+        if (pick.choice || Date.now() > end) break;
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      if (pick.choice) {
+        await T.click(opts[texts.indexOf(pick.choice)]);
+        T.picked(st, cid, value, pick.choice);
+        if (pick.guess) st.guesses.push(pick.guess);
+        return;
+      }
+    }
+    await T.screenshot(`menu-${cid}`);
+    await clearBrand(box);
+    st.guesses.push(`brand left empty (Depop has no '${value}')`);
   }
+
+  async function clearBrand(box) {
+    T.setValue(box, "");
+    escape(box);
+    const clear = T.$(S().brand_clear.selectors);
+    if (clear && T.visible(clear)) await T.click(clear);
+  }
+
+  // What each multi-select should hold, from the job (every multi-select on the form: none unless planned).
+  const planned = (f) => {
+    const ids = S().combo.ids;
+    const out = {};
+    for (const box of document.querySelectorAll("form input[role='combobox']")) {
+      if (box.id && !single(box.id) && box.id.endsWith("-input")) out[box.id] = [];
+    }
+    out[ids.colour] = (f.colors || []).slice(0, 2);
+    out[ids.source] = f.source || [];
+    out[ids.age] = f.age ? [f.age] : [];
+    out[ids.style] = f.style || [];
+    for (const [name, values] of Object.entries(f.attributes || {})) out[ids.attribute.replace("{name}", name)] = values;
+    for (const cid of Object.keys(out)) if (!document.getElementById(cid)) delete out[cid];
+    return out;
+  };
 
   // Boost's switch: a checkbox whose label offers the paid promotion (recorded 2026-10-06: "Promote your item in search
   // to help it sell faster. Pay an extra 12% fee, only if you sell.").
@@ -196,19 +250,48 @@
         await T.click(b);
         st.notes.push("Boost was on: turned off");
       }
+      // Depop's own suggestions that aren't ours: every multi-select keeps only the values we chose; a brand we didn't
+      // ask for is cleared (the listing says only what the facts support).
+      await T.step("tidy", st, async () => {
+        for (const [cid, want] of Object.entries(planned(f))) {
+          for (const b of chipButtons(cid)) {
+            if (!want.some((w) => T.norm(w) === T.norm(chipValue(b)))) {
+              st.notes.push(`removed '${chipValue(b)}' from ${cid} (Depop's own suggestion)`);
+              await T.click(b);
+              await T.sleep(300);
+            }
+          }
+        }
+        const brandBox = document.getElementById(ids.brand);
+        if (!f.brand && brandBox && brandBox.value) {
+          st.notes.push(`cleared the brand '${brandBox.value}' (Depop's own suggestion)`);
+          await clearBrand(brandBox);
+        }
+      });
     },
 
+    // The form as it is: the single-selects' values, the multi-selects' chips (the category's input shows its leaf
+    // name: our path when it is that name, chosen under the department heading).
     readBack(job, st) {
+      const f = job.fields;
+      const ids = S().combo.ids;
       const value = (sel) => {
         const el = T.$(sel);
         return el ? el.value : null;
       };
-      return {
+      const of = (cid) => document.getElementById(cid)?.value || "";
+      const seen = {
         description: value(S().description.selectors), price: value(S().price.selectors),
-        photos: String(T.$$(S().photos.thumbs).length), package: st.package || null, shipping: st.shipping || null,
+        photos: String(T.$$(S().photos.thumbs).length), package: of(ids.package) || null, shipping: st.shipping || null,
         boost: boosts().some((b) => b.checked), boost_found: boosts().length, size_menu: st.sizeMenu || null,
-        ...st.picked,
       };
+      const leaf = String(f.category || "").split(" > ").pop();
+      const cat = of(ids.category);
+      seen[ids.category] = cat ? [T.norm(cat) === T.norm(leaf) && st.picked[ids.category] ? f.category : cat] : [];
+      for (const cid of [ids.condition, ids.size, ids.package]) if (of(cid)) seen[cid] = [of(cid)];
+      seen[ids.brand] = of(ids.brand) || null;
+      for (const cid of Object.keys(planned(f))) seen[cid] = T.chipsOf(cid);
+      return seen;
     },
 
     submitButtons() {

@@ -161,7 +161,7 @@ test("a job the bridge calls off stops at the next step, whatever the mode", asy
   assert.deepEqual(plain(p.fetches), []);
 });
 
-test("Depop: the category under the item's department, the lagging size menu, the brand menu, the package size", async () => {
+test("Depop: the category under the item's department, the lagging size menu, the package size, Depop's own fill-ins tidied", async () => {
   const p = page("depop", undefined, undefined, DEPOP_FIX);
   p.d.querySelector("input[data-testid='switch']").checked = true;     // Boost on by itself: we never leave it on
   p.d.querySelector("#manual__shipping").checked = true;               // and Depop Shipping is what we use
@@ -172,25 +172,47 @@ test("Depop: the category under the item's department, the lagging size menu, th
   const seen = plain(result.seen);
   assert.equal(seen.description, DEPOP_JOB.copy.description);
   assert.deepEqual(seen["group-input"], ["Women > Bottoms > Pants"]);
-  assert.equal(p.w.__picked.category, "Womenswear > Pants");           // the page's own record: Women's, not Men's
-  assert.deepEqual(plain(result.shown)["group-input"], ["Womenswear › Pants"]);
+  assert.equal(p.w.__picked.category, "Women > Bottoms > Pants");      // the page's own record: Women's, not Men's
+  assert.deepEqual(plain(result.shown)["group-input"], ["Women > Bottoms › Pants"]);
   assert.deepEqual(seen["variants-input"], ["S"]);
-  assert.deepEqual(seen["brand-input"], ["J. Crew"]);
-  assert.equal(p.w.__picked["brand-input"], "J.Crew");                 // Depop's spelling, not "J.Crew Factory"
+  assert.equal(seen["brand-input"], "J.Crew");                         // Depop's own fill-in was ours: kept
+  assert.ok(plain(result.guesses).includes("brand set to 'J.Crew' (from 'J. Crew')"));
   assert.deepEqual(seen["condition-input"], ["Like new"]);
-  assert.deepEqual(seen["colour-input"], ["Cream"]);
+  assert.deepEqual(seen["colour-input"], ["Cream"]);                   // its Grey removed, its Cream kept (not toggled)
+  assert.deepEqual(plain(p.w.__chosen["colour-input"]), ["Cream"]);
+  assert.deepEqual(seen["source-input"], ["Preloved"]);
+  assert.deepEqual(seen["age-input"], ["Modern"]);
+  assert.deepEqual(seen["style-input"], []);
   assert.deepEqual(seen["attributes.material-input"], ["Wool"]);
-  assert.equal(seen.package, "Large (up to 2 lb)");
+  assert.equal(seen.package, "Large");                                 // not its Medium
   assert.equal(seen.shipping, "Depop Shipping");
   assert.equal(p.d.querySelector("#usps__shipping").checked, true);
   assert.equal(seen.boost, false);
   assert.equal(seen.boost_found, 1);
   assert.equal(seen.price, "35");
-  assert.equal(seen.photos, "1");
+  assert.equal(seen.photos, "1");                                      // the tile, not the other Depop images
   assert.equal(seen.submit_buttons, 1);
-  assert.ok(plain(result.notes).includes("Boost was on: turned off"));
-  assert.ok(plain(result.notes).some((n) => n.startsWith("category menu: Menswear › Pants, Womenswear › Pants")));
+  const notes = plain(result.notes);
+  assert.ok(notes.includes("Boost was on: turned off"));
+  assert.ok(notes.includes("removed 'Grey' from colour-input (Depop's own suggestion)"), JSON.stringify(notes));
+  assert.ok(notes.some((n) => n.startsWith("category menu: Men > Bottoms › Pants, Women > Bottoms › Pants")));
   assert.deepEqual(plain(p.fetches), []);
+});
+
+test("Depop: the brand typed as Depop spells it when our spelling finds nothing", async () => {
+  const p = page("depop", undefined, undefined, { ...DEPOP_FIX, ai: false });
+  await run(p, DEPOP_JOB);
+  const r = p.last();
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(plain(r.seen)["brand-input"], "J.Crew");
+  assert.equal(p.w.__picked["brand-input"], "J.Crew");                 // "J. Crew" found only Other; "J.Crew" found it
+  assert.ok(plain(r.guesses).includes("brand set to 'J.Crew' (from 'J. Crew')"));
+});
+
+test("Depop: the brand spellings tried", () => {
+  const { w } = page("depop");
+  assert.deepEqual(plain(w.Thrift.brandSpellings("J. Crew", "J. Crew")), ["J. Crew", "J.Crew", "J Crew"]);
+  assert.deepEqual(plain(w.Thrift.brandSpellings("Levi's", null)), ["Levi's", "Levis"]);
 });
 
 test("Depop: a department the menu doesn't list fails the category, the menu on record", async () => {
@@ -199,7 +221,7 @@ test("Depop: a department the menu doesn't list fails the category, the menu on 
   const r = p.last();
   assert.equal(r.event, "result");
   assert.match(plain(r.failed)[0], /^category: group-input: no option 'Home > Bottoms > Pants'/);
-  assert.ok(p.sent.some((m) => m.type === "screenshot" && m.label === "menu-group-input" && m.html.includes("Womenswear")));
+  assert.ok(p.sent.some((m) => m.type === "screenshot" && m.label === "menu-group-input" && m.html.includes("Women > Bottoms")));
 });
 
 test("Depop: a brand the menu doesn't offer is left empty and cleared", async () => {
@@ -208,8 +230,9 @@ test("Depop: a brand the menu doesn't offer is left empty and cleared", async ()
   const r = p.last();
   assert.equal(r.event, "result");
   assert.deepEqual(plain(r.guesses), ["brand left empty (Depop has no 'Zara')"]);
-  assert.equal(p.d.querySelector("#brand-input").value, "");
+  assert.equal(p.d.querySelector("#brand-input").value, "");          // its own J.Crew cleared too
   assert.equal(p.w.__picked["brand-input"], undefined);
+  assert.ok(p.sent.some((m) => m.type === "screenshot" && m.label === "menu-brand-input"));
 });
 
 test("Depop: a publish posts exactly once", async () => {
