@@ -20,18 +20,24 @@
     return input;
   }
 
+  // A row's own words: its title cell when it has one (Vinted's rows carry a title and sometimes a description).
+  const rowText = (r) => (T.$(S().rows.title, r) || r).textContent.replace(/\s+/g, " ").trim();
+
   async function clickRow(text, timeout = 8000) {
     const end = Date.now() + timeout * T.timeoutScale;
     for (;;) {
       const rows = T.$$(S().rows.selectors).filter(T.visible);
-      const texts = rows.map((r) => r.textContent.replace(/\s+/g, " ").trim());
+      const texts = rows.map(rowText);
       const i = texts.findIndex((t) => T.norm(t) === T.norm(text) || T.norm(t.split(" | ")[0]) === T.norm(text));
       if (i >= 0) {
         await T.click(rows[i]);
         await T.sleep(300);
         return texts[i];
       }
-      if (Date.now() > end) throw new Error(`no '${text}' (offered: ${texts.slice(0, 8).join(", ")})`);
+      if (Date.now() > end) {
+        await T.screenshot(`menu-${T.norm(text).replace(/[^a-z0-9]+/g, "-").slice(0, 30)}`);   // the open list
+        throw new Error(`no '${text}' (offered: ${texts.slice(0, 8).join(", ")})`);
+      }
       await new Promise((r) => setTimeout(r, 150));
     }
   }
@@ -47,10 +53,11 @@
     async fill(job, files, st) {
       const f = job.fields;
       await T.dismiss(S().promo_close.selectors);
-      await T.step("photos", st, async () => {
-        const input = await T.need(S().photos.selectors, "photos");
+      await T.step("photos", st, async () => {         // the file input is hidden (u-hidden): found, not "visible"
+        const input = await T.need(S().photos.selectors, "photos", { visible: false });
         st.attached = await T.attach(input, files.slice(0, 20), S().photos.drop);
         await T.waitCount(S().photos.thumbs, Math.min(files.length, 20), 90000);
+        await T.screenshot("photos");
       });
       await T.step("title", st, async () => T.type(await T.need(S().title.selectors, "title"), job.copy.title));
       await T.step("description", st, async () =>
@@ -73,9 +80,10 @@
           await T.type(search || (await T.need(S().brand.selectors, "brand")), f.brand);
           await T.sleep(900);
           const rows = T.$$(S().rows.selectors).filter(T.visible);
-          const texts = rows.map((r) => r.textContent.replace(/\s+/g, " ").trim());
+          const texts = rows.map(rowText);
           const { choice, guess } = T.strictPick(f.brand, texts);
           if (!choice) {
+            await T.screenshot("menu-brand");
             st.guesses.push(`brand left empty (Vinted has no '${f.brand}')`);
             escape();
             return;

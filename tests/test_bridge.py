@@ -218,6 +218,28 @@ def test_jobs_are_pushed_over_the_socket_and_their_evidence_kept(tmp_path):
     run(go())
 
 
+def test_a_deploy_that_changes_the_extension_is_announced(tmp_path):
+    """The extension reloads itself on a new files hash; the bridge tells it when ext/ changes on disk."""
+    import shutil
+    ext = tmp_path / "ext"
+    shutil.copytree(bm.EXT_DIR, ext)
+
+    async def go():
+        b = await bm.Bridge(TOKEN, port=0, ext_dir=ext).start()
+        r, w, _ = await ws_open(b.port)
+        ws_send(w, {"type": "hello", "token": TOKEN})
+        first = await ws_recv(r)
+        assert first == {"type": "welcome", "ext_hash": bm.files_hash(ext)} and b.announce_files() is False
+        (ext / "selectors.json").write_text((ext / "selectors.json").read_text(encoding="utf-8") + "\n",
+                                            encoding="utf-8")
+        assert b.announce_files() is True and b.announce_files() is False
+        again = await ws_recv(r)
+        assert again["type"] == "welcome" and again["ext_hash"] != first["ext_hash"]
+        w.close()
+        await b.close()
+    run(go())
+
+
 def test_a_job_given_up_on_ignores_late_events():
     async def go():
         b = await _bridge()
@@ -641,10 +663,13 @@ def test_the_thrift_chrome_launch_agent():
     assert "services.sh start chrome" in (ROOT / "deploy" / "mac_deploy.sh").read_text(encoding="utf-8")
 
 
-def test_every_selector_starts_unverified_but_the_recorded_pages():
+def test_verified_steps_carry_their_evidence_and_the_publish_gate_stays_closed():
+    """A step is marked verified only with what the live run showed ("seen"); the publish steps (the button, the page
+    after it) stay UNVERIFIED until a run proves them — no publish before that (WO32 §1)."""
     data = ext_driver.selectors()
     for site in ("vinted", "depop"):
-        assert all(not step["verified"] for step in data[site]["steps"].values())
-        assert {k for k, v in data[site]["pages"].items() if v.get("verified")} == {"login"} | (
-            {"block"} if site == "depop" else set())
+        for name, step in [*data[site]["steps"].items(), *data[site]["pages"].items()]:
+            if step.get("verified"):
+                assert step.get("seen"), f"{site} {name}: verified without its evidence"
         assert ext_driver.unverified(site) >= {"submit", "after_publish"}
+        assert data[site]["pages"]["login"]["verified"]

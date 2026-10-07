@@ -1,0 +1,152 @@
+<!doctype html>
+<!-- A stand-in for Vinted's upload form as the extension's first live dry run recorded it (2026-10-06, WO32):
+the hidden file input [data-testid=add-photos-input].u-hidden with its [data-testid=media-upload-grid], title / description
+by data-testid, and the category dropdown — [data-testid=catalog-select-dropdown-input] opening
+[data-testid=catalog-select-dropdown-content] with ul[data-testid=category-list] of div#catalog-<id>[role=button] rows
+(the title in .web_ui__Cell__title), walked level by level. The other fields appear only once a category is chosen,
+as on the live form; their markup is not recorded yet and modelled like the category's (rows [role=button] in
+[data-testid=<name>-select-dropdown-content]). Clicking Upload sends /api/upload-click and goes to
+/items/9876543210-<words> (window.__FIXTURE.land overrides it). -->
+<html><head><meta charset="utf-8"><title>Sell an item | Vinted</title>
+<style>.u-hidden{display:none} [role=button]{padding:2px 4px;cursor:pointer} img{width:40px;height:40px}
+.hidden-until-category{display:none}</style></head>
+<body><main id="main">
+  <h1>Sell an item</h1>
+  <div data-testid="media-upload" id="photos">
+    <input data-testid="add-photos-input" class="u-hidden" accept="image/jpeg,image/gif,image/png,image/webp" multiple type="file" name="photos">
+    <div data-testid="dropzone"><div data-testid="media-upload-grid" id="grid"></div></div>
+  </div>
+  <input class="web_ui__Input__value" id="title" data-testid="title--input" type="text" name="title">
+  <textarea class="web_ui__Input__value" name="description" id="description" data-testid="description--input"></textarea>
+  <label for="category">Category</label>
+  <input data-testid="catalog-select-dropdown-input" id="category" readonly placeholder="Select a category" name="category">
+  <div data-testid="catalog-select-dropdown-content" id="catalog-content"></div>
+  <div class="hidden-until-category" id="details">
+    <input data-testid="brand-select-dropdown-input" readonly>
+    <div data-testid="brand-select-dropdown-content" id="brand-content"></div>
+    <input data-testid="size-select-dropdown-input" readonly>
+    <div data-testid="size-select-dropdown-content" id="size-content"></div>
+    <input data-testid="condition-select-dropdown-input" readonly>
+    <div data-testid="condition-select-dropdown-content" id="condition-content"></div>
+    <input data-testid="color-select-dropdown-input" readonly>
+    <div data-testid="color-select-dropdown-content" id="color-content"></div>
+    <input data-testid="material-select-dropdown-input" readonly>
+    <div data-testid="material-select-dropdown-content" id="material-content"></div>
+    <input data-testid="price--input" id="price" name="price">
+    <div id="packages"></div>
+  </div>
+  <button data-testid="upload-form-save-draft-button" type="button">Save draft</button>
+  <button data-testid="upload-form-save-button" type="button">Upload</button>
+</main>
+<script>
+const F = window.__FIXTURE || {};
+if (F.verify) {
+  document.getElementById("main").innerHTML = "<h1>Verify your phone number before you list</h1>";
+}
+const TREE = {"Women": {"Clothing": {"Skirts": 5523, "Pants & leggings": {"Wide-leg pants": 1071}}, "Shoes": {"Ballerinas": 2955}},
+              "Men": {"Clothing": {"Pants": 1234}}, "Kids": {}, "Home": {}};
+const IDS = {"Women": 1904, "Men": 5, "Kids": 1193, "Home": 1918};
+const FIELDS = {
+  "size": ["One size", "XS / US 0-2", "S / US 4-6", "M / US 8-10"],
+  "condition": ["New with tags", "New without tags", "Very good", "Good", "Satisfactory"],
+  "color": ["Black", "Gray", "Cream", "Red", "White"],
+  "material": ["Cotton", "Wool", "Leather"],
+};
+const BRANDS = ["J.Crew", "J.Crew Factory", "Tory Burch"];
+let seq = 100;
+function cell(title, id) {
+  const li = document.createElement("li");
+  const d = document.createElement("div");
+  d.setAttribute("role", "button");
+  d.id = id || ("row-" + (seq++));
+  d.innerHTML = '<div class="web_ui__Cell__content"><div class="web_ui__Cell__title"></div></div>';
+  d.querySelector(".web_ui__Cell__title").textContent = title;
+  li.appendChild(d);
+  return [li, d];
+}
+function level(node, trail) {
+  const box = document.getElementById("catalog-content");
+  box.innerHTML = '<input placeholder="Find a category"><ul data-testid="category-list"></ul>';
+  const ul = box.querySelector("ul");
+  for (const [name, sub] of Object.entries(node)) {
+    const id = typeof sub === "number" ? "catalog-" + sub : (IDS[name] ? "catalog-" + IDS[name] : undefined);
+    const [li, d] = cell(name, id);
+    d.addEventListener("click", () => {
+      if (typeof sub === "number") {
+        document.getElementById("category").value = name;
+        box.innerHTML = "";
+        document.getElementById("details").classList.remove("hidden-until-category");
+        packages(sub);
+      } else {
+        level(sub, [...trail, name]);
+      }
+    });
+    ul.appendChild(li);
+  }
+}
+document.getElementById("category").addEventListener("click", () => level(TREE, []));
+function packages(leaf) {
+  const box = document.getElementById("packages");
+  box.innerHTML = "";
+  ["Small", "Medium", "Large"].forEach((text, i) => {
+    const r = document.createElement("input");
+    r.type = "radio"; r.name = "package_size"; r.id = "pkg-" + i;
+    const l = document.createElement("label");
+    l.setAttribute("for", r.id); l.textContent = text;
+    box.appendChild(r); box.appendChild(l);
+  });
+}
+document.querySelectorAll('[data-testid$="-select-dropdown-input"]').forEach((input) => {
+  const name = input.getAttribute("data-testid").replace("-select-dropdown-input", "");
+  if (name === "catalog") return;
+  const content = document.getElementById(name + "-content");
+  input.addEventListener("click", () => {
+    content.innerHTML = "";
+    if (name === "brand") {
+      content.innerHTML = '<input data-testid="brand-select-dropdown-search-input"><ul></ul>';
+      const search = content.querySelector("input");
+      search.addEventListener("input", () => {
+        const q = search.value.toLowerCase().replace(/[^a-z]/g, "");
+        const ul = content.querySelector("ul");
+        ul.innerHTML = "";
+        BRANDS.filter((b) => b.toLowerCase().replace(/[^a-z]/g, "").includes(q)).forEach((b) => {
+          const [li, d] = cell(b);
+          d.addEventListener("click", () => { input.value = b; content.innerHTML = ""; });
+          ul.appendChild(li);
+        });
+      });
+      return;
+    }
+    const ul = document.createElement("ul");
+    for (const t of FIELDS[name] || []) {
+      const [li, d] = cell(t);
+      d.addEventListener("click", () => {
+        input.value = input.value && (name === "color" || name === "material") ? input.value + ", " + t : t;
+        content.innerHTML = "";
+      });
+      ul.appendChild(li);
+    }
+    content.appendChild(ul);
+  });
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") document.querySelectorAll('[data-testid$="-dropdown-content"]').forEach((c) => { c.innerHTML = ""; });
+});
+document.querySelector('[data-testid="add-photos-input"]').addEventListener("change", (e) => {
+  for (const f of e.target.files) {
+    setTimeout(() => {
+      const img = document.createElement("img");
+      img.alt = f.name;
+      document.getElementById("grid").appendChild(img);
+    }, 50);
+  }
+});
+const upload = document.querySelector('[data-testid="upload-form-save-button"]');
+if (upload) upload.addEventListener("click", () => {
+  fetch("/api/upload-click").catch(() => {});
+  const words = document.getElementById("title").value.toLowerCase().replace(/[^a-z0-9 ]/g, "").trim()
+    .split(/\s+/).join("-");
+  setTimeout(() => { location.href = F.land || ("/items/9876543210-" + words); }, 100);
+});
+</script>
+</body></html>

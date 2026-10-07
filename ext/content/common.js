@@ -49,8 +49,8 @@
       await new Promise((r) => setTimeout(r, 100));
     }
   };
-  T.need = async (selectors, what) => {
-    const el = await T.waitFor(selectors);
+  T.need = async (selectors, what, opts = {}) => {
+    const el = await T.waitFor(selectors, opts);
     if (!el) throw new Error(`${what}: not on the page (${[].concat(selectors).join(" | ")})`);
     return el;
   };

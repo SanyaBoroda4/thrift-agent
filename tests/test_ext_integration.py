@@ -26,7 +26,7 @@ from thrift_agent.schema import Render  # noqa: E402
 TOKEN = "integration-token-" + "q" * 30
 FIX = ROOT / "tests" / "fixtures"
 HOST_RULES = "MAP * ~NOTFOUND, EXCLUDE 127.0.0.1"
-TITLE = "J. Crew Red Skirt size S"
+TITLE = "J. Crew Wide Leg Sweater Pants Cream size S"
 RENDER = Render(marketplace="vinted", title=TITLE, description="A red skirt.", tags=[], brand="J. Crew",
                 department="Women", category="Skirts", subcategory=None, size="S", colors=["Red"],
                 condition="like_new", price=35, photos=[], sku="i_1")
@@ -46,10 +46,10 @@ class Site:
     a counter of the publish clicks (the stand-ins call /api/upload-click and /api/post-click)."""
 
     def __init__(self, vinted=None, depop=None, depop_status=200, fixture=None):
-        self.vinted = vinted if vinted is not None else (FIX / "vinted_new_item.html").read_text(encoding="utf-8")
-        self.depop = depop if depop is not None else (FIX / "depop_create.html").read_text(encoding="utf-8")
+        self.vinted = vinted if vinted is not None else (FIX / "ext_vinted_new_item.html").read_text(encoding="utf-8")
+        self.depop = depop if depop is not None else (FIX / "ext_depop_create.html").read_text(encoding="utf-8")
         self.depop_status = depop_status
-        self.fixture = fixture or {"sizeLag": 0}
+        self.fixture = fixture or {"sizeLag": 0, "brandDelay": 200}
         self.clicks: list[str] = []
         self.urls: list[str] = []
 
@@ -74,14 +74,15 @@ class Site:
 
 def fields(mp: str, photos: list[str]):
     if mp == "vinted":
-        return SimpleNamespace(category_id=5523, category_path="Women > Clothing > Skirts", title=TITLE,
-                               description="A red skirt.\nNew without tags.", brand="J. Crew", size="S / US 4-6",
-                               condition="New without tags", colors=["Red"], materials=["Cotton"], skirt_length=None,
-                               package_sizes=["MEDIUM", "LARGE"], price=35, photos=photos, guesses=[])
-    return SimpleNamespace(category="Women > Bottoms > Skirts", description=f"{TITLE}\n\nA red skirt.\n\n#jcrew",
-                           brand="J. Crew", size="S", condition="Used - Good", colors=["Red"], source=["Preloved"],
-                           age=None, style=[], attributes={}, shipping="Depop Shipping", package_size="Small",
-                           price=35, photos=photos, guesses=[])
+        return SimpleNamespace(category_id=1071, category_path="Women > Clothing > Pants & leggings > Wide-leg pants",
+                               title=TITLE, description="Wide leg pants.\nNew without tags.", brand="J. Crew",
+                               size="S / US 4-6", condition="New without tags", colors=["Cream"], materials=["Wool"],
+                               skirt_length=None, package_sizes=["MEDIUM", "LARGE"], price=35, photos=photos,
+                               guesses=[])
+    return SimpleNamespace(category="Women > Bottoms > Pants", description=f"{TITLE}\n\nWide leg pants.\n\n#jcrew",
+                           brand="J. Crew", size="S", condition="Like new", colors=["Cream"], source=["Preloved"],
+                           age="Modern", style=[], attributes={"material": ["Wool"]}, shipping="Depop Shipping",
+                           package_size="Large", price=35, photos=photos, guesses=[])
 
 
 async def session(tmp_path, site: Site, *, token=TOKEN, ws=True, poll_minutes=None, pace=0.02):
@@ -184,7 +185,7 @@ def test_a_vinted_publish_clicks_once_and_lands_on_the_listing(tmp_path):
 
 
 def test_depop_dry_run_then_publish(tmp_path):
-    site = Site(fixture={"sizeLag": 300})
+    site = Site(fixture={"sizeLag": 300, "brandDelay": 400})
 
     async def go():
         b, pw, ctx, sw = await session(tmp_path, site)
@@ -198,7 +199,8 @@ def test_depop_dry_run_then_publish(tmp_path):
             await close(b, pw, ctx)
     dry, live = asyncio.run(go())
     assert dry.status == "dryrun", (dry.error, dry.diff, dry.note)
-    assert live.status == "posted" and live.url == "https://www.depop.com/products/shopname-j-crew-red-skirt-size-s/"
+    assert live.status == "posted" and live.url == \
+        "https://www.depop.com/products/shopname-j-crew-wide-leg-sweater-pants-cream-size-s/"
     assert site.clicks == ["/api/post-click"]
 
 

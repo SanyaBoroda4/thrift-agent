@@ -145,6 +145,7 @@ class Bridge:
         self.chrome_started: float | None = None
         self.said_missing = False
         self.log: list[str] = []
+        self.ext_hash = files_hash(ext_dir)     # what the extension was told; a deploy that changes ext/ is re-announced
 
     # ------------------------------------------------------------ lifecycle
 
@@ -323,13 +324,27 @@ class Bridge:
             return "said"
         return None
 
+    def announce_files(self) -> bool:
+        """ext/ changed on disk (a deploy pulled new extension code): the connected extension is told the new hash, and
+        reloads itself between jobs (background.js maybeReload) — no poster restart needed. True when it was told."""
+        h = files_hash(self.ext_dir)
+        if h == self.ext_hash:
+            return False
+        self.ext_hash = h
+        for sock in self.sockets:
+            if sock.ready:
+                sock.send({"type": "welcome", "ext_hash": h})
+        return True
+
     async def watch(self, in_window, start_chrome, say, state=None, every: float | None = None) -> None:
-        """Every WATCH_EVERY seconds: watch_tick(), and `state(connected)` for thrift status and the daily window."""
+        """Every WATCH_EVERY seconds: watch_tick(), the extension's files (announce_files), and `state(connected)` for
+        thrift status and the daily window."""
         while True:
             await asyncio.sleep(WATCH_EVERY if every is None else every)
             try:
                 if state is not None:
                     state(self.connected())
+                self.announce_files()
                 self.watch_tick(time.monotonic(), bool(in_window()), start_chrome, say)
             except Exception as e:  # noqa: BLE001 — the watch never stops the poster
                 self.log.append(f"watch: {type(e).__name__}: {e}")
@@ -434,7 +449,7 @@ class Bridge:
             sock.ready = True
             self.sockets.add(sock)
             self.last_seen = time.monotonic()
-            sock.send({"type": "welcome", "ext_hash": files_hash(self.ext_dir)})
+            sock.send({"type": "welcome", "ext_hash": self.ext_hash})
             for job in self.jobs.values():          # a go-ahead its old socket never delivered (it reconnected)
                 if job.handed is not None and not job.done and job.commands:
                     for cmd in job.commands:

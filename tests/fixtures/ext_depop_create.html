@@ -1,0 +1,129 @@
+<!doctype html>
+<!-- A stand-in for Depop's create form as the extension's first live dry run recorded it (2026-10-06, WO32): the file
+input [data-testid=upload-input__input] (each photo then shows as a media-photos.depop.com thumbnail), the description
+textarea, Downshift comboboxes <id>-input / <id>-menu (aria-controls) — the category menu listing a name once per
+department under its heading ("Pants" under Womenswear, Menswear, Kidswear: the heading markup is not recorded yet and
+modelled as a non-option row), the size menu appearing after the category, the brand menu answered a moment after
+typing (Depop asks its server) — the price input[data-testid=priceAmount__input][type=number], Depop Shipping's USPS
+radio (on by default) and the PACKAGE SIZE menu shippingMethods-input, Boost's switch (label[data-testid=switch-label],
+"Pay an extra 12% fee"), Post / Save as a draft. Post sends /api/post-click and goes to /products/<shop>-<words>/
+(window.__FIXTURE.land overrides the landing path). -->
+<html><head><meta charset="utf-8"><title>Sell an item | Depop</title>
+<style>ul{list-style:none;margin:0;padding:0;min-height:2px} [role=option]{padding:2px 4px;cursor:pointer}
+.field{margin:6px 0} img{width:40px;height:40px} .later{display:none}</style></head>
+<body><main>
+<form id="form">
+  <div data-testid="upload-input"><label for="upload-input__input">Add a photo</label>
+    <input id="upload-input__input" aria-label="Add a photo" data-testid="upload-input__input" accept="image/jpeg, image/png" multiple type="file"></div>
+  <div id="tiles"></div>
+  <div class="field"><label for="description">Description</label><textarea id="description" name="description"></textarea></div>
+  <div class="field"><input id="group-input" role="combobox" aria-controls="group-menu" autocomplete="off"><ul id="group-menu" role="listbox"></ul></div>
+  <div class="field later" id="size-field"><input id="variants-input" role="combobox" aria-controls="variants-menu" autocomplete="off"><ul id="variants-menu" role="listbox"></ul></div>
+  <div class="field"><input id="brand-input" role="combobox" aria-controls="brand-menu" autocomplete="off"><ul id="brand-menu" role="listbox"></ul>
+    <button type="button" data-testid="brandButton__clear">×</button></div>
+  <div class="field"><input id="condition-input" role="combobox" aria-controls="condition-menu" autocomplete="off"><ul id="condition-menu" role="listbox"></ul></div>
+  <div class="field"><input id="colour-input" role="combobox" aria-controls="colour-menu" autocomplete="off"><ul id="colour-menu" role="listbox"></ul></div>
+  <div class="field"><input id="source-input" role="combobox" aria-controls="source-menu" autocomplete="off"><ul id="source-menu" role="listbox"></ul></div>
+  <div class="field"><input id="age-input" role="combobox" aria-controls="age-menu" autocomplete="off"><ul id="age-menu" role="listbox"></ul></div>
+  <div class="field later" id="material-field"><input id="attributes.material-input" role="combobox" aria-controls="attributes.material-menu" autocomplete="off"><ul id="attributes.material-menu" role="listbox"></ul></div>
+  <div class="field"><label for="priceAmount__input">Price</label><input id="priceAmount__input" type="number" aria-label="Item price" data-testid="priceAmount__input" step="any" min="0" value="0.00"></div>
+  <div class="field"><label data-testid="switch-label"><input data-testid="switch" type="checkbox"><span></span><p>Promote your item in search to help it sell faster. Pay an extra 12% fee, only if you sell.</p></label></div>
+  <div data-testid="national-shipping-section"><h2>Shipping</h2>
+    <input data-testid="usps__shipping__input" id="usps__shipping" type="radio" value="USPS" checked name="shipping"><label for="usps__shipping">Depop Shipping (via USPS)</label>
+    <input data-testid="manual__shipping__input" id="manual__shipping" type="radio" value="MANUAL" name="shipping"><label for="manual__shipping">Other</label>
+    <div class="field"><label id="shippingMethods-label">Package size</label><input id="shippingMethods-input" role="combobox" aria-controls="shippingMethods-menu" aria-labelledby="shippingMethods-label" autocomplete="off"><ul id="shippingMethods-menu" role="listbox"></ul></div>
+  </div>
+  <button type="submit">Post</button>
+  <button type="button">Save as a draft</button>
+  <label><input type="checkbox" id="post-another"> Post and add another</label>
+</form>
+</main>
+<script>
+const F = window.__FIXTURE || {};
+const DEPTS = {"Menswear": ["Sweatpants", "Pants"], "Womenswear": ["Sweatpants", "Pants", "Skirts"], "Kidswear": ["Sweatpants", "Pants"]};
+const PATH = {"Menswear": "Men", "Womenswear": "Women", "Kidswear": "Kids"};
+const OPTIONS = {
+  "brand-input": ["J.Crew", "J.Crew Factory", "Tory Burch"],
+  "condition-input": ["Brand new", "Like new", "Used - Excellent", "Used - Good", "Used - Fair"],
+  "colour-input": ["Black", "Grey", "Cream", "Red", "White"],
+  "source-input": ["Vintage", "Preloved"],
+  "age-input": ["Modern", "90s"],
+  "attributes.material-input": ["Cotton", "Wool", "Silk"],
+  "shippingMethods-input": ["Extra small (up to 8 oz)", "Small (up to 12 oz)", "Medium (up to 1 lb)",
+                            "Large (up to 2 lb)", "Extra large (up to 10 lb)"],
+};
+const SIZES = {"Women": ["One size", "XS", "S", "M", "L"], "Men": ["S", "M", "L"], "Kids": ["4 years", "6 years"]};
+let dept = null, categoryAt = 0;
+window.__picked = {};
+function option(id, text, onPick) {
+  const li = document.createElement("li");
+  li.setAttribute("role", "option");
+  li.textContent = text;
+  li.addEventListener("click", () => onPick(text));
+  return li;
+}
+function wire(id) {
+  const input = document.getElementById(id);
+  const menu = document.getElementById(id.replace(/-input$/, "") + "-menu");
+  const render = () => {
+    const q = input.value.trim().toLowerCase();
+    menu.innerHTML = "";
+    if (id === "group-input") {
+      for (const [heading, names] of Object.entries(DEPTS)) {
+        const hits = names.filter((n) => !q || n.toLowerCase().includes(q));
+        if (!hits.length) continue;
+        const h = document.createElement("li");
+        h.textContent = heading;
+        menu.appendChild(h);
+        for (const n of hits) menu.appendChild(option(id, n, (t) => {
+          input.value = t; menu.innerHTML = ""; dept = PATH[heading]; categoryAt = Date.now();
+          window.__picked.category = heading + " > " + t;
+          document.getElementById("size-field").classList.remove("later");
+          document.getElementById("material-field").classList.remove("later");
+        }));
+      }
+      return;
+    }
+    const pool = id === "variants-input"
+      ? (Date.now() - categoryAt < (F.sizeLag ?? 0) ? ["One size"] : (SIZES[dept] || []))
+      : (OPTIONS[id] || []);
+    const show = () => {
+      menu.innerHTML = "";
+      const bare = (x) => x.toLowerCase().replace(/[^a-z0-9]/g, "");   // Depop's search: "J. Crew" finds "J.Crew"
+      for (const o of pool.filter((o) => !q || bare(o).includes(bare(q)))) {
+        menu.appendChild(option(id, o, (t) => { input.value = t; menu.innerHTML = ""; window.__picked[id] = t; }));
+      }
+    };
+    if (id === "brand-input") setTimeout(show, F.brandDelay ?? 300); else show();
+  };
+  input.addEventListener("click", render);
+  input.addEventListener("input", render);
+  input.addEventListener("keydown", (e) => { if (e.key === "Escape") menu.innerHTML = ""; });
+}
+["group-input", "variants-input", "shippingMethods-input"].concat(Object.keys(OPTIONS)).forEach((id) => {
+  if (!document.getElementById(id).dataset.wired) { document.getElementById(id).dataset.wired = "1"; wire(id); }
+});
+document.querySelector('[data-testid="brandButton__clear"]').addEventListener("click", () => {
+  document.getElementById("brand-input").value = "";
+});
+document.getElementById("upload-input__input").addEventListener("change", (e) => {
+  let n = 0;
+  for (const f of e.target.files) {
+    const k = ++n;
+    setTimeout(() => {
+      const img = document.createElement("img");
+      img.alt = "";
+      img.src = "https://media-photos.depop.com/b1/1/" + k + "/P2.jpg";
+      document.getElementById("tiles").appendChild(img);
+    }, 50);
+  }
+});
+document.getElementById("form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  fetch("/api/post-click").catch(() => {});
+  const words = document.getElementById("description").value.split("\n")[0].toLowerCase()
+    .replace(/[^a-z0-9 ]/g, "").trim().split(/\s+/).join("-");
+  setTimeout(() => { location.href = F.land || ("/products/shopname-" + words + "/"); }, 100);
+});
+</script>
+</body></html>
