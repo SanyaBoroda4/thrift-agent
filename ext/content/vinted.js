@@ -62,14 +62,34 @@
     await close(input);
   }
 
-  // A multi-select's panel stays open after a pick and Escape doesn't close it (recorded 2026-10-06: the material panel
-  // still open over the price): its own input closes it — so no panel is left open over the Upload button.
+  // A field's panel state is its chevron (recorded 2026-10-06: <field>-chevron-up while open, -chevron-down when closed,
+  // inside the field's toggle [role=button]). A multi-select's panel stays open after a pick and Escape doesn't close it
+  // (the material panel was left open over the price): it is closed with its toggle — so none is left over Upload.
+  const baseOf = (input) => (input.getAttribute("data-testid") || "").replace(/-input$/, "");
+  const chevronUp = (base) => base && document.querySelector(`[data-testid='${base}-chevron-up']`);
+  const isOpen = (input) => {
+    const base = baseOf(input);
+    if (chevronUp(base)) return true;
+    if (base && document.querySelector(`[data-testid='${base}-chevron-down']`)) return false;
+    return T.$$(S().rows.selectors).some(T.visible);
+  };
+
   async function close(input) {
     escape();
-    await T.sleep(250);
-    if (T.$$(S().rows.selectors).some(T.visible)) {
-      await T.click(input);
-      await T.sleep(300);
+    for (let k = 0; k < 3; k++) {
+      await T.sleep(350);
+      if (!isOpen(input)) return;
+      const up = chevronUp(baseOf(input));
+      await T.click(up?.closest("[role='button']") || up || input);
+    }
+  }
+
+  // Every panel still open at the end (its chevron up): closed the same way.
+  async function closeAll(st) {
+    for (const up of T.$$(["[data-testid$='-chevron-up']"])) {
+      st.notes.push(`closed the open ${up.getAttribute("data-testid").replace(/-chevron-up$/, "")} panel`);
+      await T.click(up.closest("[role='button']") || up);
+      await T.sleep(350);
     }
   }
 
@@ -147,6 +167,7 @@
         throw new Error(`package ${f.package_sizes} not offered (${cells.map(cellName).join(", ")})`);
       });
       await T.dismiss(S().promo_close.selectors);
+      await closeAll(st);
       st.photosLoadedEnd = await T.waitLoaded(S().photos.thumbs, Math.min(files.length, 20), 20000);
       await T.screenshot("photos-end");
       T.$(S().details_view?.selectors)?.scrollIntoView?.({ block: "start" });   // the form's screenshot: the details

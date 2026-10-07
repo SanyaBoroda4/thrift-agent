@@ -117,6 +117,7 @@ test("Vinted: a dry run fills every field the way a person would and never submi
   assert.equal(p.d.querySelector("#package-size-2").getAttribute("role"), "presentation");
   assert.equal(p.d.querySelector("#material-content").innerHTML, "");  // no panel left open over Upload
   assert.equal(p.d.querySelector("#color-content").innerHTML, "");
+  assert.equal(p.d.querySelectorAll("[data-testid$='-chevron-up']").length, 0);
   assert.deepEqual(plain(p.fetches), []);                              // Upload never pressed
   const steps = p.events().filter((e) => e.event === "step").map((e) => e.name);
   assert.deepEqual(steps.slice(0, 4), ["photos", "title", "description", "category"]);

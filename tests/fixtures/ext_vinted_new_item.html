@@ -119,6 +119,23 @@ function choosePackage(n) {
     c.querySelector("input").checked = on;
   });
 }
+// Each field's toggle with its chevron (recorded: <field>-chevron-up while its panel is open, -chevron-down closed).
+function chevron(name, open) {
+  const input = document.getElementById(name);
+  const base = input.getAttribute("data-testid").replace(/-input$/, "");
+  let t = input.nextElementSibling && input.nextElementSibling.classList.contains("toggle") ? input.nextElementSibling : null;
+  if (!t) {
+    t = document.createElement("div"); t.className = "toggle"; t.setAttribute("role", "button");
+    t.innerHTML = "<span></span>"; input.after(t);
+    t.addEventListener("click", () => input.click());
+  }
+  t.querySelector("span").setAttribute("data-testid", base + (open ? "-chevron-up" : "-chevron-down"));
+}
+new MutationObserver(() => {
+  for (const name of ["size", "condition", "color", "material"]) {
+    chevron(name, !!document.getElementById(name + "-content").innerHTML);
+  }
+}).observe(document.getElementById("details"), { childList: true, subtree: true });
 function panel(name, rows, multi) {
   const input = document.getElementById(name);
   const content = document.getElementById(name + "-content");
