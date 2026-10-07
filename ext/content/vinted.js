@@ -1,7 +1,11 @@
 // Thrift crosslister (WO32): Vinted's upload form, in its order — photos, title, description, category (the leaf by its
 // id, else the tree walked by its path), brand (its own list, exact or the clean form only), size, condition, colours
-// (≤ 2), materials (≤ 3), the skirt length Skirts require, price, the package size radio. Promotion offers are closed,
-// never accepted. Selectors: selectors.json → vinted (UNVERIFIED until a dry run on the Mac recorded them).
+// (≤ 2), materials (≤ 3), the skirt length Skirts require, price, the package size. Recorded live (2026-10-06): each
+// field is a readonly input opening a "-dropdown-content" / "-grid-content" / "-list-content" panel whose rows are
+// [role=button] (a category branch), [role=radio] (a leaf, a condition) or [role=checkbox] (a size, a colour, a
+// material), a "Suggested" group above the full list; the package size is a cell per size with its radio, the chosen
+// one turning role=presentation (Vinted picks a "Recommended" one by itself). A row already chosen is never clicked
+// again. The values are read back from the inputs. Promotion offers are closed, never accepted.
 (function () {
   const T = globalThis.Thrift;
   const S = () => T.selectors.vinted.steps;
@@ -30,7 +34,7 @@
       const texts = rows.map(rowText);
       const i = texts.findIndex((t) => T.norm(t) === T.norm(text) || T.norm(t.split(" | ")[0]) === T.norm(text));
       if (i >= 0) {
-        await T.click(rows[i]);
+        if (rows[i].getAttribute("aria-checked") !== "true") await T.click(rows[i]);   // chosen already: leave it
         await T.sleep(300);
         return texts[i];
       }
@@ -41,6 +45,15 @@
       await new Promise((r) => setTimeout(r, 150));
     }
   }
+
+  // The package sizes: a cell each, its name in the title's own span ("Recommended" is a badge beside it).
+  const packageCells = () => T.$$(S().package.cells).filter(T.visible);
+  const cellName = (c) => T.norm((T.$(S().package.title, c) || c).textContent);
+  const chosenPackage = () => {
+    const cell = packageCells().find((c) => T.$(S().package.radio, c)?.checked);
+    if (!cell) return null;
+    return Object.keys(PACKAGE).find((k) => PACKAGE[k] === cellName(cell)) || cellName(cell);
+  };
 
   async function pick(st, name, value) {
     await open(name);
@@ -57,6 +70,7 @@
         const input = await T.need(S().photos.selectors, "photos", { visible: false });
         st.attached = await T.attach(input, files.slice(0, 20), S().photos.drop);
         await T.waitCount(S().photos.thumbs, Math.min(files.length, 20), 90000);
+        st.photosLoaded = await T.waitLoaded(S().photos.thumbs, Math.min(files.length, 20), 30000);
         await T.screenshot("photos");
       });
       await T.step("title", st, async () => T.type(await T.need(S().title.selectors, "title"), job.copy.title));
@@ -108,24 +122,22 @@
       for (const m of (f.materials || []).slice(0, 3)) await T.step("material", st, async () => pick(st, "material", m));
       if (f.skirt_length) await T.step("skirt_length", st, async () => pick(st, "skirt_length", f.skirt_length));
       await T.step("price", st, async () => T.type(await T.need(S().price.selectors, "price"), String(job.price)));
-      await T.step("package", st, async () => {
-        const radios = T.$$(S().package.selectors);
-        const labelOf = (r) => {
-          const l = r.id && [...document.querySelectorAll("label")].find((x) => x.htmlFor === r.id);
-          return T.norm((l || r.closest("label") || r.parentElement || {}).textContent || "");
-        };
+      await T.step("package", st, async () => {         // the first size of ours this item's category offers
+        const cells = packageCells();
         for (const code of f.package_sizes || []) {
-          const want = PACKAGE[code];
-          const r = radios.find((x) => labelOf(x).startsWith(want) && !(code === "SMALL" && labelOf(x).startsWith("extra")));
-          if (r) {
-            await T.click(r);
-            st.package = code;
-            return;
-          }
+          const cell = cells.find((c) => cellName(c) === PACKAGE[code]);
+          if (!cell) continue;
+          const radio = T.$(S().package.radio, cell);
+          if (!(radio && radio.checked)) await T.click(cell);
+          await T.sleep(400);
+          if (radio && !radio.checked) throw new Error(`the package size ${PACKAGE[code]} didn't take`);
+          return;
         }
-        throw new Error(`package ${f.package_sizes} not offered (${radios.map(labelOf).join(", ")})`);
+        throw new Error(`package ${f.package_sizes} not offered (${cells.map(cellName).join(", ")})`);
       });
       await T.dismiss(S().promo_close.selectors);
+      st.photosLoadedEnd = await T.waitLoaded(S().photos.thumbs, Math.min(files.length, 20), 20000);
+      await T.screenshot("photos-end");
     },
 
     readBack(job, st) {
@@ -136,8 +148,13 @@
       const seen = {
         title: value(S().title.selectors), description: value(S().description.selectors),
         price: value(S().price.selectors), photos: String(T.$$(S().photos.thumbs).length),
-        package: st.package || null, ...st.picked,
+        photos_loaded: String(T.loaded(S().photos.thumbs)), package: chosenPackage(), ...st.picked,
       };
+      // The form's own values (a multi-select's input lists its choices, comma-separated).
+      const list = (name) => (value(S()[name].selectors) || "").split(",").map((x) => x.trim()).filter(Boolean);
+      for (const name of ["size", "condition", "skirt_length"]) if (T.$(S()[name]?.selectors)) seen[name] = list(name).slice(0, 1);
+      for (const name of ["color", "material"]) if (T.$(S()[name].selectors)) seen[name] = list(name);
+      if (T.$(S().brand.selectors)) seen.brand_shown = value(S().brand.selectors);
       // The category input shows the leaf's name: our path only when it is that name.
       const cat = value(S().category.selectors) || "";
       const leaf = String(job.fields.category_path || "").split(" > ").pop();

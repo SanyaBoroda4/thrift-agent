@@ -1,15 +1,23 @@
 <!doctype html>
-<!-- A stand-in for Vinted's upload form as the extension's first live dry run recorded it (2026-10-06, WO32):
-the hidden file input [data-testid=add-photos-input].u-hidden with its [data-testid=media-upload-grid], title / description
-by data-testid, and the category dropdown — [data-testid=catalog-select-dropdown-input] opening
-[data-testid=catalog-select-dropdown-content] with ul[data-testid=category-list] of div#catalog-<id>[role=button] rows
-(the title in .web_ui__Cell__title) for a branch, div#catalog-<id>[role=radio] for a leaf, walked level by level. The other fields appear only once a category is chosen,
-as on the live form; their markup is not recorded yet and modelled like the category's (rows [role=button] in
-[data-testid=<name>-select-dropdown-content]). Clicking Upload sends /api/upload-click and goes to
-/items/9876543210-<words> (window.__FIXTURE.land overrides it). -->
+<!-- A stand-in for Vinted's upload form as the extension's live dry runs recorded it (2026-10-06, WO32): the hidden file
+input [data-testid=add-photos-input].u-hidden with its [data-testid=media-upload-grid] (each photo a tile with its image),
+title / description by data-testid, and the item details, each a readonly input opening its panel:
+- category [data-testid=catalog-select-dropdown-input] → [data-testid=catalog-select-dropdown-content] →
+  ul[data-testid=category-list]: a branch div#catalog-<id>[role=button], a leaf div#catalog-<id>[role=radio], the title
+  in .web_ui__Cell__title; the other fields appear only once a category is chosen;
+- brand [data-testid=brand-select-dropdown-input] → its search and [role=button] rows;
+- size [data-testid=category-size-single-grid-input] → [data-testid=category-size-single-grid-content]: a grid of
+  div[role=checkbox][aria-label] ("Suggested", then the full grid);
+- condition [data-testid=category-condition-single-list-input] → div#condition-<id>[role=radio] rows (title + body);
+- colour [data-testid=color-select-dropdown-input] and material [data-testid=category-material-multi-list-input] →
+  [role=checkbox] rows ("Suggested", then the list); the input lists the choices, comma-separated;
+- price [data-testid=price-input--input];
+- package size: div#package-size-<n>[data-testid=<n>-package-size--cell] with its title span and
+  input#package_type_selector_<n>; the chosen cell turns role=presentation; Vinted picks a Recommended one by itself.
+Clicking Upload sends /api/upload-click and goes to /items/9876543210-<words> (window.__FIXTURE.land overrides it). -->
 <html><head><meta charset="utf-8"><title>Sell an item | Vinted</title>
-<style>.u-hidden{display:none} [role=button]{padding:2px 4px;cursor:pointer} img{width:40px;height:40px}
-.hidden-until-category{display:none}</style></head>
+<style>.u-hidden{display:none} [role=button],[role=radio],[role=checkbox]{padding:2px 4px;cursor:pointer}
+img{width:40px;height:40px} .hidden-until-category{display:none}</style></head>
 <body><main id="main">
   <h1>Sell an item</h1>
   <div data-testid="media-upload" id="photos">
@@ -22,18 +30,18 @@ as on the live form; their markup is not recorded yet and modelled like the cate
   <input data-testid="catalog-select-dropdown-input" id="category" readonly placeholder="Select a category" name="category">
   <div data-testid="catalog-select-dropdown-content" id="catalog-content"></div>
   <div class="hidden-until-category" id="details">
-    <input data-testid="brand-select-dropdown-input" readonly>
+    <input data-testid="brand-select-dropdown-input" id="brand" name="brand" readonly>
     <div data-testid="brand-select-dropdown-content" id="brand-content"></div>
-    <input data-testid="size-select-dropdown-input" readonly>
-    <div data-testid="size-select-dropdown-content" id="size-content"></div>
-    <input data-testid="condition-select-dropdown-input" readonly>
-    <div data-testid="condition-select-dropdown-content" id="condition-content"></div>
-    <input data-testid="color-select-dropdown-input" readonly>
+    <input data-testid="category-size-single-grid-input" id="size" name="size" readonly>
+    <div data-testid="category-size-single-grid-content" id="size-content"></div>
+    <input data-testid="category-condition-single-list-input" id="condition" name="condition" readonly>
+    <div data-testid="category-condition-single-list-content" id="condition-content"></div>
+    <input data-testid="color-select-dropdown-input" id="color" name="color" readonly>
     <div data-testid="color-select-dropdown-content" id="color-content"></div>
-    <input data-testid="material-select-dropdown-input" readonly>
-    <div data-testid="material-select-dropdown-content" id="material-content"></div>
-    <input data-testid="price--input" id="price" name="price">
-    <div id="packages"></div>
+    <input data-testid="category-material-multi-list-input" id="material" name="material" readonly>
+    <div data-testid="category-material-multi-list-content" id="material-content"></div>
+    <input class="web_ui__Input__value" id="price" placeholder="$0.00" data-testid="price-input--input" type="text" name="price">
+    <div id="package_size"></div>
   </div>
   <button data-testid="upload-form-save-draft-button" type="button">Save draft</button>
   <button data-testid="upload-form-save-button" type="button">Upload</button>
@@ -43,102 +51,142 @@ const F = window.__FIXTURE || {};
 if (F.verify) {
   document.getElementById("main").innerHTML = "<h1>Verify your phone number before you list</h1>";
 }
-const TREE = {"Women": {"Clothing": {"Skirts": 5523, "Pants & leggings": {"Wide-leg pants": 1071}}, "Shoes": {"Ballerinas": 2955}},
+const TREE = {"Women": {"Clothing": {"Skirts": 5523, "Pants & leggings": {"Wide-leg pants": 1071, "Skinny pants": 185}},
+                        "Shoes": {"Ballerinas": 2955}},
               "Men": {"Clothing": {"Pants": 1234}}, "Kids": {}, "Home": {}};
 const IDS = {"Women": 1904, "Men": 5, "Kids": 1193, "Home": 1918};
-const FIELDS = {
-  "size": ["One size", "XS / US 0-2", "S / US 4-6", "M / US 8-10"],
-  "condition": ["New with tags", "New without tags", "Very good", "Good", "Satisfactory"],
-  "color": ["Black", "Gray", "Cream", "Red", "White"],
-  "material": ["Cotton", "Wool", "Leather"],
-};
+const SIZES = [["XS / US 2", 2], ["S / US 4-6", 3], ["M / US 8-10", 4]];
+const CONDITIONS = [["New with tags", 6], ["New without tags", 1], ["Very good", 2], ["Good", 3], ["Satisfactory", 4]];
+const COLORS = [["Black", 1], ["Gray", 3], ["Cream", 20], ["Red", 7]];
+const MATERIALS = [["Cotton", 44], ["Wool", 46], ["Leather", 43]];
 const BRANDS = ["J.Crew", "J.Crew Factory", "Tory Burch"];
 let seq = 100;
-function cell(title, id, leaf) {
+function cell(title, id, role, body) {
   const li = document.createElement("li");
   const d = document.createElement("div");
-  d.setAttribute("role", leaf ? "radio" : "button");   // recorded: a leaf row is a radio, a branch a button
-  if (leaf) d.setAttribute("aria-checked", "false");
+  d.setAttribute("role", role);
+  if (role !== "button") d.setAttribute("aria-checked", "false");
   d.id = id || ("row-" + (seq++));
-  d.innerHTML = '<div class="web_ui__Cell__content"><div class="web_ui__Cell__title"></div></div>';
+  d.innerHTML = '<div class="web_ui__Cell__content"><div class="web_ui__Cell__title"></div>' +
+                (body ? '<div class="web_ui__Cell__body"></div>' : "") + "</div>";
   d.querySelector(".web_ui__Cell__title").textContent = title;
+  if (body) d.querySelector(".web_ui__Cell__body").textContent = body;
   li.appendChild(d);
   return [li, d];
 }
-function level(node, trail) {
+function level(node) {
   const box = document.getElementById("catalog-content");
   box.innerHTML = '<input placeholder="Find a category"><ul data-testid="category-list"></ul>';
   const ul = box.querySelector("ul");
   for (const [name, sub] of Object.entries(node)) {
-    const id = typeof sub === "number" ? "catalog-" + sub : (IDS[name] ? "catalog-" + IDS[name] : undefined);
-    const [li, d] = cell(name, id, typeof sub === "number");
+    const leaf = typeof sub === "number";
+    const id = leaf ? "catalog-" + sub : (IDS[name] ? "catalog-" + IDS[name] : undefined);
+    const [li, d] = cell(name, id, leaf ? "radio" : "button");
     d.addEventListener("click", () => {
-      if (typeof sub === "number") {
+      if (leaf) {
         document.getElementById("category").value = name;
         box.innerHTML = "";
         document.getElementById("details").classList.remove("hidden-until-category");
-        packages(sub);
+        packages();
       } else {
-        level(sub, [...trail, name]);
+        level(sub);
       }
     });
     ul.appendChild(li);
   }
 }
-document.getElementById("category").addEventListener("click", () => level(TREE, []));
-function packages(leaf) {
-  const box = document.getElementById("packages");
+document.getElementById("category").addEventListener("click", () => level(TREE));
+// Package sizes: a cell each; Vinted chooses a Recommended one by itself (Small, then Medium once a size is set).
+function packages() {
+  const box = document.getElementById("package_size");
   box.innerHTML = "";
-  ["Small", "Medium", "Large"].forEach((text, i) => {
-    const r = document.createElement("input");
-    r.type = "radio"; r.name = "package_size"; r.id = "pkg-" + i;
-    const l = document.createElement("label");
-    l.setAttribute("for", r.id); l.textContent = text;
-    box.appendChild(r); box.appendChild(l);
+  ["Small", "Medium", "Large"].forEach((name, i) => {
+    const n = i + 1;
+    const c = document.createElement("div");
+    c.id = "package-size-" + n; c.setAttribute("data-testid", n + "-package-size--cell"); c.setAttribute("role", "button");
+    c.innerHTML = '<div data-testid="' + n + '-package-size--cell--title"><div class="badge"></div><span>' + name +
+                  '</span></div><label><input type="radio" id="package_type_selector_' + n + '" aria-labelledby="package-size-' +
+                  n + '" name="package_type_selector_' + n + '"></label>';
+    c.addEventListener("click", () => choosePackage(n));
+    box.appendChild(c);
+  });
+  choosePackage(1);
+}
+function choosePackage(n) {
+  document.querySelectorAll('[data-testid$="-package-size--cell"]').forEach((c, i) => {
+    const on = i + 1 === n;
+    c.setAttribute("role", on ? "presentation" : "button");
+    c.querySelector("input").checked = on;
   });
 }
-document.querySelectorAll('[data-testid$="-select-dropdown-input"]').forEach((input) => {
-  const name = input.getAttribute("data-testid").replace("-select-dropdown-input", "");
-  if (name === "catalog") return;
+function panel(name, rows, multi) {
+  const input = document.getElementById(name);
   const content = document.getElementById(name + "-content");
   input.addEventListener("click", () => {
     content.innerHTML = "";
-    if (name === "brand") {
-      content.innerHTML = '<input data-testid="brand-select-dropdown-search-input"><ul></ul>';
-      const search = content.querySelector("input");
-      search.addEventListener("input", () => {
-        const q = search.value.toLowerCase().replace(/[^a-z]/g, "");
-        const ul = content.querySelector("ul");
-        ul.innerHTML = "";
-        BRANDS.filter((b) => b.toLowerCase().replace(/[^a-z]/g, "").includes(q)).forEach((b) => {
-          const [li, d] = cell(b);
-          d.addEventListener("click", () => { input.value = b; content.innerHTML = ""; });
-          ul.appendChild(li);
+    const chosen = input.value ? input.value.split(", ") : [];
+    const add = (label, items, kind) => {
+      if (label) { const h = document.createElement("div"); h.textContent = label; content.appendChild(h); }
+      const ul = document.createElement("ul");
+      for (const [t, id] of items) {
+        const [li, d] = name === "size"
+          ? (() => { const l = document.createElement("li"); const x = document.createElement("div");
+                     x.setAttribute("role", "checkbox"); x.setAttribute("aria-label", t);
+                     x.setAttribute("data-testid", kind + "-grid-option-" + id); x.innerHTML = "<span></span>";
+                     x.querySelector("span").textContent = t; l.appendChild(x); return [l, x]; })()
+          : cell(t, name + "-" + id, multi ? "checkbox" : "radio", name === "condition" ? "a description" : null);
+        d.setAttribute("aria-checked", chosen.includes(t) ? "true" : "false");
+        d.addEventListener("click", () => {
+          let now = input.value ? input.value.split(", ") : [];
+          if (multi) now = now.includes(t) ? now.filter((x) => x !== t) : [...now, t];
+          else now = [t];
+          input.value = now.join(", ");
+          if (name === "size") choosePackage(2);
+          if (!multi) content.innerHTML = "";
         });
-      });
-      return;
-    }
-    const ul = document.createElement("ul");
-    for (const t of FIELDS[name] || []) {
-      const [li, d] = cell(t);
-      d.addEventListener("click", () => {
-        input.value = input.value && (name === "color" || name === "material") ? input.value + ", " + t : t;
-        content.innerHTML = "";
-      });
+        ul.appendChild(li);
+      }
+      content.appendChild(ul);
+    };
+    if (name === "size") { add("Suggested", [SIZES[1]], "size-suggestions"); add("Women's items", SIZES, "size-group-4"); }
+    else if (multi) { add("Suggested", [rows[2] || rows[0]]); add(null, rows); }
+    else add(null, rows);
+  });
+}
+panel("size", SIZES, false);
+panel("condition", CONDITIONS, false);
+panel("color", COLORS, true);
+panel("material", MATERIALS, true);
+document.getElementById("brand").addEventListener("click", () => {
+  const content = document.getElementById("brand-content");
+  content.innerHTML = '<input data-testid="brand-select-dropdown-search-input"><ul></ul>';
+  const search = content.querySelector("input");
+  search.addEventListener("input", () => {
+    const q = search.value.toLowerCase().replace(/[^a-z]/g, "");
+    const ul = content.querySelector("ul");
+    ul.innerHTML = "";
+    BRANDS.filter((b) => b.toLowerCase().replace(/[^a-z]/g, "").includes(q)).forEach((b) => {
+      const [li, d] = cell(b, undefined, "button");
+      d.addEventListener("click", () => { document.getElementById("brand").value = b; content.innerHTML = ""; });
       ul.appendChild(li);
-    }
-    content.appendChild(ul);
+    });
   });
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") document.querySelectorAll('[data-testid$="-dropdown-content"]').forEach((c) => { c.innerHTML = ""; });
+  if (e.key === "Escape") document.querySelectorAll('[id$="-content"]').forEach((c) => { c.innerHTML = ""; });
 });
 document.querySelector('[data-testid="add-photos-input"]').addEventListener("change", (e) => {
+  let k = 0;
   for (const f of e.target.files) {
+    const n = k++;
     setTimeout(() => {
+      const tile = document.createElement("div");
+      tile.setAttribute("data-testid", "image-wrapper-" + n);
       const img = document.createElement("img");
       img.alt = f.name;
-      document.getElementById("grid").appendChild(img);
+      try { img.src = URL.createObjectURL(f); } catch (err) { /* jsdom */ }
+      tile.appendChild(img);
+      document.getElementById("grid").appendChild(tile);
     }, 50);
   }
 });

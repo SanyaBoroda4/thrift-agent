@@ -362,17 +362,27 @@ async function finish(ev) {
   if (!wsReady) await poll();
 }
 
+// Chrome allows captureVisibleTab twice a second (MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND): captures are spaced, and
+// one refused for it is tried again.
+let lastCapture = 0;
+
 async function shoot(msg, tab) {
   await restore();
   if (!current) return;
   let png_b64 = null;
   let error = null;
-  try {
-    if (tab && !tab.active) await chrome.tabs.update(tab.id, { active: true });
-    const dataUrl = await chrome.tabs.captureVisibleTab(tab ? tab.windowId : current.windowId, { format: "png" });
-    png_b64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
-  } catch (e) {
-    error = errText(e);
+  for (let attempt = 0; attempt < 3 && !png_b64; attempt++) {
+    await sleep(Math.max(0, lastCapture + 600 - Date.now()));
+    try {
+      if (tab && !tab.active) await chrome.tabs.update(tab.id, { active: true });
+      lastCapture = Date.now();
+      const dataUrl = await chrome.tabs.captureVisibleTab(tab ? tab.windowId : current.windowId, { format: "png" });
+      png_b64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
+      error = null;
+    } catch (e) {
+      error = errText(e);
+      if (!/MAX_CAPTURE|quota/i.test(error)) break;
+    }
   }
   await send({ event: "screenshot", job_id: current.job_id, label: msg.label, png_b64, html: msg.html, url: msg.url,
                error });

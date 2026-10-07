@@ -56,6 +56,15 @@ class Site:
     def _html(self, html: str) -> str:
         return html.replace("<head>", f"<head><script>window.__FIXTURE = {json.dumps(self.fixture)}</script>", 1)
 
+    async def media(self, route):
+        """Depop's uploaded photos as its tiles load them: a small JPEG (never the real CDN)."""
+        import io as _io
+
+        from PIL import Image
+        buf = _io.BytesIO()
+        Image.new("RGB", (30, 40), (230, 220, 200)).save(buf, "JPEG")
+        await route.fulfill(status=200, body=buf.getvalue(), content_type="image/jpeg")
+
     async def handle(self, route):
         url = route.request.url
         self.urls.append(url)
@@ -102,6 +111,7 @@ async def session(tmp_path, site: Site, *, token=TOKEN, ws=True, poll_minutes=No
         await b.close()
         pytest.skip(f"Playwright's Chromium isn't available here ({str(e).splitlines()[0]})")
     await ctx.route(re.compile(r"^https://www\.(vinted|depop)\.com/"), site.handle)
+    await ctx.route(re.compile(r"^https://media-photos\.depop\.com/"), site.media)     # the uploaded photos' tiles
     sw = ctx.service_workers[0] if ctx.service_workers else await ctx.wait_for_event("serviceworker", timeout=15000)
     settings = {"token": token} | ({"poll_minutes": poll_minutes} if poll_minutes else {})
     await sw.evaluate("s => chrome.storage.local.set(s)", settings)

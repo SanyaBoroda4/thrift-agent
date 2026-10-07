@@ -41,6 +41,20 @@ AFTER_CLICK_MIN = 120.0     # after the go-ahead the job gets at least this long
 CONNECT_WAIT = 90.0         # the shop check waits this long for the extension to (re)connect
 
 
+class OneOf:
+    """A read-back value that must be one of the planned ones (Vinted's package size: the first of ours its category
+    offers)."""
+
+    def __init__(self, values):
+        self.values = [str(v).upper() for v in values]
+
+    def matches(self, seen) -> bool:
+        return bool(seen) and str(seen).upper() in self.values
+
+    def __repr__(self) -> str:
+        return f"one of {self.values}"
+
+
 def selectors(path: Path = SELECTORS) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -86,8 +100,14 @@ class ExtensionPoster(Poster):
         raise PosterError("the extension driver has no Playwright page")
 
     def expected(self, r: Render) -> dict:
+        """WO30's plan, and two things the live forms showed matter (2026-10-06): every photo has to display (Depop's
+        tiles stayed blank once), and Vinted's package size — it picks a "Recommended" one by itself — is one of ours."""
         self.shape.fields = self.fields
-        return self.shape.expected(r)
+        want = self.shape.expected(r)
+        want["photos_loaded"] = str(len(self.fields.photos))
+        if self.name == "vinted" and getattr(self.fields, "package_sizes", None):
+            want["package"] = OneOf(self.fields.package_sizes)
+        return want
 
     def listing_address(self, url: str) -> str | None:
         return self.shape.listing_address(url)

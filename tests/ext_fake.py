@@ -72,6 +72,9 @@ def seen_for(job: dict) -> dict:
         if f.get("colors"):
             seen["colour-input"] = list(f["colors"])
     seen["submit_buttons"] = 1
+    seen["photos_loaded"] = photos
+    if job["site"] == "vinted" and f.get("package_sizes"):
+        seen["package"] = f["package_sizes"][0]
     return seen
 
 

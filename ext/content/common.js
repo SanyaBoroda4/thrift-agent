@@ -54,6 +54,14 @@
     if (!el) throw new Error(`${what}: not on the page (${[].concat(selectors).join(" | ")})`);
     return el;
   };
+  // The photos as a person sees them: images that have loaded (naturalWidth > 0), waited for up to `timeout`.
+  T.loaded = (selectors) => T.$$(selectors).filter((img) => img.complete && img.naturalWidth > 0).length;
+  T.waitLoaded = async (selectors, n, timeout) => {
+    T.$(selectors)?.scrollIntoView?.({ block: "center" });
+    const end = Date.now() + timeout * T.timeoutScale;
+    while (T.loaded(selectors) < n && Date.now() < end) await new Promise((r) => setTimeout(r, 400));
+    return T.loaded(selectors);
+  };
   T.waitCount = async (selectors, n, timeout) => {
     const end = Date.now() + timeout * T.timeoutScale;
     while (T.$$(selectors).length < n && Date.now() < end) await new Promise((r) => setTimeout(r, 250));

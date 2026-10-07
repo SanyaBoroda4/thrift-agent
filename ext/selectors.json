@@ -85,8 +85,8 @@
           "[id='catalog-{id}']"
         ],
         "how": "the input opens [data-testid=catalog-select-dropdown-content]: a search box and ul[data-testid=category-list] of div#catalog-<id>[role=button] rows (the title in .web_ui__Cell__title); the leaf by its id when shown, else the path walked row by row",
-        "verified": false,
-        "seen": "2026-10-06, the first extension dry run on the Mac: the dropdown open with Women (catalog-1904), Men (5), Kids (1193), Home (1918) …; 2026-10-06, the second extension dry run on the Mac: Women (catalog-1904) → Clothing → Pants & leggings walked, the leaf #catalog-1071 'Wide-leg pants' shown as a radio row"
+        "verified": true,
+        "seen": "2026-10-06, the first extension dry run on the Mac: the dropdown open with Women (catalog-1904), Men (5), Kids (1193), Home (1918) …; 2026-10-06, the second extension dry run on the Mac: Women (catalog-1904) → Clothing → Pants & leggings walked, the leaf #catalog-1071 'Wide-leg pants' shown as a radio row; 2026-10-06, the third extension dry run on the Mac: Women › Clothing › Pants & leggings › #catalog-1071 'Wide-leg pants' chosen, the input reads 'Wide-leg pants'"
       },
       "brand": {
         "selectors": [
@@ -99,27 +99,26 @@
           "[data-testid='brand-select-dropdown-search-input']",
           "input[type='search']"
         ],
-        "verified": false
+        "verified": true,
+        "seen": "2026-10-06, the third extension dry run on the Mac: [data-testid=brand-select-dropdown-input] (input#brand), its search, 'J.Crew' picked for J. Crew"
       },
       "size": {
         "selectors": [
-          "[data-testid='size-select-dropdown-input']",
-          "input#size_id",
+          "[data-testid='category-size-single-grid-input']",
           "input#size",
           "input[name='size']"
         ],
-        "verified": false
+        "verified": false,
+        "seen": "2026-10-06, the third extension dry run on the Mac: [data-testid=category-size-single-grid-input] opens [data-testid=category-size-single-grid-content]: a grid of div[role=checkbox][aria-label='S / US 4-6'] (a Suggested group, then 'Women's items')"
       },
       "condition": {
         "selectors": [
-          "[data-testid='condition-select-dropdown-input']",
-          "input#status_id",
-          "input#status",
-          "input[name='status']",
+          "[data-testid='category-condition-single-list-input']",
           "input#condition",
           "input[name='condition']"
         ],
-        "verified": false
+        "verified": false,
+        "seen": "2026-10-06, the third extension dry run on the Mac: [data-testid=category-condition-single-list-input] opens a list of div#condition-<id>[role=radio] rows (condition-6 New with tags, condition-1 New without tags …)"
       },
       "color": {
         "selectors": [
@@ -127,54 +126,68 @@
           "input#color",
           "input[name='color']"
         ],
-        "verified": false
+        "verified": false,
+        "seen": "2026-10-06, the third extension dry run on the Mac: [data-testid=color-select-dropdown-input] ('Select up to 2 colors') opens [role=checkbox] rows (Suggested: suggested-color-20 Cream, then 'Select colors')"
       },
       "material": {
         "selectors": [
-          "[data-testid='material-select-dropdown-input']",
+          "[data-testid='category-material-multi-list-input']",
           "input#material",
           "input[name='material']"
         ],
-        "verified": false
+        "verified": false,
+        "seen": "2026-10-06, the third extension dry run on the Mac: [data-testid=category-material-multi-list-input] opens [role=checkbox] rows (Suggested, then All)"
       },
       "skirt_length": {
         "selectors": [
-          "[data-testid='skirt_length-select-dropdown-input']"
+          "[data-testid*='skirt_length' i] input",
+          "input#skirt_length",
+          "input[name='skirt_length']"
         ],
         "verified": false
       },
       "rows": {
         "selectors": [
-          "[data-testid='category-list'] [role='button']",
-          "[data-testid='category-list'] [role='radio']",
           "[data-testid$='-dropdown-content'] [role='button']",
           "[data-testid$='-dropdown-content'] [role='radio']",
-          "[data-testid$='-dropdown-content'] [role='option']",
+          "[data-testid$='-dropdown-content'] [role='checkbox']",
+          "[data-testid$='-grid-content'] [role='button']",
+          "[data-testid$='-grid-content'] [role='radio']",
+          "[data-testid$='-grid-content'] [role='checkbox']",
+          "[data-testid$='-list-content'] [role='button']",
+          "[data-testid$='-list-content'] [role='radio']",
+          "[data-testid$='-list-content'] [role='checkbox']",
           "[role='option']"
         ],
         "title": [
           ".web_ui__Cell__title"
         ],
-        "how": "the rows of the open dropdown, picked by their title's exact text",
+        "how": "the rows of the open panel by their title's exact text (a size by its own text); a row already chosen (aria-checked=true) is left alone",
         "verified": false,
-        "seen": "2026-10-06, the first extension dry run on the Mac: the category rows are [role=button] cells, title in .web_ui__Cell__title (the other dropdowns appear only once a category is chosen: not seen yet); 2026-10-06, the second extension dry run on the Mac: a leaf row is div#catalog-<id>[role=radio][aria-checked] with a radio inside, a branch row [role=button]; the walk reached Women › Clothing › Pants & leggings"
+        "seen": "2026-10-06, the first extension dry run on the Mac: the category rows are [role=button] cells, title in .web_ui__Cell__title (the other dropdowns appear only once a category is chosen: not seen yet); 2026-10-06, the second extension dry run on the Mac: a leaf row is div#catalog-<id>[role=radio][aria-checked] with a radio inside, a branch row [role=button]; the walk reached Women › Clothing › Pants & leggings; 2026-10-06, the third extension dry run on the Mac: size/condition/colour/material rows are [role=checkbox] / [role=radio] inside *-grid-content / *-list-content / *-dropdown-content panels"
       },
       "price": {
         "selectors": [
-          "[data-testid='price--input']",
           "[data-testid='price-input--input']",
           "input#price",
           "input[name='price']"
         ],
-        "verified": false,
-        "seen": "2026-10-06, the first extension dry run on the Mac: not on the form before a category is chosen"
+        "verified": true,
+        "seen": "2026-10-06, the third extension dry run on the Mac: input#price[data-testid=price-input--input] (placeholder $0.00) took 35"
       },
       "package": {
-        "selectors": [
-          "input[type='radio'][name*='package' i]"
+        "cells": [
+          "[data-testid$='-package-size--cell']"
         ],
-        "how": "the radio whose label starts with the size",
-        "verified": false
+        "title": [
+          "[data-testid$='-package-size--cell--title'] > span"
+        ],
+        "radio": [
+          "input[type='radio']"
+        ],
+        "how": "the cell whose title span is the size name; its radio's checked state is the choice",
+        "verified": false,
+        "seen": "2026-10-06, the third extension dry run on the Mac: div#package-size-<n>[data-testid=<n>-package-size--cell] with a 'Recommended' badge and input#package_type_selector_<n>; Small / Medium / Large; Vinted moved its own choice Small → Medium (the chosen cell is role=presentation)"
       },
       "promo_close": {
         "selectors": [
@@ -287,8 +300,8 @@
           "[aria-roledescription='sortable'] img[src*='media-photos.depop.com']"
         ],
         "how": "files set on the input; Depop uploads each at once: its thumbnails are the sortable tiles' media-photos.depop.com images (the page shows other Depop images too)",
-        "verified": true,
-        "seen": "2026-10-06, the first extension dry run on the Mac: 6 of 6 photos uploaded (6 media-photos.depop.com/b1/<user>/<id>/P2.jpg thumbnails); 2026-10-06, the second extension dry run on the Mac: 6 sortable tiles (div[role=button][aria-roledescription=sortable], the first marked Cover) — 26 media-photos images on the page in all"
+        "verified": false,
+        "seen": "2026-10-06, the first extension dry run on the Mac: 6 of 6 photos uploaded (6 media-photos.depop.com/b1/<user>/<id>/P2.jpg thumbnails); 2026-10-06, the second extension dry run on the Mac: 6 sortable tiles (div[role=button][aria-roledescription=sortable], the first marked Cover) — 26 media-photos images on the page in all; 2026-10-06, the third extension dry run on the Mac: the whole form read back as planned (no diff) — but every tile's image kept the class 'thumbnailError' and showed blank: the photos' loading is now read back (photos_loaded)"
       },
       "description": {
         "selectors": [
@@ -296,7 +309,7 @@
           "textarea[name='description']"
         ],
         "verified": true,
-        "seen": "2026-10-06, the first extension dry run on the Mac: filled and read back"
+        "seen": "2026-10-06, the first extension dry run on the Mac: filled and read back; 2026-10-06, the third extension dry run on the Mac: the whole form read back as planned (no diff)"
       },
       "combo": {
         "menu": "{id}-menu",
@@ -314,8 +327,8 @@
           "package": "shippingMethods-input"
         },
         "how": "Downshift comboboxes (role=combobox, aria-controls=<id>-menu): cleared, typed, the option whose text IS the value; the category's options are its names, listed once per department (\"Pants\" under Women, Men, Kids): the one under the item's department heading. shippingMethods-input is the PACKAGE SIZE menu (label 'Package size'), picked by the size's first word. A multi-select's choices are chips next to its input, each with a button[aria-label='Remove <value>']. Depop fills some fields by itself once the photos are up",
-        "verified": false,
-        "seen": "2026-10-06, the first extension dry run on the Mac: condition-input → 'Like new', colour-input → 'Cream', source-input → 'Preloved', age-input → 'Modern' picked; group-input offered 'Sweatpants, Pants' three times for 'Pants'; 2026-10-06, the second extension dry run on the Mac: the category picked under 'Women > Bottoms' (the headings 'Men > Bottoms', 'Women > Bottoms', 'Kids > Bottoms'), size S, Like new, Cream, Preloved, Modern, Wool, Wide leg, package Large — and by itself Depop had added the colour chips Cream + Grey, the brand J.Crew and the package Medium; 'J. Crew' typed found only 'Other'",
+        "verified": true,
+        "seen": "2026-10-06, the first extension dry run on the Mac: condition-input → 'Like new', colour-input → 'Cream', source-input → 'Preloved', age-input → 'Modern' picked; group-input offered 'Sweatpants, Pants' three times for 'Pants'; 2026-10-06, the second extension dry run on the Mac: the category picked under 'Women > Bottoms' (the headings 'Men > Bottoms', 'Women > Bottoms', 'Kids > Bottoms'), size S, Like new, Cream, Preloved, Modern, Wool, Wide leg, package Large — and by itself Depop had added the colour chips Cream + Grey, the brand J.Crew and the package Medium; 'J. Crew' typed found only 'Other'; 2026-10-06, the third extension dry run on the Mac: the whole form read back as planned (no diff)",
         "chip_remove": "button[aria-label^='Remove ']"
       },
       "price": {
@@ -323,8 +336,8 @@
           "[data-testid='priceAmount__input']",
           "#priceAmount__input"
         ],
-        "verified": false,
-        "seen": "2026-10-06, the first extension dry run on the Mac: input#priceAmount__input[type=number][aria-label='Item price'], value 0.00"
+        "verified": true,
+        "seen": "2026-10-06, the first extension dry run on the Mac: input#priceAmount__input[type=number][aria-label='Item price'], value 0.00; 2026-10-06, the third extension dry run on the Mac: the whole form read back as planned (no diff)"
       },
       "boost": {
         "selectors": [

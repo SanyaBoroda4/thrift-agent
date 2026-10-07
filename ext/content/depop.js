@@ -216,6 +216,7 @@
         const input = await T.need(S().photos.selectors, "photos", { visible: false });
         st.attached = await T.attach(input, files.slice(0, 8), S().photos.drop);
         await T.waitCount(S().photos.thumbs, Math.min(files.length, 8), 90000);
+        st.photosLoaded = await T.waitLoaded(S().photos.thumbs, Math.min(files.length, 8), 30000);
         await T.screenshot("photos");
       });
       await T.step("description", st, async () =>
@@ -250,6 +251,8 @@
         await T.click(b);
         st.notes.push("Boost was on: turned off");
       }
+      st.photosLoadedEnd = await T.waitLoaded(S().photos.thumbs, Math.min(files.length, 8), 20000);
+      await T.screenshot("photos-end");
       // Depop's own suggestions that aren't ours: every multi-select keeps only the values we chose; a brand we didn't
       // ask for is cleared (the listing says only what the facts support).
       await T.step("tidy", st, async () => {
@@ -282,7 +285,8 @@
       const of = (cid) => document.getElementById(cid)?.value || "";
       const seen = {
         description: value(S().description.selectors), price: value(S().price.selectors),
-        photos: String(T.$$(S().photos.thumbs).length), package: of(ids.package) || null, shipping: st.shipping || null,
+        photos: String(T.$$(S().photos.thumbs).length), photos_loaded: String(T.loaded(S().photos.thumbs)),
+        package: of(ids.package) || null, shipping: st.shipping || null,
         boost: boosts().some((b) => b.checked), boost_found: boosts().length, size_menu: st.sizeMenu || null,
       };
       const leaf = String(f.category || "").split(" > ").pop();

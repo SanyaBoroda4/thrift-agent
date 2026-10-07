@@ -33,6 +33,10 @@ function page(site, html = read(FIXTURES[site]), url = URLS[site], fixture = {})
   };
   Object.defineProperty(w.HTMLInputElement.prototype, "files", {
     configurable: true, get() { return this._files || []; }, set(v) { this._files = v; } });
+  // jsdom loads no images: a photo "displays" unless the test says the site's images are broken.
+  Object.defineProperty(w.HTMLImageElement.prototype, "naturalWidth", {
+    configurable: true, get() { return w.__brokenImages ? 0 : 100; } });
+  Object.defineProperty(w.HTMLImageElement.prototype, "complete", { configurable: true, get() { return true; } });
   const fetches = [];
   w.fetch = (u) => { fetches.push(String(u)); return Promise.resolve({ ok: true, json: async () => ({}) }); };
   const sent = [];
@@ -97,23 +101,48 @@ test("Vinted: a dry run fills every field the way a person would and never submi
   assert.equal(seen.description, VINTED_JOB.copy.description);
   assert.equal(seen.price, "35");
   assert.equal(seen.photos, "1");                                      // the hidden input took the file
+  assert.equal(seen.photos_loaded, "1");
   assert.deepEqual(seen.category, [VINTED_JOB.fields.category_path]);
   assert.deepEqual(seen.brand, ["J. Crew"]);
-  assert.deepEqual(seen.size, ["S / US 4-6"]);
+  assert.equal(seen.brand_shown, "J.Crew");
+  assert.deepEqual(seen.size, ["S / US 4-6"]);                         // the form's own values
   assert.deepEqual(seen.condition, ["New without tags"]);
   assert.deepEqual(seen.color, ["Cream", "Red"]);                     // colours: at most 2
   assert.deepEqual(seen.material, ["Wool"]);
-  assert.equal(seen.package, "MEDIUM");
+  assert.equal(seen.package, "MEDIUM");                                // Vinted's own Recommended one, ours too
   assert.equal(seen.submit_buttons, 1);
   assert.deepEqual(plain(result.guesses), ["brand set to 'J.Crew' (from 'J. Crew')"]);   // Vinted's own spelling
   assert.ok(changes.input >= 2 && changes.seen === changes.input - 1 && changes.change === 1, JSON.stringify(changes));
   assert.equal(p.d.querySelector("[data-testid='catalog-select-dropdown-input']").value, "Wide-leg pants");
-  assert.ok(p.d.querySelector("#packages input:checked").nextSibling.textContent.startsWith("Medium"));
+  assert.equal(p.d.querySelector("#package-size-2").getAttribute("role"), "presentation");
   assert.deepEqual(plain(p.fetches), []);                              // Upload never pressed
   const steps = p.events().filter((e) => e.event === "step").map((e) => e.name);
   assert.deepEqual(steps.slice(0, 4), ["photos", "title", "description", "category"]);
   assert.ok(p.sent.some((m) => m.type === "screenshot" && m.label === "photos"));
+  assert.ok(p.sent.some((m) => m.type === "screenshot" && m.label === "photos-end"));
   assert.ok(p.sent.some((m) => m.type === "screenshot" && m.label === "form" && m.html.includes("upload-form-save")));
+});
+
+test("Vinted: our package size over the one Vinted recommends; a colour chosen already is left as it is", async () => {
+  const p = page("vinted");
+  await run(p, { ...VINTED_JOB, fields: { ...VINTED_JOB.fields, package_sizes: ["LARGE"], colors: ["Cream"] } });
+  const r = p.last();
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(plain(r.seen).package, "LARGE");
+  assert.equal(p.d.querySelector("#package-size-3").getAttribute("role"), "presentation");
+  const q = page("vinted");
+  q.d.querySelector("#color").value = "Cream";                         // chosen already: a click would unchoose it
+  await run(q, { ...VINTED_JOB, fields: { ...VINTED_JOB.fields, colors: ["Cream"] } });
+  assert.deepEqual(plain(q.last().seen).color, ["Cream"]);
+});
+
+test("Vinted: photos that never display are read back as such", async () => {
+  const p = page("vinted");
+  p.w.__brokenImages = true;
+  await run(p, VINTED_JOB);
+  const seen = plain(p.last().seen);
+  assert.equal(seen.photos, "1");
+  assert.equal(seen.photos_loaded, "0");                               // the Python diff fails the dry run on it
 });
 
 test("Vinted: a category row that isn't there fails the step with the open list on record", async () => {
@@ -191,6 +220,7 @@ test("Depop: the category under the item's department, the lagging size menu, th
   assert.equal(seen.boost_found, 1);
   assert.equal(seen.price, "35");
   assert.equal(seen.photos, "1");                                      // the tile, not the other Depop images
+  assert.equal(seen.photos_loaded, "1");
   assert.equal(seen.submit_buttons, 1);
   const notes = plain(result.notes);
   assert.ok(notes.includes("Boost was on: turned off"));
