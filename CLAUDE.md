@@ -260,11 +260,39 @@ rows were copied in once (kv `listings_migrated`); `posts` is left as it was.
   one-checkbox path); where Save Draft lands
   (`draft_saved`); the size field and Done for adult sizes (the values and tabs are the catalog's, WO25); the
   CAPTCHA wording; every `SEL` entry of Depop's and Vinted's posters (WO30, `post/depop.py`, `post/vinted.py`:
-  only Depop's combobox ids came from its logged-in form); every step of the extension's `ext/selectors.json` (WO32:
-  its pages login — both sites — and Depop's block page are WO30's live evidence; the rest from the extension's first
-  dry run: `failed/shots/<item>-<mp>-<time>.png/.html/.json`, the `.json` with each step's ok). Record them from the
+  only Depop's combobox ids came from its logged-in form); the extension's steps that no dry run can show
+  (`ext/selectors.json`: `after_publish` and the listing page, Vinted's Hide / Depop's Mark as sold, the shop links,
+  Vinted's skirt length and promotion close) — recorded by the owner's supervised publish and WO31. Record them from the
   evidence in `failed/shots/` (`.png`/`.html`/`.json` per run, `<item>-review.json`, `…-after-list.*`) or with
   `playwright codegen --channel chrome https://poshmark.com/create-listing` on the Mac.
+- **Recorded live by the extension (2026-10-06, WO32, five dry runs of one item in the Thrift Chrome, nothing
+  published; `ext/selectors.json` "seen"):**
+  - **Vinted:**
+    - photos: the hidden `[data-testid=add-photos-input].u-hidden`, thumbnails in `[data-testid=media-upload-grid]`;
+    - text: `title--input`, `description--input`, the price `price-input--input`;
+    - every detail is a readonly input opening a `*-dropdown/-grid/-list-content` panel:
+      - category: the tree of `div#catalog-<id>`, a branch `[role=button]`, a leaf `[role=radio]`;
+      - brand: `brand-select-dropdown-input` with a search;
+      - size: `category-size-single-grid-input`, a grid of `[role=checkbox][aria-label]`;
+      - condition: `category-condition-single-list-input`, `[role=radio]` rows;
+      - colour: `color-select-dropdown-input`; material: `category-material-multi-list-input` — both
+        `[role=checkbox]` rows;
+      - each panel lists a "Suggested" group first; the inputs show the values chosen;
+    - the package size: `div#package-size-<n>` cells with radios; Vinted chooses a "Recommended" one by itself;
+    - one Upload button `[data-testid=upload-form-save-button]`.
+  - **Depop:**
+    - photos: `[data-testid=upload-input__input]`, each photo a sortable tile with a media-photos.depop.com image. The
+      class `thumbnailError` is only its style while it loads; 6 of 6 displayed.
+    - the comboboxes by id; the category menu lists a name once per department under a heading ("Men > Bottoms",
+      "Women > Bottoms", "Kids > Bottoms");
+    - the brand search matches the text as written ("J. Crew" → only "Other"; "J.Crew" → J.Crew);
+    - a multi-select's choices are chips `button[aria-label='Remove <value>']`;
+    - **Depop fills fields by itself once the photos are up:** colour chips Cream + Grey, the brand, a package size.
+      They are read back and Depop's extras are removed;
+    - price `priceAmount__input`; Depop Shipping is the USPS radio; `shippingMethods-input` is the package-size menu;
+    - Boost is the switch "Pay an extra 12% fee": kept off;
+    - one Post button.
+  - The supervised publish may go; the unattended loop waits for `after_publish`.
 - Seen in Chromium (WO32 tests): `chrome.tabs.captureVisibleTab` needs `<all_urls>` or `activeTab`; an unpacked
   extension's `chrome.alarms` may tick every 3 s (`poll_minutes` 0.05); a tab opened by the extension can escape a
   Playwright route on its first request — the tests make every host but 127.0.0.1 unresolvable.

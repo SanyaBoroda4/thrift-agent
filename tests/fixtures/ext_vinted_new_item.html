@@ -123,7 +123,7 @@ function panel(name, rows, multi) {
   const input = document.getElementById(name);
   const content = document.getElementById(name + "-content");
   input.addEventListener("click", () => {
-    content.innerHTML = "";
+    if (content.innerHTML) { content.innerHTML = ""; return; }        // the input toggles its panel
     const chosen = input.value ? input.value.split(", ") : [];
     const add = (label, items, kind) => {
       if (label) { const h = document.createElement("div"); h.textContent = label; content.appendChild(h); }
@@ -172,8 +172,11 @@ document.getElementById("brand").addEventListener("click", () => {
     });
   });
 });
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") document.querySelectorAll('[id$="-content"]').forEach((c) => { c.innerHTML = ""; });
+document.addEventListener("keydown", (e) => {        // Escape closes a panel — not a multi-select's (recorded)
+  if (e.key === "Escape") {
+    document.querySelectorAll('[id$="-content"]:not(#color-content):not(#material-content)')
+      .forEach((c) => { c.innerHTML = ""; });
+  }
 });
 document.querySelector('[data-testid="add-photos-input"]').addEventListener("change", (e) => {
   let k = 0;

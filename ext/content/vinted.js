@@ -56,10 +56,21 @@
   };
 
   async function pick(st, name, value) {
-    await open(name);
+    const input = await open(name);
     const shown = await clickRow(value);
     T.picked(st, name, value, shown);
+    await close(input);
+  }
+
+  // A multi-select's panel stays open after a pick and Escape doesn't close it (recorded 2026-10-06: the material panel
+  // still open over the price): its own input closes it — so no panel is left open over the Upload button.
+  async function close(input) {
     escape();
+    await T.sleep(250);
+    if (T.$$(S().rows.selectors).some(T.visible)) {
+      await T.click(input);
+      await T.sleep(300);
+    }
   }
 
   T.sites.vinted = {
