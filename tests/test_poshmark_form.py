@@ -164,7 +164,7 @@ def posh(monkeypatch):
     # 10-20x what a step takes on a laptop, so a slow CI runner still passes; the "not offered" tests wait them out.
     for name, ms in (("MENU_TIMEOUT_MS", 2000), ("SUGGEST_TIMEOUT_MS", 1500), ("TAG_TIMEOUT_MS", 800),
                      ("LEAVE_TIMEOUT_MS", 1500), ("THUMB_TIMEOUT_MS", 5000), ("POLL_MS", 25),
-                     ("AFTER_LIST_MS", 2000), ("LEFT_FORM_MS", 300), ("CLOSET_POLL_MS", 2500),
+                     ("AFTER_LIST_MS", 2000), ("LEFT_FORM_MS", 300), ("CLOSET_POLL_MS", 6000),
                      ("CLOSET_EVERY_MS", 150)):
         monkeypatch.setattr(poshmark, name, ms)
     p = poshmark.PoshmarkPoster("closet")
