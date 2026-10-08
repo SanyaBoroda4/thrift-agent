@@ -112,12 +112,27 @@ def process_email(db: Database, payload: dict, now: datetime | None = None, mode
     base = {"message_id": message_id, "kind": kind, "marketplace": marketplace}
     if db.one("SELECT message_id FROM email_events WHERE message_id = ?", (message_id,)):
         return {**base, "status": "duplicate"}
+    if payload.get("unreadable") and marketplace and mode != "off" and _maybe_sale(kind, subject):
+        # WO33: Gmail wouldn't give this email's text (the reader sent its headers): never a silent loss of a sale
+        out = Outbox(now, mode)
+        out.ops(f"📭 A {site_name(marketplace)} email arrived without its text (Gmail wouldn't give it): "
+                f"\"{subject or '(no subject)'}\", {event['received_at'][:16].replace('T', ' ')} UTC — if it's a "
+                "sale, check it in Gmail.")
+        out.flush()
     if kind == "OTHER" or mode == "off":
         status = "ignored" if kind == "OTHER" else "new"
         if not _insert_event(db, event, status, now):
             return {**base, "status": "duplicate"}
         return {**base, "status": status, **({"handling": "off"} if status == "new" else {})}
     return _process(db, event, now, mode, fresh=True)
+
+
+SALE_WORDS = re.compile(r"\b(sold|sale|order|purchase|bought|ship|paid|payment)\b", re.I)
+
+
+def _maybe_sale(kind: str, subject: str) -> bool:
+    """An unreadable email worth a word to the owner: any kind but OTHER, or OTHER whose subject sounds like a sale."""
+    return kind != "OTHER" or bool(SALE_WORDS.search(subject or ""))
 
 
 def retry_email(db: Database, message_id: str, now: datetime | None = None, mode: str | None = None) -> dict:

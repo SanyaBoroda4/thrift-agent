@@ -653,3 +653,15 @@ def test_the_test_message(monkeypatch, sent):
                     ("group", "✓ thrift-api is up — Thu Oct 8, 11:00 AM EDT", False)]
     with pytest.raises(BadRequest):
         core.test_message("everyone", NOW)
+
+
+def test_an_email_gmail_wouldnt_give_in_full_is_told_to_the_owner_never_lost(db, live, sent):
+    """WO33: the Gmail reader sends an email it can't read by its headers (text "", `unreadable`): one plain ops line
+    when it might be a sale, nothing for plain noise."""
+    sold = email("poshmark", "Congratulations! Your item has sold", "", "unread-1")
+    core.process_email(db, {**sold, "unreadable": "Exception: Internal error"})
+    lines = [t for chat, t, _ in sent if chat == "ops"]
+    assert len(lines) == 1 and "arrived without its text" in lines[0] and "Your item has sold" in lines[0]
+    promo = email("poshmark", "Your weekly closet tips", "", "unread-2")
+    core.process_email(db, {**promo, "unreadable": "Exception: Internal error"})
+    assert len([t for chat, t, _ in sent if chat == "ops"]) == 1             # noise: not a word

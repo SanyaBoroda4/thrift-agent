@@ -48,7 +48,8 @@ function world({ inbox = [], props = {}, status = 200, clock = false } = {}) {
   const w = {
     inbox, status, onGet: null, now: T0,
     store: new Map(Object.entries({ API_URL, API_KEY: KEY, ...props })),
-    triggers: [], lists: [], gets: [], posts: [], logs: [], charsets: [], writes: 0,
+    triggers: [], lists: [], gets: [], posts: [], logs: [], charsets: [], writes: 0, attachments: new Map(),
+    attachmentGets: [],
   };
   const scriptProperties = {
     getProperty: (k) => (w.store.has(k) ? w.store.get(k) : null),
@@ -82,10 +83,17 @@ function world({ inbox = [], props = {}, status = 200, clock = false } = {}) {
       },
       get(user, id, options = {}) {
         w.gets.push({ user, id, ...options });
-        if (w.onGet) w.onGet(id);
+        if (w.onGet) w.onGet(id, options);
         const m = w.inbox.find((x) => x.id === id);
         if (!m) throw new Error('GoogleJsonResponseException: API call to gmail.users.messages.get failed: Not Found');
         return structuredClone(m);
+      },
+      Attachments: {
+        get(user, messageId, id) {
+          w.attachmentGets.push({ user, messageId, id });
+          if (!w.attachments.has(id)) throw new Error('GoogleJsonResponseException: attachments.get failed: Not Found');
+          return { size: w.attachments.get(id).length, data: w.attachments.get(id) };
+        },
       },
     } } },
     UrlFetchApp: {
@@ -108,6 +116,7 @@ function world({ inbox = [], props = {}, status = 200, clock = false } = {}) {
       } }) }) }),
     },
     Utilities: {
+      sleep() {},
       base64DecodeWebSafe(data) {               // strict, like Java's decoder: padded base64url only
         if (data.length % 4 !== 0 || /[^A-Za-z0-9_=-]/.test(data)) throw new Error('Exception: Could not decode string.');
         return Array.from(Buffer.from(data, 'base64url'), (b) => (b > 127 ? b - 256 : b));   // Java bytes are signed
@@ -520,7 +529,7 @@ test('nothing under gmail/ looks like a secret: no bot token, no Function addres
   }
 });
 
-test('read-only: the manifest asks for exactly the three scopes; the only Gmail calls are messages.list and .get', () => {
+test('read-only: the manifest asks for exactly the three scopes; the only Gmail calls are messages.list, .get and attachments.get', () => {
   assert.deepEqual(JSON.parse(readFileSync(join(GMAIL, 'appsscript.json'), 'utf8')), {
     timeZone: 'America/New_York',
     runtimeVersion: 'V8',
@@ -533,7 +542,7 @@ test('read-only: the manifest asks for exactly the three scopes; the only Gmail 
     ],
   });
   assert.deepEqual([...new Set(SOURCE.match(/\bGmail\.Users\.[\w.]+(?=\s*\()/g))].sort(),
-                   ['Gmail.Users.Messages.get', 'Gmail.Users.Messages.list']);
+                   ['Gmail.Users.Messages.Attachments.get', 'Gmail.Users.Messages.get', 'Gmail.Users.Messages.list']);
   assert.doesNotMatch(SOURCE, /\b(GmailApp|MailApp)\b/);
 });
 
@@ -549,4 +558,57 @@ test('Code.gs is plain Apps Script: ASCII only, no modules, no ES2020 syntax, th
   vm.runInContext(SOURCE, bare);
   for (const name of PUBLIC) assert.equal(typeof bare[name], 'function', name);
   assert.equal(typeof bare.module, 'undefined');
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// WO33: the 51 "unreadable" of the first dumpSamples() -- why, and never a lost sale
+
+test('readEmail_: a message Gmail refuses once is asked for again and read in full', () => {
+  const w = world({ inbox: many(2) });
+  let refused = 0;
+  w.onGet = (id, opts) => { if (id === 'm0002' && opts.format === 'full' && !refused++) throw new Error('Exception: Too many concurrent requests'); };
+  w.api.poll();
+  assert.deepEqual(emailIds(w), ['m0001', 'm0002']);
+  const sent = w.posts.find((p) => p.body.message_id === 'm0002').body;
+  assert.equal(sent.text, 'Item 2 sold');
+  assert.equal(sent.unreadable, undefined);
+});
+
+test('poll(): a message Gmail never gives in full still reaches the API by its headers -- a sale is never lost', () => {
+  const w = world({ inbox: many(2) });
+  w.onGet = (id, opts) => { if (id === 'm0002' && opts.format === 'full') throw new Error('Exception: Internal error'); };
+  w.api.poll();
+  const sent = w.posts.find((p) => p.body.message_id === 'm0002').body;
+  assert.equal(sent.subject, 'Sale 2');
+  assert.equal(sent.text, '');
+  assert.match(sent.unreadable, /Internal error/);
+  assert.deepEqual(seenIn(w), ['m0001', 'm0002']);            // delivered: not fetched again and again
+  assert.match(w.logs.at(-1), /m0002: read by its headers only \(Exception: Internal error\)/);
+  noSecretsLogged(w);
+});
+
+test('dumpSamples(): says why for the first five it reads by headers only, and still sends them', () => {
+  const w = world({ inbox: many(8) });
+  w.onGet = (id, opts) => { if (Number(id.slice(1)) % 2 === 0 && opts.format === 'full') throw new Error(`Exception: refused ${id}`); };
+  w.api.dumpSamples();
+  const samples = w.posts.flatMap((p) => p.body.samples);
+  assert.equal(samples.length, 8);
+  assert.equal(samples.filter((x) => x.unreadable).length, 4);
+  const why = w.logs.filter((l) => /read by its headers only/.test(l));
+  assert.equal(why.length, 4);
+  assert.match(why[0], /"Sale \d" from Poshmark/);
+  assert.match(w.logs.at(-1), /8 sent in 1 batches, 4 sent by their headers only \(their text unreadable\)/);
+});
+
+test('a body Gmail keeps as an attachment (a large HTML email) is fetched and read', () => {
+  const m = mail(1, { subject: 'You made a sale!' });
+  m.payload = { partId: '', mimeType: 'multipart/alternative', filename: '', headers: m.payload.headers, body: { size: 0 },
+                parts: [{ partId: '0', mimeType: 'text/html', filename: '', headers: [],
+                          body: { size: 900000, attachmentId: 'att-1' } }] };
+  const w = world({ inbox: [m] });
+  w.attachments.set('att-1', b64url('<html><body><p>You sold Naturino sneakers</p><p>$40.00</p></body></html>'));
+  w.api.poll();
+  const sent = w.posts.find((p) => p.body.message_id === 'm0001').body;
+  assert.equal(sent.text, 'You sold Naturino sneakers\n$40.00');
+  assert.deepEqual(w.attachmentGets.map((a) => [a.messageId, a.id]), [['m0001', 'att-1']]);
 });

@@ -28,6 +28,8 @@ var SAMPLES_BUDGET_MS = 270000;     // dumpSamples() stops reading after 4.5 and
 var SEEN_LIMIT = 1000;              // message ids remembered
 var SEEN_KEYS = ['SEEN', 'SEEN_2', 'SEEN_3', 'SEEN_4'];   // 1,000 Gmail ids are ~19 KB of JSON: three of these
 var SEEN_VALUE_MAX = 8000;          // characters per property: Apps Script refuses a value over 9 KB
+var GET_TRIES = 2;                  // a message that can't be read is asked for once more, a second later
+var UNREADABLE_LOG = 5;             // dumpSamples() logs why, for the first few it can't read
 
 // The named entities email HTML uses; numeric ones (&#8217; &#x2019;) are decoded by number.
 var ENTITIES_ = {
@@ -68,7 +70,8 @@ function poll() {
     if (Date.now() - started > POLL_BUDGET_MS) break;
     const id = todo[i];
     try {
-      const email = buildPayload(Gmail.Users.Messages.get('me', id, { format: 'full' }));
+      const email = readEmail_(id);             // throws only when not even its headers can be read: tried next run
+      if (email.unreadable) problems.push(`${id}: read by its headers only (${email.unreadable})`);
       if (!fromMarketplace_(email.from)) {      // Gmail's from: also matches a display name or a look-alike domain
         skipped++;
         done.push(id);                          // remembered, so it isn't fetched again; never sent
@@ -109,7 +112,8 @@ function dumpSamples() {
   const started = Date.now();
   config_();
   const ids = listIds_(buildQuery(SAMPLE_DAYS));
-  const counts = { found: ids.length, read: 0, sent: 0, batches: 0, refused: 0, skipped: 0, unreadable: 0 };
+  const counts = { found: ids.length, read: 0, sent: 0, batches: 0, refused: 0, skipped: 0, unreadable: 0,
+                   headersOnly: 0 };
   let batch = [];
   let stopped = false;
   const send = () => {
@@ -136,10 +140,18 @@ function dumpSamples() {
     }
     let email;
     try {
-      email = buildPayload(Gmail.Users.Messages.get('me', ids[i], { format: 'full' }));
+      email = readEmail_(ids[i]);
     } catch (e) {
       counts.unreadable++;
+      if (counts.unreadable <= UNREADABLE_LOG) log_(`dumpSamples: can't read ${ids[i]} at all: ${errorText_(e)}`);
       continue;
+    }
+    if (email.unreadable) {                     // its text couldn't be read; its headers go to the API all the same
+      counts.headersOnly++;
+      if (counts.headersOnly <= UNREADABLE_LOG) {
+        log_(`dumpSamples: ${ids[i]} read by its headers only (${email.unreadable}): "${email.subject}" from ` +
+             `${email.from}, ${email.date}`);
+      }
     }
     counts.read++;
     if (!fromMarketplace_(email.from)) {
@@ -153,7 +165,8 @@ function dumpSamples() {
   log_(`dumpSamples: ${counts.found} emails in the last ${SAMPLE_DAYS} days, ${counts.sent} sent in ${counts.batches} batches` +
        (counts.refused ? `, ${counts.refused} not taken by the API` : '') +
        (counts.skipped ? `, ${counts.skipped} skipped (not from a marketplace address)` : '') +
-       (counts.unreadable ? `, ${counts.unreadable} unreadable` : '') +
+       (counts.headersOnly ? `, ${counts.headersOnly} sent by their headers only (their text unreadable)` : '') +
+       (counts.unreadable ? `, ${counts.unreadable} unreadable (the first ${UNREADABLE_LOG} logged above)` : '') +
        (stopped ? `; stopped at the time limit after reading ${counts.read} (the newest first)` : ''));
   return counts;
 }
@@ -207,6 +220,47 @@ function header(payload, name) {
     if (headers[i] && String(headers[i].name).toLowerCase() === want) return String(headers[i].value || '');
   }
   return '';
+}
+
+/**
+ * One message as the API gets it. Gmail is asked for it in full (GET_TRIES times: a refusal is often a passing one);
+ * a body Gmail keeps as an attachment (a large HTML email) is fetched and read like any other; and a message it still
+ * won't give in full is read by its headers (From, Subject, Date) with empty text and `unreadable` saying why -- so the
+ * API sees every marketplace email, a sale among them, even when its text can't be read. Throws only when not even
+ * the headers can be read.
+ */
+function readEmail_(id) {
+  let reason = '';
+  for (let attempt = 1; attempt <= GET_TRIES; attempt++) {
+    try {
+      const msg = Gmail.Users.Messages.get('me', id, { format: 'full' });
+      inlineBodies_(msg);
+      return buildPayload(msg);
+    } catch (e) {
+      reason = errorText_(e);
+      if (attempt < GET_TRIES) Utilities.sleep(1000);
+    }
+  }
+  const meta = Gmail.Users.Messages.get('me', id, { format: 'metadata', metadataHeaders: ['From', 'Subject', 'Date'] });
+  const email = buildPayload({ id: meta.id || id, threadId: meta.threadId, internalDate: meta.internalDate,
+                               payload: { headers: (meta.payload && meta.payload.headers) || [] } });
+  email.unreadable = reason.slice(0, 300);
+  return email;
+}
+
+/** The text parts Gmail keeps as attachments (a large body: body.attachmentId, no data), fetched into body.data. */
+function inlineBodies_(msg) {
+  const walk = (part) => {
+    if (!part) return;
+    const type = String(part.mimeType || '').toLowerCase();
+    if ((type === 'text/plain' || type === 'text/html') && !part.filename && part.body && !part.body.data &&
+        part.body.attachmentId) {
+      const got = Gmail.Users.Messages.Attachments.get('me', msg.id, part.body.attachmentId);
+      if (got && got.data) part.body.data = got.data;
+    }
+    (part.parts || []).forEach(walk);
+  };
+  walk(msg.payload);
 }
 
 /** What the API gets for one Gmail message (format 'full'). */
