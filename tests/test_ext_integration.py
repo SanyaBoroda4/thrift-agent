@@ -174,7 +174,8 @@ def test_a_full_vinted_dry_run_in_chromium(tmp_path):
     out, p = asyncio.run(go())
     assert out.status == "dryrun", (out.error, out.diff, out.note)
     assert p.fill_seconds is not None and p.fill_seconds < 15, p.fill_seconds    # WO32b: fast (live target ≤ 45 s)
-    assert p.lines[:2] == ["tab opened", "photos 1/1"] and p.lines[-1].startswith("filled in ")
+    assert p.lines[:2] == ["tab opened", "page loaded"] and p.lines[-1].startswith("filled in ")
+    assert {"page script running", "photos 1/1", "category ✓"} <= set(p.lines)
     assert site.clicks == []                                       # never Upload in a dry run
     png = Path(out.screenshot)
     assert png.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n" and png.stat().st_size > 2000   # the captured tab
@@ -416,3 +417,29 @@ def test_a_bridge_that_goes_away_before_post_closes_the_tab(tmp_path):
     tabs = asyncio.run(_ready_then(tmp_path, site, gone))
     assert tabs == [] and site.clicks == []
 
+
+
+BUSY = ("<html><head><title>Sell an item | Vinted</title></head><body><h1>Sell an item</h1><script>"
+        "setTimeout(() => { const end = Date.now() + 90000; while (Date.now() < end) {} }, 0)</script></body></html>")
+
+
+def test_a_page_that_never_answers_ends_the_job_with_what_it_shows(tmp_path):
+    """The live stall (WO32b): the Vinted tab opened and then nothing, for minutes — its page never answered the worker
+    (here: the site's own script holding the page's thread). Now the job ends within ~20 s, saying so, with the tab's
+    state and a picture of it; nothing is ever clicked."""
+    site = Site(vinted=BUSY)
+
+    async def go():
+        b, pw, ctx, sw = await session(tmp_path, site)
+        try:
+            assert await connected(b)
+            p = poster("vinted", b, tmp_path)
+            t0 = time.monotonic()
+            out = await p.post(None, RENDER, "publish", True, tmp_path / "shots")
+            return out, time.monotonic() - t0, p
+        finally:
+            await close(b, pw, ctx)
+    out, took, p = asyncio.run(go())
+    assert out.status == "failed" and "the page doesn't answer" in out.error, out.error
+    assert '"url":"https://www.vinted.com/items/new"' in out.error and '"frozen":false' in out.error
+    assert took < 45 and site.clicks == [] and p.lines[:2] == ["tab opened", "page loaded"]

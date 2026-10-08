@@ -759,8 +759,11 @@ the pacing, the Telegram lines, the dry-run gate. Poshmark is untouched (its Pla
   `chrome.alarms` tick every 30 s (`GET /jobs/next` while the socket is down; `poll_minutes` in storage, default 0.5,
   tests 0.05), one job at a time in its own new tab of the Thrift window, opened as its active tab (the window itself
   never focused or raised; closed after, except a login / block / CAPTCHA page, left for the owner), the page's script
-  injected by the worker when it hasn't answered in 2 s (a late document_idle; `common.js` answers once per page), a
-  "tab opened" progress event, the photos fetched from the bridge by the worker (the extension's origin: no page CORS,
+  injected by the worker when it hasn't answered in 2 s (a late document_idle; `common.js` answers once per page), each
+  message to the page answered (or refused) within 3 s or asked again, 20 s in all — a page that never answers ends the
+  job with the tab's state (load status, address, title, frozen / discarded, its window minimized or not) and a picture
+  taken by the worker (WO32b: the live Vinted stall, twice, was a page that never answered; a job asked twice runs
+  once), "tab opened" / "page loaded" / "page script running" progress events, the photos fetched from the bridge by the worker (the extension's origin: no page CORS,
   no local network prompt) and handed to the page as bytes, `captureVisibleTab` (10 s at most) + the page's HTML on
   request, the landing page watched after the one click (`tabs.onUpdated`, ≤ 60 s), a job ended when its bridge goes
   away before the go-ahead (a Ctrl+C, the poster stopped: the tab closed — nothing can be published from it), or called

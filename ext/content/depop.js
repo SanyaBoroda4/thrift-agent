@@ -40,9 +40,12 @@
     return (await T.until(() => { const o = optionsOf(menuOf(cid)); return o.length ? o : null; }, timeout)) || [];
   }
 
-  async function open(cid) {
-    const box = document.getElementById(cid);
-    if (!box || !T.visible(box)) throw new Error(`${cid}: not on the page`);
+  // A combobox, once the form shows it (the size and the attributes come after the category: fast, they may not be
+  // there yet — the live miss, WO32b), then a real click.
+  async function open(cid, timeout = 5000) {
+    const box = await T.until(() => { const b = document.getElementById(cid); return b && T.visible(b) ? b : null; },
+                              timeout);
+    if (!box) throw new Error(`${cid}: not on the page`);
     await T.click(box);
     return box;
   }
@@ -78,7 +81,7 @@
   };
 
   async function choose(st, cid, value, { typed = null, category = false, optional = false, prefix = false } = {}) {
-    if (optional && !document.getElementById(cid)) {
+    if (optional && !(await T.until(() => document.getElementById(cid), 1500))) {
       st.notes.push(`${cid}: not on this form, left out`);
       return;
     }

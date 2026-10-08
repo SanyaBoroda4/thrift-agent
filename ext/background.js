@@ -18,6 +18,8 @@ const FILL_MS = 4 * 60000;           // a form not filled 4 min after its job ca
 const READY_MS = 15 * 60000;         // a filled form waits this long for the owner's go-ahead
 const CLICKED_MS = 5 * 60000;        // after the click: the landing page is reported within a minute; this is the end
 const CAPTURE_MS = 10000;            // a capture that doesn't come back (a minimized window isn't drawn): skipped
+const ANSWER_MS = 3000;              // one message to the page: answered (or refused) within 3 s, else asked again
+const REACH_MS = 20000;              // ... for 20 s in all: a page that never answers ends the job, with what it shows
 const STOP_PAGES = ["login", "block", "captcha", "verify"];
 // The files whose hash tells the bridge's copy (git pull on deploy) from the loaded one: a difference reloads us.
 const FILES = ["manifest.json", "background.js", "content/common.js", "content/vinted.js", "content/depop.js",
@@ -259,26 +261,54 @@ function loaded(tabId, ms) {
 // The content scripts per site (as the manifest lists them): injected by the worker when the page has none yet.
 const SCRIPTS = { vinted: ["content/common.js", "content/vinted.js"], depop: ["content/common.js", "content/depop.js"] };
 
+// What the job's tab is: its load state, address, title, whether Chrome froze or discarded it, and its window
+// (minimized?) — said when its page doesn't answer (WO32b: a Vinted page that stalled twice, silently).
+async function tabState(tabId) {
+  try {
+    const t = await chrome.tabs.get(tabId);
+    const w = await chrome.windows.get(t.windowId).catch(() => null);
+    return { status: t.status, url: t.url, title: t.title, active: t.active, discarded: t.discarded,
+             frozen: t.frozen, window: w ? w.state : null, focused: w ? w.focused : null };
+  } catch (e) {
+    return { gone: errText(e) };
+  }
+}
+
 // A message to the job's page. Its script comes with the page (the manifest, at document_idle); when it hasn't
-// answered after 2 s — a page whose idle comes late — the worker injects it (scripting), once.
-async function toTab(tabId, msg, tries = 20, site = null) {
+// answered after 2 s — a page whose idle comes late — the worker injects it (scripting), once. Each try waits 3 s at
+// most: a page whose own code holds its thread (or a dialog) never answers and never refuses — after `ms` the job
+// ends with the tab's state and a picture of it (a job asked twice runs once: the page knows its job ids).
+async function toTab(tabId, msg, ms = REACH_MS, site = null) {
+  const end = Date.now() + ms;
+  let last = "";
   for (let i = 0; ; i++) {
     try {
-      return await chrome.tabs.sendMessage(tabId, msg);
+      return await withTimeout(chrome.tabs.sendMessage(tabId, msg), ANSWER_MS, "no answer in 3 s");
     } catch (e) {
+      last = errText(e);
       if (i === 4 && SCRIPTS[site]) {
         try {
-          await chrome.scripting.executeScript({ target: { tabId }, files: SCRIPTS[site] });
-        } catch (e2) { /* not one of the sites' pages: the tries below say so */ }
+          await withTimeout(chrome.scripting.executeScript({ target: { tabId }, files: SCRIPTS[site] }), ANSWER_MS,
+                            "the page didn't run the script in 3 s");
+        } catch (e2) { last = `${last}; inject: ${errText(e2)}`; }
       }
-      if (i >= tries) {
-        let where = "?";
-        try { where = (await chrome.tabs.get(tabId)).url; } catch (e2) { /* closed */ }
-        throw new Error(`the page has no Thrift script (${where})`);
+      if (Date.now() > end) {
+        const state = await tabState(tabId);
+        await shootFromWorker("no-answer");
+        throw new Error(`the page doesn't answer (${last.slice(0, 120)}): ${JSON.stringify(state).slice(0, 400)}`);
       }
       await sleep(500);
     }
   }
+}
+
+// A picture of the job's tab taken by the worker itself (the page can't ask for one: it doesn't answer).
+async function shootFromWorker(label) {
+  await restore();
+  if (!current || current.tabId == null) return;
+  let tab = null;
+  try { tab = await chrome.tabs.get(current.tabId); } catch (e) { return; }
+  await shoot({ label, html: null, url: tab.url }, tab);
 }
 
 async function b64(blob) {
@@ -341,7 +371,9 @@ async function startJob(job) {
     await send({ event: "progress", job_id: job.job_id, what: "tab opened" });
     await loaded(tab.id, OPEN_MS);
     if ((await ours()) && current.decided) throw new Error("called off before the form opened");
-    await toTab(tab.id, { type: "job", job, selectors: sel, photos, pace: job.pace }, 20, job.site);
+    await send({ event: "progress", job_id: job.job_id, what: "page loaded" });
+    await toTab(tab.id, { type: "job", job, selectors: sel, photos, pace: job.pace }, REACH_MS, job.site);
+    await send({ event: "progress", job_id: job.job_id, what: "page script running" });
     if (await ours()) {
       current.delivered = true;
       await remember();
@@ -368,7 +400,7 @@ async function relay(msg) {
   await remember();
   if (msg.type === "cancel" && !current.delivered) return;   // the page hasn't the job yet: startJob ends it / tells it
   try {
-    await toTab(current.tabId, { type: msg.type, job_id: current.job_id }, 4);
+    await toTab(current.tabId, { type: msg.type, job_id: current.job_id }, 6000);
   } catch (e) {
     await finish({ event: "error", job_id: current.job_id, stage: msg.type, page: "unknown", message: errText(e) });
   }
@@ -382,7 +414,7 @@ async function afterClickTimeout() {
   await remember();
   try {
     await toTab(current.tabId, { type: "job", job: { ...current.job, mode: "after_publish" }, selectors: await selectors() },
-                6, current.site);
+                REACH_MS, current.site);
   } catch (e) {
     await finish({ event: "error", job_id: current.job_id, stage: "after_publish", page: "unknown", message: errText(e) });
   }
@@ -399,7 +431,8 @@ chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
   clearTimeout(afterTimer);
   await sleep(2500);
   try {
-    await toTab(tabId, { type: "job", job: { ...current.job, mode: "after_publish" }, selectors: sel }, 20, current.site);
+    await toTab(tabId, { type: "job", job: { ...current.job, mode: "after_publish" }, selectors: sel }, REACH_MS,
+                current.site);
   } catch (e) {
     await finish({ event: "result", job_id: current.job_id, url: tab.url, live: null, note: errText(e) });
   }

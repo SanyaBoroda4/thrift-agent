@@ -843,6 +843,7 @@ async def _crosslist_dry_run(s, db, iid: str, mps: list[str]) -> None:
             out = await runner.run_cross(s, db, ps, ctx, iid, mp, dry=True, request=True,
                                          progress=lambda line: print(f"  {line}", flush=True))
             print(f"{mp}: {out.status if out else 'not done (see the ops chat)'}"
+                  + (f" — {out.error}" if out and out.error else "")
                   + (f" — {out.screenshot}" if out and out.screenshot else ""))
     finally:
         if ctx is not None:

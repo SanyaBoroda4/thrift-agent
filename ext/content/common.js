@@ -17,6 +17,7 @@
   T.speed = T.speed ?? 1;            // human mode's pauses, × this (the tests set it near 0)
   T.timeoutScale = T.timeoutScale ?? 1;
   T.off = T.off || new Set();        // the jobs the bridge called off — a cancel may come before its job: kept
+  T.ran = T.ran || new Set();        // the jobs started on this page: one the worker asks again (no answer in 3 s) runs once
 
   const rand = (lo, hi) => lo + Math.random() * (hi - lo);
   const fast = () => T.mode !== "human";
@@ -354,8 +355,12 @@
     T.listening = true;
     chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (msg.type === "job") {
-        T.run(msg).catch((e) => T.emit({ event: "error", job_id: msg.job.job_id, stage: "script", page: "unknown",
-                                         message: String(e && e.message ? e.message : e).slice(0, 300) }));
+        const id = `${msg.job.job_id}:${msg.job.mode}`;
+        if (!T.ran.has(id)) {
+          T.ran.add(id);
+          T.run(msg).catch((e) => T.emit({ event: "error", job_id: msg.job.job_id, stage: "script", page: "unknown",
+                                           message: String(e && e.message ? e.message : e).slice(0, 300) }));
+        }
         sendResponse({ ok: true });
       } else if (msg.type === "submit" || msg.type === "cancel") {
         const id = msg.job_id || T.jobId;
