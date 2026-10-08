@@ -86,11 +86,22 @@ def save(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=1), encoding="utf-8")
 
 
-def choose(what: str, options: list[str]) -> int:
-    """The owner picks one (the WO: if there are several, ask)."""
+def choose(what: str, options: list[str], env: str) -> int:
+    """The owner picks one (the WO: if there are several, ask): typed here, or — run where nobody can type — named in
+    `env` (the number, or the name) after the list printed."""
+    pick = os.getenv(env, "").strip()
+    if pick:
+        if pick.isdigit() and 1 <= int(pick) <= len(options):
+            return int(pick) - 1
+        hits = [i for i, o in enumerate(options) if o.split(" (")[0] == pick or pick in o]
+        if len(hits) == 1:
+            return hits[0]
+        sys.exit(f"{env}={pick!r} names none of the {what} (or several)")
     say(f"\nSeveral {what}:")
     for i, o in enumerate(options, 1):
         say(f"  {i}. {o}")
+    if not sys.stdin.isatty():
+        sys.exit(f"Several {what}: set {env} to the number or the name and run it again.")
     while True:
         a = input(f"Which {what.rstrip('s')}? [1-{len(options)}] ").strip()
         if a.isdigit() and 1 <= int(a) <= len(options):
@@ -105,7 +116,7 @@ def account(st: dict) -> dict:
         sys.exit("Not signed in: run `az login` first.")
     subs = [s for s in az("account", "list") if s.get("state") == "Enabled"]
     if len(subs) > 1 and not st.get("subscription"):
-        i = choose("subscriptions", [f"{s['name']} ({s['id']})" for s in subs])
+        i = choose("subscriptions", [f"{s['name']} ({s['id']})" for s in subs], "THRIFT_AZ_SUBSCRIPTION")
         az("account", "set", "--subscription", subs[i]["id"], parse=False)
         acct = az("account", "show")
     st["subscription"] = acct["id"]
@@ -121,7 +132,8 @@ def postgres(st: dict) -> dict:
         sys.exit("No Azure Database for PostgreSQL flexible server in this subscription: the WO expects the existing one.")
     names = [s["name"] for s in servers]
     if st.get("pg_server") not in names:
-        i = 0 if len(servers) == 1 else choose("Postgres servers", [f"{s['name']} ({s['location']})" for s in servers])
+        i = 0 if len(servers) == 1 else choose("Postgres servers", [f"{s['name']} ({s['location']})" for s in servers],
+                                               "THRIFT_PG_SERVER")
         st["pg_server"] = servers[i]["name"]
     srv = next(s for s in servers if s["name"] == st["pg_server"])
     st["pg_rg"] = srv["resourceGroup"]

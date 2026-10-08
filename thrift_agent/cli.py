@@ -786,6 +786,8 @@ def crosslist(item_id: str = typer.Argument(None, metavar="[ITEM]"),
               backfill: bool = typer.Option(False, "--backfill", help="Queue every item still live on Poshmark"),
               check_login: bool = typer.Option(False, "--check-login", help="Open the sell pages in the Thrift "
                                                                             "Chrome: logged in? (WO32)"),
+              one_by_one: bool = typer.Option(False, "--one-by-one", help="--dry-run: the sites one after another "
+                                                                          "(the old way), not together (WO33)"),
               mp: str = MARKETPLACE) -> None:
     """Cross-list on Depop and Vinted (WO30). `thrift crosslist <item>` queues an item already live on Poshmark;
     `--dry-run <item>` fills both forms (the running poster does it between listings), the screenshots and the mapped
@@ -833,7 +835,7 @@ def crosslist(item_id: str = typer.Argument(None, metavar="[ITEM]"),
             return
         if not s.is_prod:
             raise typer.BadParameter("the dev machine never opens the marketplaces: run it on the Mac")
-        asyncio.run(_crosslist_dry_run(s, db, item_id, mps))
+        asyncio.run(_crosslist_dry_run(s, db, item_id, mps, together=not one_by_one and s.get("poster.parallel", True)))
         return
     queued = cl.queue(s, db, item_id, mps, why="thrift crosslist")
     print(f"[green]queued[/] {item_id}: {', '.join(queued)}" if queued else
@@ -854,17 +856,35 @@ async def _check_logins(s, db, mps: list[str]) -> list[str]:
         await runner.close_bridge(b, None)
 
 
-async def _crosslist_dry_run(s, db, iid: str, mps: list[str]) -> None:
+async def _crosslist_dry_run(s, db, iid: str, mps: list[str], together: bool = False) -> None:
     """The dry run in this process (the poster isn't running): the Thrift Chrome's extension through a bridge here
-    (WO32), or the poster's Chrome profile for a Playwright-driven marketplace; the forms filled, nothing saved."""
+    (WO32), or the poster's Chrome profile for a Playwright-driven marketplace; the forms filled, nothing saved.
+    `together` (WO33): the extension's sites at the same time, each in its own window — the parallel poster's way;
+    else one after another. Each site's time and the whole run's are printed."""
+    import time as _time
+
     from thrift_agent.post import runner
     from thrift_agent.post.base import open_browser
     ps = {mp: p for mp, p in runner.posters(s).items() if mp in mps}
     b, _ = await runner.open_bridge(s, None, ps, watch=False)
     pw = ctx = None
+    took: dict[str, float] = {}
+
+    async def one(mp: str) -> None:
+        tag = f"{mp}: " if together else "  "
+        if not together:
+            print(f"{mp}:")
+        t0 = _time.monotonic()
+        out = await runner.run_cross(s, db, ps, ctx, iid, mp, dry=True, request=True,
+                                     progress=lambda line: print(f"{tag}{line}", flush=True))
+        took[mp] = _time.monotonic() - t0
+        print(f"{mp}: {out.status if out else 'not done (see the ops chat)'} in {took[mp]:.1f} s"
+              + (f" — {out.error}" if out and out.error else "")
+              + (f" — {out.screenshot}" if out and out.screenshot else ""))
     try:
         if runner.uses_browser(ps):
             pw, ctx = await open_browser(s.path("chrome_profile"), s["schedule"]["timezone"])
+        ready = []
         for mp in mps:
             if mp not in ps:
                 print(f"{mp}: off (see the ops chat)")
@@ -875,12 +895,20 @@ async def _crosslist_dry_run(s, db, iid: str, mps: list[str]) -> None:
                 except RuntimeError as e:
                     print(f"{mp}: {e}")
                     continue
-            print(f"{mp}:")
-            out = await runner.run_cross(s, db, ps, ctx, iid, mp, dry=True, request=True,
-                                         progress=lambda line: print(f"  {line}", flush=True))
-            print(f"{mp}: {out.status if out else 'not done (see the ops chat)'}"
-                  + (f" — {out.error}" if out and out.error else "")
-                  + (f" — {out.screenshot}" if out and out.screenshot else ""))
+            ready.append(mp)
+        t0 = _time.monotonic()
+        ext = [mp for mp in ready if getattr(ps[mp], "driver", "") == "extension"]
+        if together and len(ext) > 1:
+            await asyncio.gather(*(one(mp) for mp in ext))
+            for mp in ready:
+                if mp not in ext:
+                    await one(mp)
+        else:
+            for mp in ready:
+                await one(mp)
+        if len(took) > 1:
+            print(f"all: {_time.monotonic() - t0:.1f} s {'together' if together else 'one after another'} "
+                  f"(the sites' own times add up to {sum(took.values()):.1f} s)")
     finally:
         if ctx is not None:
             await ctx.close()

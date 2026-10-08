@@ -203,3 +203,37 @@ def test_parallel_is_the_default_and_the_switch_falls_back(tmp_path):
     assert not parallel.parallel_ok(_settings(tmp_path, parallel=False), ext, once=False)
     playwright_cross = {"poshmark": Timed("poshmark", 0), "depop": Timed("depop", 0, driver="playwright")}
     assert not parallel.parallel_ok(s, playwright_cross, once=False)  # it would need Poshmark's Chrome profile
+
+
+def test_the_crosslist_dry_run_fills_the_extension_sites_together(tmp_path, monkeypatch, capsys):
+    """WO33: `thrift crosslist --dry-run <item>` (the poster stopped) fills Depop and Vinted at the same time, each in
+    its own window — about the slower site's time; `--one-by-one` the old way, the sum. Each time is printed."""
+    from thrift_agent import cli
+    from thrift_agent.post import runner as runner_mod
+
+    async def fake_cross(s, db, ps, ctx, iid, mp, dry, request, progress):
+        progress("form open")
+        await asyncio.sleep(0.4)
+        return SimpleNamespace(status="dryrun", error=None, screenshot=None)
+
+    async def nothing(*a, **k):
+        return None
+
+    async def no_bridge(*a, **k):
+        return None, None
+    monkeypatch.setattr(runner_mod, "posters", lambda s: {"depop": SimpleNamespace(driver="extension"),
+                                                         "vinted": SimpleNamespace(driver="extension")})
+    monkeypatch.setattr(runner_mod, "open_bridge", no_bridge)
+    monkeypatch.setattr(runner_mod, "connect_extension", nothing)
+    monkeypatch.setattr(runner_mod, "close_bridge", nothing)
+    monkeypatch.setattr(runner_mod, "uses_browser", lambda ps: False)
+    monkeypatch.setattr(runner_mod, "run_cross", fake_cross)
+    s = _settings(tmp_path)
+    timings = {}
+    for together in (True, False):
+        t0 = time.monotonic()
+        asyncio.run(cli._crosslist_dry_run(s, None, "i_x", ["depop", "vinted"], together=together))
+        timings[together] = time.monotonic() - t0
+    out = capsys.readouterr().out
+    assert timings[True] < 0.7 <= timings[False], timings
+    assert "depop: form open" in out and "together" in out and "one after another" in out

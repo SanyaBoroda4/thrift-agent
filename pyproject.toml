@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.5"]
+dev = ["pytest>=8", "ruff>=0.5", "azure-functions"]     # azure-functions: tests/api imports api/function_app.py
 
 [project.scripts]
 thrift = "thrift_agent.cli:app"
