@@ -167,7 +167,7 @@ def function_app(st: dict) -> None:
            "--instance-memory", "512", "--maximum-instance-count", "10", "--tags", *TAGS)
     st["url"] = f"https://{st['app']}.azurewebsites.net"
     # Application Insights (made with the app): a 0.1 GB daily cap
-    az("config", "set", "extension.use_dynamic_install=yes_without_prompt", parse=False)
+    az("extension", "add", "--name", "application-insights", parse=False, check=False)
     ai = az("monitor", "app-insights", "component", "show", "-g", RG, "--app", st["app"], check=False)
     if ai is not None:
         az("monitor", "app-insights", "component", "billing", "update", "-g", RG, "--app", st["app"], "--cap", "0.1",
@@ -176,22 +176,27 @@ def function_app(st: dict) -> None:
 
 
 def budget(st: dict) -> None:
+    """$5 a month on thrift-rg, e-mails to the signed-in account at 80% and 100% of it (actual cost; this az's budget
+    command takes no forecast threshold). Its arguments as JSON files: kebab-case keys, as `az … --notifications ??`
+    shows them."""
     if az("consumption", "budget", "show-with-rg", "-g", RG, "-n", "thrift-budget", check=False) is None:
         start = date.today().replace(day=1)
-        notes = {"actual80": {"enabled": True, "operator": "GreaterThan", "threshold": 80, "contactEmails": [st["user"]],
-                              "thresholdType": "Actual"},
-                 "forecast100": {"enabled": True, "operator": "GreaterThan", "threshold": 100,
-                                 "contactEmails": [st["user"]], "thresholdType": "Forecasted"}}
-        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as f:
-            json.dump(notes, f)
+        notes = {f"actual{pct}": {"enabled": True, "operator": "GreaterThan", "threshold": pct,
+                                  "contact-emails": [st["user"]]} for pct in (80, 100)}
+        period = {"start-date": start.isoformat(), "end-date": start.replace(year=start.year + 5).isoformat()}
+        files = []
         try:
+            for data in (notes, period):
+                with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as f:
+                    json.dump(data, f)
+                files.append(f.name)
             az("consumption", "budget", "create-with-rg", "-g", RG, "-n", "thrift-budget", "--amount", "5",
-               "--category", "cost", "--time-grain", "monthly",
-               "--time-period", f"start-date={start.isoformat()}", f"end-date={start.replace(year=start.year + 5)}",
-               "--notifications", f"@{f.name}")
+               "--category", "Cost", "--time-grain", "Monthly", "--time-period", f"@{files[1]}",
+               "--notifications", f"@{files[0]}")
         finally:
-            os.unlink(f.name)
-    say(f"✓ budget: $5 a month on {RG}, emails to {st['user']} at 80% and on a 100% forecast")
+            for name in files:
+                os.unlink(name)
+    say(f"✓ budget: $5 a month on {RG}, e-mails to {st['user']} at 80% and 100%")
 
 
 def my_ip() -> str:
@@ -201,17 +206,17 @@ def my_ip() -> str:
 
 def firewall(st: dict) -> None:
     rules = {r["name"]: r for r in az("postgres", "flexible-server", "firewall-rule", "list", "-g", st["pg_rg"],
-                                       "-n", st["pg_server"]) or []}
+                                       "-s", st["pg_server"]) or []}
     if AZURE_SERVICES not in rules and not any(r["startIpAddress"] == "0.0.0.0" == r["endIpAddress"]
                                                for r in rules.values()):
-        az("postgres", "flexible-server", "firewall-rule", "create", "-g", st["pg_rg"], "-n", st["pg_server"],
-           "--rule-name", AZURE_SERVICES, "--start-ip-address", "0.0.0.0", "--end-ip-address", "0.0.0.0")
+        az("postgres", "flexible-server", "firewall-rule", "create", "-g", st["pg_rg"], "-s", st["pg_server"],
+           "-n", AZURE_SERVICES, "--start-ip-address", "0.0.0.0", "--end-ip-address", "0.0.0.0")
         say("✓ firewall: Allow Azure services (added)")
     else:
         say("✓ firewall: Azure services already allowed")
     ip = my_ip()
-    az("postgres", "flexible-server", "firewall-rule", "create", "-g", st["pg_rg"], "-n", st["pg_server"],
-       "--rule-name", FIREWALL_TMP, "--start-ip-address", ip, "--end-ip-address", ip)
+    az("postgres", "flexible-server", "firewall-rule", "create", "-g", st["pg_rg"], "-s", st["pg_server"],
+       "-n", FIREWALL_TMP, "--start-ip-address", ip, "--end-ip-address", ip)
     st["tmp_rule"] = True
     say(f"✓ firewall: {FIREWALL_TMP} for this PC (removed by `cleanup`)")
 
@@ -221,8 +226,8 @@ def admin_connection(st: dict):
     admin, else the admin password typed here (never stored)."""
     import psycopg
     if st.get("pg_entra"):
-        admins = az("postgres", "flexible-server", "ad-admin", "list", "-g", st["pg_rg"], "-s", st["pg_server"],
-                    check=False) or []
+        admins = az("postgres", "flexible-server", "microsoft-entra-admin", "list", "-g", st["pg_rg"], "-s",
+                    st["pg_server"], check=False) or []
         me = next((a for a in admins if (a.get("principalName") or "").lower() == st["user"].lower()), None)
         if me:
             token = az("account", "get-access-token", "--resource-type", "oss-rdbms")["accessToken"]
@@ -237,9 +242,9 @@ def admin_connection(st: dict):
 
 
 def database(st: dict) -> None:
-    if az("postgres", "flexible-server", "db", "show", "-g", st["pg_rg"], "-s", st["pg_server"], "-d", "thrift",
+    if az("postgres", "flexible-server", "db", "show", "-g", st["pg_rg"], "-s", st["pg_server"], "-n", "thrift",
           check=False) is None:
-        az("postgres", "flexible-server", "db", "create", "-g", st["pg_rg"], "-s", st["pg_server"], "-d", "thrift")
+        az("postgres", "flexible-server", "db", "create", "-g", st["pg_rg"], "-s", st["pg_server"], "-n", "thrift")
     sec = load(SECRETS)
     sec.setdefault("thrift_app_password", secrets.token_urlsafe(30))
     save(SECRETS, sec)
@@ -353,8 +358,8 @@ def check(st: dict, k: dict) -> None:
 
 
 def cleanup(st: dict) -> None:
-    az("postgres", "flexible-server", "firewall-rule", "delete", "-g", st["pg_rg"], "-n", st["pg_server"],
-       "--rule-name", FIREWALL_TMP, "--yes", parse=False, check=False)
+    az("postgres", "flexible-server", "firewall-rule", "delete", "-g", st["pg_rg"], "-s", st["pg_server"],
+       "-n", FIREWALL_TMP, "--yes", parse=False, check=False)
     st["tmp_rule"] = False
     say(f"✓ firewall rule {FIREWALL_TMP} removed")
 
