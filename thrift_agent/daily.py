@@ -209,6 +209,8 @@ def all_done(s: Settings, db: DB) -> bool:
     card waiting for an answer, none held for a look. The "Posted ✓" that leaves it so carries "✓ All done — safe to
     close the Mac."."""
     w = work(s, db)
+    if db.conn.execute("SELECT 1 FROM takedowns WHERE status='pending' LIMIT 1").fetchone():
+        return False                                   # WO33: a take-down still to do (a sale elsewhere)
     return not (w.new_shares or w.processing or w.cards or w.to_publish or w.held)
 
 

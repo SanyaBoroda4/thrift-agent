@@ -114,7 +114,8 @@ async def session(tmp_path, site: Site, *, token=TOKEN, ws=True, poll_minutes=No
         pytest.skip(f"Playwright's Chromium isn't available here ({str(e).splitlines()[0]})")
     await ctx.route(re.compile(r"^https://www\.(vinted|depop)\.com/"), site.handle)
     await ctx.route(re.compile(r"^https://media-photos\.depop\.com/"), site.media)     # the uploaded photos' tiles
-    sw = ctx.service_workers[0] if ctx.service_workers else await ctx.wait_for_event("serviceworker", timeout=15000)
+    # 60 s: a Windows CI runner's first Chromium start with an extension can pass 15 s (WO33 CI)
+    sw = ctx.service_workers[0] if ctx.service_workers else await ctx.wait_for_event("serviceworker", timeout=60000)
     settings = {"token": token} | ({"poll_minutes": poll_minutes} if poll_minutes else {})
     await sw.evaluate("s => chrome.storage.local.set(s)", settings)
     await sw.evaluate("""async () => {           // its files' hash noted (onInstalled) — else it counts as reloading
@@ -443,9 +444,11 @@ def test_a_page_that_never_answers_ends_the_job_with_what_it_shows(tmp_path):
     out, took, p = asyncio.run(go())
     assert out.status == "failed" and not out.clicked and site.clicks == [], out.error
     # Which clean ending depends on who runs first, the page's own script or ours (the CI runners differ): it never
-    # answers; or ours saw it first (not the sell form); or the load never finished. Never a silent stall.
+    # answers (to the job's delivery, or — the job delivered, then the page's script took its thread — to the
+    # worker's watchdog after 30 s of silence, WO33); or ours saw it first (not the sell form); or the load never
+    # finished. Never a silent stall, never the page's own 90 s.
     endings = ("the page doesn't answer", "not the sell form", "the page didn't load")
-    assert any(e in out.error for e in endings) and took < 70, (out.error, took)
+    assert any(e in out.error for e in endings) and took < 60, (out.error, took)
     if "the page doesn't answer" in out.error:
         assert '"url":"https://www.vinted.com/items/new"' in out.error and '"frozen":false' in out.error
 
@@ -532,3 +535,31 @@ def test_the_worker_waits_through_a_page_that_moves_on_not_one_that_stays(tmp_pa
     (moved, waited), (stayed, waited2) = asyncio.run(go())
     assert moved == "https://www.vinted.com/items/new" and 800 < waited < 10000, (moved, waited)
     assert stayed == "https://www.vinted.com/member/login" and 2000 < waited2 < 6000, (stayed, waited2)
+
+
+def test_two_sites_fill_at_once_each_in_its_own_window(tmp_path):
+    """WO33 A2: a Vinted job and a Depop job together — each in its site's own window (made once, kept), each with its
+    own screenshot, neither's events in the other's record."""
+    site = Site(fixture={"sizeLag": 0, "brandDelay": 100})
+
+    async def go():
+        b, pw, ctx, sw = await session(tmp_path, site)
+        try:
+            assert await connected(b)
+            v, d = poster("vinted", b, tmp_path), poster("depop", b, tmp_path)
+            t0 = time.monotonic()
+            outs = await asyncio.gather(v.post(None, RENDER, "publish", True, tmp_path / "shots"),
+                                        d.post(None, RENDER, "publish", True, tmp_path / "shots"))
+            took = time.monotonic() - t0
+            windows = await sw.evaluate("async () => (await chrome.storage.session.get('windows')).windows")
+            return outs, took, windows, v, d
+        finally:
+            await close(b, pw, ctx)
+    (vo, do), took, windows, v, d = asyncio.run(go())
+    assert vo.status == "dryrun" and do.status == "dryrun", (vo.error, vo.diff, do.error, do.diff)
+    assert windows["vinted"]["windowId"] != windows["depop"]["windowId"]
+    assert vo.screenshot != do.screenshot and Path(vo.screenshot).exists() and Path(do.screenshot).exists()
+    assert "upload-form-save-button" in Path(vo.screenshot).with_suffix(".html").read_text(encoding="utf-8")
+    assert "priceAmount__input" in Path(do.screenshot).with_suffix(".html").read_text(encoding="utf-8")
+    assert took < v.fill_seconds + d.fill_seconds + 12, (took, v.fill_seconds, d.fill_seconds)   # side by side
+    assert site.clicks == []

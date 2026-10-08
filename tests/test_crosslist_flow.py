@@ -29,12 +29,12 @@ RENDER = Render(marketplace="poshmark", title=TITLE, description="Red flats.", t
                 condition="good", price=85, photos=[], sku="i_1")
 
 
-def _settings(tmp_path, depop_live=True, vinted_live=True, cap=25) -> Settings:
+def _settings(tmp_path, depop_live=True, vinted_live=True, cap=25, parallel=False) -> Settings:
     paths = {k: str(tmp_path / k) for k in ("inbox", "work", "archive", "failed", "chrome_profile", "control")}
     s = Settings({
         "machine_role": "prod",
         "paths": {**paths, "db": str(tmp_path / "state.db")},
-        "poster": {"dry_run": False, "autopublish_confirmed": True, "max_consecutive_failures": 3},
+        "poster": {"dry_run": False, "autopublish_confirmed": True, "max_consecutive_failures": 3, "parallel": parallel},
         "schedule": {"timezone": "America/New_York", "hours": ["00:00", "23:59"], "per_hour_max": 10, "daily_cap": 25,
                      "gap_seconds": [150, 420]},
         "marketplaces": {"poshmark": {"enabled": True, "username": "closet", "autopublish": True, "max_photos": 16},
@@ -526,21 +526,23 @@ def test_a_posted_reply_marks_the_depop_row_posted_with_its_address(tmp_path, mo
     assert quiet.group == [] and f"Added: {TITLE} · Depop {DEPOP_URL}" in quiet.ops
 
 
-def test_a_new_item_waits_for_its_unconfirmed_site_then_gets_one_line(tmp_path, quiet):
-    """WO32b §7: while Depop is unconfirmed, the ⚠️ question is the item's only group message; once it's settled, ONE
-    "Posted ✓" line with every site that confirmed — and never a second."""
+def test_a_new_item_s_line_waits_for_every_site_to_settle_then_goes_once(tmp_path, quiet):
+    """WO33 A3: the item's one "Posted ✓" line goes out once every enabled site has had its say — posted, failed,
+    skipped, or waiting on the owner's answer to the ⚠️ question (that site is left out of the line); a site still in
+    progress holds it. Never a second line: a site confirmed later is an ops "Added:" line."""
     s = _settings(tmp_path)
     db = DB(s.path("db"))
     iid = _item(db)
     db.upsert_listing(iid, "poshmark", status="posted", url="https://poshmark.com/listing/x-" + "b" * 24)
-    db.upsert_listing(iid, "vinted", status="posted", url="https://www.vinted.com/items/77")
+    db.upsert_listing(iid, "vinted", status="posting")
     db.upsert_listing(iid, "depop", status="failed", error="unconfirmed publish: no listing page")
-    assert crosslist.announce(s, db, iid) is None and quiet.group == []
-    db.upsert_listing(iid, "depop", status="posted", url=DEPOP_URL, error=None)       # the owner's link, checked
+    assert crosslist.announce(s, db, iid) is None and quiet.group == []           # Vinted still in progress
+    db.upsert_listing(iid, "vinted", status="posted", url="https://www.vinted.com/items/77")
     text = crosslist.announce(s, db, iid)
     assert quiet.group == [text] and text.startswith(f"Posted ✓ {TITLE} — $85 · Poshmark https://poshmark.com/")
-    assert f"Depop {DEPOP_URL}" in text and "Vinted https://www.vinted.com/items/77" in text
-    assert crosslist.announce(s, db, iid) is None and len(quiet.group) == 1
+    assert "Vinted https://www.vinted.com/items/77" in text and "Depop" not in text
+    db.upsert_listing(iid, "depop", status="posted", url=DEPOP_URL, error=None)       # the owner's link, checked
+    assert crosslist.announce(s, db, iid) == f"Added: {TITLE} · Depop {DEPOP_URL}" and len(quiet.group) == 1
 
 
 def test_items_live_before_wo32b_count_as_announced(tmp_path, quiet):

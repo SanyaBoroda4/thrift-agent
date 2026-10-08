@@ -1455,13 +1455,15 @@ def request_posted(s: Settings, db: DB, iid: str, url: str, mp: str = "poshmark"
     return address
 
 
-def take_requests(db: DB) -> list[dict]:
-    """The queued "posted <url>" requests, emptied (the poster takes them)."""
+def take_requests(db: DB, mps: list[str] | None = None) -> list[dict]:
+    """The queued "posted <url>" requests, taken out — those of `mps` only, when given (WO33: each site's worker takes
+    its own; the rest stay queued)."""
     with db.tx():
         reqs = loads(db.kv_get(POSTER_REQUESTS)) or []
-        if reqs:
-            db.kv_set(POSTER_REQUESTS, "[]")
-    return reqs
+        mine = [r for r in reqs if mps is None or (r.get("mp") or "poshmark") in mps]
+        if mine:
+            db.kv_set(POSTER_REQUESTS, json.dumps([r for r in reqs if r not in mine]))
+    return mine
 
 
 def retry_unconfirmed(s: Settings, db: DB, iid: str, mp: str = "poshmark") -> str:

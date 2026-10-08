@@ -11,7 +11,8 @@ no DevTools connection, no automation flags.
 - `GET /jobs/next` the same job object (the extension's alarm, while its socket is down); `POST /events` an event, its
   answer the job's commands; `GET /photos/<item>/<n>.jpg` the item's photos (already rotated and resized, the cover
   first), with Access-Control-Allow-Origin only for https://www.vinted.com and https://www.depop.com; `GET /health`.
-- One job at a time per site (the extension runs one at a time in all). Screenshots and the page's HTML are written
+- One job at a time PER SITE (WO33: a Depop job and a Vinted job run together, each in its site's window of the
+  Thrift Chrome); a job's photos are served under its site and item. Screenshots and the page's HTML are written
   next to the job's evidence path (<shot>-<label>.png / .html). A job's steps and progress ("tab opened", "photos 6/6",
   "category ✓") reach its listener as they happen (WO32b: the CLI prints them). A job lasts 3 minutes at most.
 - The pace (WO32b, `ext.pace`): "fast" (the default) fills each field in one go and waits only for the page; "human"
@@ -43,7 +44,7 @@ from thrift_agent.config import ROOT
 HOST, PORT = "127.0.0.1", 8765
 EXT_DIR = ROOT / "ext"
 EXT_FILES = ("manifest.json", "background.js", "content/common.js", "content/vinted.js", "content/depop.js",
-             "selectors.json", "options.html", "options.js")          # = background.js FILES: the reload check
+             "selectors.json", "options.html", "options.js", "idle.html", "idle.js")   # = background.js FILES
 SITE_ORIGINS = ("https://www.vinted.com", "https://www.depop.com")
 JOB_TIMEOUT = 180.0          # a job's whole life before its go-ahead (WO32b): 3 minutes
 PICKUP_TIMEOUT = 150.0       # no extension took the job (it reconnects within 5 s, polls every 30 s): nothing opened
@@ -211,9 +212,12 @@ class Bridge:
 
     # ------------------------------------------------------------ jobs
 
-    def photo_urls(self, item: str, paths: list[str | Path]) -> list[str]:
-        self.photos[item] = [Path(p) for p in paths]
-        return [f"{self.base}/photos/{item}/{n}.jpg" for n in range(1, len(paths) + 1)]
+    def photo_urls(self, item: str, paths: list[str | Path], site: str = "") -> list[str]:
+        """The addresses the extension fetches a job's photos from: under its site too (WO33: Depop's ≤ 8 and Vinted's
+        ≤ 20 of one item are different lists, and their jobs run together)."""
+        key = f"{site}/{item}" if site else item
+        self.photos[key] = [Path(p) for p in paths]
+        return [f"{self.base}/photos/{key}/{n}.jpg" for n in range(1, len(paths) + 1)]
 
     def submit(self, site: str, mode: str, payload: dict, shot: Path | None = None) -> Job:
         now = time.monotonic()
@@ -263,18 +267,21 @@ class Bridge:
             await asyncio.sleep(0.1)
         return job.final is not None
 
-    def _busy(self) -> bool:
+    def _busy(self, site: str | None = None) -> bool:
+        """The extension has a job of this site in hand (any site: `site` None) — one called off counts until it let
+        it go (≤ DRAIN)."""
         now = time.monotonic()
         return any(j.handed is not None and j.final is None and (j.dropped is None or now - j.dropped < DRAIN)
-                   for j in self.jobs.values())
+                   and (site is None or j.site == site) for j in self.jobs.values())
 
     def _next(self) -> Job | None:
-        """The oldest waiting job, if the extension has none in hand (it runs one at a time, whatever the site)."""
-        if self._busy():
-            return None
-        while self.queue:
-            job = self.queue.popleft()
-            if not job.done:
+        """The oldest waiting job whose site has none in hand (the extension runs one job per site, WO33)."""
+        for job in list(self.queue):
+            if job.done:
+                self.queue.remove(job)
+                continue
+            if not self._busy(job.site):
+                self.queue.remove(job)
                 job.handed = time.monotonic()
                 return job
         return None
@@ -289,18 +296,18 @@ class Bridge:
             pass                                    # no loop (a test calling it bare): the next event pushes
 
     def _push(self) -> None:
+        """Every job that can start now (one per site) to a ready socket."""
         now = time.monotonic()
         for sock in self.sockets:
             if not sock.ready or sock.hold_until > now:
                 continue
-            job = self._next()
-            if job is None:
-                return
-            if sock.send({"type": "job", "job": job.message()}):
-                job.sock = sock
-            else:
-                job.handed = None
-                self.queue.appendleft(job)
+            while (job := self._next()) is not None:
+                if sock.send({"type": "job", "job": job.message()}):
+                    job.sock = sock
+                else:
+                    job.handed = None
+                    self.queue.appendleft(job)
+                    break
 
     def _event(self, ev: dict) -> list[dict]:
         """One event from the extension: recorded on its job and queued for the driver. Returns the job's commands
@@ -470,10 +477,10 @@ class Bridge:
                 return 400, cors, b'{"error": "json"}'
             return 200, cors, json.dumps({"commands": self._event(ev if isinstance(ev, dict) else {})}).encode()
         if method == "GET" and path.startswith("/photos/"):
-            parts = [unquote(p) for p in path.split("/")[2:]]
-            if len(parts) == 2 and parts[1].endswith(".jpg") and parts[1][:-4].isdigit():
-                files = self.photos.get(parts[0]) or []
-                n = int(parts[1][:-4])
+            parts = [unquote(p) for p in path.split("/")[2:]]          # <item>/<n>.jpg or <site>/<item>/<n>.jpg
+            if len(parts) in (2, 3) and parts[-1].endswith(".jpg") and parts[-1][:-4].isdigit():
+                files = self.photos.get("/".join(parts[:-1])) or []
+                n = int(parts[-1][:-4])
                 if 1 <= n <= len(files) and files[n - 1].is_file():
                     photo = files[n - 1]
                     kind = "image/png" if photo.suffix.lower() == ".png" else "image/jpeg"

@@ -79,6 +79,7 @@ _UNIT_AFTER = re.compile(r"\s*(?:cm|mm|in|inch|inches|us|uk|eu|y|t|m|w)\b", re.I
 # A message that is nothing but a price: "28", "$28", "28.00", "28 dollars" (typed without a reply, WO20).
 # "cover 2": photo 2 of the item becomes its cover (WO23; a reply to the card, or typed while it is open).
 COVER_CMD = re.compile(r"^\s*cover\s*#?\s*(\d{1,2})\s*$", re.I)
+SHIPPED_CMD = re.compile(r"^\s*shipped\s+(.+?)\s*$", re.I | re.S)       # WO33: "shipped <title words>"
 # Replies to "⚠️ … I can't see it in the closet" (outbox kind "unconfirmed", WO28 §3): "posted <url>" / "retry".
 POSTED_CMD = re.compile(r"^\s*(?:it'?s\s+)?posted\s*[:\-]?\s*(\S+)\s*$", re.I)
 RETRY_CMD = re.compile(r"^\s*(?:retry|try again|not there|isn'?t there)\s*[.!]*\s*$", re.I)
@@ -744,10 +745,34 @@ def _reply_unconfirmed(s: Settings, db: DB, bot: Bot, ref: str, text: str, mid: 
     return f"unconfirmed {iid}: unreadable reply {text!r}"
 
 
+def _shipped(db: DB, bot: Bot, words: str, mid: int | None) -> str:
+    """The owner's "shipped <title words>" (WO33 E2): to thrift-api, which marks the open sale whose title has those
+    words shipped (no more reminders) and says "✓ Marked shipped: <title>" in the group. The API away: kept and sent
+    when it answers again."""
+    from thrift_agent import sales
+    client = sales.api()
+    body = {"kind": "shipped", "words": words}
+    if client is None:
+        bot.send_message("Sales tracking isn't set up on the Mac yet — mark it shipped in the site's app", reply_to=mid)
+        return "shipped: no API"
+    try:
+        out = client.post("/mac-event", body)
+    except sales.ApiError:
+        sales.queue(db, "/mac-event", body)
+        bot.send_message("Got it — it's marked shipped as soon as the Mac reaches the sales tracker again", reply_to=mid)
+        return "shipped: kept for later"
+    if not (out.get("matched") or out.get("sale_id")):
+        bot.send_message(f"No open sale matches \"{words}\" — try words from its title", reply_to=mid)
+        return f"shipped: no match for {words!r}"
+    return f"shipped: {out.get('matched') or out.get('sale_id')}"
+
+
 def _typed(s: Settings, db: DB, bot: Bot, text: str, mid: int | None) -> str:
     """A message that replies to nothing. A plain number is the price of the open card (WO20), "cover 2" its cover
     (WO23); anything else is the owners' own chat and is ignored. A typed number under the floor is not taken (a stray
     "2" in the chat must not price an item at $2): a reply to the card, or `thrift price`, sets it."""
+    if m := SHIPPED_CMD.match(text or ""):
+        return _shipped(db, bot, m[1], mid)
     if m := COVER_CMD.match(text or ""):
         row = open_message(db)
         if row is None or row["kind"] != "item":

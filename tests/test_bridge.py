@@ -141,28 +141,55 @@ def test_photos_are_served_with_the_token_cover_first(tmp_path):
 
 # ---------------------------------------------------------------- jobs
 
-def test_one_job_at_a_time_through_the_alarms_poll():
-    """The extension's HTTP path (its socket down): GET /jobs/next hands out one job; the next one only once the first
-    has its last word; an event's answer carries the job's go-ahead."""
+def test_one_job_at_a_time_per_site_through_the_alarms_poll():
+    """The extension's HTTP path (its socket down): GET /jobs/next hands out one job PER SITE (WO33: Depop and Vinted run
+    together); a site's next job only once its first has its last word; an event's answer carries the job's go-ahead."""
     async def go():
         b = await _bridge()
         first = b.submit("vinted", "dry_run", {"fields": {}, "copy": {}, "price": 1, "photos": []})
-        second = b.submit("depop", "dry_run", {"fields": {}, "copy": {}, "price": 1, "photos": []})
+        again = b.submit("vinted", "dry_run", {"fields": {}, "copy": {}, "price": 1, "photos": []})
+        other = b.submit("depop", "dry_run", {"fields": {}, "copy": {}, "price": 1, "photos": []})
         h = {"X-Thrift-Token": TOKEN}
         async with _client(b) as c:
             got = (await c.get("/jobs/next", headers=h)).json()
             assert got["job_id"] == first.id and got["site"] == "vinted" and got["mode"] == "dry_run"
             assert got["pace"] == 0.01 and b.connected()
-            assert (await c.get("/jobs/next", headers=h)).status_code == 204         # one at a time, any site
+            assert (await c.get("/jobs/next", headers=h)).json()["job_id"] == other.id     # Depop's, beside it
+            assert (await c.get("/jobs/next", headers=h)).status_code == 204               # Vinted's second waits
             b.command(first, "submit")
             r = await c.post("/events", headers=h, json={"event": "waiting", "job_id": first.id})
             assert r.json() == {"commands": [{"type": "submit", "job_id": first.id}]} and first.clicked
             await c.post("/events", headers=h, json={"event": "step", "job_id": first.id, "name": "title", "ok": True})
             await c.post("/events", headers=h, json={"event": "result", "job_id": first.id, "url": "u"})
-            assert (await c.get("/jobs/next", headers=h)).json()["job_id"] == second.id
+            assert (await c.get("/jobs/next", headers=h)).json()["job_id"] == again.id
         assert (await first.wait(("result",), 1))["url"] == "u" and first.steps[0]["name"] == "title"
         await b.close()
     run(go())
+
+
+def test_a_job_s_photos_are_served_under_its_site():
+    """Depop's ≤ 8 and Vinted's ≤ 20 photos of one item are different lists, and their jobs run together (WO33)."""
+    async def go(tmp):
+        from PIL import Image
+        a, z = tmp / "a.jpg", tmp / "z.jpg"
+        Image.new("RGB", (4, 4), (255, 0, 0)).save(a)
+        Image.new("RGB", (4, 4), (0, 0, 255)).save(z)
+        b = await _bridge()
+        try:
+            dep = b.photo_urls("i_1", [a], "depop")
+            vin = b.photo_urls("i_1", [z, a], "vinted")
+            async with _client(b) as c:
+                h = {"X-Thrift-Token": TOKEN}
+                d1 = (await c.get(dep[0].replace(b.base, ""), headers=h)).content
+                v1 = (await c.get(vin[0].replace(b.base, ""), headers=h)).content
+            return dep, vin, d1 == a.read_bytes(), v1 == z.read_bytes()
+        finally:
+            await b.close()
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        dep, vin, d_ok, v_ok = run(go(Path(d)))
+    assert dep[0].endswith("/photos/depop/i_1/1.jpg") and vin[1].endswith("/photos/vinted/i_1/2.jpg")
+    assert d_ok and v_ok
 
 
 def test_the_socket_needs_an_extension_origin_and_the_token():
@@ -300,10 +327,10 @@ def test_a_job_called_off_is_cancelled_in_the_extension_and_the_next_waits_for_i
         await ws_recv(r)
         first = b.submit("vinted", "publish", {"fields": {}, "copy": {}, "price": 1, "photos": []})
         assert (await ws_recv(r))["job"]["job_id"] == first.id
-        second = b.submit("depop", "dry_run", {"fields": {}, "copy": {}, "price": 1, "photos": []})
-        b.drop(first)                                           # the driver's 6 minutes are up
+        second = b.submit("vinted", "dry_run", {"fields": {}, "copy": {}, "price": 1, "photos": []})
+        b.drop(first)                                           # the driver's time is up
         assert (await ws_recv(r)) == {"type": "cancel", "job_id": first.id}
-        assert second.handed is None                            # the extension still has the first in hand
+        assert second.handed is None                            # the extension still has Vinted's first in hand
         ws_send(w, {"type": "event", "event": "error", "job_id": first.id, "stage": "cancelled", "message": "x"})
         assert (await ws_recv(r))["job"]["job_id"] == second.id and first._events.empty()
         w.close()
@@ -421,7 +448,7 @@ def test_a_dry_run_reads_back_and_never_clicks(tmp_path, selectors):
     assert record["diff"] == {} and record["steps"][0]["name"] == "photos"
     job = fake.jobs[0]
     assert job["fields"]["category_id"] == 2955 and job["copy"]["title"] == TITLE and job["price"] == 85
-    assert job["photos"][0].endswith("/photos/i_1/1.jpg")
+    assert job["photos"][0].endswith("/photos/vinted/i_1/1.jpg")
 
 
 def test_a_read_back_that_differs_fails_the_dry_run(tmp_path, selectors, monkeypatch):

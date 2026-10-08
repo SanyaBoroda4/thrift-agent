@@ -198,7 +198,7 @@ def pending(s: Settings, db: DB, mps: list[str] | None = None) -> list[tuple[str
         rows = db.conn.execute(
             f"SELECT l.item_id FROM listings l LEFT JOIN listings p ON p.item_id=l.item_id AND p.marketplace='poshmark' "
             f"WHERE l.marketplace=? AND l.status IN ({','.join('?' * len(states))}) "
-            f"ORDER BY COALESCE(p.posted_at, l.updated_at), l.item_id", (mp, *states)).fetchall()
+            f"ORDER BY COALESCE(p.posted_at, l.updated_at), l.rowid", (mp, *states)).fetchall()   # ties: queue order
         out += [(r["item_id"], mp) for r in rows]
     return out
 
@@ -318,12 +318,46 @@ def added_line(db: DB, iid: str, mps: list[str]) -> str:
     return f"Added: {title} · {parts}"
 
 
+SETTLED = ("posted", "failed", "skipped", "drafted", "dryrun", "delisted", "sold")
+AWAY_WAIT = 600.0      # a site whose extension is away holds an item's line this long after its first live listing
+
+
+def settled(s: Settings, db: DB, iid: str, now: datetime | None = None) -> bool:
+    """Has every enabled site of the item had its say (WO33 A3)? Posted, failed (an unconfirmed publish too: its ⚠️
+    question waits for the owner), skipped, drafted or dry-run — or queued on a site stopped for the window or at its
+    daily cap, or on one whose extension has been away for 10 minutes since the item's first live listing (a moment's
+    disconnect doesn't send the line without it). A site with no row yet, or one in progress, is not settled."""
+    rows = {r["marketplace"]: r for r in db.listings_for(iid)}
+    mps = [*(["poshmark"] if s.get("marketplaces.poshmark.enabled", False) else []), *enabled(s)]
+    first = min((r["posted_at"] for r in rows.values() if r["status"] == "posted" and r["posted_at"]), default=None)
+    now = now or datetime.now(timezone.utc)
+    waited = first is not None and (now - datetime.fromisoformat(first)).total_seconds() >= AWAY_WAIT
+    for mp in mps:
+        row = rows.get(mp)
+        if row is None:
+            return False
+        if row["status"] in SETTLED:
+            continue
+        if row["status"] == "queued" and mp != "poshmark" and (blocked(db, mp) or capped(s, db, mp) or
+                                                               (mp not in reachable(s, db) and waited)):
+            continue
+        return False
+    return True
+
+
+def waiting_lines(db: DB) -> list[str]:
+    """Items with a live listing whose group line hasn't gone out yet (the poster sweeps them: a site that was away)."""
+    return [r[0] for r in db.conn.execute(
+        "SELECT DISTINCT l.item_id FROM listings l WHERE l.status='posted' AND NOT EXISTS "
+        "(SELECT 1 FROM events e WHERE e.ref=l.item_id AND e.kind='posted_announced')").fetchall()]
+
+
 def announce(s: Settings | None, db: DB, iid: str) -> str | None:
-    """The group hears about an item ONCE (WO32b): the first time its listings go out, one "Posted ✓" line with every
-    site that confirmed. While one of its sites is unconfirmed, the ⚠️ question is the item's only group message and the
-    line waits for its answer. Sites added to an item already announced (a supervised publish, the backfill, a retry,
-    a 'posted <url>' reply) go to the ops chat only: "Added: <title> · Depop <url>". Returns the text sent (None:
-    nothing new)."""
+    """The group hears about an item ONCE (WO32b): the first time its listings go out — once all its sites are settled
+    (WO33 A3: posted, failed, skipped, or waiting on the owner's answer to the ⚠️ question) — one "Posted ✓" line with
+    every site that confirmed, Poshmark · Depop · Vinted. Sites added to an item already announced (a supervised
+    publish, the backfill, a retry, a 'posted <url>' reply) go to the ops chat only: "Added: <title> · Depop <url>".
+    Returns the text sent (None: nothing new)."""
     seen = announced(db, iid)
     mps = [r["marketplace"] for r in db.listings_for(iid) if r["status"] == "posted" and r["marketplace"] not in seen]
     if not mps:
@@ -333,7 +367,7 @@ def announce(s: Settings | None, db: DB, iid: str) -> str | None:
         db.log(iid, "posted_announced", {"mps": mps, "to": "ops"})
         notify.say(text)
         return text
-    if unconfirmed(db, iid):
+    if s is not None and not settled(s, db, iid):
         return None
     text = posted_line(s, db, iid, mps, done=s is not None and daily.all_done(s, db))
     db.log(iid, "posted_announced", {"mps": mps})

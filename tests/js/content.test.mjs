@@ -79,7 +79,7 @@ const VINTED_JOB = {
 };
 const DEPOP_JOB = {
   job_id: "depop-1", site: "depop", mode: "dry_run", price: 35,
-  fields: { category: "Women > Bottoms > Pants", brand: "J. Crew", brand_typed: "J. Crew", size: "S",
+  fields: { category: "Women > Bottoms > Pants", brand: "J. Crew", brand_typed: "J. Crew", size: "S", sku: "i_261001_abc123",
             condition: "Like new", colors: ["Cream"], source: ["Preloved"], age: "Modern", style: [],
             attributes: { material: ["Wool"] }, shipping: "Depop Shipping", package_size: "Large" },
   copy: { title: "J. Crew Wide Leg Sweater Pants Cream size S",
@@ -320,6 +320,7 @@ test("Depop: the category under the item's department, the lagging size menu, th
   assert.equal(seen.boost, false);
   assert.equal(seen.boost_found, 1);
   assert.equal(seen.price, "35");
+  assert.equal(seen.sku, "i_261001_abc123");                           // WO33 A4: our item id, in Depop's SKU
   assert.equal(seen.photos, "1");                                      // the tile, not the other Depop images
   assert.equal(seen.photos_loaded, "1");
   assert.equal(seen.submit_buttons, 1);

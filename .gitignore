@@ -22,3 +22,7 @@ data/catalog_raw/
 data/*.new.json
 # the content-script tests' dev dependency (WO32): npm ci --prefix tests/js
 tests/js/node_modules/
+# thrift-api (WO33): the Function's local settings and build output never go to git
+api/local.settings.json
+api/.python_packages/
+api/.venv/

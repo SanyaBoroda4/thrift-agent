@@ -39,6 +39,30 @@ CREATE TABLE IF NOT EXISTS outbox (
 CREATE TABLE IF NOT EXISTS kv (
   key TEXT PRIMARY KEY, value TEXT
 );
+CREATE TABLE IF NOT EXISTS api_dirty (
+  kind TEXT NOT NULL, key TEXT NOT NULL, changed_at TEXT NOT NULL, PRIMARY KEY (kind, key)
+);
+CREATE TRIGGER IF NOT EXISTS api_dirty_item_ins AFTER INSERT ON items BEGIN
+  INSERT OR REPLACE INTO api_dirty VALUES ('item', NEW.id, strftime('%Y-%m-%dT%H:%M:%f', 'now'));
+END;
+CREATE TRIGGER IF NOT EXISTS api_dirty_item_upd AFTER UPDATE ON items BEGIN
+  INSERT OR REPLACE INTO api_dirty VALUES ('item', NEW.id, strftime('%Y-%m-%dT%H:%M:%f', 'now'));
+END;
+CREATE TRIGGER IF NOT EXISTS api_dirty_listing_ins AFTER INSERT ON listings BEGIN
+  INSERT OR REPLACE INTO api_dirty VALUES ('listing', NEW.item_id || '|' || NEW.marketplace,
+                                           strftime('%Y-%m-%dT%H:%M:%f', 'now'));
+END;
+CREATE TRIGGER IF NOT EXISTS api_dirty_listing_upd AFTER UPDATE ON listings BEGIN
+  INSERT OR REPLACE INTO api_dirty VALUES ('listing', NEW.item_id || '|' || NEW.marketplace,
+                                           strftime('%Y-%m-%dT%H:%M:%f', 'now'));
+END;
+CREATE TABLE IF NOT EXISTS api_outbox (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS takedowns (
+  id TEXT PRIMARY KEY, item_id TEXT NOT NULL, marketplace TEXT NOT NULL, listing_url TEXT, title TEXT,
+  status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, error TEXT, fetched_at TEXT NOT NULL, done_at TEXT
+);
 """
 
 # batch: new → needs_confirm → split | failed
@@ -50,6 +74,10 @@ CREATE TABLE IF NOT EXISTS kv (
 #        queued → posting → posted | failed | skipped, later delisted | sold; also dryrun (a dry-run filled the form)
 #        and drafted. failed / skipped / dryrun with no URL → queued via `thrift requeue`. `fields_json` holds the
 #        values mapped for the site's form before it opens; `price` the approved price it listed at.
+# api_dirty (WO33): the items and listings changed since the last /sync — filled by the triggers above (every change,
+#        whoever made it), emptied by sales.push once the API took them; api_outbox: the other calls to the API
+#        (task results, the owner's 'shipped' replies) kept while it is out of reach and replayed in order;
+#        takedowns: the take-downs the API handed to this Mac (a sale elsewhere), done by the poster's site workers.
 # outbox: every Telegram message the agent sent that expects a reply (kind batch | condition | kids | item | owner_q),
 #        so a reply or a button press can be mapped back to its batch/item. At most one is open at a time (WO20,
 #        approve.pump); the dev print is recorded under chat 'dev'. kv holds the getUpdates offset, the queue's

@@ -119,6 +119,8 @@ class ExtensionPoster(Poster):
         want["photos_loaded"] = str(len(self.fields.photos))
         if self.name == "vinted" and getattr(self.fields, "package_sizes", None):
             want["package"] = OneOf(self.fields.package_sizes)
+        if self.name == "depop" and "sku" not in unverified("depop", self.selectors_path):
+            want["sku"] = r.sku                        # WO33 A4: compared once a Mac dry run has recorded it filled
         return want
 
     def listing_address(self, url: str) -> str | None:
@@ -152,10 +154,10 @@ class ExtensionPoster(Poster):
             fields = {"category": f.category, "brand": f.brand, "brand_typed": spelled or f.brand, "size": f.size,
                       "condition": f.condition, "colors": list(f.colors), "source": list(f.source), "age": f.age,
                       "style": list(f.style), "attributes": dict(f.attributes), "shipping": f.shipping,
-                      "package_size": f.package_size}
+                      "package_size": f.package_size, "sku": r.sku}
             copy = {"title": f.description.splitlines()[0], "description": f.description}
         return {"fields": fields, "copy": copy, "price": f.price,
-                "photos": self._bridge().photo_urls(r.sku, list(f.photos)), "listing_url": None}
+                "photos": self._bridge().photo_urls(r.sku, list(f.photos), self.name), "listing_url": None}
 
     async def _await(self, job: bridge_mod.Job, kinds: tuple[str, ...], deadline: float) -> dict:
         """The next event of these kinds before the deadline — and a job no extension took within PICKUP_TIMEOUT is
@@ -437,6 +439,20 @@ class ExtensionPoster(Poster):
                       if all(w in re.findall(r"[a-z0-9]+", f"{t} {u}".lower()) for w in want))
         seen = {"listings": len(listings), "with_this_title": ours[:10]}
         return (ours[0], seen) if len(ours) == 1 else (None, seen)
+
+    async def probe_delist(self, url: str) -> dict:
+        """WO33's no-click recording of the take-down control: our listing's page opened in the Thrift Chrome, Hide /
+        Mark as sold looked for, the page and its picture kept — nothing clicked. Returns {"found", "text", "url",
+        "shot"}."""
+        address = self.listing_address(url)
+        if address is None:
+            raise PosterError(f"not a {self.name} listing address: {url!r}")
+        ev = await self._job("probe", {"listing_url": address}, 120, shot=self.shot)
+        if ev.get("event") == "error":
+            if ev.get("page") in STOP_PAGES:
+                raise self._stop(ev)
+            raise PosterError(f"{self.site} probe {address}: {ev.get('message')}")
+        return {"found": bool(ev.get("found")), "text": ev.get("text"), "url": ev.get("url"), "shot": str(self.shot)}
 
     async def delist(self, url: str) -> bool:
         """WO31's take-down, never a delete: Vinted's Hide, Depop's Mark as sold — only once that step is recorded."""

@@ -1,12 +1,14 @@
-// Thrift crosslister (WO32, WO32b) — the background service worker. The link to the bridge inside the poster process
-// on this Mac: a WebSocket to ws://127.0.0.1:8765/ext (the token in the first message, a message every 20 s so the
-// worker stays up while it is open), tried again 1 s, 2 s, 5 s after it drops and then every 5 s — a bridge that starts
-// is seen within seconds — and, for when the worker was put to sleep (MV3 workers go idle), an alarm every 30 s that
-// asks GET /jobs/next. One job at a time, in its own tab of this window, opened as its active tab (the window itself is
-// never focused or raised: the owner may be using the Mac): the job's photos fetched from the bridge, the content script
-// started on the page, its events relayed, the visible tab captured on request (10 s at most). After the one publish
-// click it watches the tab land on the listing page. A job whose bridge goes away before the go-ahead can't be
-// published any more: it is called off and its tab closed. It opens nothing a job didn't ask for.
+// Thrift crosslister (WO32, WO32b, WO33) — the background service worker. The link to the bridge inside the poster
+// process on this Mac: a WebSocket to ws://127.0.0.1:8765/ext (the token in the first message, a message every 20 s so
+// the worker stays up while it is open), tried again 1 s, 2 s, 5 s after it drops and then every 5 s — a bridge that
+// starts is seen within seconds — and, for when the worker was put to sleep (MV3 workers go idle), an alarm that asks
+// GET /jobs/next. One job at a time PER SITE (WO33: a Depop job and a Vinted job run together), each in its site's own
+// window of the Thrift Chrome — created once, kept with a small idle page, never focused or raised over what the owner
+// is using — in a tab of its own that is that window's active tab, so no job tab is ever hidden: the job's photos
+// fetched from the bridge, the content script started on the page, its events relayed, that window captured on
+// request (10 s at most). After the one publish click it watches the tab land on the listing page. A job whose bridge
+// goes away before the go-ahead can't be published any more: it is called off and its tab closed. It opens nothing a
+// job didn't ask for.
 const BRIDGE = "http://127.0.0.1:8765";
 const WS_URL = "ws://127.0.0.1:8765/ext";
 const PING_MS = 20000;
@@ -20,10 +22,11 @@ const CLICKED_MS = 5 * 60000;        // after the click: the landing page is rep
 const CAPTURE_MS = 10000;            // a capture that doesn't come back (a minimized window isn't drawn): skipped
 const ANSWER_MS = 3000;              // one message to the page: answered (or refused) within 3 s, else asked again
 const REACH_MS = 20000;              // ... for 20 s in all: a page that never answers ends the job, with what it shows
+const QUIET_MS = 30000;              // a page filling a form, silent this long, is asked if it is still there (3 s)
 const STOP_PAGES = ["login", "block", "captcha", "verify"];
 // The files whose hash tells the bridge's copy (git pull on deploy) from the loaded one: a difference reloads us.
 const FILES = ["manifest.json", "background.js", "content/common.js", "content/vinted.js", "content/depop.js",
-               "selectors.json", "options.html", "options.js"];
+               "selectors.json", "options.html", "options.js", "idle.html", "idle.js"];
 
 let ws = null;
 let wsReady = false;
@@ -31,16 +34,17 @@ let attempt = 0;
 let refused = false;
 let reconnectTimer = null;
 let pingTimer = null;
-let afterTimer = null;
-let current = null;        // the job in hand: {job_id, site, mode, tabId, windowId, clicked, after, job}
+let jobs = {};             // site → the job in hand there: {job_id, site, mode, tabId, windowId, clicked, after, …, job}
+let restored = false;
+const afterTimers = {};    // site → the after-click timer
 let selectorsCache = null;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const errText = (e) => String(e && e.message ? e.message : e).slice(0, 300);
 
 async function settings() {
-  const { token = "", poll_minutes = 0.5 } = await chrome.storage.local.get(["token", "poll_minutes"]);
-  return { token, poll_minutes };
+  const { token = "" } = await chrome.storage.local.get(["token"]);
+  return { token };
 }
 
 function withTimeout(promise, ms, what) {
@@ -62,12 +66,20 @@ async function selectors() {
 }
 
 async function remember() {
-  await chrome.storage.session.set({ current });
+  await chrome.storage.session.set({ jobs });
 }
 
+// The jobs in hand, back after the worker was put to sleep and woken (session storage outlives it).
 async function restore() {
-  if (!current) current = (await chrome.storage.session.get("current")).current || null;
+  if (restored) return;
+  const saved = (await chrome.storage.session.get("jobs")).jobs || {};
+  jobs = { ...saved, ...jobs };
+  restored = true;
 }
+
+const byId = (id) => Object.values(jobs).find((j) => j && j.job_id === id) || null;
+const byTab = (tabId) => Object.values(jobs).find((j) => j && j.tabId === tabId) || null;
+const anyJob = () => Object.values(jobs).some(Boolean);
 
 async function filesHash() {
   const enc = new TextEncoder();
@@ -94,7 +106,8 @@ async function noteLoaded() {
 
 // The bridge has other files than the ones loaded (a deploy pulled new code): reload, once per version, between jobs.
 async function maybeReload(hash) {
-  if (!hash || current) return;
+  await restore();
+  if (!hash || anyJob()) return;
   const { loaded_hash, reloaded_for } = await chrome.storage.local.get(["loaded_hash", "reloaded_for"]);
   if (!loaded_hash || loaded_hash === hash || reloaded_for === hash) return;
   await chrome.storage.local.set({ reloaded_for: hash });
@@ -166,27 +179,27 @@ async function onBridge(msg) {
     refused = true;
     await setState("the bridge refused the token: paste it again (cat ~/thrift/var/ext_token)");
   } else if (msg.type === "job") {
-    await startJob(msg.job);
+    startJob(msg.job);                               // not awaited: the other site's job may come meanwhile
   } else if (msg.type === "submit" || msg.type === "cancel") {
     await relay(msg);
   }
 }
 
-// GET /jobs/next: the way in while the socket is down (the alarm's tick).
+// GET /jobs/next: the way in while the socket is down (the alarm's tick) — one job per free site.
 async function poll() {
-  await restore();
-  if (wsReady || current) return;
+  if (wsReady) return;
   const { token } = await settings();
   if (!token) return;
-  try {
-    const r = await fetch(`${BRIDGE}/jobs/next`, { headers: { "X-Thrift-Token": token } });
-    if (r.status === 401) return setState("the bridge refused the token: paste it again (cat ~/thrift/var/ext_token)");
-    if (r.status === 200) {
+  for (let i = 0; i < 3; i++) {
+    try {
+      const r = await fetch(`${BRIDGE}/jobs/next`, { headers: { "X-Thrift-Token": token } });
+      if (r.status === 401) return setState("the bridge refused the token: paste it again (cat ~/thrift/var/ext_token)");
+      if (r.status !== 200) return;
       await setState("polling (the socket is down)");
-      await startJob(await r.json());
+      startJob(await r.json());
+    } catch (e) {
+      return setState("the bridge isn't reachable (the poster isn't running, or Depop / Vinted are off)");
     }
-  } catch (e) {
-    await setState("the bridge isn't reachable (the poster isn't running, or Depop / Vinted are off)");
   }
 }
 
@@ -211,15 +224,15 @@ async function send(event) {
   }
 }
 
-// The bridge that gave the job went away (a Ctrl+C at the terminal, the poster stopped) before its go-ahead: nothing can
-// be published from this form any more, and no one waits for it — the page is told, the tab closed. After the click the
+// The bridge that gave a job went away (a Ctrl+C at the terminal, the poster stopped) before its go-ahead: nothing can
+// be published from that form any more, and no one waits for it — the page is told, the tab closed. After the click a
 // job stays: its landing page is still reported (the poster looks at the shop when it starts again).
 async function abandon(why, jobId = null) {
   await restore();
-  if (!current || current.clicked || (jobId && current.job_id !== jobId)) return;
-  const job = current;
-  try { await chrome.tabs.sendMessage(job.tabId, { type: "cancel" }); } catch (e) { /* no page yet */ }
-  await finish({ event: "error", job_id: job.job_id, stage: "cancelled", page: "unknown", message: why });
+  for (const j of Object.values(jobs).filter((x) => x && !x.clicked && (!jobId || x.job_id === jobId))) {
+    try { await chrome.tabs.sendMessage(j.tabId, { type: "cancel", job_id: j.job_id }); } catch (e) { /* no page yet */ }
+    await finish({ event: "error", job_id: j.job_id, stage: "cancelled", page: "unknown", message: why });
+  }
 }
 
 // While a publish waits for the bridge's go-ahead without a socket: ask every 2 s.
@@ -227,22 +240,46 @@ async function waitCommands(jobId) {
   for (let i = 0; i < 180; i++) {
     await sleep(2000);
     await restore();
-    if (!current || current.job_id !== jobId || current.decided || wsReady) return;
+    const j = byId(jobId);
+    if (!j || j.decided || wsReady) return;
     await send({ event: "waiting", job_id: jobId });
   }
 }
 
+// ---------------------------------------------------------------- the sites' windows
+
+const idleUrl = (site) => chrome.runtime.getURL(`idle.html?site=${site}`);
+
+// The site's own window (WO33): found by its idle tab (after a browser restart too: the session restores it), else
+// created — never focused, so it opens behind what the owner is using. One at a time: two jobs starting together
+// would each write the windows map over the other's.
+let windowLock = Promise.resolve();
+function siteWindow(site) {
+  const run = windowLock.then(() => siteWindowNow(site));
+  windowLock = run.catch(() => {});
+  return run;
+}
+
+async function siteWindowNow(site) {
+  const idle = idleUrl(site);
+  const { windows: saved = {} } = await chrome.storage.session.get("windows");
+  const known = saved[site];
+  if (known) {
+    try {
+      const w = await chrome.windows.get(known.windowId);
+      if (w && w.type === "normal") return known;
+    } catch (e) { /* closed: looked for, else made again */ }
+  }
+  const found = (await chrome.tabs.query({})).find((t) => t.url === idle);
+  const entry = found ? { windowId: found.windowId, idleTabId: found.id }
+    : await chrome.windows.create({ url: idle, focused: false }).then((w) => ({ windowId: w.id, idleTabId: w.tabs[0].id }));
+  await chrome.storage.session.set({ windows: { ...saved, [site]: entry } });
+  return entry;
+}
+
 // ---------------------------------------------------------------- one job
 
-async function thriftWindow(url) {
-  try {
-    const win = await chrome.windows.getLastFocused({ windowTypes: ["normal"] });
-    return { windowId: win.id };
-  } catch (e) {
-    const win = await chrome.windows.create({ url, focused: false });
-    return { windowId: win.id, tab: win.tabs[0] };
-  }
-}
+const web = (u) => /^https?:/i.test(u || "");
 
 function loaded(tabId, ms) {
   return new Promise((resolve, reject) => {
@@ -250,14 +287,14 @@ function loaded(tabId, ms) {
       chrome.tabs.onUpdated.removeListener(on);
       reject(new Error(`the page didn't load in ${ms / 1000} s`));
     }, ms);
-    const on = (id, info) => {
-      if (id !== tabId || info.status !== "complete") return;
+    const on = (id, info, tab) => {
+      if (id !== tabId || info.status !== "complete" || !web(tab && tab.url)) return;
       clearTimeout(timer);
       chrome.tabs.onUpdated.removeListener(on);
       resolve();
     };
     chrome.tabs.onUpdated.addListener(on);
-    chrome.tabs.get(tabId).then((t) => t.status === "complete" && t.url !== "about:blank" && on(tabId, t)).catch(() => {});
+    chrome.tabs.get(tabId).then((t) => t.status === "complete" && on(tabId, { status: "complete" }, t)).catch(() => {});
   });
 }
 
@@ -280,14 +317,14 @@ const pathOf = (u) => { try { return new URL(u).pathname.replace(/\/+$/, ""); } 
 // The page the job is for, loaded: a sell form's job waits through a page that moves on by itself — live, Vinted sent
 // /items/new to /session-refresh, which went back to /items/new a second later; the job handed to the refresh page
 // died with it, silently (the WO32b stall). Any other page that stays (a login page) is the page script's to name.
-async function landed(tabId, target, ms) {
+async function landed(tabId, target, ms, j) {
   const end = Date.now() + ms;
   for (;;) {
     await loaded(tabId, Math.max(1000, end - Date.now()));
     const tab = await chrome.tabs.get(tabId);
     if (pathOf(tab.url) === pathOf(target) || Date.now() > end) return tab;
     if (!(await navigates(tabId, 2500))) return tab;
-    await send({ event: "progress", job_id: current && current.job_id, what: `passed through ${pathOf(tab.url)}` });
+    await send({ event: "progress", job_id: j && j.job_id, what: `passed through ${pathOf(tab.url)}` });
   }
 }
 
@@ -311,7 +348,7 @@ async function tabState(tabId) {
 // answered after 2 s — a page whose idle comes late — the worker injects it (scripting), once. Each try waits 3 s at
 // most: a page whose own code holds its thread (or a dialog) never answers and never refuses — after `ms` the job
 // ends with the tab's state and a picture of it (a job asked twice runs once: the page knows its job ids).
-async function toTab(tabId, msg, ms = REACH_MS, site = null) {
+async function toTab(tabId, msg, ms = REACH_MS, site = null, j = null) {
   const end = Date.now() + ms;
   let last = "";
   for (let i = 0; ; i++) {
@@ -327,7 +364,7 @@ async function toTab(tabId, msg, ms = REACH_MS, site = null) {
       }
       if (Date.now() > end) {
         const state = await tabState(tabId);
-        await shootFromWorker("no-answer");
+        if (j) await shootFromWorker("no-answer", j);
         throw new Error(`the page doesn't answer (${last.slice(0, 120)}): ${JSON.stringify(state).slice(0, 400)}`);
       }
       await sleep(500);
@@ -336,12 +373,11 @@ async function toTab(tabId, msg, ms = REACH_MS, site = null) {
 }
 
 // A picture of the job's tab taken by the worker itself (the page can't ask for one: it doesn't answer).
-async function shootFromWorker(label) {
-  await restore();
-  if (!current || current.tabId == null) return;
+async function shootFromWorker(label, j) {
+  if (!j || j.tabId == null) return;
   let tab = null;
-  try { tab = await chrome.tabs.get(current.tabId); } catch (e) { return; }
-  await shoot({ label, html: null, url: tab.url }, tab);
+  try { tab = await chrome.tabs.get(j.tabId); } catch (e) { return; }
+  await shoot({ label, html: null, url: tab.url, job_id: j.job_id }, tab);
 }
 
 async function b64(blob) {
@@ -364,17 +400,18 @@ async function fetchPhotos(urls) {
 }
 
 function urlFor(job, site) {
-  if (job.mode === "verify" || job.mode === "delist") return job.listing_url;
+  if (job.mode === "verify" || job.mode === "delist" || job.mode === "probe") return job.listing_url;
   if (job.mode === "find") return site.shop_url.replace("{shop}", encodeURIComponent(job.shop || ""));
   return site.sell_url;
 }
 
 async function startJob(job) {
   await restore();
-  if (current) {
-    if (current.job_id !== job.job_id) {
+  const held = jobs[job.site];
+  if (held) {
+    if (held.job_id !== job.job_id) {
       await send({ event: "error", job_id: job.job_id, stage: "busy", page: "unknown",
-                   message: `another job is running (${current.job_id})` });
+                   message: `another ${job.site} job is running (${held.job_id})` });
     }
     return;
   }
@@ -384,33 +421,36 @@ async function startJob(job) {
     await send({ event: "error", job_id: job.job_id, stage: "open", page: "unknown", message: `unknown site ${job.site}` });
     return;
   }
-  current = { job_id: job.job_id, site: job.site, mode: job.mode, tabId: null, windowId: null, clicked: false,
-              after: false, decided: false, delivered: false, started: Date.now(), job };
+  jobs[job.site] = { job_id: job.job_id, site: job.site, mode: job.mode, tabId: null, windowId: null, clicked: false,
+                     after: false, decided: false, delivered: false, started: Date.now(), job };
   await remember();
-  // Still this job, and not called off? (A cancel can come while the tab opens: it is ended before the page has it.)
-  const ours = async () => { await restore(); return !!current && current.job_id === job.job_id; };
+  // Still this job? (A cancel can come while the tab opens: it is ended before the page has it.)
+  const ours = async () => { await restore(); const j = jobs[job.site]; return j && j.job_id === job.job_id ? j : null; };
   try {
     const photos = job.mode === "dry_run" || job.mode === "publish" ? await fetchPhotos(job.photos || []) : [];
     const url = urlFor(job, site);
-    const where = await thriftWindow(url);
-    const tab = where.tab || (await chrome.tabs.create({ url, active: true, windowId: where.windowId }));
-    if (!(await ours())) {                         // ended meanwhile: the tab it opened goes too
+    const where = await siteWindow(job.site);
+    const tab = await chrome.tabs.create({ url, active: true, windowId: where.windowId });
+    let j = await ours();
+    if (!j) {                                      // ended meanwhile: the tab it opened goes too
       try { await chrome.tabs.remove(tab.id); } catch (e) { /* gone */ }
       return;
     }
-    current.tabId = tab.id;
-    current.windowId = tab.windowId;
+    j.tabId = tab.id;
+    j.windowId = tab.windowId;
     await remember();
     await send({ event: "progress", job_id: job.job_id, what: "tab opened" });
-    await landed(tab.id, url, OPEN_MS);
-    if ((await ours()) && current.decided) throw new Error("called off before the form opened");
+    await landed(tab.id, url, OPEN_MS, j);
+    j = await ours();
+    if (j && j.decided) throw new Error("called off before the form opened");
     await send({ event: "progress", job_id: job.job_id, what: "page loaded" });
-    await toTab(tab.id, { type: "job", job, selectors: sel, photos, pace: job.pace }, REACH_MS, job.site);
+    await toTab(tab.id, { type: "job", job, selectors: sel, photos, pace: job.pace }, REACH_MS, job.site, j);
     await send({ event: "progress", job_id: job.job_id, what: "page script running" });
-    if (await ours()) {
-      current.delivered = true;
+    j = await ours();
+    if (j) {
+      j.delivered = true;
       await remember();
-      if (current.decided && !current.clicked) {   // the cancel came while the page was being reached: told now
+      if (j.decided && !j.clicked) {               // the cancel came while the page was being reached: told now
         try { await chrome.tabs.sendMessage(tab.id, { type: "cancel", job_id: job.job_id }); } catch (e) { /* gone */ }
       }
     }
@@ -419,127 +459,129 @@ async function startJob(job) {
   }
 }
 
-// The bridge's go-ahead (submit) or no (cancel) for the filled form; after submit, the landing page is watched.
+// The bridge's go-ahead (submit) or no (cancel) for a filled form; after submit, the landing page is watched.
 async function relay(msg) {
   await restore();
-  if (!current || current.job_id !== msg.job_id || current.decided) return;
-  current.decided = true;
+  const j = byId(msg.job_id);
+  if (!j || j.decided) return;
+  j.decided = true;
   if (msg.type === "submit") {
-    current.clicked = true;
-    current.clickedAt = Date.now();
-    clearTimeout(afterTimer);
-    afterTimer = setTimeout(afterClickTimeout, AFTER_CLICK_MS);
+    j.clicked = true;
+    j.clickedAt = Date.now();
+    clearTimeout(afterTimers[j.site]);
+    afterTimers[j.site] = setTimeout(() => afterClickTimeout(j.job_id), AFTER_CLICK_MS);
   }
   await remember();
-  if (msg.type === "cancel" && !current.delivered) return;   // the page hasn't the job yet: startJob ends it / tells it
+  if (msg.type === "cancel" && !j.delivered) return;   // the page hasn't the job yet: startJob ends it / tells it
   try {
-    await toTab(current.tabId, { type: msg.type, job_id: current.job_id }, 6000);
+    await toTab(j.tabId, { type: msg.type, job_id: j.job_id }, 6000);
   } catch (e) {
-    await finish({ event: "error", job_id: current.job_id, stage: msg.type, page: "unknown", message: errText(e) });
+    await finish({ event: "error", job_id: j.job_id, stage: msg.type, page: "unknown", message: errText(e) });
   }
 }
 
 // No listing page a minute after the click: whatever the tab shows is reported (the bridge then checks the shop).
-async function afterClickTimeout() {
+async function afterClickTimeout(jobId) {
   await restore();
-  if (!current || !current.clicked || current.after) return;
-  current.after = true;
+  const j = byId(jobId);
+  if (!j || !j.clicked || j.after) return;
+  j.after = true;
   await remember();
   try {
-    await toTab(current.tabId, { type: "job", job: { ...current.job, mode: "after_publish" }, selectors: await selectors() },
-                REACH_MS, current.site);
+    await toTab(j.tabId, { type: "job", job: { ...j.job, mode: "after_publish" }, selectors: await selectors() },
+                REACH_MS, j.site, j);
   } catch (e) {
-    await finish({ event: "error", job_id: current.job_id, stage: "after_publish", page: "unknown", message: errText(e) });
+    await finish({ event: "error", job_id: j.job_id, stage: "after_publish", page: "unknown", message: errText(e) });
   }
 }
 
-// The job's page navigated while it was being filled (a session refresh, a reload): its script — and the job with it —
+// A job's page navigated while it was being filled (a session refresh, a reload): its script — and the job with it —
 // is gone. Before the go-ahead nothing can have been published: the job is handed to the new page (twice at most),
 // except a form already waiting for the owner's POST (never filled again behind them: ended, nothing published) and a
 // take-down (its clicks are never repeated).
-async function onNavigatedMidJob(tabId) {
-  const job = current;
-  if (job.readyAt || job.mode === "delist" || (job.reloads || 0) >= 2) {
-    const why = job.readyAt ? "the page reloaded while it waited for POST — nothing was published"
-      : job.mode === "delist" ? "the page reloaded during the take-down" : "the page keeps reloading";
-    return finish({ event: "error", job_id: job.job_id, stage: "reloaded", page: "unknown", message: why });
+async function onNavigatedMidJob(j) {
+  if (j.readyAt || j.mode === "delist" || (j.reloads || 0) >= 2) {
+    const why = j.readyAt ? "the page reloaded while it waited for POST — nothing was published"
+      : j.mode === "delist" ? "the page reloaded during the take-down" : "the page keeps reloading";
+    return finish({ event: "error", job_id: j.job_id, stage: "reloaded", page: "unknown", message: why });
   }
-  job.delivered = false;
-  job.reloads = (job.reloads || 0) + 1;
+  j.delivered = false;
+  j.reloads = (j.reloads || 0) + 1;
   await remember();
   try {
     const sel = await selectors();
-    const tab = await landed(tabId, urlFor(job.job, sel[job.site]), OPEN_MS);
-    await send({ event: "progress", job_id: job.job_id, what: `the page reloaded (${pathOf(tab.url)}) — filling it again` });
-    const photos = job.job.mode === "dry_run" || job.job.mode === "publish" ? await fetchPhotos(job.job.photos || []) : [];
-    await toTab(tabId, { type: "job", job: job.job, selectors: sel, photos, pace: job.job.pace }, REACH_MS, job.site);
+    const tab = await landed(j.tabId, urlFor(j.job, sel[j.site]), OPEN_MS, j);
+    await send({ event: "progress", job_id: j.job_id, what: `the page reloaded (${pathOf(tab.url)}) — filling it again` });
+    const photos = j.job.mode === "dry_run" || j.job.mode === "publish" ? await fetchPhotos(j.job.photos || []) : [];
+    await toTab(j.tabId, { type: "job", job: j.job, selectors: sel, photos, pace: j.job.pace }, REACH_MS, j.site, j);
     await restore();
-    if (current && current.job_id === job.job_id) {
-      current.delivered = true;
+    const now = byId(j.job_id);
+    if (now) {
+      now.delivered = true;
       await remember();
     }
   } catch (e) {
-    await finish({ event: "error", job_id: job.job_id, stage: "reloaded", page: "unknown", message: errText(e) });
+    await finish({ event: "error", job_id: j.job_id, stage: "reloaded", page: "unknown", message: errText(e) });
   }
 }
 
 chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
   await restore();
-  if (current && tabId === current.tabId && current.delivered && !current.clicked && !current.decided &&
-      info.status === "loading") {
-    return onNavigatedMidJob(tabId);
-  }
-  if (!current || tabId !== current.tabId || !current.clicked || current.after) return;
+  const j = byTab(tabId);
+  if (!j) return;
+  if (j.delivered && !j.clicked && !j.decided && info.status === "loading") return onNavigatedMidJob(j);
+  if (!j.clicked || j.after) return;
   if (info.status !== "complete" && !info.url) return;
   const sel = await selectors();
-  if (!new RegExp(sel[current.site].listing_url).test(tab.url || "")) return;
-  current.after = true;
+  if (!new RegExp(sel[j.site].listing_url).test(tab.url || "")) return;
+  j.after = true;
   await remember();
-  clearTimeout(afterTimer);
+  clearTimeout(afterTimers[j.site]);
   await sleep(2500);
   try {
-    await toTab(tabId, { type: "job", job: { ...current.job, mode: "after_publish" }, selectors: sel }, REACH_MS,
-                current.site);
+    await toTab(tabId, { type: "job", job: { ...j.job, mode: "after_publish" }, selectors: sel }, REACH_MS, j.site, j);
   } catch (e) {
-    await finish({ event: "result", job_id: current.job_id, url: tab.url, live: null, note: errText(e) });
+    await finish({ event: "result", job_id: j.job_id, url: tab.url, live: null, note: errText(e) });
   }
 });
 
-// The job's last word: to the bridge, then its tab closed — except a login / CAPTCHA / block page, left open for the
-// owner (a human may log in or solve it there; the code never does).
+// A job's last word: to the bridge, then its tab closed (its window stays, on its idle page) — except a login /
+// CAPTCHA / block page, left open for the owner (a human may log in or solve it there; the code never does).
 async function finish(ev) {
   await restore();
-  const job = current && current.job_id === ev.job_id ? current : null;
-  if (job) {
-    current = null;
-    clearTimeout(afterTimer);
+  const j = byId(ev.job_id);
+  if (j) {
+    delete jobs[j.site];
+    clearTimeout(afterTimers[j.site]);
     await remember();
   }
   await send(ev);
-  if (job && job.tabId != null && !(ev.event === "error" && STOP_PAGES.includes(ev.page))) {
+  if (j && j.tabId != null && !(ev.event === "error" && STOP_PAGES.includes(ev.page))) {
     await sleep(1500);
     try {
-      await chrome.tabs.remove(job.tabId);
+      await chrome.tabs.remove(j.tabId);
     } catch (e) { /* closed already */ }
   }
   if (!wsReady) await poll();
 }
 
 // Chrome allows captureVisibleTab twice a second (MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND): captures are spaced, and
-// one refused for it is tried again.
+// one refused for it is tried again. Each job's window is captured on its own (WO33: two jobs, two pictures).
 let lastCapture = 0;
 
 async function shoot(msg, tab) {
   await restore();
-  if (!current) return;
+  const j = (msg.job_id && byId(msg.job_id)) || (tab && byTab(tab.id));
+  if (!j) return;
   let png_b64 = null;
   let error = null;
   for (let attempt = 0; attempt < 3 && !png_b64; attempt++) {
-    await sleep(Math.max(0, lastCapture + 600 - Date.now()));
+    const wait = Math.max(0, lastCapture + 600 - Date.now());
+    lastCapture = Date.now() + wait;
+    await sleep(wait);
     try {
       if (tab && !tab.active) await chrome.tabs.update(tab.id, { active: true });
-      lastCapture = Date.now();
-      const dataUrl = await withTimeout(chrome.tabs.captureVisibleTab(tab ? tab.windowId : current.windowId,
+      const dataUrl = await withTimeout(chrome.tabs.captureVisibleTab(tab ? tab.windowId : j.windowId,
                                                                       { format: "png" }), CAPTURE_MS,
                                         "no picture in 10 s (is the Thrift Chrome window minimized?)");
       png_b64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
@@ -549,20 +591,44 @@ async function shoot(msg, tab) {
       if (!/MAX_CAPTURE|quota/i.test(error)) break;
     }
   }
-  await send({ event: "screenshot", job_id: current.job_id, label: msg.label, png_b64, html: msg.html, url: msg.url,
-               error });
+  await send({ event: "screenshot", job_id: j.job_id, label: msg.label, png_b64, html: msg.html, url: msg.url, error });
 }
+
+// The watchdog: a page whose own script holds its thread can't run our step limits (they live in that page) — a job
+// whose page has said nothing for 30 s is asked if it is still there; no answer in 3 s ends it, with the tab's state
+// (a page busy waiting on its photos still answers).
+async function watchdog() {
+  await restore();
+  const now = Date.now();
+  for (const j of Object.values(jobs).filter((x) => x && x.delivered && !x.clicked && !x.readyAt && !x.decided)) {
+    if (now - (j.heardAt || j.started || now) < QUIET_MS) continue;
+    try {
+      await withTimeout(chrome.tabs.sendMessage(j.tabId, { type: "ping" }), ANSWER_MS, "no answer in 3 s");
+      j.heardAt = Date.now();
+    } catch (e) {
+      const state = await tabState(j.tabId);
+      await shootFromWorker("no-answer", j);
+      await finish({ event: "error", job_id: j.job_id, stage: "hung", page: "unknown",
+                     message: `the page doesn't answer (silent ${Math.round((now - (j.heardAt || j.started)) / 1000)} s while filling — `
+                       + `its own script holds it?): ${JSON.stringify(state).slice(0, 400)}` });
+    }
+  }
+}
+setInterval(() => { watchdog().catch(() => {}); }, 5000);
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
+    const heard = sender && sender.tab ? byTab(sender.tab.id) : null;
+    if (heard) heard.heardAt = Date.now();
     if (msg.type === "event") {
       const ev = { ...msg };
       delete ev.type;
       if (ev.event === "result" || ev.event === "error") return finish(ev);
       if (ev.event === "ready") {
         await restore();
-        if (current && current.job_id === ev.job_id) {
-          current.readyAt = Date.now();
+        const j = byId(ev.job_id);
+        if (j) {
+          j.readyAt = Date.now();
           await remember();
         }
       }
@@ -610,17 +676,21 @@ function overdue(c, now) {
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== "poll") return;
   await restore();
-  const late = current && overdue(current, Date.now());
-  if (late) await finish({ event: "error", job_id: current.job_id, stage: "stale", page: "unknown", message: late });
+  const now = Date.now();
+  for (const j of Object.values(jobs).filter(Boolean)) {
+    const late = overdue(j, now);
+    if (late) await finish({ event: "error", job_id: j.job_id, stage: "stale", page: "unknown", message: late });
+  }
   await connect();
   await poll();
 });
 
-// The owner closed the job's tab: the job ends there (nothing more can happen in it).
+// The owner closed a job's tab (or its window): the job ends there (nothing more can happen in it).
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   await restore();
-  if (current && current.tabId === tabId) {
-    await finish({ event: "error", job_id: current.job_id, stage: "tab_closed", page: "unknown",
+  const j = byTab(tabId);
+  if (j) {
+    await finish({ event: "error", job_id: j.job_id, stage: "tab_closed", page: "unknown",
                    message: "the job's tab was closed" });
   }
 });

@@ -32,6 +32,10 @@ UNVERIFIED (record on the Mac from the evidence in failed/shots):
                                 one stops the publish before the click)
   draft_saved                   where Save Draft lands
   captcha                       the wording of Poshmark's bot check
+  edit_url, availability, availability_option, update_listing
+                                WO33's take-down: the listing's edit page, its Availability menu, "Not For Sale" /
+                                "For Sale", and Update — recorded without using them (`thrift delist --verify`); until
+                                then a sale asks the owner to mark it sold on Poshmark by hand
 The size menus' tabs and values are Poshmark's own catalog of the form (data/poshmark_catalog.json, WO25); a size is
 selected only as a value of its tab's menu. The Brand field is optional on the form (its "Optional" label, 2026-09-30):
 an item the owner calls unbranded leaves it empty.
@@ -221,11 +225,19 @@ SEL = {
     "listing_url": re.compile(r"/listing/(?P<slug>[^/?#]+)-(?P<id>[0-9a-f]{24})"),
     "created_id": re.compile(r"[?&]created_listing_id=(?P<id>[0-9a-f]{24})(?![0-9a-f])"),
     # ---- UNVERIFIED: see the module docstring ----
+    # WO33 take-downs (reversible: Availability "Not For Sale" on the listing's edit page, never a delete) — recorded
+    # by `thrift delist --verify` (the page opened, the control found, a picture; nothing changed).
+    "edit_url": "{base}/edit-listing/{id}",
+    "availability": lambda p: p.locator('[data-vv-name="availability"], [data-test="availability"], '
+                                        '[data-et-name="availability"]').or_(p.get_by_text("Availability", exact=True)),
+    "availability_option": lambda p, text: p.get_by_text(text, exact=True),
+    "update_listing": lambda p: p.get_by_role("button", name=re.compile(r"^\s*update\s*$", re.I)),
     "promote_toggle": lambda panel: panel.locator('input[type="checkbox"]'),
     "draft_saved": re.compile(r"/closet/|/listing/"),
     "captcha": lambda p: p.get_by_text(re.compile("captcha|verify you are human", re.I)),
 }
-UNVERIFIED = frozenset({"promote_toggle", "draft_saved", "captcha"})
+AVAILABILITY_NEEDS = frozenset({"edit_url", "availability", "availability_option", "update_listing"})   # WO33
+UNVERIFIED = frozenset({"promote_toggle", "draft_saved", "captcha"}) | AVAILABILITY_NEEDS
 PUBLISH_NEEDS = frozenset({"list_item", "listing_url"})      # submit() publishes only once these are recorded
 DRAFT_NEEDS = frozenset({"draft_saved"})
 
@@ -1094,6 +1106,46 @@ class PoshmarkPoster(Poster):
                 return None, record                       # several: never a guess
             await asyncio.sleep(FIND_WAIT_MS / 1000)       # not (yet) shown: look once more
         return None, record
+
+    async def set_availability(self, ctx: BrowserContext, url: str, available: bool, probe: bool = False,
+                               shots: Path | None = None) -> bool | None:
+        """WO33 take-downs, reversible: the listing's Availability set to "Not For Sale" (`available` False) or back to
+        "For Sale" (`thrift relist`) on its edit page, then Update — never a delete. Refused while the steps are
+        UNVERIFIED. `probe`: the edit page opened, the control looked for, the page kept as evidence — nothing chosen,
+        nothing saved (how the steps get recorded). Returns True when done, None when the listing is gone, False when
+        the control didn't take."""
+        if not probe and (missing := sorted(AVAILABILITY_NEEDS & UNVERIFIED)):
+            raise PosterError(f"Poshmark's Availability isn't recorded yet ({', '.join(missing)} UNVERIFIED)")
+        m = SEL["listing_url"].search(urlparse(url or "").path)
+        if m is None:
+            raise PosterError(f"not a Poshmark listing address: {url!r}")
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.shot = (shots or Path(".")) / f"{m['id']}-poshmark-{stamp}-{'probe' if probe else 'availability'}.png"
+        page = await ctx.new_page()
+        try:
+            resp = await page.goto(SEL["edit_url"].format(base=self.base_url, id=m["id"]))
+            await page.wait_for_load_state("domcontentloaded")
+            if resp is not None and resp.status == 404:
+                return None
+            control = SEL["availability"](page).first
+            try:
+                await control.wait_for(state="visible", timeout=MENU_TIMEOUT_MS)
+            except PlaywrightTimeout:
+                await keep_evidence(page, self.shot, {"url": url, "found": False})
+                return False
+            if probe:
+                await control.scroll_into_view_if_needed()
+                await keep_evidence(page, self.shot, {"url": url, "found": True, "probe": True,
+                                                      "text": (await control.inner_text())[:200]})
+                return True
+            await control.click()
+            await SEL["availability_option"](page, "For Sale" if available else "Not For Sale").first.click()
+            await SEL["update_listing"](page).first.click()
+            await page.wait_for_load_state("domcontentloaded")
+            await keep_evidence(page, self.shot, {"url": url, "available": available})
+            return True
+        finally:
+            await page.close()
 
     async def verify_live(self, page: Page, url: str, r: Render) -> None:
         """The base check (title and price), plus whether the page carries the SKU (recorded: owner's view only?)."""

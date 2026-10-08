@@ -325,6 +325,10 @@
       if (page !== "listing") return fail("delist", "unknown", `not a listing page: ${location.href}`);
       return site.delist(job, st);
     }
+    if (job.mode === "probe") {                       // WO33: the take-down control looked for — never clicked
+      if (page !== "listing") return fail("probe", "unknown", `not a listing page: ${location.href}`);
+      return site.probe(job, st);
+    }
     if (page !== "form") {
       await T.screenshot(page);
       return fail("open", "unknown", `not the sell form: ${location.href}`);
@@ -378,6 +382,8 @@
         const ok = !!go && id === T.jobId;
         if (ok) go(msg.type === "submit");
         sendResponse({ ok: ok || msg.type === "cancel" });
+      } else if (msg.type === "ping") {                 // the worker's watchdog: still here
+        sendResponse({ ok: true });
       } else if (msg.type === "classify") {
         T.selectors = msg.selectors;
         sendResponse({ page: T.classify(msg.site), url: location.href });

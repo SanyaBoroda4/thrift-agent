@@ -168,12 +168,28 @@ def _worker_iteration(s, db, interval: int, window: daily.Window | None = None) 
     the inbox in the queue's order, send the next question if none is open, bring the window's status message up to
     date, sleep. Telegram's side (replies, buttons, the next question after an answer) runs on its own thread, so the
     owner is answered at once while items are still being processed."""
-    _safe_window(db, window and window.step)
+    began = None
+    if window is not None:
+        try:
+            began = window.step()
+        except Exception as e:  # noqa: BLE001 — the window's side never stops the worker
+            db.log(None, "error", traceback.format_exc())
+            print(f"[window] {type(e).__name__}: {e}")
     if window is None or not window.lid_closed:          # lid closed: a short maintenance wake, nothing is started
         _safe_tick(s, db)
         _safe_pump(s, db)
         _safe_window(db, window.update if window else None)
+        _safe_sales(db, force_beat=bool(began))         # WO33: the changes to thrift-api, the heartbeat on a wake
     time.sleep(interval)
+
+
+def _safe_sales(db, force_beat: bool = False) -> None:
+    """Sales tracking's turn (WO33): never the reason the worker stops (the API away is a quiet event)."""
+    from thrift_agent import sales
+    try:
+        sales.tick(db, force_beat=force_beat)
+    except Exception as e:  # noqa: BLE001
+        db.log(None, "error", f"sales tick: {type(e).__name__}: {e}")
 
 
 def _safe_window(db, fn) -> None:
@@ -721,6 +737,26 @@ def status() -> None:
     st = loads(db.kv_get(daily.STATUS_KEY)) or {}
     if st.get("text"):
         print(f"window: {escape(st['text'])}")
+    _status_sales(db)
+
+
+def _status_sales(db) -> None:
+    """WO33: the sales API as this Mac sees it — reachable, its mode, open sales, take-downs, Gmail's last heartbeat."""
+    from thrift_agent import sales
+    client = sales.api()
+    pending = sales.pending_count(db)
+    if client is None:
+        print("sales tracking: off (THRIFT_API_URL / THRIFT_API_KEY not in .env)")
+        return
+    try:
+        h = client.get("/health")
+    except sales.ApiError as e:
+        print(f"[yellow]sales API: not reachable[/] ({escape(str(e))}) · take-downs pending here: {pending}")
+        return
+    beats = h.get("heartbeats") or {}
+    gmail = beats.get("gmail") if isinstance(beats.get("gmail"), str) else (beats.get("gmail") or {}).get("last_seen")
+    print(f"sales API: reachable · mode {h.get('mode')} · open sales {h.get('open_sales', '?')} · take-downs pending "
+          f"here {pending} · Gmail's last heartbeat {gmail or 'never'}")
 
 
 @app.command()
@@ -850,6 +886,119 @@ async def _crosslist_dry_run(s, db, iid: str, mps: list[str]) -> None:
             await ctx.close()
             await pw.stop()
         await runner.close_bridge(b, None)
+
+
+# ---------------------------------------------------------------- WO33: sales, take-downs, the API
+
+sales_app = typer.Typer(help="Sales tracked by thrift-api (WO33): open, unmatched or all; `match` links one to an item")
+app.add_typer(sales_app, name="sales")
+api_app = typer.Typer(help="thrift-api, the sales tracking's Azure Function (WO33)")
+app.add_typer(api_app, name="api")
+
+
+def _api_or_exit():
+    from thrift_agent import sales
+    client = sales.api()
+    if client is None:
+        print("[red]sales tracking is off[/]: add THRIFT_API_URL and THRIFT_API_KEY to .env")
+        raise typer.Exit(1)
+    return client
+
+
+@sales_app.callback(invoke_without_command=True)
+def sales_list(ctx: typer.Context, open_: bool = typer.Option(False, "--open", help="unshipped sales (the default)"),
+               unmatched: bool = typer.Option(False, "--unmatched", help="sales that matched no item"),
+               all_: bool = typer.Option(False, "--all", help="every sale")) -> None:
+    """The sales thrift-api found in the marketplace emails."""
+    if ctx.invoked_subcommand:
+        return
+    from thrift_agent import sales
+    client = _api_or_exit()
+    state = "unmatched" if unmatched else "all" if all_ else "open"
+    try:
+        rows = client.get("/sales", {"state": state}).get("sales") or []
+    except sales.ApiError as e:
+        print(f"[red]the API didn't answer[/]: {escape(str(e))}")
+        raise typer.Exit(1) from None
+    t = Table("sale", "site", "title", "$", "sold", "ship by", "shipped", "status", "item")
+    for r in rows:
+        t.add_row(str(r.get("id")), str(r.get("marketplace")), escape(str(r.get("title_seen") or r.get("title") or ""))[:40],
+                  str(r.get("price") or ""), str(r.get("sold_at") or "")[:10], str(r.get("ship_by") or ""),
+                  str(r.get("shipped_at") or "")[:10], str(r.get("status")), str(r.get("item_id") or ""))
+    print(t if rows else f"no {state} sales")
+
+
+@sales_app.command("match")
+def sales_match(sale_id: str, item_id: str) -> None:
+    """Link an unmatched sale to its item — then its take-downs follow."""
+    from thrift_agent import sales
+    client = _api_or_exit()
+    try:
+        out = client.post(f"/sales/{sale_id}/match", {"item_id": item_id})
+    except sales.ApiError as e:
+        print(f"[red]not matched[/]: {escape(str(e))}")
+        raise typer.Exit(1) from None
+    print(f"[green]matched[/] {sale_id} → {item_id}: {escape(json.dumps(out)[:300])}")
+
+
+@app.command()
+def delist(run: bool = typer.Option(False, "--run", help="do the pending take-downs now (the poster stopped)"),
+           verify: bool = typer.Option(False, "--verify", help="record a site's take-down control without using it"),
+           marketplace: str = typer.Option(None, "--marketplace", help="poshmark | depop | vinted (--verify)"),
+           url: str = typer.Option(None, "--url", help="the listing to look at (--verify)")) -> None:
+    """Take-downs (WO33): reversible only — Poshmark Not for Sale, Depop Mark as sold, Vinted Hide. On the Mac, with
+    the poster service stopped (the running poster does them by itself between listings)."""
+    from thrift_agent.post import takedown
+    s = settings()
+    if not s.is_prod:
+        raise typer.BadParameter("take-downs run on the Mac only (machine_role: prod)")
+    if verify:
+        if marketplace not in takedown.SITES or not url:
+            raise typer.BadParameter("--verify needs --marketplace poshmark|depop|vinted and --url <listing>")
+        print(asyncio.run(takedown.verify(s, _db(), marketplace, url)))
+        return
+    if not run:
+        raise typer.BadParameter("say --run (do the pending take-downs) or --verify (record a control)")
+    for line in asyncio.run(takedown.run_pending(s, _db())):
+        print(escape(line))
+
+
+@app.command()
+def relist(item_id: str, marketplace: str = typer.Option(None, "--marketplace", help="poshmark | depop | vinted")) -> None:
+    """Undo our take-down of an item where the site allows it (Poshmark: For Sale again). The owner's command — never
+    automatic."""
+    from thrift_agent.post import takedown
+    s = settings()
+    if not s.is_prod:
+        raise typer.BadParameter("relisting runs on the Mac only (machine_role: prod)")
+    for line in asyncio.run(takedown.relist(s, _db(), item_id, marketplace)):
+        print(escape(line))
+
+
+@app.command("sync")
+def sync_cmd(push: bool = typer.Option(True, "--push/--no-push", help="send the changes now")) -> None:
+    """The items and listings changed since the last sync, and the kept calls, to thrift-api now."""
+    from thrift_agent import sales
+    db = _db()
+    client = _api_or_exit()
+    try:
+        n, m = sales.push(db, client), sales.flush(db, client)
+    except sales.ApiError as e:
+        print(f"[red]the API didn't answer[/]: {escape(str(e))} (nothing lost: it goes next time)")
+        raise typer.Exit(1) from None
+    print(f"synced {n} change{'s' if n != 1 else ''}, {m} kept call{'s' if m != 1 else ''}")
+
+
+@api_app.command("ping")
+def api_ping() -> None:
+    """thrift-api's health and mode."""
+    from thrift_agent import sales
+    client = _api_or_exit()
+    try:
+        print(escape(json.dumps(client.get("/health"), indent=1)))
+    except sales.ApiError as e:
+        print(f"[red]not reachable[/]: {escape(str(e))}")
+        raise typer.Exit(1) from None
 
 
 catalogs_app = typer.Typer(help="The marketplaces' listing-form catalogs (data/*_catalog.json, WO30)")

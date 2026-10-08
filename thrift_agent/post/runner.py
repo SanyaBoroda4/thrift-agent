@@ -923,7 +923,7 @@ def dry_run_stage(s: Settings, override: str | None = None) -> str:
 
 
 async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, allow_dev_browser: bool = False,
-              stage: str | None = None) -> None:
+              stage: str | None = None, takedowns=None) -> None:
     # Publishing for real takes two deliberate flips on the Mac: poster.dry_run off AND poster.autopublish_confirmed on.
     dry = (force_dry or not s.is_prod or s.get("poster.dry_run", True)
            or not s.get("poster.autopublish_confirmed", False))
@@ -932,6 +932,9 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, 
     stage = dry_run_stage(s, stage)
     max_fail = int(s.get("poster.max_consecutive_failures", 3))
     ps = posters(s)
+    from thrift_agent.post import parallel                     # WO33: the three site workers (else the loop below)
+    if parallel.parallel_ok(s, ps, once):
+        return await parallel.run_parallel(s, db, ps, dry=dry, stage=stage, force_dry=force_dry, takedowns=takedowns)
     stop = asyncio.Event()
     _install_stop(stop)
     bridge, watch = await open_bridge(s, db, ps)         # WO32: Depop / Vinted through the Thrift Chrome's extension
@@ -1170,7 +1173,7 @@ async def serve_requests(s: Settings, db: DB, ps: dict, ctx) -> list[str]:
     poster runs), queued by pipeline.request_posted: each is checked here, between listings, in the poster's own
     browser. A wrong address is said once, and the owner can reply again. Returns the items done."""
     done = []
-    for req in pipeline.take_requests(db):
+    for req in pipeline.take_requests(db, list(ps)):
         iid, mp, url = req.get("item"), req.get("mp") or "poshmark", req.get("url")
         try:
             done.append(await confirm_live(s, db, ps, ctx, iid, mp, url) and iid)

@@ -5,11 +5,12 @@ import pytest
 from thrift_agent import config
 from thrift_agent.schema import Ev, Facts
 
-SECRET_PREFIXES = ("TELEGRAM_", "ANTHROPIC_API_KEY")
+SECRET_PREFIXES = ("TELEGRAM_", "ANTHROPIC_API_KEY", "THRIFT_API_")
 
 
 def secret_names() -> list[str]:
-    """Every environment variable the agent treats as a secret: all TELEGRAM_* plus the Anthropic key."""
+    """Every environment variable the agent treats as a secret: all TELEGRAM_* and THRIFT_API_* (WO33), plus the
+    Anthropic key."""
     return [k for k in os.environ if k.startswith(SECRET_PREFIXES)]
 
 

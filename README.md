@@ -366,6 +366,17 @@ Vinted and Depop turn away a browser driven over the DevTools protocol, so both 
   install chromium`), and the bridge / driver / WO30 loop with a scripted stand-in extension. jsdom also runs both
   fills with every timer forced to ≥ 1 s (a hidden tab): they still take seconds.
 
+## Parallel posting and sales tracking (WO33)
+- **Three site workers** (`thrift_agent/post/parallel.py`): an approved item goes to Poshmark, Depop and Vinted at the
+  same time — about the slowest site's minute. Poshmark has its own thread and Chrome; Depop and Vinted run side by
+  side in the Thrift Chrome, each site in its own window. One site turned away never stops the others.
+- **thrift-api** (`api/`, an Azure Function on Flex Consumption; `deploy/azure/provision.py`): a Gmail Apps Script
+  (`gmail/`) forwards the marketplace emails; a sale says `💰 Sold on Depop: <title> — $35. Ship by Thu Oct 9.` in the
+  group, the item comes down on the other sites the next time the Mac is open (reversible: Not for Sale / Mark as
+  sold / Hide), shipping reminders come the day before and the morning it's due, and a private dashboard shows it all.
+- **The Mac:** `THRIFT_API_URL` + `THRIFT_API_KEY` in .env turn it on; `thrift sales`, `thrift delist`, `thrift relist`,
+  `thrift sync --push`, `thrift api ping`.
+
 ## The daily window (WO28)
 The Mac is mostly closed. About once a day it is opened (often on battery) for ~30 minutes; photos are shared from the
 iPhone any time and prices approved in Telegram. The owner's one-page guide is [docs/DAILY.md](docs/DAILY.md).

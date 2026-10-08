@@ -40,6 +40,14 @@ technical messages (errors, progress, the Mac waking up) go to Alex privately.
 - **"✓ All done — safe to close the Mac."** under a "Posted ✓" — that was the last one: everything is listed and no
   card is waiting. Close the lid.
 
+**Sales** (once sales tracking is on)
+- **"💰 Sold on Depop: <title> — $35. Ship by Thu Oct 9."** — it sold. The Mac takes it down on the other sites the
+  next time it is open (you don't need to do anything there).
+- **"📦 Ship tomorrow: …"** / **"📦 Due today: …"** — the shipping reminders. They stop once the site says it shipped,
+  or when you write `shipped` and a few words of the title in the group (e.g. `shipped jcrew pants`).
+- **"⚠️ Sold twice: …"** — it sold on two sites: cancel the second order in that site's app.
+- **"Couldn't take <title> down on <Site> — please mark it sold there."** — do it in that site's app.
+
 **Things to do something about** (each comes once)
 - **"Depop needs you to log in on the Mac."** / **"Vinted needs you to log in on the Mac."** — on the Mac, open the
   **Thrift Chrome** (the second Chrome icon in the Dock, the one Depop and Vinted are listed from — not your own
@@ -66,8 +74,9 @@ technical messages (errors, progress, the Mac waking up) go to Alex privately.
 
 ## The Thrift Chrome
 
-The second Chrome on the Mac (its own icon in the Dock) is where Depop and Vinted are listed from. Leave it open: it
-can sit behind other windows, but don't minimize it. If you quit it by accident, the Mac opens it again within a few
+The second Chrome on the Mac (its own icon in the Dock) is where Depop and Vinted are listed from — now with a window
+for each ("Depop — Thrift listing window", "Vinted — …"). Leave them open: they can sit behind other windows, but
+don't minimize them. If you quit it by accident, the Mac opens it again within a few
 minutes. Don't use it for your own browsing — use your normal Chrome for that. A form fills there in under a minute; a
 tab that opens and then nothing happens for 20 seconds is given up by itself (its screenshot goes to Alex).
 

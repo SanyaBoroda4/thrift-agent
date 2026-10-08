@@ -71,6 +71,8 @@ def seen_for(job: dict) -> dict:
             seen["variants-input"] = [f["size"]]
         if f.get("colors"):
             seen["colour-input"] = list(f["colors"])
+        if f.get("sku"):
+            seen["sku"] = f["sku"]                        # WO33 A4: Depop's SKU, our item id
     seen["submit_buttons"] = 1
     seen["photos_loaded"] = photos
     if job["site"] == "vinted" and f.get("package_sizes"):
@@ -79,9 +81,9 @@ def seen_for(job: dict) -> dict:
 
 
 def item_of(job: dict) -> str:
-    """The item id, from the photo addresses (/photos/<item>/<n>.jpg)."""
+    """The item id, from the photo addresses (/photos/<site>/<item>/<n>.jpg, or /photos/<item>/<n>.jpg)."""
     for u in job.get("photos") or []:
-        return u.split("/photos/")[1].split("/")[0]
+        return u.split("/photos/")[1].split("/")[-2]
     return "i_0"
 
 
@@ -97,6 +99,7 @@ class FakeExtension:
         self.calls: list[tuple[str, bool]] = []
         self.jobs: list[dict] = []
         self.clicks = 0
+        self.clicked: list[tuple[str, str]] = []        # (site, item) of each publish click
         self.commands: list[dict] = []          # every go-ahead / cancel the bridge sent
         self.connected = asyncio.Event()
         self.task: asyncio.Task | None = None
@@ -134,7 +137,7 @@ class FakeExtension:
         assert " 101 " in status, status
         from thrift_agent.bridge import files_hash
         ws_send(writer, {"type": "hello", "token": self.token, "loaded": files_hash()})
-        commands: asyncio.Queue = asyncio.Queue()
+        queues: dict[str, asyncio.Queue] = {}           # one per job: two sites' jobs run at once (WO33)
         while True:
             msg = await ws_recv(reader, timeout=3600)
             if msg is None:
@@ -142,10 +145,11 @@ class FakeExtension:
             if msg.get("type") == "welcome":
                 self.connected.set()
             elif msg.get("type") == "job":
-                asyncio.get_running_loop().create_task(self.answer(writer, msg["job"], commands))
+                q = queues.setdefault(msg["job"]["job_id"], asyncio.Queue())
+                asyncio.get_running_loop().create_task(self.answer(writer, msg["job"], q))
             elif msg.get("type") in ("submit", "cancel"):
                 self.commands.append(msg)
-                commands.put_nowait(msg)
+                queues.setdefault(msg.get("job_id"), asyncio.Queue()).put_nowait(msg)
 
     def event(self, writer, **ev) -> None:
         ws_send(writer, {"type": "event", **ev})
@@ -206,6 +210,7 @@ class FakeExtension:
             await writer.drain()
             return
         self.clicks += 1
+        self.clicked.append((site, item_of(job)))
         self.event(writer, event="step", job_id=jid, name="submit", ok=True, clicked=True)
         iid = item_of(job)
         url = (res.url or "").replace("{iid}", iid).replace("{slug}", iid.replace("_", "-"))

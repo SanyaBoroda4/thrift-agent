@@ -243,6 +243,17 @@
       T.emit({ event: "result", job_id: job.job_id, delisted: true, url: location.href });
     },
 
+    // WO33: the take-down control (Hide) looked for on our listing's page — never clicked; the page and its picture
+    // are the evidence the selector is recorded from.
+    async probe(job, st) {
+      const re = new RegExp(S().hide.text, "i");
+      const button = await T.until(() => T.$$(S().hide.selectors).find((b) => T.visible(b) && re.test(T.norm(b.textContent))),
+                                   6000);
+      await T.screenshot("probe");
+      T.emit({ event: "result", job_id: job.job_id, probe: true, found: !!button, url: location.href,
+               text: button ? button.textContent.replace(/\s+/g, " ").trim() : null });
+    },
+
     async find(job, st) {
       // The seller's own member page: its listings' addresses and titles, for the check after an interrupted upload.
       await T.waitFor(S().shop_links.selectors, { timeout: 8000, visible: false });

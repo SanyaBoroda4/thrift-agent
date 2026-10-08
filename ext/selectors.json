@@ -347,6 +347,16 @@
         "verified": true,
         "seen": "2026-10-06, the first extension dry run on the Mac: input#priceAmount__input[type=number][aria-label='Item price'], value 0.00; 2026-10-06, the third extension dry run on the Mac: the whole form read back as planned (no diff)"
       },
+      "sku": {
+        "selectors": [
+          "[data-testid='SKU__input']",
+          "input#SKU__input",
+          "input[name='sku']"
+        ],
+        "how": "a plain text input under Quantity ('Learn more about SKUs'): our item id (WO33 A4) — only the seller sees it; sales are matched by it",
+        "verified": false,
+        "seen": "2026-10-06, the dry runs' form HTML: input#SKU__input[data-testid=SKU__input][name=sku], empty; never filled yet"
+      },
       "boost": {
         "selectors": [
           "label[data-testid='switch-label'] input[type='checkbox']",

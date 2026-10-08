@@ -93,6 +93,8 @@ poster:
   max_consecutive_failures: 3   # after this many failed items in a row the poster writes PAUSE and stops (stop, don't guess)
   notify_dry_runs: false   # a Telegram photo for every successful dry-run; off: the owner's chat carries the questions
                            # (one at a time, WO20), failures and live listings. The evidence is in failed/shots/ either way.
+  parallel: true           # WO33: three site workers — an approved item goes to Poshmark, Depop and Vinted at the same
+                           # time. false: the old sequential loop (Poshmark → Depop → Vinted), a safety valve.
 
 marketplaces:
   poshmark:

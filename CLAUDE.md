@@ -89,9 +89,13 @@ iCloud Posh/inbox/<ts>/ (+ _done) ─► register batch ─► prep (HEIC→JPEG
       — check: …"; a required field nothing comes close to → the item skipped, nothing saved, reported)
      (the daily window, WO28: no new listing with the lid closed or below 15% on battery; the Mac kept from idle
       sleep while listings remain; a listing the Mac slept through is looked for in the closet before "unconfirmed")
-  ─► cross-list (WO30): live on Poshmark → Depop → Vinted, 5–15 s apart (WO32b), the same approved price; every value mapped
-     from the saved catalogs (data/*_catalog.json); a dry run unless the marketplace's autopublish is on; then ONE
-     "Posted ✓ <title> — $X · Poshmark <url> · Depop <url> · Vinted <url>" line for the item
+  ─► cross-list (WO30): Poshmark, Depop and Vinted AT THE SAME TIME (WO33: three site workers; the cross rows queued at
+     the price's approval), the same approved price; every value mapped from the saved catalogs (data/*_catalog.json);
+     a dry run unless the marketplace's autopublish is on; then ONE "Posted ✓ <title> — $X · Poshmark <url> · Depop
+     <url> · Vinted <url>" line for the item, once all its sites are settled
+  ─► sold anywhere (WO33): thrift-api (Azure) reads the marketplace emails (a Gmail Apps Script) → "💰 Sold on <Site>"
+     → take-down tasks → the Mac's site workers take the item down elsewhere (reversible) before any new listing →
+     ship-by reminders until shipped; a dashboard on the phone
 ```
 Item statuses: `new` → (`awaiting_condition` →) `awaiting_price` | `needs_info` → `ready` → `posting` → `posted` |
 `drafted` | `failed`; `needs_owner` only for an item a poster from before WO27 parked (`thrift requeue` takes it
@@ -872,6 +876,84 @@ the pacing, the Telegram lines, the dry-run gate. Poshmark is untouched (its Pla
   `settings.local.yaml` (`enabled: true`) and restart the poster; then CC runs `thrift crosslist --dry-run <item>` (the
   two filled-form screenshots in the ops chat) and records the selectors from that evidence; then WO30's supervised
   `--publish-first --marketplace vinted|depop` and `marketplaces.<m>.autopublish: true`.
+
+## Parallel posting (WO33 Part A)
+`thrift poster` runs three site workers (`post/parallel.py`; `poster.parallel: true` by default, `false` = the
+sequential loop): an approved item goes to every site at once — about its slowest site's minute, not the sum.
+- **Poshmark** in its own thread (own event loop, Playwright instance, SQLite connection); **Depop and Vinted** as
+  asyncio workers beside the bridge. Each, between its own listings: its pending take-downs first (Part D), then the
+  next approved item with a `queued` row for it, in approval order (ties: queue order), within the hours, under its
+  own daily cap, the human gap after each listing. Unchanged per site: one job at a time, one click per publish,
+  `posting` at the go-ahead (extension) / before the form (Poshmark), never retried blind, the shop check, 3 attempts.
+- **Isolation:** a failure, a timeout, a login wall or a CAPTCHA stops only that site for the window
+  (`crosslist.block`, Poshmark too in parallel mode — never the owner's PAUSE, which stays the brake for all).
+- **The cross rows are queued at the price's approval** (`parallel.feed`: ready, the owner's price, the gate's
+  publish), not after Poshmark is live. Parallel needs a cross site and no cross site on the Playwright driver (it
+  would want Poshmark's Chrome profile); a one-shot run (`--once`) is sequential.
+- **The group line (A3):** once every enabled site of the item is settled (`crosslist.settled`): posted, failed (an
+  unconfirmed publish too — its ⚠️ question waits), skipped, drafted, dry-run; or queued on a site stopped for the
+  window, at its daily cap, or whose extension has been away 10 minutes since the item's first live listing (a
+  moment's disconnect never sends it early; the housekeeping sweeps such items). Links Poshmark · Depop · Vinted; a
+  site confirmed later is an ops "Added:" line. "✓ All done" only when nothing is left to list and no take-down is
+  pending (`daily.all_done`).
+- **The extension (A2):** one job per site (`Bridge._busy(site)`, `_next`), each site in its own window of the Thrift
+  Chrome (`siteWindow`: found by its idle page `ext/idle.html?site=…`, made once if missing, never focused), each job
+  in a tab of its own that is its window's active tab, captured per window; a job's photos are served under its site
+  (`/photos/<site>/<item>/<n>.jpg`: Depop's ≤ 8 and Vinted's ≤ 20 differ). A watchdog pings a page that has been
+  silent 30 s while filling: no answer in 3 s (the page's own script holds its thread) ends the job with its state.
+- **Depop's SKU (A4):** our item id in `SKU__input` (only the seller sees it; sales are matched by it; Depop's Selling
+  API keys products by it) — compared in the read-back once a Mac dry run records it (`selectors.json` sku).
+- The supervised `--publish-first … --marketplace X` still needs the poster stopped (the bridge's port), said clearly.
+
+## Sales tracking (WO33 Parts B–G)
+**thrift-api** — an Azure Function (`api/`: Python 3.12, Flex Consumption, no always-ready instance, App Insights
+capped at 0.1 GB a day, a $5/month budget alert on `thrift-rg`), its data in the database `thrift` (login
+`thrift_app`, owner of `thrift` only) on the owner's existing Postgres server; `deploy/azure/provision.py up|deploy|
+mode|cleanup|keys` makes and deploys it idempotently from the PC (only `thrift-*` resources, tag
+`project=thrift-agent`; the function keys and `thrift_app`'s password stay in the PC's git-ignored `var/azure/`; the
+Telegram token is read from the Mac's .env, never printed). The same code runs on SQLite in the tests.
+- **Gmail:** a Google Apps Script in the seller's Gmail (`gmail/Code.gs`, read-only Advanced Gmail service, scopes
+  gmail.readonly + external_request + scriptapp) posts each new email from poshmark.com / depop.com / vinted.com
+  (`from:(…) newer_than:2d`, every 5 min, the seen ids in Script Properties, sender domains checked) to `POST /email`,
+  then `POST /heartbeat`; `dumpSamples()` sends 90 days to `/samples` for the parsers.
+- **Endpoints** (function keys `mac`, `gmail`, `dashboard`, each revocable; `x-functions-key`, the dashboard `?code=`):
+  `POST /email`, `/samples`, `/heartbeat`, `/sync` (the Mac's items and listings), `GET /tasks` (take-downs, a
+  10-minute lease) and `POST /tasks/{id}`, `POST /mac-event` (`shipped …`), `GET /sales`, `POST /sales/{id}/match`,
+  `GET /dashboard`, `GET /health`, `POST /test-message`. Telegram from Azure is send-only (`sendMessage`; never
+  getUpdates / setWebhook — the Mac's long polling owns the updates; a test greps); quiet hours 23:00–08:00 send
+  silently; never delayed.
+- **Modes** (`SALES_MODE`): `replay` — sales recorded, every would-be message to the ops chat as "[replay] …", never a
+  take-down; `live` — only emails after `go_live_at` act (older ones are history); `off` — stored, nothing else.
+- **A sale** (`💰 Sold on <Site>: <title> — $X. Ship by Thu Oct 9.`): matched by listing URL / id / Depop SKU, else the
+  site's posted listings by title (≥ 0.9), else unmatched (ops; `thrift sales match`); take-down tasks for every
+  other site where it is posted; sold twice → `⚠️ Sold twice …`. SHIPPED stops the reminders, DELIVERED closes it,
+  CANCELLED says so (no automatic relisting).
+- **Ship-by** (`api/thrift_api/deadlines.py`): a date the email states wins; else Poshmark +7 days, Vinted +5 business
+  days (US federal holidays skipped), Depop +5 days. Reminders after 09:00 local: the day before, the morning it is
+  due, then one ops line if overdue — never twice, none once shipped. `shipped <title words>` in the group marks it.
+- **Take-downs on the Mac** (`thrift_agent/sales.py`, `post/takedown.py`): fetched before each worker's next listing
+  (GET /tasks also names the items sold since going live: their rows still queued anywhere become `skipped: sold`,
+  never listed after the sale); reversible only — Poshmark Availability Not for Sale (`set_availability`),
+  Depop Mark as sold, Vinted Hide (`ExtensionPoster.delist`), never a delete; a site whose control is UNVERIFIED is
+  never tried (the API is told `manual`: the group asks the owner to mark it sold there); 3 failures → the same line;
+  all done → `✓ <title> taken down on …`. `thrift delist --verify --marketplace m --url <listing>` records a control
+  WITHOUT using it (the page opened, the control found, a picture to the ops chat, nothing clicked).
+- **Going live** (D4): the first heartbeat that sees `mode: live` with a new `go_live_at` runs the check once
+  (`sales.golive_check`): every item on Depop or Vinted whose Poshmark page (the WO30 backfill checker) is no longer
+  for sale is told to the API (`/mac-event` `not_for_sale` → its take-downs), unreadable pages are only counted; ONE
+  ops summary.
+- **The Mac's link** (`THRIFT_API_URL`, `THRIFT_API_KEY` in .env — the owner's; missing → all of this off, posting
+  as before, one ops line a day): every change to an item or a listing is marked by SQLite triggers (`api_dirty`) and
+  pushed to `/sync` by the worker each minute, in order, after an offline spell too; other calls wait in
+  `api_outbox`; the heartbeat (`mac`) every 15 min and on every wake. SQLite stays the posting's source of truth,
+  Postgres the sales'.
+- **Commands:** `thrift sales [--open|--unmatched|--all]`, `thrift sales match <sale> <item>`, `thrift delist --run`,
+  `thrift delist --verify …`, `thrift relist <item> [--marketplace m]` (Poshmark For Sale again; Depop/Vinted by hand
+  until recorded), `thrift sync --push`, `thrift api ping`; `thrift status` adds the API, its mode, open sales,
+  pending take-downs and Gmail's last heartbeat.
+- **Dashboard** (`GET /dashboard?code=…`, `api/thrift_api/dashboard.py`): cards (active listings per site, sold this
+  month, awaiting shipment with the nearest ship-by, unmatched), a table newest first with each site's status and
+  links, filters All / Active / Sold / To ship; no buyer data; inline CSS/JS only (a CSP), light and dark.
 
 ## Kids clothing sizes (WO23)
 A kids label that gives the child's height ("104 cm", "Gr. 104", "104") or age ("4 ans", "4A", "5-6 Y", "18 mois") is

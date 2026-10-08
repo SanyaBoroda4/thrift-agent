@@ -257,6 +257,11 @@
         for (const v of values) await T.step(`attributes.${name}`, st, async () => choose(st, cid, v, { optional: true }));
       }
       await T.step("price", st, async () => T.type(await T.need(S().price.selectors, "price"), String(job.price)));
+      // Depop's SKU (WO33 A4): our item id — only the seller sees it; sales are matched by it, and Depop's Selling API
+      // keys products by it.
+      if (job.fields.sku && S().sku) {
+        await T.step("sku", st, async () => T.type(await T.need(S().sku.selectors, "sku"), String(job.fields.sku)));
+      }
       await T.step("shipping", st, async () => {         // Depop Shipping: its USPS radio (on by default)
         const usps = await T.need(S().shipping.selectors, "shipping", { visible: false });
         if (!usps.checked) await T.click(usps);
@@ -326,6 +331,7 @@
       const of = (cid) => document.getElementById(cid)?.value || "";
       const seen = {
         description: value(S().description.selectors), price: value(S().price.selectors),
+        sku: S().sku ? value(S().sku.selectors) : null,
         photos: String(T.$$(S().photos.thumbs).length), photos_loaded: String(T.loaded(S().photos.thumbs)),
         package: of(ids.package) || null, shipping: st.shipping || null,
         boost: boosts().some((b) => b.checked), boost_found: boosts().length, size_menu: st.sizeMenu || null,
@@ -395,6 +401,17 @@
       }
       await T.screenshot("delisted");
       T.emit({ event: "result", job_id: job.job_id, delisted: true, url: location.href });
+    },
+
+    // WO33: the take-down control (Mark as sold) looked for on our listing's page — never clicked; the page and its
+    // picture are the evidence the selector is recorded from.
+    async probe(job, st) {
+      const re = new RegExp(S().mark_sold.text, "i");
+      const button = await T.until(() => T.$$(S().mark_sold.selectors).find((b) => T.visible(b) && re.test(T.norm(b.textContent))),
+                                   6000);
+      await T.screenshot("probe");
+      T.emit({ event: "result", job_id: job.job_id, probe: true, found: !!button, url: location.href,
+               text: button ? button.textContent.replace(/\s+/g, " ").trim() : null });
     },
 
     async find(job, st) {
