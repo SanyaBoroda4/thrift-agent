@@ -586,3 +586,20 @@ test("vinted: a member page without the dialog presses nothing", async () => {
   assert.match(plain(p.events().find((e) => e.event === "error")).message, /no Item listed dialog/);
   assert.deepEqual(plain(p.w.clicks), []);
 });
+
+test("vinted: the shop read waits for the member page to draw its tiles (WO33: live, read too early it found none)", async () => {
+  const html = `<html><head><title>Vinted</title></head><body><main id="grid"></main><script>
+    setTimeout(() => {
+      document.getElementById("grid").innerHTML =
+        '<a href="/items/111" title="Naturino size 7.5, brand: Naturino, $40.00">x</a>' +
+        '<a href="/items/222" title="Zara dress size M, brand: Zara, $100.00">y</a>';
+    }, 400);
+  </script></body></html>`;
+  const p = page("vinted", html, "https://www.vinted.com/member/1234");
+  p.w.Thrift.timeoutScale = 1;                              // the real waits: the tiles come after 0.4 s
+  await run(p, { job_id: "vinted-find", site: "vinted", mode: "find", shop: "1234" });
+  await until(() => p.events().some((e) => e.event === "result" || e.event === "error"), 15000);
+  const result = plain(p.events().find((e) => e.event === "result"));
+  assert.equal(result.listings.length, 2);
+  assert.match(result.listings[0].text, /Naturino size 7\.5/);
+});

@@ -55,3 +55,16 @@ def test_only_the_confirmed_numbers_are_recorded(tmp_path):
     assert db.listing(b, "vinted") is None                                      # not confirmed: untouched
     assert lines[1].startswith("7: no such number")
     assert hl.apply(db, [1])[0].endswith("— left as it is")                    # never twice
+
+
+def test_depop_addresses_give_their_words_and_a_short_word_is_never_a_near_brand():
+    """Live (WO33): Depop's tiles read "Sold" and its addresses end with "/" — the address's words were lost, and
+    "Solid & Striped" matched the badge "Sold". Now the words count, and a brand needs every word of it."""
+    vans = {"url": "https://www.depop.com/products/someone-vans-size-13-whitegreen-checkerboard-2dae/", "text": "Sold"}
+    ours = {"id": "i_5", "title": "Solid & Striped White Knit Crop Top & Flare Pants 2-Piece Set size M",
+            "brand": "Solid & Striped", "size": "M", "price": 45}
+    assert hl.score(ours, vans["text"], vans["url"]) == 0
+    lacoste = {"url": "https://www.depop.com/products/someone-lacoste-graphic-tee-kids-4t-1a2b/", "text": ""}
+    tee = {"id": "i_6", "title": "Lacoste Graphic Tee Heather Gray Cotton Crewneck Kids size 4T", "brand": "Lacoste",
+           "size": "4T", "price": 20}
+    assert hl.score(tee, lacoste["text"], lacoste["url"]) >= hl.SURE

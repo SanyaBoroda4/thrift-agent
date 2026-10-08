@@ -451,6 +451,8 @@ class ExtensionPoster(Poster):
             if ev.get("page") in STOP_PAGES:
                 raise self._stop(ev)
             raise PosterError(f"{self.site} shop {shop}: {ev.get('message')}")
+        if not ev.get("listings"):
+            self.notes.append(f"{self.site}: the shop page showed no listings ({ev.get('url') or shop})")
         out: dict[str, str] = {}
         for x in ev.get("listings") or []:
             if address := self.listing_address(str(x.get("url") or "")):

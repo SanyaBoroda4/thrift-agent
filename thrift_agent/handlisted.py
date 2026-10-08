@@ -15,7 +15,7 @@ from thrift_agent.db import DB, loads, now
 KEY = "hand_listed_candidates"        # kv: the last list sent to the owner, by number
 STOP = {"size", "sz", "the", "with", "and", "for", "new", "nwt", "nwot", "kids", "kid", "girls", "girl", "boys", "boy",
         "womens", "women", "mens", "men", "toddler", "baby", "us", "eu", "piece", "pieces", "set", "brand", "condition",
-        "good", "very", "like", "without", "tags", "child", "one"}
+        "good", "very", "like", "without", "tags", "child", "one", "sold"}     # "Sold": Depop's badge on a tile
 SURE, MAYBE = 0.62, 0.35              # a score at least this high: listed as "same item" / "not sure"
 
 
@@ -56,11 +56,11 @@ def _price(text: str) -> float | None:
 def score(ours: dict, theirs: str, url: str) -> float:
     """How alike our item and her listing look, 0–1: the brand (a near spelling counts: Missguided / Misguided), the
     item's own words, the size, the price."""
-    t_words = set(words(f"{theirs} {url.rsplit('/', 1)[-1]}"))
+    t_words = set(words(f"{theirs} {url.rstrip('/').rsplit('/', 1)[-1]}"))      # the address's own words too
     brand = _brand_words(ours.get("brand") or "")
     s = 0.0
-    if brand:
-        hit = brand <= t_words or any(_near(b, w) for b in brand for w in t_words)
+    if brand:                                   # every word of the brand, each exactly or one letter off
+        hit = all(b in t_words or any(_near(b, w) for w in t_words) for b in brand)
         s += 0.4 if hit else -0.2
     o_words = set(words(ours.get("title") or "")) - brand
     if o_words:
@@ -76,8 +76,9 @@ def score(ours: dict, theirs: str, url: str) -> float:
 
 
 def _near(a: str, b: str) -> bool:
-    """One letter apart (a doubled letter dropped: Missguided / Misguided), for brands of 5 letters or more."""
-    if len(a) < 5 or abs(len(a) - len(b)) > 1:
+    """One letter apart (a doubled letter dropped: Missguided / Misguided), for words of 6 letters or more (never
+    "solid" for "sold")."""
+    if len(a) < 6 or len(b) < 5 or abs(len(a) - len(b)) > 1:
         return False
     if len(a) == len(b):
         return sum(x != y for x, y in zip(a, b)) <= 1

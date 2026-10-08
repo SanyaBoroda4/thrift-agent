@@ -272,12 +272,14 @@
 
     async find(job, st) {
       // The seller's own member page: its listings' addresses and titles, for the check after an interrupted upload.
-      await T.waitFor(S().shop_links.selectors, { timeout: 8000, visible: false });
-      await T.sleep(150);
+      // The member page draws its tiles after it loads (a React app): wait for them, then for the grid to settle.
+      await T.until(() => T.$$(S().shop_links.selectors).length > 0, 20000);
+      await T.quiet(800, 5000);
       const listings = T.$$(S().shop_links.selectors).map((a) => ({
         url: a.href, text: (a.getAttribute("title") || a.textContent || "").replace(/\s+/g, " ").trim(),
       }));
-      T.emit({ event: "result", job_id: job.job_id, listings });
+      await T.screenshot("shop");
+      T.emit({ event: "result", job_id: job.job_id, listings, url: location.href });
     },
   };
 })();
