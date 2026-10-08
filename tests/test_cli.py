@@ -165,7 +165,8 @@ def test_the_worker_exits_when_the_telegram_thread_dies(monkeypatch, tmp_path):
     monkeypatch.setattr(cli.approve, "bot_for", lambda s: _FakeBot())
     monkeypatch.setattr(cli.approve, "resend_pending", lambda s, db: [])
     monkeypatch.setattr(cli, "_telegram_loop", lambda s, bot: None)          # returns at once: the thread is gone
-    monkeypatch.setattr(cli, "_worker_iteration", lambda s, db, interval: cli.time.sleep(0.05))
+    # (the loop may get a turn in before it sees the thread gone: the stub takes the loop's real arguments)
+    monkeypatch.setattr(cli, "_worker_iteration", lambda s, db, interval, window=None: cli.time.sleep(0.05))
     r = CliRunner().invoke(cli.app, ["run"])
     assert r.exit_code != 0 and "Telegram thread stopped" in str(r.exception or r.output)
 
