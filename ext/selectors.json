@@ -492,18 +492,20 @@
           "[aria-modal='true']"
         ],
         "text": "delete this listing",
-        "verified": false,
-        "owner": "2026-10-08: titled \"Delete listing\", \"Are you sure you want to delete this listing? You will lose all the likes.\", buttons Cancel and Delete listing"
+        "verified": true,
+        "seen": "2026-10-08, the owner's practice run on our live Depop listing (WO33, `thrift delist --practice`): the bin opened aside[role=dialog][aria-modal=true] — h1 \"Delete listing\", \"Are you sure you want to delete this listing? You will lose all the likes.\", buttons Cancel and Delete listing, a close ×; Cancel pressed, the window closed, the listing still live. Delete listing seen, never pressed in practice."
       },
       "delete_confirm": {
         "text": "^delete listing$",
-        "verified": false,
-        "note": "inside the window only"
+        "verified": true,
+        "note": "inside the window only",
+        "seen": "2026-10-08, the owner's practice run on our live Depop listing (WO33, `thrift delist --practice`): the bin opened aside[role=dialog][aria-modal=true] — h1 \"Delete listing\", \"Are you sure you want to delete this listing? You will lose all the likes.\", buttons Cancel and Delete listing, a close ×; Cancel pressed, the window closed, the listing still live. Delete listing seen, never pressed in practice."
       },
       "delete_cancel": {
         "text": "^cancel$",
-        "verified": false,
-        "note": "inside the window only"
+        "verified": true,
+        "note": "inside the window only",
+        "seen": "2026-10-08, the owner's practice run on our live Depop listing (WO33, `thrift delist --practice`): the bin opened aside[role=dialog][aria-modal=true] — h1 \"Delete listing\", \"Are you sure you want to delete this listing? You will lose all the likes.\", buttons Cancel and Delete listing, a close ×; Cancel pressed, the window closed, the listing still live. Delete listing seen, never pressed in practice."
       }
     }
   }
