@@ -56,6 +56,13 @@ def delist_ready(site: str, poster) -> str | None:
     return f"{crosslist.LABEL[site]}'s {what} isn't recorded yet ({', '.join(missing)})" if missing else None
 
 
+def may_take_down(s: Settings, db: DB, site: str) -> bool:
+    """Take-downs run in any hour — they keep a sold item from selling twice — but never with the owner's PAUSE (the
+    brake for everything that touches a site), the lid closed (a maintenance wake would cut one off half-way), or the
+    site stopped for the window (it would only meet the same wall; it waits for the next window)."""
+    return not s.flag_set("PAUSE") and power.lid_closed() is not True and not crosslist.blocked(db, site)
+
+
 async def takedowns(site: str, poster, db: DB, ctx) -> bool:
     """The site's take-downs before its next listing (WO33 Part D): fresh from the API, then one done."""
     sales.fetch_tasks(db, [site], force=not sales.pending(db, site))
@@ -214,7 +221,7 @@ async def _poshmark_worker(s, poster, dry, stage, halt, state, opener, takedowns
 async def _poshmark_turn(s, db, ps, ctx, dry, stage, state, awake, failures, marketplaces, takedowns) -> bool:
     """One Poshmark turn: requests, take-downs, then one listing. True when it listed (or tried to)."""
     await runner.serve_requests(s, db, ps, ctx)
-    if takedowns is not None and await takedowns("poshmark", ps["poshmark"], db, ctx):
+    if takedowns is not None and may_take_down(s, db, "poshmark") and await takedowns("poshmark", ps["poshmark"], db, ctx):
         return True
     if crosslist.blocked(db, "poshmark"):
         state.idle("poshmark")
@@ -283,7 +290,7 @@ async def _cross_turn(s, db, ps, mp, dry, state, awake, takedowns) -> bool:
     """One Depop / Vinted turn: take-downs, then one listing. True when it listed (or tried to)."""
     poster = ps[mp]
     reachable = getattr(poster, "available", lambda: True)()
-    if takedowns is not None and reachable and await takedowns(mp, poster, db, None):
+    if takedowns is not None and reachable and may_take_down(s, db, mp) and await takedowns(mp, poster, db, None):
         return True
     hours_ok, _ = can_post(s, 0, 0)
     if dry or not reachable or not hours_ok or crosslist.blocked(db, mp) or runner._paused(db):

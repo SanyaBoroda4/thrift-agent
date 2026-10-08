@@ -295,6 +295,23 @@ def test_the_worker_does_its_take_downs_before_new_listings(tmp_path, api, said,
     assert db.listing(sold, "vinted")["status"] == "delisted" and db.listing(fresh, "vinted")["status"] == "posted"
 
 
+def test_take_downs_wait_for_the_brake_the_lid_and_a_stopped_site(tmp_path, monkeypatch):
+    """Take-downs run outside listing hours (a sold item must not sell twice), but never with the owner's PAUSE, the
+    lid closed, or the site stopped for the window."""
+    from thrift_agent import crosslist
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    monkeypatch.setattr(parallel.power, "lid_closed", lambda: False)
+    assert parallel.may_take_down(s, db, "depop")
+    crosslist.block(db, "depop", "Depop: not logged in")
+    assert not parallel.may_take_down(s, db, "depop") and parallel.may_take_down(s, db, "vinted")
+    monkeypatch.setattr(parallel.power, "lid_closed", lambda: True)
+    assert not parallel.may_take_down(s, db, "vinted")
+    monkeypatch.setattr(parallel.power, "lid_closed", lambda: False)
+    s.flag("PAUSE").write_text("the owner's brake", encoding="utf-8")
+    assert not parallel.may_take_down(s, db, "vinted")
+
+
 def test_the_owners_shipped_reply_goes_to_the_api(tmp_path, api, monkeypatch):
     s = _settings(tmp_path)
     db = DB(s.path("db"))

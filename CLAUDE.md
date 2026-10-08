@@ -931,7 +931,9 @@ Telegram token is read from the Mac's .env, never printed). The same code runs o
 - **Ship-by** (`api/thrift_api/deadlines.py`): a date the email states wins; else Poshmark +7 days, Vinted +5 business
   days (US federal holidays skipped), Depop +5 days. Reminders after 09:00 local: the day before, the morning it is
   due, then one ops line if overdue — never twice, none once shipped. `shipped <title words>` in the group marks it.
-- **Take-downs on the Mac** (`thrift_agent/sales.py`, `post/takedown.py`): fetched before each worker's next listing
+- **Take-downs on the Mac** (`thrift_agent/sales.py`, `post/takedown.py`): in any hour (a sold item must not sell
+  twice) but never with PAUSE, the lid closed, or the site stopped for the window (`parallel.may_take_down`); fetched
+  before each worker's next listing
   (GET /tasks also names the items sold since going live: their rows still queued anywhere become `skipped: sold`,
   never listed after the sale); reversible only — Poshmark Availability Not for Sale (`set_availability`),
   Depop Mark as sold, Vinted Hide (`ExtensionPoster.delist`), never a delete; a site whose control is UNVERIFIED is
