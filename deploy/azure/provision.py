@@ -11,6 +11,8 @@ subscription or the server changes.
     python deploy/azure/provision.py finish    # app settings, the code deployed, the keys made, /health, a test message
     python deploy/azure/provision.py up        # all three, in a terminal where the owner can type
     python deploy/azure/provision.py deploy    # the Function's code again (after a change in api/)
+    python deploy/azure/provision.py telegram  # the bot token and the group's id from the Mac's .env (when the Mac
+                                               # was away during `finish`), then the test message
     python deploy/azure/provision.py mode replay|live|off
     python deploy/azure/provision.py keys      # the URL and keys, for the Apps Script and the Mac's .env — shown only
                                                # in a real terminal (the owner's), never in a log
@@ -145,6 +147,20 @@ def postgres(st: dict) -> dict:
     return st
 
 
+PROVIDERS = ("Microsoft.Storage", "Microsoft.Web", "Microsoft.OperationalInsights", "Microsoft.Insights")
+
+
+def providers(st: dict) -> None:
+    """The Azure services the resources below need, registered on the subscription if they never were (a storage
+    account in an unregistered subscription fails with "SubscriptionNotFound"). Free; nothing else changes."""
+    done = []
+    for name in PROVIDERS:
+        if az("provider", "show", "-n", name, "--query", "registrationState") != "Registered":
+            az("provider", "register", "-n", name, "--wait", parse=False)
+            done.append(name)
+    say(f"✓ resource providers: {', '.join(done) + ' registered' if done else 'all registered already'}")
+
+
 def group(st: dict) -> None:
     if az("group", "exists", "-n", RG) is not True:
         az("group", "create", "-n", RG, "-l", st["location"], "--tags", *TAGS)
@@ -159,19 +175,29 @@ def storage(st: dict) -> None:
     say(f"✓ storage account: {st['storage']}")
 
 
+def insights(st: dict) -> None:
+    """Application Insights in a workspace of our own (`thrift-logs`, 30 days, 0.1 GB a day) — left to itself,
+    `functionapp create` would use Azure's shared DefaultWorkspace in a DefaultResourceGroup, outside thrift-rg."""
+    st.setdefault("app", f"thrift-api-{secrets.token_hex(3)}")
+    az("extension", "add", "--name", "application-insights", parse=False, check=False)
+    ws = az("monitor", "log-analytics", "workspace", "show", "-g", RG, "-n", "thrift-logs", check=False)
+    if ws is None:
+        ws = az("monitor", "log-analytics", "workspace", "create", "-g", RG, "-n", "thrift-logs", "-l", st["location"],
+                "--retention-time", "30", "--quota", "0.1", "--tags", *TAGS)
+    if az("monitor", "app-insights", "component", "show", "-g", RG, "--app", st["app"], check=False) is None:
+        az("monitor", "app-insights", "component", "create", "-g", RG, "--app", st["app"], "-l", st["location"],
+           "--workspace", ws["id"], "--application-type", "web", "--kind", "web", "--tags", *TAGS)
+    az("monitor", "app-insights", "component", "billing", "update", "-g", RG, "--app", st["app"], "--cap", "0.1")
+    say(f"✓ Application Insights: {st['app']} in workspace thrift-logs (0.1 GB a day, 30 days)")
+
+
 def function_app(st: dict) -> None:
     st.setdefault("app", f"thrift-api-{secrets.token_hex(3)}")
     if az("functionapp", "show", "-n", st["app"], "-g", RG, check=False) is None:
         az("functionapp", "create", "-n", st["app"], "-g", RG, "--storage-account", st["storage"],
            "--flexconsumption-location", st["location"], "--runtime", "python", "--runtime-version", "3.12",
-           "--instance-memory", "512", "--maximum-instance-count", "10", "--tags", *TAGS)
+           "--instance-memory", "512", "--maximum-instance-count", "10", "--app-insights", st["app"], "--tags", *TAGS)
     st["url"] = f"https://{st['app']}.azurewebsites.net"
-    # Application Insights (made with the app): a 0.1 GB daily cap
-    az("extension", "add", "--name", "application-insights", parse=False, check=False)
-    ai = az("monitor", "app-insights", "component", "show", "-g", RG, "--app", st["app"], check=False)
-    if ai is not None:
-        az("monitor", "app-insights", "component", "billing", "update", "-g", RG, "--app", st["app"], "--cap", "0.1",
-           check=False)
     say(f"✓ Function app: {st['app']} (Flex Consumption, Python 3.12, 512 MB, no always-ready instances) — {st['url']}")
 
 
@@ -228,7 +254,8 @@ def admin_connection(st: dict):
     if st.get("pg_entra"):
         admins = az("postgres", "flexible-server", "microsoft-entra-admin", "list", "-g", st["pg_rg"], "-s",
                     st["pg_server"], check=False) or []
-        me = next((a for a in admins if (a.get("principalName") or "").lower() == st["user"].lower()), None)
+        me_id = az("ad", "signed-in-user", "show", "--query", "id", check=False)
+        me = next((a for a in admins if me_id and a.get("objectId") == me_id), None)
         if me:
             token = az("account", "get-access-token", "--resource-type", "oss-rdbms")["accessToken"]
             return psycopg.connect(host=st["pg_fqdn"], dbname="postgres", user=me["principalName"], password=token,
@@ -242,9 +269,6 @@ def admin_connection(st: dict):
 
 
 def database(st: dict) -> None:
-    if az("postgres", "flexible-server", "db", "show", "-g", st["pg_rg"], "-s", st["pg_server"], "-n", "thrift",
-          check=False) is None:
-        az("postgres", "flexible-server", "db", "create", "-g", st["pg_rg"], "-s", st["pg_server"], "-n", "thrift")
     sec = load(SECRETS)
     sec.setdefault("thrift_app_password", secrets.token_urlsafe(30))
     save(SECRETS, sec)
@@ -257,35 +281,29 @@ def database(st: dict) -> None:
             conn.execute("GRANT thrift_app TO CURRENT_USER")      # Azure's admin isn't a superuser: needed to hand over
         except Exception:  # noqa: BLE001 — granted already
             pass
-        conn.execute("ALTER DATABASE thrift OWNER TO thrift_app")
+        if conn.execute("SELECT 1 FROM pg_database WHERE datname='thrift'").fetchone():
+            conn.execute("ALTER DATABASE thrift OWNER TO thrift_app")
+        else:
+            conn.execute("CREATE DATABASE thrift OWNER thrift_app")
     import psycopg
     with psycopg.connect(host=st["pg_fqdn"], dbname="thrift", user="thrift_app", password=sec["thrift_app_password"],
                          sslmode="require", autocommit=True) as conn:
-        conn.execute("SELECT 1")
+        # Azure's `public` belongs to azure_pg_admin: thrift_app can't create tables there. Its own schema, named after
+        # it, is first on the default search_path ("$user", public) — no setting changes.
+        conn.execute("CREATE SCHEMA IF NOT EXISTS thrift_app AUTHORIZATION thrift_app")
     say("✓ database thrift, login thrift_app (owner of thrift only; TLS required)")
 
 
-def mac_secret(name: str) -> str:
-    """One value from the Mac's .env, read over SSH (read only), never printed."""
+def mac_secret(name: str) -> str | None:
+    """One value from the Mac's .env, read over SSH (read only), never printed; None when the Mac can't be reached."""
     r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", f"HostKeyAlias={MAC_ALIAS}", MAC,
                         f"grep -m1 '^{name}=' ~/thrift-agent/.env | cut -d= -f2-"], capture_output=True, text=True)
     value = r.stdout.strip().strip('"').strip("'")
-    if r.returncode != 0 or not value:
-        raise SystemExit(f"couldn't read {name} from the Mac's .env (is the Mac reachable at {MAC}?)")
-    return value
+    return value if r.returncode == 0 and value else None
 
 
-def app_settings(st: dict, mode: str | None = None) -> None:
-    sec = load(SECRETS)
-    import yaml
-    ops = (yaml.safe_load((ROOT / "private" / "settings.yaml").read_text(encoding="utf-8")) or {}).get("telegram", {})
-    values = {"DATABASE_URL": f"postgresql://thrift_app:{sec['thrift_app_password']}@{st['pg_fqdn']}:5432/thrift"
-                              "?sslmode=require",
-              "TELEGRAM_BOT_TOKEN": mac_secret("TELEGRAM_BOT_TOKEN"),
-              "TELEGRAM_GROUP_CHAT_ID": mac_secret("TELEGRAM_CHAT_ID"),
-              "TELEGRAM_OPS_CHAT_ID": str(ops.get("ops_chat_id") or mac_secret("TELEGRAM_OPS_CHAT_ID")),
-              "SALES_MODE": mode or st.get("mode", "replay"), "TZ_NAME": "America/New_York"}
-    st["mode"] = values["SALES_MODE"]
+def set_settings(st: dict, values: dict) -> None:
+    """App settings merged in (the others kept), through a temporary file deleted at once — never on a command line."""
     fd, path = tempfile.mkstemp(suffix=".json")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -293,12 +311,44 @@ def app_settings(st: dict, mode: str | None = None) -> None:
         az("functionapp", "config", "appsettings", "set", "-g", RG, "-n", st["app"], "--settings", f"@{path}", parse=False)
     finally:
         os.unlink(path)
-    say(f"✓ app settings: DATABASE_URL, TELEGRAM_* (from the Mac's .env), SALES_MODE={st['mode']}, TZ_NAME")
+
+
+def telegram(st: dict) -> bool:
+    """The bot token and the group's chat id, read from the Mac's .env over SSH. False when the Mac is away."""
+    token, group = mac_secret("TELEGRAM_BOT_TOKEN"), mac_secret("TELEGRAM_CHAT_ID")
+    if not (token and group):
+        say(f"… Telegram: the Mac isn't reachable at {MAC} — run `provision.py telegram` when it is "
+            "(set THRIFT_MAC=user@address if it moved); the test message waits for it")
+        return False
+    set_settings(st, {"TELEGRAM_BOT_TOKEN": token, "TELEGRAM_GROUP_CHAT_ID": group})
+    st["telegram"] = True
+    say("✓ Telegram: the bot token and the group's id (from the Mac's .env) in the app settings")
+    return True
+
+
+def app_settings(st: dict, mode: str | None = None) -> None:
+    if mode is not None:                            # `mode replay|live|off`: only that setting changes
+        set_settings(st, {"SALES_MODE": mode})
+        st["mode"] = mode
+        say(f"✓ SALES_MODE={mode}")
+        return
+    sec = load(SECRETS)
+    import yaml
+    ops = (yaml.safe_load((ROOT / "private" / "settings.yaml").read_text(encoding="utf-8")) or {}).get("telegram", {})
+    st["mode"] = st.get("mode", "replay")
+    set_settings(st, {"DATABASE_URL": f"postgresql://thrift_app:{sec['thrift_app_password']}@{st['pg_fqdn']}:5432/"
+                                      "thrift?sslmode=require",
+                      "TELEGRAM_OPS_CHAT_ID": str(ops.get("ops_chat_id") or mac_secret("TELEGRAM_OPS_CHAT_ID") or ""),
+                      "SALES_MODE": st["mode"], "TZ_NAME": "America/New_York"})
+    say(f"✓ app settings: DATABASE_URL, TELEGRAM_OPS_CHAT_ID, SALES_MODE={st['mode']}, TZ_NAME")
+    telegram(st)
 
 
 def deploy_code(st: dict) -> None:
     func = shutil.which("func") or str(Path(os.getenv("APPDATA", "")) / "npm" / "func.cmd")
-    r = subprocess.run([func, "azure", "functionapp", "publish", st["app"], "--python"], cwd=ROOT / "api",
+    env = dict(os.environ)          # Core Tools asks `az` for its token: the CLI found here must be on its PATH too
+    env["PATH"] = str(Path(az_path()).parent) + os.pathsep + env.get("PATH", "")
+    r = subprocess.run([func, "azure", "functionapp", "publish", st["app"], "--python"], cwd=ROOT / "api", env=env,
                        capture_output=True, text=True, encoding="utf-8", errors="replace")
     if r.returncode != 0:
         raise SystemExit(f"the deploy failed: {(r.stdout + r.stderr)[-1500:]}")
@@ -320,14 +370,17 @@ def show_keys(st: dict) -> None:
 
 
 def keys(st: dict) -> dict:
-    out = {}
+    """The three named host keys, made when missing; their values read back from the list (`keys set` answers without
+    them) into var/azure/keys.txt — never printed."""
+    have = (az("functionapp", "keys", "list", "-g", RG, "-n", st["app"]) or {}).get("functionKeys") or {}
     for name in ("mac", "gmail", "dashboard"):
-        got = az("functionapp", "keys", "list", "-g", RG, "-n", st["app"]) or {}
-        have = (got.get("functionKeys") or {}).get(name)
-        if not have:
-            have = az("functionapp", "keys", "set", "-g", RG, "-n", st["app"], "--key-type", "functionKeys",
-                      "--key-name", name)["value"]
-        out[name] = have
+        if not have.get(name):
+            az("functionapp", "keys", "set", "-g", RG, "-n", st["app"], "--key-type", "functionKeys", "--key-name", name,
+               parse=False)
+    have = (az("functionapp", "keys", "list", "-g", RG, "-n", st["app"]) or {}).get("functionKeys") or {}
+    out = {name: have.get(name) for name in ("mac", "gmail", "dashboard")}
+    if not all(out.values()):
+        raise SystemExit(f"function keys missing after setting them: {[n for n, v in out.items() if not v]}")
     VAR.mkdir(parents=True, exist_ok=True)
     KEYS.write_text("\n".join([f"API_URL={st['url']}", *(f"{k}={v}" for k, v in out.items()),
                                f"dashboard_url={st['url']}/dashboard?code={out['dashboard']}"]) + "\n", encoding="utf-8")
@@ -353,6 +406,9 @@ def check(st: dict, k: dict) -> None:
                 raise SystemExit(f"GET /health didn't answer: {e}") from None
             time.sleep(10)
     say(f"✓ health: db {h.get('db')}, mode {h.get('mode')}")
+    if not st.get("telegram"):
+        say("… test message: after `provision.py telegram` (the bot token isn't set yet)")
+        return
     sent = call(st, k["mac"], "POST", "/test-message", {"chat": "ops"})
     say(f"✓ test message to the ops chat: {'sent' if sent.get('sent') else 'not sent'} (mode {sent.get('mode')})")
 
@@ -371,8 +427,10 @@ def main(argv: list[str]) -> None:
         account(st)
         postgres(st)
         save(STATE, st)
+        providers(st)
         group(st)
         storage(st)
+        insights(st)
         function_app(st)
         save(STATE, st)
         budget(st)
@@ -391,6 +449,16 @@ def main(argv: list[str]) -> None:
         pass
     elif what == "deploy":
         deploy_code(st)
+    elif what == "check":
+        k = keys(st)
+        save(STATE, st)
+        check(st, k)
+    elif what == "telegram":
+        if telegram(st):
+            save(STATE, st)
+            k = {"mac": dict(line.split("=", 1) for line in KEYS.read_text(encoding="utf-8").splitlines()
+                             if "=" in line)["mac"]}
+            check(st, k)
     elif what == "mode" and len(argv) > 2 and argv[2] in ("replay", "live", "off"):
         app_settings(st, argv[2])
     elif what == "cleanup":
