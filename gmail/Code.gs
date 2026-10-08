@@ -446,11 +446,18 @@ function partText_(part, mimeType) {
   return '';
 }
 
-/** A body's base64url data as UTF-8 text ("" when it can't be decoded). */
+/**
+ * A body's data as UTF-8 text ("" when it can't be decoded). Apps Script's Advanced Gmail service hands it over as the
+ * bytes themselves (a Byte[]: WO33, live -- every first sample came through empty while this read it as base64 text);
+ * the REST API's base64url string is still read too.
+ */
 function decodeBody_(data) {
-  let s = String(data);
-  if (s.length % 4) s += '===='.slice(s.length % 4);
   try {
+    if (data && typeof data === 'object' && typeof data.length === 'number') {
+      return Utilities.newBlob(data).getDataAsString('UTF-8');
+    }
+    let s = String(data);
+    if (s.length % 4) s += '===='.slice(s.length % 4);
     return Utilities.newBlob(Utilities.base64DecodeWebSafe(s)).getDataAsString('UTF-8');
   } catch (e) {
     return '';

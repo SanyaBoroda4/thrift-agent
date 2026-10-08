@@ -16,6 +16,7 @@ subscription or the server changes.
     python deploy/azure/provision.py mode replay|live|off
     python deploy/azure/provision.py keys      # the URL and keys, for the Apps Script and the Mac's .env — shown only
                                                # in a real terminal (the owner's), never in a log
+    python deploy/azure/provision.py open      # the temporary firewall rule for this PC again (samples.py pull)
     python deploy/azure/provision.py cleanup   # the temporary firewall rule for this PC removed (end of setup)
 
 Secrets are never printed (but by `keys`, in the owner's terminal) or committed: the function keys and thrift_app's
@@ -461,6 +462,8 @@ def main(argv: list[str]) -> None:
             check(st, k)
     elif what == "mode" and len(argv) > 2 and argv[2] in ("replay", "live", "off"):
         app_settings(st, argv[2])
+    elif what == "open":                         # this PC on the server's firewall again (samples.py pull)
+        firewall(st)
     elif what == "cleanup":
         cleanup(st)
     elif what == "keys":

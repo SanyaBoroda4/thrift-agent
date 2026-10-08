@@ -665,3 +665,14 @@ def test_an_email_gmail_wouldnt_give_in_full_is_told_to_the_owner_never_lost(db,
     promo = email("poshmark", "Your weekly closet tips", "", "unread-2")
     core.process_email(db, {**promo, "unreadable": "Exception: Internal error"})
     assert len([t for chat, t, _ in sent if chat == "ops"]) == 1             # noise: not a word
+
+
+def test_a_sample_stored_without_its_text_gets_it_when_sent_again(db):
+    """WO33, live: the first dumpSamples() sent 110 emails with empty text (a decoding bug in the reader); sent again,
+    each gets its text — one already holding text is left alone."""
+    first = email("vinted", "You sold an item on Vinted", "", "s-1")
+    assert core.store_samples(db, [first])["stored"] == 1
+    again = {**first, "text": "You sold J. Crew pants for $35.00"}
+    assert core.store_samples(db, [again]) == {"stored": 0, "duplicates": 0, "skipped": 0, "filled": 1}
+    assert db.one("SELECT text FROM samples WHERE message_id = 's-1'")["text"] == "You sold J. Crew pants for $35.00"
+    assert core.store_samples(db, [{**first, "text": "something else"}])["duplicates"] == 1

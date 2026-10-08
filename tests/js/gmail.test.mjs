@@ -612,3 +612,13 @@ test('a body Gmail keeps as an attachment (a large HTML email) is fetched and re
   assert.equal(sent.text, 'You sold Naturino sneakers\n$40.00');
   assert.deepEqual(w.attachmentGets.map((a) => [a.messageId, a.id]), [['m0001', 'att-1']]);
 });
+
+test('Apps Script hands a body over as bytes (a Byte[]), not base64 text: read as UTF-8 (WO33, live: 110 empty samples)', () => {
+  const m = mail(1, { subject: 'You sold an item on Vinted', text: 'You sold J. Crew pants \u2014 $35.00' });
+  const bytes = Array.from(Buffer.from('You sold J. Crew pants \u2014 $35.00', 'utf8'), (b) => (b > 127 ? b - 256 : b));
+  m.payload.body = { size: bytes.length, data: bytes };       // what Gmail.Users.Messages.get gives inside Apps Script
+  const w = world({ inbox: [m] });
+  w.api.poll();
+  const sent = w.posts.find((p) => p.body.message_id === 'm0001').body;
+  assert.equal(sent.text, 'You sold J. Crew pants \u2014 $35.00');
+});

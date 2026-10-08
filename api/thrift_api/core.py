@@ -160,10 +160,15 @@ def store_samples(db: Database, samples: object) -> dict:
                 counts["skipped"] += 1
                 continue
             received = parse_time(sample.get("date"))
+            text = _text(sample.get("text"))[:MAX_TEXT]
             added = db.execute("INSERT INTO samples (message_id, marketplace, subject, received_at, text) VALUES (?, ?, ?, ?, ?) "
                                "ON CONFLICT (message_id) DO NOTHING",
                                (message_id, marketplace, _text(sample.get("subject"))[:1000], iso(received) if received else None,
-                                _text(sample.get("text"))[:MAX_TEXT]))
+                                text))
+            if not added and text and db.execute(   # WO33: a sample stored without its text gets it when sent again
+                    "UPDATE samples SET text = ? WHERE message_id = ? AND (text IS NULL OR text = '')", (text, message_id)):
+                counts["filled"] = counts.get("filled", 0) + 1
+                continue
             counts["stored" if added else "duplicates"] += 1
     return counts
 
