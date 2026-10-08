@@ -258,6 +258,36 @@ function loaded(tabId, ms) {
   });
 }
 
+// Does the tab start loading another page within `ms`? (A client-side redirect: Vinted's /session-refresh.)
+function navigates(tabId, ms) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => { chrome.tabs.onUpdated.removeListener(on); resolve(false); }, ms);
+    const on = (id, info) => {
+      if (id !== tabId || info.status !== "loading") return;
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(on);
+      resolve(true);
+    };
+    chrome.tabs.onUpdated.addListener(on);
+  });
+}
+
+const pathOf = (u) => { try { return new URL(u).pathname.replace(/\/+$/, ""); } catch (e) { return ""; } };
+
+// The page the job is for, loaded: a sell form's job waits through a page that moves on by itself — live, Vinted sent
+// /items/new to /session-refresh, which went back to /items/new a second later; the job handed to the refresh page
+// died with it, silently (the WO32b stall). Any other page that stays (a login page) is the page script's to name.
+async function landed(tabId, target, ms) {
+  const end = Date.now() + ms;
+  for (;;) {
+    await loaded(tabId, Math.max(1000, end - Date.now()));
+    const tab = await chrome.tabs.get(tabId);
+    if (pathOf(tab.url) === pathOf(target) || Date.now() > end) return tab;
+    if (!(await navigates(tabId, 2500))) return tab;
+    await send({ event: "progress", job_id: current && current.job_id, what: `passed through ${pathOf(tab.url)}` });
+  }
+}
+
 // The content scripts per site (as the manifest lists them): injected by the worker when the page has none yet.
 const SCRIPTS = { vinted: ["content/common.js", "content/vinted.js"], depop: ["content/common.js", "content/depop.js"] };
 
@@ -369,7 +399,7 @@ async function startJob(job) {
     current.windowId = tab.windowId;
     await remember();
     await send({ event: "progress", job_id: job.job_id, what: "tab opened" });
-    await loaded(tab.id, OPEN_MS);
+    await landed(tab.id, url, OPEN_MS);
     if ((await ours()) && current.decided) throw new Error("called off before the form opened");
     await send({ event: "progress", job_id: job.job_id, what: "page loaded" });
     await toTab(tab.id, { type: "job", job, selectors: sel, photos, pace: job.pace }, REACH_MS, job.site);
@@ -420,8 +450,42 @@ async function afterClickTimeout() {
   }
 }
 
+// The job's page navigated while it was being filled (a session refresh, a reload): its script — and the job with it —
+// is gone. Before the go-ahead nothing can have been published: the job is handed to the new page (twice at most),
+// except a form already waiting for the owner's POST (never filled again behind them: ended, nothing published) and a
+// take-down (its clicks are never repeated).
+async function onNavigatedMidJob(tabId) {
+  const job = current;
+  if (job.readyAt || job.mode === "delist" || (job.reloads || 0) >= 2) {
+    const why = job.readyAt ? "the page reloaded while it waited for POST — nothing was published"
+      : job.mode === "delist" ? "the page reloaded during the take-down" : "the page keeps reloading";
+    return finish({ event: "error", job_id: job.job_id, stage: "reloaded", page: "unknown", message: why });
+  }
+  job.delivered = false;
+  job.reloads = (job.reloads || 0) + 1;
+  await remember();
+  try {
+    const sel = await selectors();
+    const tab = await landed(tabId, urlFor(job.job, sel[job.site]), OPEN_MS);
+    await send({ event: "progress", job_id: job.job_id, what: `the page reloaded (${pathOf(tab.url)}) — filling it again` });
+    const photos = job.job.mode === "dry_run" || job.job.mode === "publish" ? await fetchPhotos(job.job.photos || []) : [];
+    await toTab(tabId, { type: "job", job: job.job, selectors: sel, photos, pace: job.job.pace }, REACH_MS, job.site);
+    await restore();
+    if (current && current.job_id === job.job_id) {
+      current.delivered = true;
+      await remember();
+    }
+  } catch (e) {
+    await finish({ event: "error", job_id: job.job_id, stage: "reloaded", page: "unknown", message: errText(e) });
+  }
+}
+
 chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
   await restore();
+  if (current && tabId === current.tabId && current.delivered && !current.clicked && !current.decided &&
+      info.status === "loading") {
+    return onNavigatedMidJob(tabId);
+  }
   if (!current || tabId !== current.tabId || !current.clicked || current.after) return;
   if (info.status !== "complete" && !info.url) return;
   const sel = await selectors();

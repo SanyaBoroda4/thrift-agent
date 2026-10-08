@@ -443,3 +443,87 @@ def test_a_page_that_never_answers_ends_the_job_with_what_it_shows(tmp_path):
     assert out.status == "failed" and "the page doesn't answer" in out.error, out.error
     assert '"url":"https://www.vinted.com/items/new"' in out.error and '"frozen":false' in out.error
     assert took < 45 and site.clicks == [] and p.lines[:2] == ["tab opened", "page loaded"]
+
+
+class RefreshingSite(Site):
+    """Vinted as it was live on Oct 7 (WO32b, the Thrift Chrome's history): /items/new answered with a redirect to
+    /session-refresh, which went back to /items/new a second later — or (`reload_once`) the form reloading itself once
+    while it is being filled."""
+
+    def __init__(self, reload_once=False, **kw):
+        super().__init__(**kw)
+        self.reload_once, self.forms = reload_once, 0
+
+    async def handle(self, route):
+        url = route.request.url
+        path = re.sub(r"^https://www\.vinted\.com", "", url).split("?")[0]
+        if "vinted.com" in url and path == "/items/new":
+            self.forms += 1
+            if self.forms == 1 and not self.reload_once:     # (a server redirect in Chrome; Playwright's router
+                self.urls.append(url)                          # commits a 302 first: the page hops at once instead)
+                return await route.fulfill(status=200, content_type="text/html", body=(
+                    "<html><head><script>location.replace('/session-refresh?ref_url=%2Fitems%2Fnew')</script></head>"
+                    "<body></body></html>"))
+            if self.forms == 1 and self.reload_once:
+                self.urls.append(url)
+                body = self._html(self.vinted).replace(
+                    "</body>", "<script>setTimeout(() => location.reload(), 1200)</script></body>", 1)
+                return await route.fulfill(status=200, body=body, content_type="text/html")
+        if "vinted.com" in url and path == "/session-refresh":
+            self.urls.append(url)
+            return await route.fulfill(status=200, content_type="text/html", body=(
+                "<html><head><title>Vinted</title></head><body>…<script>setTimeout(() => "
+                "location.replace('/items/new'), 1000)</script></body></html>"))
+        return await super().handle(route)
+
+
+@pytest.mark.parametrize("reload_once", [False, True])
+def test_a_page_that_moves_on_by_itself_still_gets_its_job(tmp_path, reload_once):
+    """The live stall's cause: the job went to Vinted's /session-refresh page, which then went back to /items/new — the
+    job died with the refresh page. Now the worker waits for the form, and a page that reloads mid-fill gets the job
+    again (nothing can have been published before the go-ahead)."""
+    site = RefreshingSite(reload_once=reload_once)
+
+    async def go():
+        b, pw, ctx, sw = await session(tmp_path, site)
+        try:
+            assert await connected(b)
+            p = poster("vinted", b, tmp_path)
+            return await p.post(None, RENDER, "publish", True, tmp_path / "shots"), p
+        finally:
+            await close(b, pw, ctx)
+    out, p = asyncio.run(go())
+    assert out.status == "dryrun", (out.error, out.diff, out.note, p.lines)
+    assert site.clicks == []
+    assert any(line.startswith("the page reloaded (/items/new) — filling it again") or
+               line == "passed through /session-refresh" for line in p.lines), p.lines
+
+
+def test_the_worker_waits_through_a_page_that_moves_on_not_one_that_stays(tmp_path):
+    """landed(): the job's tab on another page than the job's (live: /session-refresh, which went back to /items/new
+    a second later) is waited through; a page that stays (a login page) is handed over after 2.5 s, for the page script
+    to name — never a wait to the end."""
+    site = RefreshingSite()
+
+    async def go():
+        b, pw, ctx, sw = await session(tmp_path, site)
+        try:
+            assert await connected(b)
+            return await sw.evaluate("""async () => {
+              const w = await chrome.windows.getLastFocused({ windowTypes: ["normal"] });
+              const out = [];
+              for (const start of ["https://www.vinted.com/session-refresh?ref_url=%2Fitems%2Fnew",
+                                   "https://www.vinted.com/member/login"]) {
+                const t = await chrome.tabs.create({ url: start, active: true, windowId: w.id });
+                const t0 = Date.now();
+                const tab = await landed(t.id, "https://www.vinted.com/items/new", 45000);
+                out.push([tab.url, Date.now() - t0]);
+                await chrome.tabs.remove(t.id);
+              }
+              return out;
+            }""")
+        finally:
+            await close(b, pw, ctx)
+    (moved, waited), (stayed, waited2) = asyncio.run(go())
+    assert moved == "https://www.vinted.com/items/new" and 800 < waited < 10000, (moved, waited)
+    assert stayed == "https://www.vinted.com/member/login" and 2000 < waited2 < 6000, (stayed, waited2)

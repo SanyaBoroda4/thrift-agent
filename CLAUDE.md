@@ -762,8 +762,14 @@ the pacing, the Telegram lines, the dry-run gate. Poshmark is untouched (its Pla
   injected by the worker when it hasn't answered in 2 s (a late document_idle; `common.js` answers once per page), each
   message to the page answered (or refused) within 3 s or asked again, 20 s in all — a page that never answers ends the
   job with the tab's state (load status, address, title, frozen / discarded, its window minimized or not) and a picture
-  taken by the worker (WO32b: the live Vinted stall, twice, was a page that never answered; a job asked twice runs
-  once), "tab opened" / "page loaded" / "page script running" progress events, the photos fetched from the bridge by the worker (the extension's origin: no page CORS,
+  taken by the worker (a job asked twice runs once), "tab opened" / "page loaded" / "page script running" progress
+  events. **The live Vinted stall (WO32b), from the Thrift Chrome's history:** both stalled runs went /items/new →
+  (server redirect) `/session-refresh?ref_url=/items/new` → (a client redirect ~1 s later) /items/new; the worker took
+  the refresh page for the loaded form, handed it the job, and the job died with that page — silently. Now a sell job's
+  tab counts as loaded on the job's own page, or on another one that stays 2.5 s (a login page: the page script names
+  it) — a page that moves on is waited through ("passed through /session-refresh"); and a page that navigates during
+  the fill gets the job again (twice at most; "the page reloaded … — filling it again"), except a form already waiting
+  for POST (ended: nothing published) and a take-down; the photos fetched from the bridge by the worker (the extension's origin: no page CORS,
   no local network prompt) and handed to the page as bytes, `captureVisibleTab` (10 s at most) + the page's HTML on
   request, the landing page watched after the one click (`tabs.onUpdated`, ≤ 60 s), a job ended when its bridge goes
   away before the go-ahead (a Ctrl+C, the poster stopped: the tab closed — nothing can be published from it), or called
