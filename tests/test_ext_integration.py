@@ -420,7 +420,8 @@ def test_a_bridge_that_goes_away_before_post_closes_the_tab(tmp_path):
 
 
 BUSY = ("<html><head><title>Sell an item | Vinted</title></head><body><h1>Sell an item</h1><script>"
-        "setTimeout(() => { const end = Date.now() + 90000; while (Date.now() < end) {} }, 0)</script></body></html>")
+        "addEventListener('load', () => setTimeout(() => { const end = Date.now() + 90000; while (Date.now() < end) {} },"
+        " 0))</script></body></html>")             # loaded, then its own script holds the page's thread
 
 
 def test_a_page_that_never_answers_ends_the_job_with_what_it_shows(tmp_path):
