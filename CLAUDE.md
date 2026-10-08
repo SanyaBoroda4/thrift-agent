@@ -948,7 +948,8 @@ Telegram token is read from the Mac's .env, never printed). The same code runs o
   ops summary.
 - **The Mac's link** (`THRIFT_API_URL`, `THRIFT_API_KEY` in .env — the owner's; missing → all of this off, posting
   as before, one ops line a day): every change to an item or a listing is marked by SQLite triggers (`api_dirty`) and
-  pushed to `/sync` by the worker each minute, in order, after an offline spell too; other calls wait in
+  pushed to `/sync` by the worker each minute, in order, after an offline spell too (once, at the first start, every
+  item and listing made before the triggers is marked too — kv `api_dirty_seeded`; `thrift sync --push --all` again); other calls wait in
   `api_outbox`; the heartbeat (`mac`) every 15 min and on every wake. SQLite stays the posting's source of truth,
   Postgres the sales'.
 - **Commands:** `thrift sales [--open|--unmatched|--all]`, `thrift sales match <sale> <item>`, `thrift delist --run`,

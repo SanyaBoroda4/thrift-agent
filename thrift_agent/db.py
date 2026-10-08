@@ -102,6 +102,7 @@ def new_id(prefix: str) -> str:
 
 LISTINGS_MIGRATED = "listings_migrated"      # kv: when the old `posts` rows were copied into `listings` (once)
 ANNOUNCED_MIGRATED = "announced_migrated"    # kv: when the items live before WO32b were marked announced (once)
+API_SEEDED = "api_dirty_seeded"               # kv: when every item and listing was first marked for /sync (once)
 _POSH_ID = re.compile(r"-([0-9a-f]{24})/?$")
 
 
@@ -136,6 +137,24 @@ class DB:
                     self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
         self._migrate_posts()
         self._migrate_announced()
+        self.seed_api_dirty()
+
+    def seed_api_dirty(self, again: bool = False) -> int:
+        """WO33: every item and listing marked for /sync once — the triggers mark only what changes after they were
+        made, and thrift-api must hold the listings made before, or a sale of one could never be matched. `again`
+        (`thrift sync --push --all`): the whole mirror sent again. Returns how many were marked."""
+        with self.tx() as c:
+            if not again and c.execute("SELECT 1 FROM kv WHERE key=?", (API_SEEDED,)).fetchone():
+                return 0
+            stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+            c.execute("INSERT OR IGNORE INTO api_dirty SELECT 'item', id, ? FROM items", (stamp,))
+            n = c.execute("SELECT changes()").fetchone()[0]
+            c.execute("INSERT OR IGNORE INTO api_dirty SELECT 'listing', item_id || '|' || marketplace, ? FROM listings",
+                      (stamp,))
+            n += c.execute("SELECT changes()").fetchone()[0]
+            c.execute("INSERT INTO kv (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                      (API_SEEDED, now()))
+            return n
 
     def _migrate_announced(self) -> None:
         """WO32b: every item already live on Poshmark counts as announced in the group — the flow before WO30 said its

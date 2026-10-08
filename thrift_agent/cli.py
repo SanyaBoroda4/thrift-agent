@@ -1004,11 +1004,15 @@ def relist(item_id: str, marketplace: str = typer.Option(None, "--marketplace", 
 
 
 @app.command("sync")
-def sync_cmd(push: bool = typer.Option(True, "--push/--no-push", help="send the changes now")) -> None:
+def sync_cmd(push: bool = typer.Option(True, "--push/--no-push", help="send the changes now"),
+             all_: bool = typer.Option(False, "--all", help="every item and listing again, not only the changed ones")
+             ) -> None:
     """The items and listings changed since the last sync, and the kept calls, to thrift-api now."""
     from thrift_agent import sales
     db = _db()
     client = _api_or_exit()
+    if all_:
+        print(f"marked {db.seed_api_dirty(again=True)} items and listings to send again")
     try:
         n, m = sales.push(db, client), sales.flush(db, client)
     except sales.ApiError as e:

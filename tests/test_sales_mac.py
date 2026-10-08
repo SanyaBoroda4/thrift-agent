@@ -322,3 +322,22 @@ def test_the_owners_shipped_reply_goes_to_the_api(tmp_path, api, monkeypatch):
     api.down = True
     assert approve._typed(s, db, bot, "Shipped the red flats", 6) == "shipped: kept for later"
     assert db.conn.execute("SELECT path FROM api_outbox").fetchall()[0][0] == "/mac-event"
+
+
+def test_the_first_sync_sends_every_item_and_listing_made_before_the_triggers(tmp_path, api):
+    """The triggers mark only what changes after they exist: once, at the first start, every item and listing is
+    marked, so thrift-api holds the listings made before (a sale of one must match); never again on its own;
+    `thrift sync --push --all` marks them all again."""
+    from thrift_agent import db as db_mod
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    old = _item(db, 1)
+    db.upsert_listing(old, "poshmark", status="posted", url="https://poshmark.com/listing/x-" + "c" * 24)
+    db.conn.execute("DELETE FROM api_dirty")                       # as on the Mac: made before the triggers were
+    db.conn.execute("DELETE FROM kv WHERE key=?", (db_mod.API_SEEDED,))
+    db.conn.commit()
+    again = DB(s.path("db"))                                       # the worker's next start
+    assert {r[0] for r in again.conn.execute("SELECT key FROM api_dirty")} == {old, f"{old}|poshmark"}
+    assert sales.push(again, api.client()) == 2
+    assert DB(s.path("db")).conn.execute("SELECT COUNT(*) FROM api_dirty").fetchone()[0] == 0   # never twice
+    assert again.seed_api_dirty(again=True) == 2
