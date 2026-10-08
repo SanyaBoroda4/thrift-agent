@@ -330,6 +330,35 @@ test("Depop: the category under the item's department, the lagging size menu, th
   assert.deepEqual(plain(p.fetches), []);
 });
 
+test("Depop: its own suggestions coming late are waited for, then ours go over them (live: the package)", async () => {
+  const p = page("depop", undefined, undefined, { sizeLag: 150, brandDelay: 100, aiDelay: 2000 });
+  p.w.Thrift.timeoutScale = 1;                          // the real waits: Depop's suggestions 2 s after the photos
+  await run(p, DEPOP_JOB);
+  const result = p.last();
+  assert.equal(result.event, "result", JSON.stringify(result));
+  assert.deepEqual(plain(result.failed), []);
+  assert.match(result.seen.package, /^Large/);          // ours, not Depop's "Medium"
+  assert.deepEqual(plain(result.seen["colour-input"]), ["Cream"]);
+  const s = p.events().find((e) => e.event === "step" && e.name === "suggestions");
+  assert.equal(s.detail, "Depop's own came");
+});
+
+test("Depop: a package size Depop changes after ours is set back before the read-back", async () => {
+  const p = page("depop", undefined, undefined, { sizeLag: 150, brandDelay: 100, ai: false });
+  const send = p.w.chrome.runtime.sendMessage;
+  p.w.chrome.runtime.sendMessage = (m) => {
+    if (m.type === "event" && m.event === "step" && m.name === "package") {
+      p.d.getElementById("shippingMethods-input").value = "Medium";     // Depop's own, landing just after ours
+    }
+    return send(m);
+  };
+  await run(p, DEPOP_JOB);
+  const result = p.last();
+  assert.equal(result.event, "result", JSON.stringify(result));
+  assert.match(result.seen.package, /^Large/);
+  assert.ok(result.notes.some((n) => /changed the package size to 'Medium': set back to Large/.test(n)), result.notes);
+});
+
 test("Depop: the brand typed as Depop spells it when our spelling finds nothing", async () => {
   const p = page("depop", undefined, undefined, { ...DEPOP_FIX, ai: false });
   await run(p, DEPOP_JOB);

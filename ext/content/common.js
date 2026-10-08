@@ -88,6 +88,16 @@
     timer = setTimeout(() => finish(value() || null), timeout * T.timeoutScale);
     check();
   });
+  // The page has stopped changing: no DOM mutation for `ms` (a framework done re-rendering), `max` at most.
+  T.quiet = (ms = 600, max = 3000) => new Promise((resolve) => {
+    let timer = null, cap = null;
+    const obs = new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(done, ms * T.timeoutScale); });
+    function done() { obs.disconnect(); clearTimeout(timer); clearTimeout(cap); resolve(); }
+    obs.observe(document.documentElement || document, { childList: true, subtree: true, attributes: true,
+                                                        characterData: true });
+    timer = setTimeout(done, ms * T.timeoutScale);
+    cap = setTimeout(done, max * T.timeoutScale);
+  });
   T.waitFor = (selectors, { timeout = 8000, visible = true, root = document } = {}) =>
     T.until(() => T.$$(selectors, root).find((e) => !visible || T.visible(e)), timeout);
   T.need = async (selectors, what, opts = {}) => {

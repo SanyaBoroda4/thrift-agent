@@ -231,6 +231,16 @@
         await T.screenshot("photos");
         return `${st.photosLoaded}/${n} shown`;
       }, { limit: 120000 });
+      // Depop fills colours, the brand and a package size by itself once the photos are up (recorded 2026-10-06). At
+      // the fast pace its suggestions could land after our own picks and replace them (live 2026-10-07: the package
+      // set to Medium after ours): they are waited for (8 s at most) and for the page to settle; ours go over them.
+      await T.step("suggestions", st, async () => {
+        const theirs = () => document.getElementById(ids.brand)?.value || document.getElementById(ids.package)?.value ||
+          T.chipsOf(ids.colour).length;
+        const came = await T.until(theirs, 8000);
+        if (came) await T.quiet(600, 3000);
+        return came ? "Depop's own came" : "none came";
+      });
       await T.step("description", st, async () =>
         T.type(await T.need(S().description.selectors, "description"), job.copy.description));
       await T.step("category", st, async () =>
@@ -281,6 +291,25 @@
         if (!f.brand && brandBox && brandBox.value) {
           st.notes.push(`cleared the brand '${brandBox.value}' (Depop's own suggestion)`);
           await clearBrand(brandBox);
+        }
+        // A single choice Depop replaced after ours (its suggestions came late): ours again.
+        const pkg = document.getElementById(ids.package);
+        if (f.package_size && pkg && !T.norm(pkg.value).startsWith(T.norm(f.package_size))) {
+          st.notes.push(`Depop changed the package size to '${pkg.value}': set back to ${f.package_size}`);
+          await choose(st, ids.package, f.package_size, { prefix: true });
+        }
+        if (f.brand && brandBox && brandBox.value && !T.strictPick(f.brand, [brandBox.value]).choice) {
+          st.notes.push(`Depop changed the brand to '${brandBox.value}': set back`);
+          await brand(st, f.brand, f.brand_typed);
+        }
+        // Our values a multi-select lost: added back.
+        for (const [cid, want] of Object.entries(planned(f))) {
+          for (const w of want) {
+            if (!T.chipsOf(cid).some((c) => T.norm(c) === T.norm(w))) {
+              st.notes.push(`'${w}' was gone from ${cid}: added back`);
+              await choose(st, cid, w, { optional: cid !== ids.colour });
+            }
+          }
         }
       });
     },

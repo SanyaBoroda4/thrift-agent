@@ -756,8 +756,9 @@ the pacing, the Telegram lines, the dry-run gate. Poshmark is untouched (its Pla
   still run on the two sites only, nothing else is opened or read). `background.js` — the WebSocket to
   `ws://127.0.0.1:8765/ext` (the token first; tried again 1 s, 2 s, 5 s after a drop, then every 5 s — WO32b: a bridge
   that starts is seen within ~5 s; 30 s after a refused token; a ping every 20 s keeps the MV3 worker up), a
-  `chrome.alarms` tick every 30 s (`GET /jobs/next` while the socket is down; `poll_minutes` in storage, default 0.5,
-  tests 0.05), one job at a time in its own new tab of the Thrift window, opened as its active tab (the window itself
+  `chrome.alarms` tick (`GET /jobs/next` while the socket is down) every 30 s — every 5 s when loaded unpacked, as in
+  the Thrift Chrome (Chrome allows it there; live, a worker put to sleep while no bridge ran took 18 s to answer the
+  CLI on the 30 s alarm); `poll_minutes` in storage overrides, tests 0.05; one job at a time in its own new tab of the Thrift window, opened as its active tab (the window itself
   never focused or raised; closed after, except a login / block / CAPTCHA page, left for the owner), the page's script
   injected by the worker when it hasn't answered in 2 s (a late document_idle; `common.js` answers once per page), each
   message to the page answered (or refused) within 3 s or asked again, 20 s in all — a page that never answers ends the
@@ -788,7 +789,11 @@ the pacing, the Telegram lines, the dry-run gate. Poshmark is untouched (its Pla
   path), brand search (ours or its clean form only, `strictPick`), size, condition, colours ≤ 2, materials ≤ 3, the
   skirt length, the package radio; photos as Files on `input.files`, all in one DataTransfer (fallback: a drop);
   `scrollIntoView`; Depop's Boost unchecked if it is on, Vinted's bump / promote offers closed; Depop's menus waited on
-  until they offer the value (an older list may still show), its size menu reopened every 0.8 s while it lags.
+  until they offer the value (an older list may still show), its size menu reopened every 0.8 s while it lags, its
+  comboboxes waited for (the size and the attributes come after the category); **Depop's own suggestions** (colours,
+  brand, package — they come once the photos are up) waited for, 8 s at most, and the page to settle (`T.quiet`) before
+  our picks go over them (live, WO32b: at the fast pace its package "Medium" landed after our "Large"); the tidy step
+  sets back a single choice Depop replaced and adds back a value of ours a multi-select lost.
   Pages classified block → captcha → login → verify → listing → form (`selectors.json` pages; jsdom has no innerText:
   the text without scripts). `selectors.json`: site → pages / steps → selector(s) → how verified; every step starts
   UNVERIFIED (`"verified": false`); WO30's live evidence recorded the login pages of both and Depop's block page.

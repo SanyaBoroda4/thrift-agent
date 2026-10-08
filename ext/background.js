@@ -49,7 +49,10 @@ function withTimeout(promise, ms, what) {
     .finally(() => clearTimeout(timer));
 }
 
+let lastState = null;
 async function setState(link) {
+  if (link === lastState) return;                  // written when it changes (it is asked every few seconds)
+  lastState = link;
   await chrome.storage.local.set({ bridge_state: { link, at: new Date().toISOString() } });
 }
 
@@ -579,8 +582,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // ---------------------------------------------------------------- waking up
 
+// The alarm: every 30 s (Chrome's least for an installed extension); the Thrift Chrome loads this one unpacked, which
+// Chrome lets wake every 5 s — a worker put to sleep while no bridge ran is then back within ~5 s of one starting
+// (live, WO32b: 18 s on the 30 s alarm). `poll_minutes` in storage overrides both.
 async function ensureAlarm() {
-  const { poll_minutes } = await settings();
+  const stored = (await chrome.storage.local.get("poll_minutes")).poll_minutes;
+  let poll_minutes = stored;
+  if (!poll_minutes) {
+    let unpacked = false;
+    try { unpacked = (await chrome.management.getSelf()).installType === "development"; } catch (e) { /* packed */ }
+    poll_minutes = unpacked ? 5 / 60 : 0.5;
+  }
   const alarm = await chrome.alarms.get("poll");
   if (!alarm || alarm.periodInMinutes !== poll_minutes) {
     await chrome.alarms.create("poll", { periodInMinutes: poll_minutes, delayInMinutes: poll_minutes });
