@@ -31,7 +31,7 @@ def in_hours(now_local: datetime, hours: list) -> bool:
     if len(hours) != 2:
         raise ValueError(f"schedule.hours must be [start, end], got {hours!r}")
     start, end = (_parse_hour(h) for h in hours)
-    t = now_local.time()
+    t = now_local.time().replace(second=0, microsecond=0)      # by the minute: "23:59" runs through 23:59:59
     if start <= end:
         return start <= t <= end
     return t >= start or t <= end               # window crosses midnight, e.g. ["21:00", "02:00"]

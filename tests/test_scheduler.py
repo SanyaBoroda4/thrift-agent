@@ -21,6 +21,14 @@ def test_in_hours():
     assert not in_hours(datetime(2026, 9, 24, 3, 0), ["09:00", "21:00"])
 
 
+def test_the_end_of_the_hours_runs_through_its_minute():
+    """ "23:59" means through 23:59:59 — a CI run at 23:59:13 New York time found it closed (the hours' last minute)."""
+    assert in_hours(datetime(2026, 10, 7, 23, 59, 13), ["00:00", "23:59"])
+    assert in_hours(datetime(2026, 10, 7, 21, 0, 40), ["09:00", "21:00"])
+    assert not in_hours(datetime(2026, 10, 7, 21, 1, 0), ["09:00", "21:00"])
+    assert not in_hours(datetime(2026, 10, 7, 8, 59, 59), ["09:00", "21:00"])
+
+
 def test_parse_hour_accepts_yaml_ints_and_unpadded_strings():
     assert _parse_hour(540) == time(9, 0)               # YAML 1.1: an unquoted 9:00 is the sexagesimal int 540
     assert _parse_hour("9:00") == time(9, 0)
