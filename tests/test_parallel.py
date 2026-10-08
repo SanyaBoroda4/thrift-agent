@@ -86,6 +86,15 @@ def _run(s, db, ps):
 def test_an_item_takes_its_slowest_site_not_the_sum(tmp_path, quick):
     """3 items × 3 sites: Poshmark 0.6 s, Depop 0.4 s, Vinted 0.2 s a listing — one after the other that is 3.6 s; the
     workers side by side take about Poshmark's 1.8 s."""
+    # The machine's own overhead first (workers starting, the idle turns before the end): the same run with listings
+    # that take no time — a slow CI runner pays it in both runs.
+    (tmp_path / "base").mkdir()
+    s0 = _settings(tmp_path / "base", parallel=True)
+    db0 = DB(s0.path("db"))
+    for n in (1, 2, 3):
+        _item(db0, n)
+    base = _run(s0, db0, {"poshmark": Timed("poshmark", 0.0), "depop": Timed("depop", 0.0),
+                          "vinted": Timed("vinted", 0.0)})
     s = _settings(tmp_path, parallel=True)
     db = DB(s.path("db"))
     items = [_item(db, n) for n in (1, 2, 3)]
@@ -93,7 +102,7 @@ def test_an_item_takes_its_slowest_site_not_the_sum(tmp_path, quick):
     took = _run(s, db, ps)
     assert all(db.listing(i, mp)["status"] == "posted" for i in items for mp in ps), [
         dict(r) for r in db.conn.execute("SELECT item_id, marketplace, status, error FROM listings")]
-    assert took < 3.2, took                                          # not the 3.6 s sum (plus the workers' starts)
+    assert took - base < 2.9, (took, base)                         # about Poshmark's 1.8 s, not the 3.6 s sum
     first = {mp: p.calls[0][1] for mp, p in ps.items()}
     assert max(first.values()) - min(first.values()) < 0.5          # one item, three sites at once
 
@@ -235,5 +244,5 @@ def test_the_crosslist_dry_run_fills_the_extension_sites_together(tmp_path, monk
         asyncio.run(cli._crosslist_dry_run(s, None, "i_x", ["depop", "vinted"], together=together))
         timings[together] = time.monotonic() - t0
     out = capsys.readouterr().out
-    assert timings[True] < 0.7 <= timings[False], timings
+    assert timings[False] >= 0.8 and timings[True] < timings[False] - 0.25, timings    # the slower site, not the sum
     assert "depop: form open" in out and "together" in out and "one after another" in out
