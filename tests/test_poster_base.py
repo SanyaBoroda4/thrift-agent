@@ -19,7 +19,7 @@ class FakePage:
     async def wait_for_load_state(self, *a, **k):
         pass
 
-    async def screenshot(self, path, full_page=False):
+    async def screenshot(self, path, full_page=False, **kw):
         Path(path).write_bytes(b"png")
 
     async def content(self):

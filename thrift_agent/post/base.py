@@ -159,8 +159,8 @@ async def keep_evidence(page: Page | None, shot: Path, record: dict | None = Non
     what was expected, the diff). Best effort: evidence never replaces the outcome it documents."""
     if page is None:
         return
-    try:
-        await page.screenshot(path=str(shot), full_page=True)
+    try:          # 15 s, not Playwright's 30: a page caught mid-navigation never holds the poster up for long
+        await page.screenshot(path=str(shot), full_page=True, timeout=15000)
     except Exception:  # noqa: BLE001
         pass
     try:

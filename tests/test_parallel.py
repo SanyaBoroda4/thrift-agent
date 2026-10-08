@@ -244,5 +244,6 @@ def test_the_crosslist_dry_run_fills_the_extension_sites_together(tmp_path, monk
         asyncio.run(cli._crosslist_dry_run(s, None, "i_x", ["depop", "vinted"], together=together))
         timings[together] = time.monotonic() - t0
     out = capsys.readouterr().out
-    assert timings[False] >= 0.8 and timings[True] < timings[False] - 0.25, timings    # the slower site, not the sum
+    # (0.75: Windows' clock ticks in ~16 ms steps — two 0.4 s sleeps have measured 0.797 s)
+    assert timings[False] >= 0.75 and timings[True] < timings[False] - 0.25, timings   # the slower site, not the sum
     assert "depop: form open" in out and "together" in out and "one after another" in out

@@ -32,7 +32,7 @@ UNVERIFIED (record on the Mac from the evidence in failed/shots):
                                 one stops the publish before the click)
   draft_saved                   where Save Draft lands
   captcha                       the wording of Poshmark's bot check
-  edit_url, availability, availability_option, update_listing
+  edit_url, availability, availability_option, update_listing, availability_label
                                 WO33's take-down: the listing's edit page, its Availability menu, "Not For Sale" /
                                 "For Sale", and Update — recorded without using them (`thrift delist --verify`); until
                                 then a sale asks the owner to mark it sold on Poshmark by hand
@@ -229,7 +229,8 @@ SEL = {
     # by `thrift delist --verify` (the page opened, the control found, a picture; nothing changed).
     "edit_url": "{base}/edit-listing/{id}",
     "availability": lambda p: p.locator('[data-vv-name="availability"], [data-test="availability"], '
-                                        '[data-et-name="availability"]').or_(p.get_by_text("Availability", exact=True)),
+                                        '[data-et-name="availability"]'),
+    "availability_label": lambda p: p.get_by_text("Availability", exact=True),      # the probe's clue, never clicked
     "availability_option": lambda p, text: p.get_by_text(text, exact=True),
     "update_listing": lambda p: p.get_by_role("button", name=re.compile(r"^\s*update\s*$", re.I)),
     "promote_toggle": lambda panel: panel.locator('input[type="checkbox"]'),
@@ -237,7 +238,7 @@ SEL = {
     "captcha": lambda p: p.get_by_text(re.compile("captcha|verify you are human", re.I)),
 }
 AVAILABILITY_NEEDS = frozenset({"edit_url", "availability", "availability_option", "update_listing"})   # WO33
-UNVERIFIED = frozenset({"promote_toggle", "draft_saved", "captcha"}) | AVAILABILITY_NEEDS
+UNVERIFIED = frozenset({"promote_toggle", "draft_saved", "captcha", "availability_label"}) | AVAILABILITY_NEEDS
 PUBLISH_NEEDS = frozenset({"list_item", "listing_url"})      # submit() publishes only once these are recorded
 DRAFT_NEEDS = frozenset({"draft_saved"})
 
@@ -254,7 +255,17 @@ CLOSET_EVERY_MS = 10_000         # ... once every this often
 ID_SKEW_S = 600                  # a listing id created this long before the run started is still "new" (clock skew)
 FIND_TRIES, FIND_WAIT_MS = 3, 10_000   # the closet check after a sleep: looks, and the wait between them (WO28)
 POLL_MS = 250
+UPDATE_TIMEOUT_MS = 15_000       # WO33: Update on the edit page, then the page leaving it
+PUBLIC_CHECK_S, PUBLIC_EVERY_S = 20.0, 4.0   # ... then the public listing read until it agrees, every this often
 ROOT_TEXT_MAX = 300              # a dropdown "root" showing more text than this holds more than one field
+
+def _poshmark_live(url: str) -> bool | None:
+    """The public listing for sale? The WO30 backfill checker (crosslist.poshmark_live), behind a name tests replace."""
+    from thrift_agent.crosslist import poshmark_live
+    return poshmark_live(url)
+
+
+PUBLIC_STATE = _poshmark_live
 
 # [id, visible text, "title|aria-label|data-et-name"] of each element in a list.
 _ITEM_JS = """e => [e.id || '', (e.innerText || e.textContent || '').trim(),
@@ -1131,7 +1142,8 @@ class PoshmarkPoster(Poster):
             try:
                 await control.wait_for(state="visible", timeout=MENU_TIMEOUT_MS)
             except PlaywrightTimeout:
-                await keep_evidence(page, self.shot, {"url": url, "found": False})
+                label = await SEL["availability_label"](page).count()       # where to look in the kept HTML
+                await keep_evidence(page, self.shot, {"url": url, "found": False, "label_on_page": bool(label)})
                 return False
             if probe:
                 await control.scroll_into_view_if_needed()
@@ -1141,11 +1153,28 @@ class PoshmarkPoster(Poster):
             await control.click()
             await SEL["availability_option"](page, "For Sale" if available else "Not For Sale").first.click()
             await SEL["update_listing"](page).first.click()
-            await page.wait_for_load_state("domcontentloaded")
-            await keep_evidence(page, self.shot, {"url": url, "available": available})
-            return True
+            try:                                        # Update saves and leaves the edit page (as the form's List)
+                await page.wait_for_url(lambda u: "/edit-listing/" not in u, timeout=UPDATE_TIMEOUT_MS)
+                await page.wait_for_load_state("domcontentloaded")
+            except PlaywrightTimeout:
+                pass                                    # stayed: the public page below decides
+            state = await self._public_state(url, available)
+            await keep_evidence(page, self.shot, {"url": url, "available": available, "public": state})
+            # WO33 D3: the public listing confirms it — not for sale after a take-down, for sale after a relist; an
+            # unreadable public page is taken as done (the evidence shows it) rather than pressing Update again.
+            return state is None or state == available
         finally:
             await page.close()
+
+    async def _public_state(self, url: str, want: bool) -> bool | None:
+        """The listing's public page (the WO30 backfill checker: inventory status "available" or not), read until it
+        says `want` — Poshmark may take a few seconds — at most PUBLIC_CHECK_S."""
+        end = time.monotonic() + PUBLIC_CHECK_S
+        while True:
+            state = await asyncio.to_thread(PUBLIC_STATE, url)
+            if state is None or state == want or time.monotonic() >= end:
+                return state
+            await asyncio.sleep(PUBLIC_EVERY_S)
 
     async def verify_live(self, page: Page, url: str, r: Render) -> None:
         """The base check (title and price), plus whether the page carries the SKU (recorded: owner's view only?)."""

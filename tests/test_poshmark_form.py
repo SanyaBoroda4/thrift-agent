@@ -770,3 +770,139 @@ def test_the_form_never_selects_fair(chrome, posh, photos, condition, label):
     r = render(photos, condition=condition)
     seen, events = fill_and_read(chrome, posh, r, steps=["_condition"])
     assert seen["condition"] == label and f"condition:{label}" in events and "condition:Fair" not in events, events
+
+
+# ---------------------------------------------------------------- WO33: the take-down on the edit page
+# WO33 Part D on Poshmark: the take-down is the listing's Availability set to "Not For Sale" on its edit page, then
+# Update — reversible (`thrift relist`: back to "For Sale"), never a delete — and the public listing confirms it (D3).
+# A stand-in edit page in real headless Chrome (the fixture site of test_poshmark_form.py, https://fixture.invalid: no
+# network; the public check answers from the stand-in): the probe finds the control and changes nothing; the steps
+# refuse while UNVERIFIED; once recorded, the take-down and the relist each choose their value and press Update once; a
+# public page that still sells it is a failure; a listing that's gone is None.
+LISTING_ID = "6701a2b3c4d5e6f708192a3b"
+URL = f"{BASE}/listing/J-Crew-Wide-Leg-Pants-{LISTING_ID}"
+
+EDIT = """<html><body><h1>Edit Listing</h1>
+<div class="form__group"><label>Availability</label>
+  <div data-vv-name="availability" class="dropdown" tabindex="0"
+       onclick="document.getElementById('opts').hidden = false">%(now)s</div>
+  <ul id="opts" hidden><li onclick="pick('For Sale')">For Sale</li><li onclick="pick('Not For Sale')">Not For Sale</li></ul>
+</div>
+<button onclick="update()">Update</button>
+<script>
+  let chosen = %(now_js)s;
+  function pick(v) {
+    chosen = v;
+    document.querySelector('[data-vv-name=availability]').textContent = v;
+    document.getElementById('opts').hidden = true;
+  }
+  function update() {
+    fetch('/api/update?availability=' + encodeURIComponent(chosen)).then(() => { location.href = '/listing/x'; });
+  }
+</script></body></html>"""
+
+
+class EditSite:
+    """The listing's edit page (its Availability as it is now), Update recorded; any other id is a 404."""
+
+    def __init__(self, now: str = "For Sale"):
+        self.now, self.updates, self.urls = now, [], []
+
+    async def handle(self, route):
+        from urllib.parse import parse_qs, urlparse
+        url = route.request.url
+        self.urls.append(url)
+        path = urlparse(url).path
+        if not url.startswith(BASE + "/"):
+            await route.abort()
+        elif path == f"/edit-listing/{LISTING_ID}":
+            body = EDIT % {"now": self.now, "now_js": repr(self.now)}
+            await route.fulfill(status=200, content_type="text/html; charset=utf-8", body=body)
+        elif path == "/api/update":
+            self.updates.append(parse_qs(urlparse(url).query)["availability"][0])
+            self.now = self.updates[-1]
+            await route.fulfill(status=204, body="")
+        elif path.startswith("/edit-listing/"):
+            await route.fulfill(status=404, content_type="text/html", body="<html><body>Not Found</body></html>")
+        else:
+            await route.fulfill(status=200, content_type="text/html", body="<html><body>listing</body></html>")
+
+
+def run(chrome, site, scenario):
+    loop, browser = chrome
+
+    async def go():
+        ctx = await browser.new_context()
+        await ctx.route("**/*", site.handle)
+        try:
+            return await scenario(ctx)
+        finally:
+            await ctx.close()
+    return loop.run_until_complete(go())
+
+
+@pytest.fixture
+def recorded(monkeypatch):
+    """The take-down's steps as if a Mac probe had recorded them; the public check quick."""
+    monkeypatch.setattr(poshmark, "UNVERIFIED", poshmark.UNVERIFIED - poshmark.AVAILABILITY_NEEDS)
+    monkeypatch.setattr(poshmark, "PUBLIC_CHECK_S", 0.3)
+    monkeypatch.setattr(poshmark, "PUBLIC_EVERY_S", 0.1)
+
+
+def public(site, stuck=None):
+    """The public listing as the stand-in holds it (for sale unless "Not For Sale"); `stuck` pins an answer."""
+    return lambda url: stuck if stuck is not None else site.now != "Not For Sale"
+
+
+def test_the_probe_finds_the_control_and_changes_nothing(chrome, posh, tmp_path):
+    site = EditSite()
+    found = run(chrome, site, lambda ctx: posh.set_availability(ctx, URL, False, probe=True, shots=tmp_path))
+    assert found is True and site.updates == [] and site.now == "For Sale"
+    assert posh.shot.with_suffix(".html").exists() and posh.shot.with_suffix(".json").exists()
+
+
+def test_the_steps_refuse_while_unverified(chrome, posh, tmp_path):
+    site = EditSite()
+    with pytest.raises(PosterError, match="isn't recorded yet"):
+        run(chrome, site, lambda ctx: posh.set_availability(ctx, URL, False, shots=tmp_path))
+    assert site.urls == [] and site.updates == []                  # refused before any page opened
+
+
+def test_the_take_down_is_not_for_sale_and_the_relist_for_sale(chrome, posh, tmp_path, recorded, monkeypatch):
+    site = EditSite()
+    monkeypatch.setattr(poshmark, "PUBLIC_STATE", public(site))
+    assert run(chrome, site, lambda ctx: posh.set_availability(ctx, URL, False, shots=tmp_path)) is True
+    assert site.updates == ["Not For Sale"]
+    assert run(chrome, site, lambda ctx: posh.set_availability(ctx, URL, True, shots=tmp_path)) is True
+    assert site.updates == ["Not For Sale", "For Sale"]               # thrift relist: reversed, one Update each
+    assert '"public": true' in posh.shot.with_suffix(".json").read_text(encoding="utf-8")
+
+
+def test_a_public_page_that_still_sells_it_is_a_failure(chrome, posh, tmp_path, recorded, monkeypatch):
+    site = EditSite()
+    monkeypatch.setattr(poshmark, "PUBLIC_STATE", public(site, stuck=True))
+    assert run(chrome, site, lambda ctx: posh.set_availability(ctx, URL, False, shots=tmp_path)) is False
+    assert site.updates == ["Not For Sale"]                           # pressed once; tried again by the 3 attempts
+
+
+def test_a_listing_that_is_gone_is_none(chrome, posh, tmp_path, recorded):
+    site = EditSite()
+    gone = f"{BASE}/listing/Old-Thing-{'f' * 24}"
+    assert run(chrome, site, lambda ctx: posh.set_availability(ctx, gone, False, shots=tmp_path)) is None
+    assert site.updates == []
+
+
+def test_a_page_without_the_control_is_false_with_evidence(chrome, posh, tmp_path, recorded, monkeypatch):
+    monkeypatch.setattr(poshmark, "MENU_TIMEOUT_MS", 300)
+    site = EditSite()
+    site.handle_orig = site.handle
+
+    async def bare(route):
+        if "/edit-listing/" in route.request.url:
+            await route.fulfill(status=200, content_type="text/html",
+                                body="<html><body><label>Availability</label><p>something else</p></body></html>")
+        else:
+            await site.handle_orig(route)
+    site.handle = bare
+    assert run(chrome, site, lambda ctx: posh.set_availability(ctx, URL, False, shots=tmp_path)) is False
+    assert '"label_on_page": true' in posh.shot.with_suffix(".json").read_text(encoding="utf-8")

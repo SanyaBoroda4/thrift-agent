@@ -935,8 +935,10 @@ Telegram token is read from the Mac's .env, never printed). The same code runs o
   twice) but never with PAUSE, the lid closed, or the site stopped for the window (`parallel.may_take_down`); fetched
   before each worker's next listing
   (GET /tasks also names the items sold since going live: their rows still queued anywhere become `skipped: sold`,
-  never listed after the sale); reversible only — Poshmark Availability Not for Sale (`set_availability`),
-  Depop Mark as sold, Vinted Hide (`ExtensionPoster.delist`), never a delete; a site whose control is UNVERIFIED is
+  never listed after the sale); reversible only — Poshmark Availability Not for Sale (`set_availability`: the edit
+  page's Availability, Update, then the public listing read until it's no longer for sale — the WO30 checker), Depop
+  Mark as sold, Vinted Hide (`ExtensionPoster.delist`: the control and its confirmation once each; what a sold / hidden
+  public page looks like is recorded at the first real one), never a delete; a site whose control is UNVERIFIED is
   never tried (the API is told `manual`: the group asks the owner to mark it sold there); 3 failures → the same line;
   all done → `✓ <title> taken down on …`. `thrift delist --verify --marketplace m --url <listing>` records a control
   WITHOUT using it (the page opened, the control found, a picture to the ops chat, nothing clicked).

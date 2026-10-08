@@ -482,3 +482,66 @@ test("Depop's department headings: a group's label, else the nearest text above 
   const opts = [...menu.querySelectorAll("[role='option']")];
   assert.deepEqual(opts.map((o) => w.Thrift.headerOf(o, menu)), ["Menswear", "Womenswear", "Kidswear"]);
 });
+
+// ---------------------------------------------------------------- WO33: take-downs (reversible) and their probe
+// Our listing's own page: Depop's Mark as sold, Vinted's Hide, each with the confirmation the site may show. `delist`
+// presses the control and its confirmation once each (never a Delete); `probe` only looks — nothing is clicked, the
+// page and its picture are the evidence the selector is recorded from.
+const LISTING_PAGES = {
+  depop: { url: "https://www.depop.com/products/myshop-j-crew-wide-leg-pants-11b1/", control: "Mark as sold",
+           attrs: "" },
+  vinted: { url: "https://www.vinted.com/items/7123456789-j-crew-wide-leg-pants", control: "Hide",
+            attrs: ' data-testid="item-hide-button"' },
+};
+const listingPage = (site, withControl = true) => {
+  const { control, attrs } = LISTING_PAGES[site];
+  return `<html><head><title>J. Crew Wide Leg Pants</title></head><body><h1>J. Crew Wide Leg Pants</h1>
+    <button>Edit</button><button>Delete</button>
+    ${withControl ? `<button id="control"${attrs}>${control}</button>` : ""}
+    <script>
+      window.clicks = [];
+      const control = document.getElementById("control");
+      if (control) control.addEventListener("click", () => {
+        window.clicks.push("control");
+        const dialog = document.createElement("div");
+        dialog.setAttribute("role", "dialog");
+        dialog.innerHTML = "<p>Are you sure?</p><button id='yes'>${control}</button><button>Cancel</button>";
+        document.body.appendChild(dialog);
+        dialog.querySelector("#yes").addEventListener("click", () => { window.clicks.push("confirm"); dialog.remove(); });
+      });
+    </script></body></html>`;
+};
+
+for (const site of ["depop", "vinted"]) {
+  const control = LISTING_PAGES[site].control;
+
+  test(`${site}: the take-down presses ${control} and its confirmation once each, never Delete`, async () => {
+    const p = page(site, listingPage(site), LISTING_PAGES[site].url);
+    await run(p, { job_id: `${site}-delist`, site, mode: "delist", listing_url: LISTING_PAGES[site].url });
+    await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
+    const result = p.events().find((e) => e.event === "result");
+    assert.ok(result && result.delisted, JSON.stringify(plain(p.events())));
+    assert.deepEqual(plain(p.w.clicks), ["control", "confirm"]);
+    assert.ok(!p.d.querySelector("[role=dialog]"));
+  });
+
+  test(`${site}: the probe finds ${control} and clicks nothing`, async () => {
+    const p = page(site, listingPage(site), LISTING_PAGES[site].url);
+    await run(p, { job_id: `${site}-probe`, site, mode: "probe", listing_url: LISTING_PAGES[site].url });
+    await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
+    const result = plain(p.events().find((e) => e.event === "result"));
+    assert.equal(result.probe, true);
+    assert.equal(result.found, true);
+    assert.equal(result.text, control);
+    assert.deepEqual(plain(p.w.clicks), []);                      // looked at, never pressed
+  });
+
+  test(`${site}: a page without ${control} is an error, not a guess`, async () => {
+    const p = page(site, listingPage(site, false), LISTING_PAGES[site].url);
+    await run(p, { job_id: `${site}-delist-none`, site, mode: "delist", listing_url: LISTING_PAGES[site].url });
+    await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
+    assert.ok(p.events().some((e) => e.event === "error" && new RegExp(`no ${control}`, "i").test(e.message)),
+              JSON.stringify(plain(p.events())));
+    assert.deepEqual(plain(p.w.clicks), []);
+  });
+}
