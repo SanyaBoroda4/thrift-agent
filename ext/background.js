@@ -210,18 +210,22 @@ async function send(event) {
     return;
   }
   const { token } = await settings();
-  try {
-    const r = await fetch(`${BRIDGE}/events`, {
-      method: "POST", headers: { "X-Thrift-Token": token, "Content-Type": "application/json" },
-      body: JSON.stringify(event),
-    });
-    if (r.ok) {
-      const { commands = [] } = await r.json();
-      for (const c of commands) await onBridge(c);
-    }
-  } catch (e) {                      // nothing listens on the port: the bridge that gave the job is gone
-    if (event.job_id) abandon("the bridge went away before the go-ahead (the poster or the CLI stopped)", event.job_id);
+  for (const wait of [0, 400, 1200]) {   // a refused or reset connection is tried twice more (a busy machine) before
+    if (wait) await new Promise((ok) => setTimeout(ok, wait));      // the bridge counts as gone
+    try {
+      const r = await fetch(`${BRIDGE}/events`, {
+        method: "POST", headers: { "X-Thrift-Token": token, "Content-Type": "application/json" },
+        body: JSON.stringify(event),
+      });
+      if (r.ok) {
+        const { commands = [] } = await r.json();
+        for (const c of commands) await onBridge(c);
+      }
+      return;
+    } catch (e) { /* tried again below */ }
   }
+  // nothing listens on the port: the bridge that gave the job is gone
+  if (event.job_id) abandon("the bridge went away before the go-ahead (the poster or the CLI stopped)", event.job_id);
 }
 
 // The bridge that gave a job went away (a Ctrl+C at the terminal, the poster stopped) before its go-ahead: nothing can
