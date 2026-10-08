@@ -100,6 +100,27 @@ async def verify(s: Settings, db: DB, mp: str, url: str) -> str:
     return line
 
 
+async def practice(s: Settings, db: DB, url: str) -> str:
+    """The owner's practice run of Depop's delete (WO33): the bin, the window recorded, Cancel, still live — never
+    Delete listing. Its picture goes to the ops chat."""
+    ps, bridge, pw, ctx = await _open(s, ["depop"])
+    shots = s.path("failed") / "shots"
+    shots.mkdir(parents=True, exist_ok=True)
+    try:
+        poster = ps["depop"]
+        poster.shot = shots / "practice-depop.png"
+        out = await poster.practice_delete(url)
+    finally:
+        await _close(bridge, pw, ctx)
+    w = out["window"]
+    line = (f"🧪 Depop delete, practice (Cancel pressed, never Delete listing): the window "
+            f"\"{w.get('title') or '?'}\" — buttons {', '.join(w.get('buttons') or []) or '?'}; "
+            f"{'closed' if out['closed'] else 'NOT closed'}; the listing afterwards: {out['state_after']}")
+    notify.ops_photo(Path(out["shot"]).with_name("practice-depop-delete-window.png"), line)
+    db.log(None, "depop_delete_practice", {"url": url, **{k: v for k, v in out.items() if k != "shot"}})
+    return line
+
+
 async def relist(s: Settings, db: DB, iid: str, mp: str | None = None) -> list[str]:
     """Our take-down undone where the site allows it (the owner's command): Poshmark's Availability back to For Sale;
     Depop and Vinted by hand until their controls are recorded."""

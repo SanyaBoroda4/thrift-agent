@@ -938,7 +938,11 @@ Telegram token is read from the Mac's .env, never printed). The same code runs o
 - **Gmail:** a Google Apps Script in the seller's Gmail (`gmail/Code.gs`, read-only Advanced Gmail service, scopes
   gmail.readonly + external_request + scriptapp) posts each new email from poshmark.com / depop.com / vinted.com
   (`from:(…) newer_than:2d`, every 5 min, the seen ids in Script Properties, sender domains checked) to `POST /email`,
-  then `POST /heartbeat`; `dumpSamples()` sends 90 days to `/samples` for the parsers.
+  then `POST /heartbeat`; `dumpSamples()` sends 90 days to `/samples` for the parsers. Apps Script hands a body over
+  as bytes, not base64 text (WO33, live: the first 110 samples came empty). Reads paced (200 ms) and Gmail's
+  per-minute quota waited out (2 s, 6 s); in the 5-minute poll an email is done only once its FULL text went — one
+  Gmail won't give is tried 3 runs (`TRIES`), then sent by its headers with `unreadable` and `tries`, and the API
+  tells the ops chat (📭); a large body kept as an attachment is fetched (`messages.attachments.get`, read-only).
 - **Endpoints** (function keys `mac`, `gmail`, `dashboard`, each revocable; `x-functions-key`, the dashboard `?code=`):
   `POST /email`, `/samples`, `/heartbeat`, `/sync` (the Mac's items and listings), `GET /tasks` (take-downs, a
   10-minute lease) and `POST /tasks/{id}`, `POST /mac-event` (`shipped …`), `GET /sales`, `POST /sales/{id}/match`,
@@ -958,10 +962,17 @@ Telegram token is read from the Mac's .env, never printed). The same code runs o
   twice) but never with PAUSE, the lid closed, or the site stopped for the window (`parallel.may_take_down`); fetched
   before each worker's next listing
   (GET /tasks also names the items sold since going live: their rows still queued anywhere become `skipped: sold`,
-  never listed after the sale); reversible only — Poshmark Availability Not for Sale (`set_availability`: the edit
-  page's Availability, Update, then the public listing read until it's no longer for sale — the WO30 checker), Depop
-  Mark as sold, Vinted Hide (`ExtensionPoster.delist`: the control and its confirmation once each; what a sold / hidden
-  public page looks like is recorded at the first real one), never a delete; a site whose control is UNVERIFIED is
+  never listed after the sale); Poshmark Availability Not for Sale (`set_availability`: the edit page's
+  Availability, Update, then the public listing read until it's no longer for sale — the WO30 checker), Vinted Hide
+  (`ExtensionPoster.delist`: Hide and its confirmation; it counts only when Hide has gone), both reversible; **Depop:
+  DELETE** (the owner's decision, 2026-10-08 — it replaces "Mark as sold" and "never delete" for Depop, whose page
+  offers no Mark as sold): when a sale on Poshmark or Vinted is matched, on `/products/<slug>/manage/` the bin next to
+  Copy listing (`button[aria-label='Delete listing']`), the "Delete listing" window ("Are you sure you want to delete
+  this listing? You will lose all the likes." — Cancel / Delete listing), Delete listing pressed once, then the address
+  opened again: gone = taken down. A Depop listing that shows sold already (its JSON-LD SoldOut) is never deleted:
+  the API is told `sold` and the group hears "⚠️ Sold twice …" (once per item). The window is recorded by the owner's
+  practice run (`thrift delist --practice --marketplace depop --url <listing>`: the bin, the window, Cancel, the
+  listing checked still live — never Delete listing); until then a Depop take-down asks the owner; a site whose control is UNVERIFIED is
   never tried (the API is told `manual`: the group asks the owner to mark it sold there); 3 failures → the same line;
   all done → `✓ <title> taken down on …`. `thrift delist --verify --marketplace m --url <listing>` records a control
   WITHOUT using it (the page opened, the control found, a picture to the ops chat, nothing clicked).

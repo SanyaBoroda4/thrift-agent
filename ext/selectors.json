@@ -447,7 +447,8 @@
         ],
         "text": "^mark as sold$",
         "verified": false,
-        "seen_missing": "2026-10-08, `thrift delist --verify` on our live Depop listing (WO33): the listing page offers Edit (a link to the edit page), Boost listing, Copy listing and Delete listing (aria-label, never pressed) — no Mark as sold; to look for on the edit page next. Until then a Depop take-down asks the owner."
+        "seen_missing": "2026-10-08, `thrift delist --verify` on our live Depop listing (WO33): the listing page offers Edit (a link to the edit page), Boost listing, Copy listing and Delete listing (aria-label, never pressed) — no Mark as sold; to look for on the edit page next. Until then a Depop take-down asks the owner.",
+        "note": "replaced by delete (the owner's decision, 2026-10-08): Depop's listing page offers no Mark as sold"
       },
       "confirm": {
         "selectors": [
@@ -477,6 +478,32 @@
         "how": "Depop Shipping (via USPS): a radio, on by default; 'Other' (manual) is never chosen",
         "verified": true,
         "seen": "2026-10-06, the first extension dry run on the Mac: radio name=shipping value=USPS checked; MANUAL the other"
+      },
+      "delete_button": {
+        "selectors": [
+          "button[aria-label='Delete listing']"
+        ],
+        "verified": true,
+        "seen": "2026-10-08, `thrift delist --verify` on our live Depop listing (WO33, nothing clicked): the seller's buttons Edit, Boost listing, Copy listing and the bin button[aria-label='Delete listing'] (aria-haspopup=dialog)"
+      },
+      "delete_dialog": {
+        "selectors": [
+          "[role='dialog']",
+          "[aria-modal='true']"
+        ],
+        "text": "delete this listing",
+        "verified": false,
+        "owner": "2026-10-08: titled \"Delete listing\", \"Are you sure you want to delete this listing? You will lose all the likes.\", buttons Cancel and Delete listing"
+      },
+      "delete_confirm": {
+        "text": "^delete listing$",
+        "verified": false,
+        "note": "inside the window only"
+      },
+      "delete_cancel": {
+        "text": "^cancel$",
+        "verified": false,
+        "note": "inside the window only"
       }
     }
   }

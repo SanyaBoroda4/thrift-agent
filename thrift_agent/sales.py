@@ -322,6 +322,9 @@ async def run_takedown(site: str, poster, db: DB, ctx, ready=None) -> bool:
         return True
     if ok is None:
         report(db, t["id"], "not_found", error="the listing is gone already")
+    elif ok == "sold":                          # Depop shows it sold already: nothing deleted — it sold twice
+        db.upsert_listing(iid, site, status="sold")
+        report(db, t["id"], "sold", evidence=str(getattr(poster, "shot", "") or "") or None)
     elif ok:
         db.upsert_listing(iid, site, status="delisted")
         report(db, t["id"], "done", evidence=str(getattr(poster, "shot", "") or "") or None)

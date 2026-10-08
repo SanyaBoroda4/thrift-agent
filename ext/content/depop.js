@@ -13,6 +13,45 @@
 (function () {
   const T = globalThis.Thrift;
   const S = () => T.selectors.depop.steps;
+  // WO33: the listing's own state, from its JSON-LD (schema.org Product): sold out?
+  const productLd = () => {
+    try { return JSON.parse(T.$(S().listing_title.selectors)?.textContent || "null"); } catch (e) { return null; }
+  };
+  const soldOut = () => /SoldOut/i.test(String(productLd()?.offers?.availability || ""));
+  // A button inside `root` whose text (or label) matches `pattern` exactly.
+  const button = (root, pattern) => {
+    const re = new RegExp(pattern, "i");
+    return T.$$("button", root).find((b) => T.visible(b) && re.test(T.norm(b.textContent || b.getAttribute("aria-label") || "")));
+  };
+  // The bin next to Copy listing, then the "Delete listing" window (null, with an error emitted, when either is missing).
+  const openDeleteWindow = async (job) => {
+    const bin = await T.until(() => T.$$(S().delete_button.selectors).find(T.visible), 10000);
+    if (!bin) {
+      T.emit({ event: "error", job_id: job.job_id, stage: "delete_button", page: "listing", message: "no Delete listing bin on the page" });
+      return null;
+    }
+    T.emit({ event: "step", job_id: job.job_id, name: "delete_bin", ok: true, clicked: true });
+    await T.click(bin);
+    const want = new RegExp(S().delete_dialog.text, "i");
+    const dialog = await T.until(() => T.$$(S().delete_dialog.selectors).find((d) => T.visible(d) && want.test(T.norm(d.textContent))), 8000);
+    if (!dialog) {
+      await T.screenshot("no-delete-window");
+      T.emit({ event: "error", job_id: job.job_id, stage: "delete_dialog", page: "listing", message: "the bin opened no Delete listing window" });
+      return null;
+    }
+    return dialog;
+  };
+  // Is the listing still there? Its page fetched again (same site, the seller's cookies): its Product JSON-LD.
+  const stillThere = async (url) => {
+    try {
+      const r = await fetch(url, { credentials: "include", cache: "no-store" });
+      if (r.status === 404 || r.status === 410) return false;
+      return /"@type"\s*:\s*"Product"/.test(await r.text());
+    } catch (e) {
+      return null;
+    }
+  };
+
   const menuOf = (cid) => document.getElementById(S().combo.menu.replace("{id}", cid.replace(/-input$/, "")));
   const optionsOf = (menu) => (menu ? [...menu.querySelectorAll(S().combo.options)].filter(T.visible) : []);
   const textOf = (el) => el.textContent.replace(/\s+/g, " ").trim();
@@ -379,39 +418,63 @@
       const href = T.$(S().shop_link.selectors)?.getAttribute("href") || "";
       const shop = (href.match(/^\/([^/?#]+)\/?/) || [])[1] || null;
       return { url: location.href, title, price, photos, attributes, shop,
+               product: String(ld["@type"] || "") === "Product" || !!ld.offers,
+               availability: String(ld.offers?.availability || "") || null,
                body: [title, price, attributes, description].join("\n").slice(0, 3000) };
     },
 
+    // WO33, the owner's decision (2026-10-08): Depop's take-down DELETES the listing — its page offers no Mark as
+    // sold. On our listing's page (/products/<slug>/manage/): already sold (its JSON-LD says SoldOut) → nothing pressed,
+    // "sold" (the group hears it sold twice); else the bin next to Copy listing, the "Delete listing" window, and its
+    // Delete listing button — pressed once. The driver then opens the address again: gone = taken down.
     async delist(job, st) {
-      // The listing this agent created: Mark as sold, and the confirmation if one shows. Never Delete (WO32 §4).
-      const re = new RegExp(S().mark_sold.text, "i");
-      const button = T.$$(S().mark_sold.selectors).find((b) => T.visible(b) && re.test(T.norm(b.textContent)));
-      if (!button) {
-        return T.emit({ event: "error", job_id: job.job_id, stage: "mark_sold", page: "form",
-                        message: "no Mark as sold button" });
+      if (soldOut()) {
+        await T.screenshot("sold");
+        return T.emit({ event: "result", job_id: job.job_id, sold: true, url: location.href });
       }
-      T.emit({ event: "step", job_id: job.job_id, name: "mark_sold", ok: true, clicked: true });
-      await T.click(button);
-      const cre = new RegExp(S().confirm.text, "i");
-      const confirm = await T.until(() => T.$$(S().confirm.selectors)
-        .find((b) => T.visible(b) && cre.test(T.norm(b.textContent))), 4000);
-      if (confirm) {
-        await T.click(confirm);
-        await T.until(() => !confirm.isConnected, 4000);
+      const dialog = await openDeleteWindow(job);
+      if (!dialog) return;
+      const yes = button(dialog, S().delete_confirm.text);
+      if (!yes) {
+        return T.emit({ event: "error", job_id: job.job_id, stage: "delete_confirm", page: "listing",
+                        message: "the Delete listing window has no Delete listing button" });
       }
-      await T.screenshot("delisted");
-      T.emit({ event: "result", job_id: job.job_id, delisted: true, url: location.href });
+      T.emit({ event: "step", job_id: job.job_id, name: "delete_listing", ok: true, clicked: true });
+      await T.click(yes);
+      await T.until(() => !dialog.isConnected || !T.visible(dialog), 15000);
+      await T.screenshot("deleted");
+      T.emit({ event: "result", job_id: job.job_id, delete_pressed: true, url: location.href });
+    },
+
+    // WO33, the owner's practice run: the bin pressed, the window recorded, Cancel pressed — never Delete listing —
+    // and the listing checked still live.
+    async practice(job, st) {
+      const dialog = await openDeleteWindow(job);
+      if (!dialog) return;
+      const seen = { title: T.norm(T.$("h1, h2, h3, [class*='title' i]", dialog)?.textContent || "").slice(0, 80),
+                     text: T.norm(dialog.textContent).slice(0, 300),
+                     buttons: T.$$("button", dialog).filter(T.visible).map((b) => T.norm(b.textContent || b.getAttribute("aria-label") || "")) };
+      await T.screenshot("delete-window");
+      const cancel = button(dialog, S().delete_cancel.text);
+      if (!cancel) {
+        return T.emit({ event: "error", job_id: job.job_id, stage: "delete_cancel", page: "listing",
+                        message: `the window has no Cancel (${JSON.stringify(seen).slice(0, 300)})` });
+      }
+      await T.click(cancel);
+      const closed = await T.until(() => !dialog.isConnected || !T.visible(dialog), 6000);
+      const live = await stillThere(job.check_url || location.href);
+      await T.screenshot("after-cancel");
+      T.emit({ event: "result", job_id: job.job_id, practice: true, window: seen, closed: !!closed, live });
     },
 
     // WO33: the take-down control (Mark as sold) looked for on our listing's page — never clicked; the page and its
     // picture are the evidence the selector is recorded from.
     async probe(job, st) {
-      const re = new RegExp(S().mark_sold.text, "i");
-      const button = await T.until(() => T.$$(S().mark_sold.selectors).find((b) => T.visible(b) && re.test(T.norm(b.textContent))),
-                                   6000);
+      // WO33: Depop's take-down is the delete (its page has no Mark as sold) — the bin looked for, never pressed
+      const button = await T.until(() => T.$$(S().delete_button.selectors).find(T.visible), 6000);
       await T.screenshot("probe");
       T.emit({ event: "result", job_id: job.job_id, probe: true, found: !!button, url: location.href,
-               text: button ? button.textContent.replace(/\s+/g, " ").trim() : null });
+               text: button ? (button.getAttribute("aria-label") || button.textContent).replace(/\s+/g, " ").trim() : null });
     },
 
     async find(job, st) {

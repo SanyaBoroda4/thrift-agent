@@ -516,7 +516,7 @@ const listingPage = (site, withControl = true) => {
     </script></body></html>`;
 };
 
-for (const site of ["depop", "vinted"]) {
+for (const site of ["vinted"]) {               // Depop's take-down is a delete since WO33: its own tests below
   const control = LISTING_PAGES[site].control;
 
   test(`${site}: the take-down presses ${control} and its confirmation once each, never Delete`, async () => {
@@ -616,4 +616,69 @@ test("vinted: a Hide that doesn't take is an error, never a false done (WO33: th
   await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
   assert.ok(p.events().some((e) => e.event === "error" && /not hidden/.test(e.message)), JSON.stringify(plain(p.events())));
   assert.ok(!p.events().some((e) => e.event === "result"));
+});
+
+// ---------------------------------------------------------------- WO33: Depop's take-down deletes (the owner's rule)
+// On our listing's page the bin next to Copy listing opens "Delete listing" ("Are you sure you want to delete this
+// listing? You will lose all the likes.", Cancel / Delete listing). Sold already (JSON-LD SoldOut): nothing pressed.
+const DEPOP_URL = "https://www.depop.com/products/myshop-j-crew-wide-leg-pants-11b1/";
+const depopListing = (availability = "https://schema.org/InStock") => `<html><head><title>Depop</title>
+  <script type="application/ld+json" data-testid="meta__jsonLd">${JSON.stringify({
+    "@type": "Product", name: "J.Crew Women's Cream Trousers", description: "J. Crew Wide Leg Pants\n\nWide leg pants.",
+    offers: { "@type": "Offer", price: "35.00", availability } })}</script></head><body>
+  <a href="/products/edit/myshop-j-crew-wide-leg-pants-11b1/">Edit</a><button type="button">Boost listing</button>
+  <a href="/products/create/?copy=1">Copy listing</a>
+  <button type="button" aria-haspopup="dialog" aria-label="Delete listing" id="bin"><svg><title>Delete listing</title></svg></button>
+  <script>
+    window.clicks = [];
+    document.getElementById("bin").addEventListener("click", () => {
+      window.clicks.push("bin");
+      const d = document.createElement("div");
+      d.setAttribute("role", "dialog");
+      d.innerHTML = "<h2>Delete listing</h2><p>Are you sure you want to delete this listing? You will lose all the likes.</p>" +
+                    "<button type='button' id='no'>Cancel</button><button type='button' id='yes'>Delete listing</button>";
+      document.body.appendChild(d);
+      d.querySelector("#no").addEventListener("click", () => { window.clicks.push("cancel"); d.remove(); });
+      d.querySelector("#yes").addEventListener("click", () => { window.clicks.push("delete"); d.remove(); });
+    });
+  </script></body></html>`;
+
+test("depop: the take-down presses the bin, then Delete listing in its window — once each", async () => {
+  const p = page("depop", depopListing(), DEPOP_URL + "manage/");
+  await run(p, { job_id: "depop-delete", site: "depop", mode: "delist", listing_url: DEPOP_URL + "manage/", check_url: DEPOP_URL });
+  await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
+  assert.deepEqual(plain(p.w.clicks), ["bin", "delete"]);
+  assert.ok(p.events().some((e) => e.event === "result" && e.delete_pressed), JSON.stringify(plain(p.events())));
+});
+
+test("depop: a listing that shows sold already is never deleted — it sold twice", async () => {
+  const p = page("depop", depopListing("https://schema.org/SoldOut"), DEPOP_URL + "manage/");
+  await run(p, { job_id: "depop-sold", site: "depop", mode: "delist", listing_url: DEPOP_URL + "manage/", check_url: DEPOP_URL });
+  await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
+  assert.ok(p.events().some((e) => e.event === "result" && e.sold));
+  assert.deepEqual(plain(p.w.clicks), []);
+});
+
+test("depop: the practice run opens the window, records it and presses Cancel — never Delete listing", async () => {
+  const p = page("depop", depopListing(), DEPOP_URL + "manage/");
+  p.w.fetch = async () => ({ status: 200, text: async () => '<script data-testid="meta__jsonLd">{"@type":"Product"}</script>' });
+  await run(p, { job_id: "depop-practice", site: "depop", mode: "practice", listing_url: DEPOP_URL + "manage/", check_url: DEPOP_URL });
+  await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
+  const result = plain(p.events().find((e) => e.event === "result"));
+  assert.deepEqual(plain(p.w.clicks), ["bin", "cancel"]);
+  assert.equal(result.practice, true);
+  assert.equal(result.closed, true);
+  assert.equal(result.live, true);
+  assert.deepEqual(result.window.buttons, ["cancel", "delete listing"]);
+  assert.match(result.window.text, /you will lose all the likes/);
+});
+
+test("depop: the probe finds the bin and presses nothing", async () => {
+  const p = page("depop", depopListing(), DEPOP_URL);
+  await run(p, { job_id: "depop-probe", site: "depop", mode: "probe", listing_url: DEPOP_URL });
+  await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
+  const result = plain(p.events().find((e) => e.event === "result"));
+  assert.equal(result.found, true);
+  assert.equal(result.text, "Delete listing");
+  assert.deepEqual(plain(p.w.clicks), []);
 });

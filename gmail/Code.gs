@@ -28,7 +28,12 @@ var SAMPLES_BUDGET_MS = 270000;     // dumpSamples() stops reading after 4.5 and
 var SEEN_LIMIT = 1000;              // message ids remembered
 var SEEN_KEYS = ['SEEN', 'SEEN_2', 'SEEN_3', 'SEEN_4'];   // 1,000 Gmail ids are ~19 KB of JSON: three of these
 var SEEN_VALUE_MAX = 8000;          // characters per property: Apps Script refuses a value over 9 KB
-var GET_TRIES = 2;                  // a message that can't be read is asked for once more, a second later
+var GET_TRIES = 3;                  // a message that can't be read is asked for again (a quota error: after 2 s, 6 s)
+var QUOTA_WAITS_MS = [2000, 6000];  // Gmail's "Quota exceeded ... per minute per user": wait, then ask again
+var READ_PACE_MS = 200;             // a pause between two messages read: under Gmail's per-minute quota
+var POLL_TRIES = 3;                 // poll(): an email whose text can't be read is tried this many runs before it goes
+                                    // by its headers (the API then tells the ops chat)
+var QUOTA_RE = /quota|rate ?limit|too many|limit exceeded/i;
 var UNREADABLE_LOG = 5;             // dumpSamples() logs why, for the first few it can't read
 
 // The named entities email HTML uses; numeric ones (&#8217; &#x2019;) are decoded by number.
@@ -60,6 +65,7 @@ function poll() {
   config_();
   const props = PropertiesService.getScriptProperties();
   const seen = loadSeen_(props);
+  const tries = loadTries_(props);
   const todo = unseen(listIds_(buildQuery(POLL_DAYS)).reverse(), seen);    // Gmail lists the newest first
   const done = [];
   const problems = [];
@@ -69,9 +75,19 @@ function poll() {
   for (let i = 0; i < todo.length && i < PER_RUN; i++) {
     if (Date.now() - started > POLL_BUDGET_MS) break;
     const id = todo[i];
+    if (i) Utilities.sleep(READ_PACE_MS);
     try {
       const email = readEmail_(id);             // throws only when not even its headers can be read: tried next run
-      if (email.unreadable) problems.push(`${id}: read by its headers only (${email.unreadable})`);
+      if (email.unreadable) {                   // its text couldn't be read: not delivered -- tried again next run,
+        tries[id] = (tries[id] || 0) + 1;       // and only after POLL_TRIES runs sent by its headers
+        if (tries[id] < POLL_TRIES) {
+          errors++;
+          problems.push(`${id}: text unreadable, try ${tries[id]} of ${POLL_TRIES} (${email.unreadable})`);
+          continue;
+        }
+        email.tries = tries[id];
+        problems.push(`${id}: sent by its headers after ${tries[id]} tries (${email.unreadable})`);
+      }
       if (!fromMarketplace_(email.from)) {      // Gmail's from: also matches a display name or a look-alike domain
         skipped++;
         done.push(id);                          // remembered, so it isn't fetched again; never sent
@@ -81,6 +97,7 @@ function poll() {
       if (ok_(status)) {
         sent++;
         done.push(id);
+        delete tries[id];
       } else {
         errors++;
         problems.push(`${id}: HTTP ${status}`);
@@ -91,6 +108,7 @@ function poll() {
     }
   }
   if (done.length) saveSeen_(props, rememberSeen(seen, done));
+  saveTries_(props, tries, todo);
   const left = todo.length - sent - skipped;    // failed this run, or past the run's limit: tried next run
   let beat;
   try {
@@ -139,6 +157,7 @@ function dumpSamples() {
       break;
     }
     let email;
+    if (i) Utilities.sleep(READ_PACE_MS);
     try {
       email = readEmail_(ids[i]);
     } catch (e) {
@@ -238,14 +257,46 @@ function readEmail_(id) {
       return buildPayload(msg);
     } catch (e) {
       reason = errorText_(e);
-      if (attempt < GET_TRIES) Utilities.sleep(1000);
+      if (attempt < GET_TRIES) Utilities.sleep(QUOTA_RE.test(reason) ? QUOTA_WAITS_MS[attempt - 1] || 6000 : 1000);
     }
   }
-  const meta = Gmail.Users.Messages.get('me', id, { format: 'metadata', metadataHeaders: ['From', 'Subject', 'Date'] });
+  const meta = withQuotaRetry_(() => Gmail.Users.Messages.get('me', id, { format: 'metadata',
+                                                                          metadataHeaders: ['From', 'Subject', 'Date'] }));
   const email = buildPayload({ id: meta.id || id, threadId: meta.threadId, internalDate: meta.internalDate,
                                payload: { headers: (meta.payload && meta.payload.headers) || [] } });
   email.unreadable = reason.slice(0, 300);
   return email;
+}
+
+/** `call()`, asked again after a quota error (2 s, then 6 s); any other error is thrown at once. */
+function withQuotaRetry_(call) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return call();
+    } catch (e) {
+      if (attempt > QUOTA_WAITS_MS.length || !QUOTA_RE.test(errorText_(e))) throw e;
+      Utilities.sleep(QUOTA_WAITS_MS[attempt - 1]);
+    }
+  }
+}
+
+/** poll()'s count of tries for the emails it couldn't read yet: {id: n}, in the TRIES property. */
+function loadTries_(props) {
+  try {
+    const value = JSON.parse(props.getProperty('TRIES') || '{}');
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+/** The tries kept only for emails still waiting (in this run's list), at most 100 of them. */
+function saveTries_(props, tries, waiting) {
+  const keep = {};
+  const ids = Object.keys(tries).filter((id) => waiting.indexOf(id) >= 0).slice(-100);
+  ids.forEach((id) => { keep[id] = tries[id]; });
+  if (ids.length) props.setProperty('TRIES', JSON.stringify(keep));
+  else props.deleteProperty('TRIES');
 }
 
 /** The text parts Gmail keeps as attachments (a large body: body.attachmentId, no data), fetched into body.data. */

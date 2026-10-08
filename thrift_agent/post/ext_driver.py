@@ -39,7 +39,8 @@ from thrift_agent.schema import Render
 SELECTORS = bridge_mod.EXT_DIR / "selectors.json"
 PUBLISH_NEEDS = frozenset({"submit"})                       # the supervised `--publish-first`
 AUTOPUBLISH_NEEDS = frozenset({"submit", "after_publish"})  # the unattended loop: the landing page recorded too
-DELIST_NEEDS = {"vinted": frozenset({"hide"}), "depop": frozenset({"mark_sold"})}
+# WO33: Vinted's Hide; Depop's DELETE (the owner's decision, 2026-10-08: its page offers no Mark as sold)
+DELIST_NEEDS = {"vinted": frozenset({"hide"}), "depop": frozenset({"delete_button", "delete_dialog", "delete_confirm"})}
 STOP_PAGES = ("login", "block", "captcha", "verify")
 WHAT = {"login": "not logged in in the Thrift Chrome", "block": "the site turned the Thrift Chrome away (block page)",
         "captcha": "a CAPTCHA is shown in the Thrift Chrome", "verify": "the site asks for a check (verification)"}
@@ -474,17 +475,68 @@ class ExtensionPoster(Poster):
             raise PosterError(f"{self.site} probe {address}: {ev.get('message')}")
         return {"found": bool(ev.get("found")), "text": ev.get("text"), "url": ev.get("url"), "shot": str(self.shot)}
 
-    async def delist(self, url: str) -> bool:
-        """WO31's take-down, never a delete: Vinted's Hide, Depop's Mark as sold — only once that step is recorded."""
+    async def delist(self, url: str) -> bool | None | str:
+        """The take-down, once its steps are recorded: Vinted's Hide (reversible); Depop's DELETE (the owner's
+        decision, WO33 — its page offers no Mark as sold): on /products/<slug>/manage/ the bin, the "Delete listing"
+        window, Delete listing pressed once, then the address opened again — gone is done. True: taken down; None:
+        the listing was gone already; "sold": Depop shows it sold already (nothing pressed: it sold twice)."""
         if missing := sorted(DELIST_NEEDS[self.name] & unverified(self.name, self.selectors_path)):
             raise PosterError(f"{self.site}: delisting isn't recorded yet ({', '.join(missing)} UNVERIFIED in "
                               "ext/selectors.json)")
         address = self.listing_address(url)
         if address is None:
             raise PosterError(f"not a {self.name} listing address: {url!r}")
-        ev = await self._job("delist", {"listing_url": address}, 180, shot=self.shot)
+        if self.name != "depop":
+            ev = await self._job("delist", {"listing_url": address}, 180, shot=self.shot)
+            if ev.get("event") == "error":
+                if ev.get("page") in STOP_PAGES:
+                    raise self._stop(ev)
+                raise PosterError(f"{self.site} delist {address}: {ev.get('message')}")
+            return bool(ev.get("delisted"))
+        before = await self._depop_state(address)
+        if before == "gone":
+            return None
+        if before == "sold":
+            return "sold"
+        self.lines = []
+        ev = await self._job("delist", {"listing_url": address.rstrip("/") + "/manage/", "check_url": address}, 180,
+                             shot=self.shot)
+        if ev.get("event") == "result" and ev.get("sold"):
+            return "sold"
+        pressed = ev.get("delete_pressed") or any(line.startswith("delete_listing") for line in self.lines)
+        if ev.get("event") == "error" and not pressed:
+            if ev.get("page") in STOP_PAGES:
+                raise self._stop(ev)
+            raise PosterError(f"{self.site} delete {address}: {ev.get('message')}")
+        after = await self._depop_state(address)           # the page may have moved on: the address itself decides
+        if after == "gone":
+            return True
+        raise PosterError(f"{self.site}: Delete listing pressed, but {address} is still there ({after})")
+
+    async def _depop_state(self, address: str) -> str:
+        """Depop's listing page as it is now: "live", "sold" (its JSON-LD says SoldOut) or "gone" (no product there)."""
+        ev = await self._job("verify", {"listing_url": address}, 120)
         if ev.get("event") == "error":
             if ev.get("page") in STOP_PAGES:
                 raise self._stop(ev)
-            raise PosterError(f"{self.site} delist {address}: {ev.get('message')}")
-        return bool(ev.get("delisted"))
+            return "gone"                                     # not a listing page any more
+        live = ev.get("live") or {}
+        if not live.get("product"):
+            return "gone"
+        return "sold" if "soldout" in str(live.get("availability") or "").lower() else "live"
+
+    async def practice_delete(self, url: str) -> dict:
+        """WO33, the owner's practice run on a live Depop listing: the bin pressed, the "Delete listing" window
+        recorded, Cancel pressed — never Delete listing — and the listing checked still live."""
+        address = self.listing_address(url)
+        if self.name != "depop" or address is None:
+            raise PosterError(f"the practice run is for a Depop listing address, not {url!r}")
+        ev = await self._job("practice", {"listing_url": address.rstrip("/") + "/manage/", "check_url": address}, 120,
+                             shot=self.shot)
+        if ev.get("event") == "error":
+            if ev.get("page") in STOP_PAGES:
+                raise self._stop(ev)
+            raise PosterError(f"{self.site} practice {address}: {ev.get('message')}")
+        still = await self._depop_state(address)
+        return {"window": ev.get("window") or {}, "closed": bool(ev.get("closed")), "live_seen_by_page": ev.get("live"),
+                "state_after": still, "shot": str(self.shot)}

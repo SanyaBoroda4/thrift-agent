@@ -1021,13 +1021,20 @@ def sales_match(sale_id: str, item_id: str) -> None:
 def delist(run: bool = typer.Option(False, "--run", help="do the pending take-downs now (the poster stopped)"),
            verify: bool = typer.Option(False, "--verify", help="record a site's take-down control without using it"),
            marketplace: str = typer.Option(None, "--marketplace", help="poshmark | depop | vinted (--verify)"),
-           url: str = typer.Option(None, "--url", help="the listing to look at (--verify)")) -> None:
+           url: str = typer.Option(None, "--url", help="the listing to look at (--verify)"),
+           practice: bool = typer.Option(False, "--practice", help="Depop: the bin, the window recorded, Cancel — "
+                                                                   "never Delete listing (WO33)")) -> None:
     """Take-downs (WO33): reversible only — Poshmark Not for Sale, Depop Mark as sold, Vinted Hide. On the Mac, with
     the poster service stopped (the running poster does them by itself between listings)."""
     from thrift_agent.post import takedown
     s = settings()
     if not s.is_prod:
         raise typer.BadParameter("take-downs run on the Mac only (machine_role: prod)")
+    if practice:
+        if marketplace != "depop" or not url:
+            raise typer.BadParameter("--practice is for Depop: --marketplace depop --url <listing>")
+        print(asyncio.run(takedown.practice(s, _db(), url)))
+        return
     if verify:
         if marketplace not in takedown.SITES or not url:
             raise typer.BadParameter("--verify needs --marketplace poshmark|depop|vinted and --url <listing>")

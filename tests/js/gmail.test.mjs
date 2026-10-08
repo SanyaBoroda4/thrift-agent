@@ -49,7 +49,7 @@ function world({ inbox = [], props = {}, status = 200, clock = false } = {}) {
     inbox, status, onGet: null, now: T0,
     store: new Map(Object.entries({ API_URL, API_KEY: KEY, ...props })),
     triggers: [], lists: [], gets: [], posts: [], logs: [], charsets: [], writes: 0, attachments: new Map(),
-    attachmentGets: [],
+    attachmentGets: [], sleeps: [],
   };
   const scriptProperties = {
     getProperty: (k) => (w.store.has(k) ? w.store.get(k) : null),
@@ -116,7 +116,7 @@ function world({ inbox = [], props = {}, status = 200, clock = false } = {}) {
       } }) }) }),
     },
     Utilities: {
-      sleep() {},
+      sleep(ms) { w.sleeps.push(ms); },
       base64DecodeWebSafe(data) {               // strict, like Java's decoder: padded base64url only
         if (data.length % 4 !== 0 || /[^A-Za-z0-9_=-]/.test(data)) throw new Error('Exception: Could not decode string.');
         return Array.from(Buffer.from(data, 'base64url'), (b) => (b > 127 ? b - 256 : b));   // Java bytes are signed
@@ -574,17 +574,45 @@ test('readEmail_: a message Gmail refuses once is asked for again and read in fu
   assert.equal(sent.unreadable, undefined);
 });
 
-test('poll(): a message Gmail never gives in full still reaches the API by its headers -- a sale is never lost', () => {
+test('poll(): an email whose text Gmail won\'t give is NOT marked done -- tried 3 runs, then sent by its headers', () => {
   const w = world({ inbox: many(2) });
   w.onGet = (id, opts) => { if (id === 'm0002' && opts.format === 'full') throw new Error('Exception: Internal error'); };
   w.api.poll();
+  w.api.poll();
+  assert.deepEqual(emailIds(w), ['m0001']);                     // two runs: m0002 not sent, not seen
+  assert.deepEqual(seenIn(w), ['m0001']);
+  assert.equal(JSON.parse(w.store.get('TRIES')).m0002, 2);
+  assert.match(w.logs.at(-1), /m0002: text unreadable, try 2 of 3 \(Exception: Internal error\)/);
+  w.api.poll();                                                  // the third run: what it has, and the ops chat hears it
   const sent = w.posts.find((p) => p.body.message_id === 'm0002').body;
   assert.equal(sent.subject, 'Sale 2');
   assert.equal(sent.text, '');
+  assert.equal(sent.tries, 3);
   assert.match(sent.unreadable, /Internal error/);
-  assert.deepEqual(seenIn(w), ['m0001', 'm0002']);            // delivered: not fetched again and again
-  assert.match(w.logs.at(-1), /m0002: read by its headers only \(Exception: Internal error\)/);
+  assert.deepEqual(seenIn(w), ['m0001', 'm0002']);
+  assert.equal(w.store.get('TRIES'), undefined);                 // nothing waiting any more
   noSecretsLogged(w);
+});
+
+test('quota: Gmail\'s per-minute quota error is waited out (2 s, then 6 s) and the full text read', () => {
+  const w = world({ inbox: many(1) });
+  let refused = 0;
+  w.onGet = (id, opts) => {
+    if (opts.format === 'full' && refused++ < 2) throw new Error("Exception: Quota exceeded for quota metric 'Queries' and limit 'Units per minute per user'");
+  };
+  w.api.poll();
+  const sent = w.posts.find((p) => p.body.message_id === 'm0001').body;
+  assert.equal(sent.text, 'Item 1 sold');
+  assert.deepEqual(w.sleeps, [2000, 6000]);
+});
+
+test('pacing: a pause between two messages read, in poll() and in dumpSamples()', () => {
+  const w = world({ inbox: many(3) });
+  w.api.poll();
+  assert.deepEqual(w.sleeps, [200, 200]);
+  const d = world({ inbox: many(3) });
+  d.api.dumpSamples();
+  assert.deepEqual(d.sleeps, [200, 200]);
 });
 
 test('dumpSamples(): says why for the first five it reads by headers only, and still sends them', () => {

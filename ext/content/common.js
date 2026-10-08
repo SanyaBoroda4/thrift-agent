@@ -331,6 +331,10 @@
       if (page !== "listing") return fail("delist", "unknown", `not a listing page: ${location.href}`);
       return site.delist(job, st);
     }
+    if (job.mode === "practice") {                    // WO33: Depop's delete window opened, then Cancel — never Delete
+      if (page !== "listing" || !site.practice) return fail("practice", "unknown", `not a listing page: ${location.href}`);
+      return site.practice(job, st);
+    }
     if (job.mode === "probe") {                       // WO33: the take-down control looked for — never clicked
       if (page !== "listing") return fail("probe", "unknown", `not a listing page: ${location.href}`);
       return site.probe(job, st);

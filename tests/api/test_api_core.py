@@ -676,3 +676,28 @@ def test_a_sample_stored_without_its_text_gets_it_when_sent_again(db):
     assert core.store_samples(db, [again]) == {"stored": 0, "duplicates": 0, "skipped": 0, "filled": 1}
     assert db.one("SELECT text FROM samples WHERE message_id = 's-1'")["text"] == "You sold J. Crew pants for $35.00"
     assert core.store_samples(db, [{**first, "text": "something else"}])["duplicates"] == 1
+
+
+def test_depop_already_sold_is_sold_twice_once_never_deleted(db, live, sent):
+    """WO33, the owner's Depop rule: the Mac finds the Depop listing sold already (nothing deleted) → result "sold":
+    the task is closed, the listing sold, ONE "Sold twice" line — and none again when Depop's own sale email follows."""
+    seed(db)
+    core.process_email(db, posh_sale(), NOW)
+    sent.clear()
+    depop, vinted = core.take_tasks(db, ["depop", "vinted"], NOW)
+    out = core.task_result(db, depop["id"], "sold", evidence="shots/sold.png", now=NOW)
+    assert out["status"] == "sold" and out["changed"] is True
+    assert texts(sent, "group") == ["⚠️ Sold twice: Lacoste Tee White size M sold on Poshmark and Depop. "
+                                    "Cancel the Depop order in its app."]
+    assert listing_states(db)["depop"] == "sold"
+    core.task_result(db, vinted["id"], "done", now=NOW)
+    assert not [t for t in texts(sent, "group") if "taken down on" in t]       # not down everywhere: it sold
+    core.process_email(db, depop_sale(message_id="depop-sale-2"), NOW)          # Depop's own sale email, later
+    assert len([t for t in texts(sent, "group") if t.startswith("⚠️ Sold twice")]) == 1
+
+
+def test_the_readers_third_try_is_always_told_even_for_plain_noise(db, live, sent):
+    """WO33: poll() sends an email by its headers only after its 3rd try (`tries`): the ops chat hears it, sale or not."""
+    promo = email("poshmark", "Your weekly closet tips", "", "unread-3")
+    core.process_email(db, {**promo, "unreadable": "Exception: Internal error", "tries": 3})
+    assert [t for chat, t, _ in sent if chat == "ops" and "arrived without its text" in t]

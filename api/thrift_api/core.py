@@ -31,7 +31,7 @@ MAX_ATTEMPTS = 3
 MAX_TEXT = 200_000                       # characters of an email's text kept
 ACTING = ("live", "replay")              # the handlings that send messages; only "live" makes tasks
 OPEN_TASKS = ("pending", "running")
-RESULTS = ("done", "not_found", "failed")
+RESULTS = ("done", "not_found", "failed", "sold")
 MAC_PREFIX = "mac:"
 SALE_COLUMNS = ("id", "marketplace", "item_id", "listing_id", "title_seen", "price", "order_id", "sold_at", "ship_by",
                 "ship_by_source", "shipped_at", "delivered_at", "status", "message_id", "created_at")
@@ -112,7 +112,9 @@ def process_email(db: Database, payload: dict, now: datetime | None = None, mode
     base = {"message_id": message_id, "kind": kind, "marketplace": marketplace}
     if db.one("SELECT message_id FROM email_events WHERE message_id = ?", (message_id,)):
         return {**base, "status": "duplicate"}
-    if payload.get("unreadable") and marketplace and mode != "off" and _maybe_sale(kind, subject):
+    # the reader's last word on an email it couldn't read (`tries`: after its 3rd try) is always told; a headers-only
+    # email without it only when it might be a sale
+    if payload.get("unreadable") and marketplace and mode != "off" and (payload.get("tries") or _maybe_sale(kind, subject)):
         # WO33: Gmail wouldn't give this email's text (the reader sent its headers): never a silent loss of a sale
         out = Outbox(now, mode)
         out.ops(f"📭 A {site_name(marketplace)} email arrived without its text (Gmail wouldn't give it): "
@@ -267,8 +269,7 @@ def _sale(db: Database, mp: str, parsed: dict, message_id: str, subject: str | N
     if handling in ACTING:
         title, site = _title(db, item_id, parsed.get("title"), parsed.get("listing_id")), site_name(mp)
         if status == "double_sale":
-            out.group(f"⚠️ Sold twice: {title} sold on {site_name(first['marketplace'])} and {site}. "
-                      f"Cancel the {site} order in its app.")
+            _sold_twice(db, out, item_id, title, site_name(first["marketplace"]), site, now)
         else:
             out.group(_sold_line(site, title, parsed.get("price"), ship_day))
         if status == "unmatched":
@@ -534,7 +535,7 @@ def task_result(db: Database, task_id: str, result: str, error: str | None = Non
     not found, the group hears "✓ <title> taken down on A and B."."""
     now, mode = _clock(now), mode or util.mode()
     if result not in RESULTS:
-        raise BadRequest("result is done, not_found or failed")
+        raise BadRequest("result is done, not_found, failed or sold")
     error = _text(error).strip()[:1000] or None
     evidence = _text(evidence).strip()[:2000] or None
     out = Outbox(now, mode)
@@ -543,6 +544,7 @@ def task_result(db: Database, task_id: str, result: str, error: str | None = Non
         if task is None:
             raise NotFound("no such task")
         accepts = {"done": ("pending", "running", "failed"), "not_found": ("pending", "running", "failed"),
+                   "sold": ("pending", "running", "failed"),
                    "failed": ("pending", "running") if manual else ("running",)}[result]
         attempts = int(task["attempts"] or 0)
         if task["status"] not in accepts:
@@ -556,6 +558,14 @@ def task_result(db: Database, task_id: str, result: str, error: str | None = Non
                        "evidence = COALESCE(?, evidence) WHERE id = ?", (iso(now), evidence, task_id))
             db.execute("UPDATE listings SET status = 'delisted', updated_at = ? WHERE item_id = ? AND marketplace = ?",
                        (iso(now), task["item_id"], task["marketplace"]))
+        elif result == "sold":                # WO33: Depop shows it sold already — nothing deleted: sold twice
+            status = "sold"
+            db.execute("UPDATE delist_tasks SET status = 'sold', done_at = ?, lease_until = NULL, "
+                       "evidence = COALESCE(?, evidence) WHERE id = ?", (iso(now), evidence, task_id))
+            db.execute("UPDATE listings SET status = 'sold', updated_at = ? WHERE item_id = ? AND marketplace = ?",
+                       (iso(now), task["item_id"], task["marketplace"]))
+            first = db.one("SELECT marketplace FROM sales WHERE id = ?", (task["sale_id"],)) or {}
+            _sold_twice(db, out, task["item_id"], title, site_name(first.get("marketplace") or ""), site, now)
         elif result == "not_found":
             status = "not_found"
             db.execute("UPDATE delist_tasks SET status = 'not_found', done_at = ?, lease_until = NULL, last_error = ?, "
@@ -576,6 +586,18 @@ def task_result(db: Database, task_id: str, result: str, error: str | None = Non
         _after_task(db, task["sale_id"], out)
     out.flush()
     return {"id": task_id, "status": status, "attempts": attempts, "changed": True}
+
+
+def _sold_twice(db: Database, out: Outbox, item_id: str | None, title: str, first: str, second: str,
+                now: datetime) -> None:
+    """ONE "⚠️ Sold twice" line per item, whoever noticed first — the sale emails, or the Mac finding Depop's listing
+    sold already (WO33)."""
+    key = f"sold_twice:{item_id}"
+    if item_id and setting(db, key):
+        return
+    if item_id:
+        put_setting(db, key, iso(now))
+    out.group(f"⚠️ Sold twice: {title} sold on {first} and {second}. Cancel the {second} order in its app.")
 
 
 def _after_task(db: Database, sale_id: str, out: Outbox) -> None:
@@ -776,8 +798,7 @@ def match_sale(db: Database, sale_id: str, item_id: object, now: datetime | None
                 db.execute("UPDATE sales SET status = 'delisting' WHERE id = ?", (sale_id,))
         site, title = site_name(sale["marketplace"]), item["title"] or item_id
         if status == "double_sale" and handling in ACTING:
-            out.group(f"⚠️ Sold twice: {title} sold on {site_name(first['marketplace'])} and {site}. "
-                      f"Cancel the {site} order in its app.")
+            _sold_twice(db, out, item_id, title, site_name(first["marketplace"]), site, now)
         downs = f"; take-downs: {util.and_list([site_name(t['marketplace']) for t in tasks])}" if tasks else ""
         out.ops(f"Matched the {site} sale {sale_id} to {title} ({status}){downs}.")
     out.flush()

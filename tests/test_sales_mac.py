@@ -341,3 +341,68 @@ def test_the_first_sync_sends_every_item_and_listing_made_before_the_triggers(tm
     assert sales.push(again, api.client()) == 2
     assert DB(s.path("db")).conn.execute("SELECT COUNT(*) FROM api_dirty").fetchone()[0] == 0   # never twice
     assert again.seed_api_dirty(again=True) == 2
+
+
+def test_depop_already_sold_is_reported_sold_and_nothing_is_deleted(tmp_path, api):
+    """WO33: Depop's listing shows sold already — the poster returns "sold" (nothing pressed): the API is told so
+    (its group line "Sold twice"), the row is sold here."""
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid = _item(db)
+    db.upsert_listing(iid, "depop", status="posted", url="https://www.depop.com/products/shop-x-1a2b/")
+    api.tasks = [_task(db, iid, "depop")]
+    sales.fetch_tasks(db, ["depop"], force=True)
+    assert asyncio.run(sales.run_takedown("depop", Taker(result="sold"), db, None)) is True
+    assert next(b for _, p, b, _ in api.calls if p == "/tasks/t_depop_1")["result"] == "sold"
+    assert db.listing(iid, "depop")["status"] == "sold"
+
+
+class Scripted:
+    """ExtensionPoster._job answered from a script: (mode, event) pairs in order."""
+
+    def __init__(self, script):
+        self.script, self.asked = list(script), []
+
+    async def __call__(self, mode, payload, timeout, shot=None):
+        self.asked.append((mode, payload))
+        want, ev = self.script.pop(0)
+        assert want == mode, (want, mode)
+        return ev
+
+
+LIVE = {"event": "result", "live": {"product": True, "availability": "https://schema.org/InStock"}}
+SOLD = {"event": "result", "live": {"product": True, "availability": "https://schema.org/SoldOut"}}
+GONE = {"event": "error", "page": "unknown", "message": "not a listing page"}
+
+
+def _depop(monkeypatch, script):
+    from thrift_agent.post import ext_driver
+    p = ext_driver.ExtensionPoster("depop", bridge=None)
+    monkeypatch.setattr(ext_driver, "unverified", lambda site, path=None: set())
+    job = Scripted(script)
+    monkeypatch.setattr(p, "_job", job)
+    return p, job
+
+
+def test_depop_delete_presses_once_and_counts_only_when_the_address_is_gone(monkeypatch):
+    url = "https://www.depop.com/products/shop-j-crew-pants-11b1/"
+    p, job = _depop(monkeypatch, [("verify", LIVE), ("delist", {"event": "result", "delete_pressed": True}),
+                                  ("verify", GONE)])
+    assert asyncio.run(p.delist(url)) is True
+    assert job.asked[1] == ("delist", {"listing_url": url + "manage/", "check_url": url})
+
+
+def test_depop_sold_already_is_never_deleted(monkeypatch):
+    p, job = _depop(monkeypatch, [("verify", SOLD)])
+    assert asyncio.run(p.delist("https://www.depop.com/products/shop-j-crew-pants-11b1/")) == "sold"
+    assert [m for m, _ in job.asked] == ["verify"]                     # no delete job at all
+
+
+def test_depop_still_there_after_delete_is_an_error_and_gone_before_is_not_found(monkeypatch):
+    from thrift_agent.post.base import PosterError
+    p, _ = _depop(monkeypatch, [("verify", LIVE), ("delist", {"event": "result", "delete_pressed": True}),
+                                ("verify", LIVE)])
+    with pytest.raises(PosterError, match="still there"):
+        asyncio.run(p.delist("https://www.depop.com/products/shop-j-crew-pants-11b1/"))
+    p2, _ = _depop(monkeypatch, [("verify", GONE)])
+    assert asyncio.run(p2.delist("https://www.depop.com/products/shop-j-crew-pants-11b1/")) is None
