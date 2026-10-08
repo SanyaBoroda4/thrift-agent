@@ -507,7 +507,11 @@ const listingPage = (site, withControl = true) => {
         dialog.setAttribute("role", "dialog");
         dialog.innerHTML = "<p>Are you sure?</p><button id='yes'>${control}</button><button>Cancel</button>";
         document.body.appendChild(dialog);
-        dialog.querySelector("#yes").addEventListener("click", () => { window.clicks.push("confirm"); dialog.remove(); });
+        dialog.querySelector("#yes").addEventListener("click", () => {
+          window.clicks.push("confirm");
+          dialog.remove();
+          if (!window.__keepControl) control.remove();      // taken: the page no longer offers it (Vinted: "Hide" gone)
+        });
       });
     </script></body></html>`;
 };
@@ -602,4 +606,14 @@ test("vinted: the shop read waits for the member page to draw its tiles (WO33: l
   const result = plain(p.events().find((e) => e.event === "result"));
   assert.equal(result.listings.length, 2);
   assert.match(result.listings[0].text, /Naturino size 7\.5/);
+});
+
+test("vinted: a Hide that doesn't take is an error, never a false done (WO33: the button must be gone afterwards)", async () => {
+  const p = page("vinted", listingPage("vinted").replace("<script>", "<script>window.__keepControl = true;"),
+                 LISTING_PAGES.vinted.url);
+  p.w.Thrift.timeoutScale = 0.05;
+  await run(p, { job_id: "vinted-delist-stuck", site: "vinted", mode: "delist", listing_url: LISTING_PAGES.vinted.url });
+  await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
+  assert.ok(p.events().some((e) => e.event === "error" && /not hidden/.test(e.message)), JSON.stringify(plain(p.events())));
+  assert.ok(!p.events().some((e) => e.event === "result"));
 });

@@ -255,7 +255,15 @@
         await T.click(confirm);
         await T.until(() => !confirm.isConnected, 4000);
       }
+      // WO33: hidden only when the Hide button has gone (the page then offers to show it again) — a confirmation we
+      // don't recognise leaves it there: an error, tried again, never a false "done".
+      const gone = await T.until(() => !T.$$(S().hide.selectors)
+        .some((b) => b.isConnected && T.visible(b) && re.test(T.norm(b.textContent))), 8000);
       await T.screenshot("delisted");
+      if (!gone) {
+        return T.emit({ event: "error", job_id: job.job_id, stage: "hide", page: "listing",
+                        message: "Hide pressed, but the listing still offers Hide: not hidden" });
+      }
       T.emit({ event: "result", job_id: job.job_id, delisted: true, url: location.href });
     },
 

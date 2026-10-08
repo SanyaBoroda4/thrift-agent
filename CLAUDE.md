@@ -321,6 +321,15 @@ rows were copied in once (kv `listings_migrated`); `posts` is left as it was.
   `a[href='/items/<id>']` whose `title` reads "<title>, brand: …, condition: …, size: …, $35.00"; `shop_links`
   verified). Vinted's `after_publish` is verified: its unattended loop needs only the owner's
   `marketplaces.vinted.autopublish: true`. Before this the landing waited 60 s as an "unknown page".
+- **Recorded by the take-down probes (2026-10-08, WO33, `thrift delist --verify`, nothing clicked):** Poshmark's edit
+  page `/edit-listing/<id>` — "Availability *": `[data-et-name=listingEditorAvailabilitySection] [data-test=dropdown]`
+  (items "available,not_for_sale"), options `a.dropdown__link[data-et-on-name=availability][data-et-name=available |
+  not_for_sale]`, `button[data-et-name=update]` (Delete Listing `a[data-et-name=delete]` never touched); after Update
+  the public listing is read until it is no longer for sale. Vinted's listing page: Hide
+  `button[data-testid=item-hide-button]` (next to Mark as sold, Mark as reserved, Edit listing, Delete
+  `item-delete-button` — never); a take-down counts only when Hide has gone afterwards. Depop's listing page has NO
+  Mark as sold — Edit (to the edit page), Boost listing, Copy listing, Delete listing (never): `mark_sold` stays
+  UNVERIFIED (the edit page to probe next), so a Depop take-down asks the owner.
 - Seen in Chromium (WO32 tests): `chrome.tabs.captureVisibleTab` needs `<all_urls>` or `activeTab`; an unpacked
   extension's `chrome.alarms` may tick every 3 s (`poll_minutes` 0.05); a tab opened by the extension can escape a
   Playwright route on its first request — the tests make every host but 127.0.0.1 unresolvable.

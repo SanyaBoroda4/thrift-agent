@@ -221,9 +221,10 @@
       "never_click": {
         "selectors": [
           "[data-testid='list-promotion-submit-cta']",
-          "[data-testid='bump-button']"
+          "[data-testid='bump-button']",
+          "[data-testid='item-delete-button']"
         ],
-        "note": "List another and Bump: recorded so a test can prove they are never pressed",
+        "note": "List another, Bump, Delete: recorded so a test can prove they are never pressed",
         "verified": true,
         "seen": "2026-10-08, the first supervised Vinted publish on the Mac (WO33, from its evidence): after the one Upload click the tab went to /member/<id>?promo_shown=true with an \"Item listed\" dialog (h1 \"Item listed\", the item card, \"List another\" [data-testid=list-promotion-submit-cta], \"Later\" [data-testid=list-promotion-cancel-cta]); the member page also shows Bump buttons [data-testid=bump-button]. The shop check found the new listing among the member page's 20 (/items/<id>-<slug>)."
       },
@@ -249,11 +250,11 @@
       },
       "hide": {
         "selectors": [
-          "[data-testid='item-hide-button']",
-          "button"
+          "[data-testid='item-hide-button']"
         ],
         "text": "^hide$",
-        "verified": false
+        "verified": true,
+        "seen": "2026-10-08, `thrift delist --verify` on our live Vinted listing (WO33, nothing clicked): the seller's buttons — Mark as sold, Mark as reserved [data-testid=mark-as-reserved-button], Hide button[data-testid=item-hide-button], Edit listing [data-testid=item-edit-button], Delete [data-testid=item-delete-button] (never). What follows Hide is unseen: the take-down counts only when the Hide button has gone."
       },
       "confirm": {
         "selectors": [
@@ -374,8 +375,8 @@
           "input[name='sku']"
         ],
         "how": "a plain text input under Quantity ('Learn more about SKUs'): our item id (WO33 A4) — only the seller sees it; sales are matched by it",
-        "verified": false,
-        "seen": "2026-10-06, the dry runs' form HTML: input#SKU__input[data-testid=SKU__input][name=sku], empty; never filled yet"
+        "verified": true,
+        "seen": "2026-10-08, five extension dry runs on the Mac (WO33): our item id typed in [data-testid=SKU__input] and read back (\"sku ✓\")"
       },
       "boost": {
         "selectors": [
@@ -445,7 +446,8 @@
           "button"
         ],
         "text": "^mark as sold$",
-        "verified": false
+        "verified": false,
+        "seen_missing": "2026-10-08, `thrift delist --verify` on our live Depop listing (WO33): the listing page offers Edit (a link to the edit page), Boost listing, Copy listing and Delete listing (aria-label, never pressed) — no Mark as sold; to look for on the edit page next. Until then a Depop take-down asks the owner."
       },
       "confirm": {
         "selectors": [

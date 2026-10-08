@@ -783,17 +783,24 @@ LISTING_ID = "6701a2b3c4d5e6f708192a3b"
 URL = f"{BASE}/listing/J-Crew-Wide-Leg-Pants-{LISTING_ID}"
 
 EDIT = """<html><body><h1>Edit Listing</h1>
-<div class="form__group"><label>Availability</label>
-  <div data-vv-name="availability" class="dropdown" tabindex="0"
-       onclick="document.getElementById('opts').hidden = false">%(now)s</div>
-  <ul id="opts" hidden><li onclick="pick('For Sale')">For Sale</li><li onclick="pick('Not For Sale')">Not For Sale</li></ul>
-</div>
-<button onclick="update()">Update</button>
+<section><div class="listing-editor__section__title"> Availability * </div>
+<div data-et-name="listingEditorAvailabilitySection">
+  <div data-test="dropdown" class="dropdown" tabindex="0" items="available,not_for_sale"
+       onclick="document.getElementById('opts').hidden = false"><div class="dropdown__selector"><span>%(now)s</span></div></div>
+  <ul id="opts" data-test="dropdown_menu_list" hidden>
+    <li class="dropdown__menu__item"><a class="dropdown__link" data-et-on-name="availability" data-et-name="available"
+       onclick="pick('For Sale')">For Sale</a></li>
+    <li class="dropdown__menu__item"><a class="dropdown__link" data-et-on-name="availability" data-et-name="not_for_sale"
+       onclick="pick('Not For Sale')">Not For Sale</a></li>
+  </ul>
+</div></section>
+<a data-et-name="delete" onclick="fetch('/api/delete')">Delete Listing</a>
+<button data-et-name="update" onclick="update()">Update</button>
 <script>
   let chosen = %(now_js)s;
   function pick(v) {
     chosen = v;
-    document.querySelector('[data-vv-name=availability]').textContent = v;
+    document.querySelector('[data-test=dropdown] span').textContent = v;
     document.getElementById('opts').hidden = true;
   }
   function update() {
@@ -861,7 +868,8 @@ def test_the_probe_finds_the_control_and_changes_nothing(chrome, posh, tmp_path)
     assert posh.shot.with_suffix(".html").exists() and posh.shot.with_suffix(".json").exists()
 
 
-def test_the_steps_refuse_while_unverified(chrome, posh, tmp_path):
+def test_the_steps_refuse_while_unverified(chrome, posh, tmp_path, monkeypatch):
+    monkeypatch.setattr(poshmark, "UNVERIFIED", poshmark.UNVERIFIED | poshmark.AVAILABILITY_NEEDS)
     site = EditSite()
     with pytest.raises(PosterError, match="isn't recorded yet"):
         run(chrome, site, lambda ctx: posh.set_availability(ctx, URL, False, shots=tmp_path))
@@ -875,6 +883,7 @@ def test_the_take_down_is_not_for_sale_and_the_relist_for_sale(chrome, posh, tmp
     assert site.updates == ["Not For Sale"]
     assert run(chrome, site, lambda ctx: posh.set_availability(ctx, URL, True, shots=tmp_path)) is True
     assert site.updates == ["Not For Sale", "For Sale"]               # thrift relist: reversed, one Update each
+    assert not [u for u in site.urls if "/api/delete" in u]              # Delete Listing never touched
     assert '"public": true' in posh.shot.with_suffix(".json").read_text(encoding="utf-8")
 
 

@@ -32,10 +32,11 @@ UNVERIFIED (record on the Mac from the evidence in failed/shots):
                                 one stops the publish before the click)
   draft_saved                   where Save Draft lands
   captcha                       the wording of Poshmark's bot check
-  edit_url, availability, availability_option, update_listing, availability_label
-                                WO33's take-down: the listing's edit page, its Availability menu, "Not For Sale" /
-                                "For Sale", and Update — recorded without using them (`thrift delist --verify`); until
-                                then a sale asks the owner to mark it sold on Poshmark by hand
+  availability_label            the word "Availability" on the edit page: only the probe's clue, never clicked
+WO33's take-down (edit_url, availability, availability_option, update_listing) was recorded from the live edit page by
+`thrift delist --verify` on 2026-10-08 without using it: [data-et-name=listingEditorAvailabilitySection]'s
+[data-test=dropdown] (items "available,not_for_sale"), a.dropdown__link[data-et-on-name=availability]
+[data-et-name=available|not_for_sale], button[data-et-name=update]; a[data-et-name=delete] is never touched.
 The size menus' tabs and values are Poshmark's own catalog of the form (data/poshmark_catalog.json, WO25); a size is
 selected only as a value of its tab's menu. The Brand field is optional on the form (its "Optional" label, 2026-09-30):
 an item the owner calls unbranded leaves it empty.
@@ -228,17 +229,20 @@ SEL = {
     # WO33 take-downs (reversible: Availability "Not For Sale" on the listing's edit page, never a delete) — recorded
     # by `thrift delist --verify` (the page opened, the control found, a picture; nothing changed).
     "edit_url": "{base}/edit-listing/{id}",
-    "availability": lambda p: p.locator('[data-vv-name="availability"], [data-test="availability"], '
-                                        '[data-et-name="availability"]'),
+    # WO33, recorded by `thrift delist --verify` on the live edit page (2026-10-08, nothing clicked): the Availability
+    # section's Poshmark dropdown (items="available,not_for_sale"), its two options, and Update.
+    "availability": lambda p: p.locator('[data-et-name="listingEditorAvailabilitySection"] [data-test="dropdown"]'),
     "availability_label": lambda p: p.get_by_text("Availability", exact=True),      # the probe's clue, never clicked
-    "availability_option": lambda p, text: p.get_by_text(text, exact=True),
-    "update_listing": lambda p: p.get_by_role("button", name=re.compile(r"^\s*update\s*$", re.I)),
+    "availability_option": lambda p, text: p.locator(
+        'a.dropdown__link[data-et-on-name="availability"][data-et-name="%s"]'
+        % ("available" if text == "For Sale" else "not_for_sale")),
+    "update_listing": lambda p: p.locator('button[data-et-name="update"]'),
     "promote_toggle": lambda panel: panel.locator('input[type="checkbox"]'),
     "draft_saved": re.compile(r"/closet/|/listing/"),
     "captcha": lambda p: p.get_by_text(re.compile("captcha|verify you are human", re.I)),
 }
 AVAILABILITY_NEEDS = frozenset({"edit_url", "availability", "availability_option", "update_listing"})   # WO33
-UNVERIFIED = frozenset({"promote_toggle", "draft_saved", "captcha", "availability_label"}) | AVAILABILITY_NEEDS
+UNVERIFIED = frozenset({"promote_toggle", "draft_saved", "captcha", "availability_label"})
 PUBLISH_NEEDS = frozenset({"list_item", "listing_url"})      # submit() publishes only once these are recorded
 DRAFT_NEEDS = frozenset({"draft_saved"})
 
