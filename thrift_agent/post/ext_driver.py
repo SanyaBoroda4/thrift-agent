@@ -440,6 +440,24 @@ class ExtensionPoster(Poster):
         seen = {"listings": len(listings), "with_this_title": ours[:10]}
         return (ours[0], seen) if len(ours) == 1 else (None, seen)
 
+    async def shop_listings(self) -> list[dict]:
+        """Every listing the seller's shop page shows (WO33: the items she listed by hand), as {url, text} — the
+        listing's own address and the longest text seen for it (Vinted: the tile's description)."""
+        shop = self.shop or self.learned_shop or ""
+        if not shop:
+            raise PosterError(f"no {self.name} shop page to read (set marketplaces.{self.name}.shop)")
+        ev = await self._job("find", {"shop": shop}, 180)
+        if ev.get("event") == "error":
+            if ev.get("page") in STOP_PAGES:
+                raise self._stop(ev)
+            raise PosterError(f"{self.site} shop {shop}: {ev.get('message')}")
+        out: dict[str, str] = {}
+        for x in ev.get("listings") or []:
+            if address := self.listing_address(str(x.get("url") or "")):
+                text = str(x.get("text") or "").strip()
+                out[address] = text if len(text) > len(out.get(address, "")) else out.get(address, "")
+        return [{"url": u, "text": t} for u, t in out.items()]
+
     async def probe_delist(self, url: str) -> dict:
         """WO33's no-click recording of the take-down control: our listing's page opened in the Thrift Chrome, Hide /
         Mark as sold looked for, the page and its picture kept — nothing clicked. Returns {"found", "text", "url",

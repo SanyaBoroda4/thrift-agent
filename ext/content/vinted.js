@@ -223,6 +223,22 @@
                photos: T.$$(S().listing_photos.selectors).length, body: T.textOf().slice(0, 3000) };
     },
 
+    // WO33, recorded from the first supervised publish (2026-10-08): Upload lands on the member page with an "Item
+    // listed" dialog — "List another" [data-testid=list-promotion-submit-cta] and "Later"
+    // [data-testid=list-promotion-cancel-cta]. Only Later is pressed (its id AND its text); List another and the page's
+    // Bump buttons never are. No dialog within 6 s: nothing pressed.
+    async landed(job, st) {
+      const step = S().listed_later;
+      const re = new RegExp(step.text, "i");
+      const later = await T.until(() => T.$$(step.selectors).find((b) => T.visible(b) && re.test(T.norm(b.textContent))),
+                                  6000);
+      if (!later) return "no Item listed dialog";
+      await T.click(later);
+      const gone = await T.until(() => !later.isConnected || !T.visible(later), 4000);
+      T.emit({ event: "step", job_id: job.job_id, name: "listed_later", ok: !!gone, clicked: true });
+      return gone ? "Item listed: Later" : "Item listed: Later pressed, the dialog still showing";
+    },
+
     async delist(job, st) {
       // The listing this agent created: its Hide, and the confirmation if one shows. Never Delete (WO32 §4).
       const re = new RegExp(S().hide.text, "i");

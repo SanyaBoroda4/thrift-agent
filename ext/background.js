@@ -537,7 +537,11 @@ chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
   if (!j.clicked || j.after) return;
   if (info.status !== "complete" && !info.url) return;
   const sel = await selectors();
-  if (!new RegExp(sel[j.site].listing_url).test(tab.url || "")) return;
+  const conf = sel[j.site] || {};
+  const listing = new RegExp(conf.listing_url).test(tab.url || "");
+  // WO33: Vinted's Upload lands on the seller's member page ("Item listed": Later is pressed there, then the shop check)
+  const landing = !!conf.landing_url && new RegExp(conf.landing_url).test(tab.url || "");
+  if (!listing && !(landing && info.status === "complete")) return;
   j.after = true;
   await remember();
   clearTimeout(afterTimers[j.site]);

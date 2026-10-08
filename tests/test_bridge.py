@@ -886,8 +886,8 @@ def test_verified_steps_carry_their_evidence_and_the_publish_gate_stays_closed()
                 assert step.get("seen"), f"{site} {name}: verified without its evidence"
         # The live dry runs (2026-10-06) recorded the forms and their one publish button: the owner's supervised publish
         # may go; the unattended loop waits for a real publish to record the page after the click — Depop's first
-        # supervised publish recorded it (2026-10-07, WO32b), Vinted's is still to come.
+        # supervised publish recorded it (2026-10-07, WO32b), Vinted's too (2026-10-08, WO33: the member page and its
+        # "Item listed" dialog, Later pressed).
         assert not (ext_driver.PUBLISH_NEEDS & ext_driver.unverified(site))
-        assert ext_driver.AUTOPUBLISH_NEEDS & ext_driver.unverified(site) == ({"after_publish"} if site == "vinted"
-                                                                             else set())
+        assert not (ext_driver.AUTOPUBLISH_NEEDS & ext_driver.unverified(site))
         assert data[site]["pages"]["login"]["verified"]

@@ -226,6 +226,7 @@
       if ((p.selectors && T.$(p.selectors)) || (p.text && new RegExp(p.text, "im").test(text))) return name;
     }
     if (conf.listing_url && new RegExp(conf.listing_url).test(location.href)) return "listing";
+    if (conf.landing_url && new RegExp(conf.landing_url).test(location.href)) return "landing";   // WO33: after Upload
     if (pages.form && T.$(pages.form.selectors)) return "form";
     return "unknown";
   };
@@ -310,6 +311,11 @@
       return fail(job.mode === "after_publish" ? "after_publish" : "open", page, `${page} page`);
     }
     if (job.mode === "find") return site.find(job, st);
+    if (job.mode === "after_publish" && page === "landing") {   // WO33: Vinted's member page after Upload
+      const did = site.landed ? await site.landed(job, st) : "nothing to answer";
+      await T.screenshot("landing");
+      return fail("after_publish", "landing", `landed on ${location.href} (${did}): the shop check finds the listing`);
+    }
     if (job.mode === "verify" || job.mode === "after_publish") {
       if (page !== "listing") {
         await T.screenshot(page);

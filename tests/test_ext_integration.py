@@ -72,15 +72,34 @@ class Site:
         self.urls.append(url)
         path = re.sub(r"^https://www\.(vinted|depop)\.com", "", url).split("?")[0]
         site = "vinted" if "vinted.com" in url else "depop"
-        if path in ("/api/upload-click", "/api/post-click"):
+        if path in ("/api/upload-click", "/api/post-click", "/api/later-click", "/api/list-another-click",
+                    "/api/bump-click"):
             self.clicks.append(path)
             return await route.fulfill(status=200, body="{}", content_type="application/json")
+        if site == "vinted" and re.match(r"^/member/\d+/?$", path):      # WO33: where Upload lands, the shop
+            return await route.fulfill(status=200, body=member_page("promo_shown=true" in url), content_type="text/html")
         if re.match(r"^/items/\d+", path) or (re.match(r"^/products/[a-z0-9-]+/?$", path) and "create" not in path):
             body = LISTING.format(title=TITLE, site=site.title(), price=35, size="S / US 4-6")
             return await route.fulfill(status=200, body=body, content_type="text/html")
         if site == "vinted":
             return await route.fulfill(status=200, body=self._html(self.vinted), content_type="text/html")
         return await route.fulfill(status=self.depop_status, body=self._html(self.depop), content_type="text/html")
+
+
+def member_page(dialog: bool) -> str:
+    """Vinted's member page as the first supervised publish recorded it (WO33): the shop's listings (the new one among
+    them), a Bump button under each, and right after Upload (?promo_shown=true) the "Item listed" dialog — List
+    another / Later. Every press is counted (/api/*-click)."""
+    tile = ("<div data-testid='grid-item'><a href='/items/9876543210-j-crew-wide-leg-sweater-pants-cream-size-s' "
+            f"title='{TITLE}'>{TITLE}</a><button type='button' data-testid='bump-button' "
+            "onclick=\"fetch('/api/bump-click')\">Bump</button></div>")
+    pop = ("<div role='dialog' class='web_ui__Dialog'><h1>Item listed</h1>"
+           "<button type='button' data-testid='list-promotion-submit-cta' "
+           "onclick=\"fetch('/api/list-another-click')\">List another</button>"
+           "<button type='button' data-testid='list-promotion-cancel-cta' "
+           "onclick=\"fetch('/api/later-click'); this.closest('[role=dialog]').remove()\">Later</button></div>")
+    return (f"<html><head><title>tattishop | Vinted</title></head><body><main><h2>tattishop</h2>{tile}</main>"
+            f"{pop if dialog else ''}</body></html>")
 
 
 def fields(mp: str, photos: list[str]):
@@ -204,6 +223,31 @@ def test_a_vinted_publish_clicks_once_and_lands_on_the_listing(tmp_path):
     assert site.clicks == ["/api/upload-click"]                     # exactly once
     assert Path(out.screenshot).name.endswith("-after-publish.png")
     assert "live check" not in (out.note or "")
+
+
+def test_a_vinted_publish_landing_on_the_member_page_presses_later_and_finds_it_in_the_shop(tmp_path):
+    """WO33, as the first supervised Vinted publish went live: Upload lands on the member page with "Item listed" —
+    the extension presses Later at once (no 60 s wait), never List another or Bump; the shop check finds the
+    listing by its title."""
+    site = Site(fixture={"sizeLag": 0, "brandDelay": 200, "land": "/member/3456?promo_shown=true"})
+
+    async def go():
+        b, pw, ctx, sw = await session(tmp_path, site)
+        try:
+            assert await connected(b)
+            p = poster("vinted", b, tmp_path, verified=True)
+            p.shop = "3456"
+            t0 = time.monotonic()
+            out = await p.post(None, RENDER, "publish", False, tmp_path / "shots")
+            return out, time.monotonic() - t0
+        finally:
+            await close(b, pw, ctx)
+    out, took = asyncio.run(go())
+    assert out.status == "posted", (out.error, out.note)
+    assert out.url == "https://www.vinted.com/items/9876543210"
+    assert site.clicks == ["/api/upload-click", "/api/later-click"], site.clicks     # never List another, never Bump
+    assert "Item listed: Later" in (out.note or "") and "found in the shop" in (out.note or "")
+    assert took < 50, took                                          # answered at once, not after the 60 s timeout
 
 
 def test_depop_dry_run_then_publish(tmp_path):

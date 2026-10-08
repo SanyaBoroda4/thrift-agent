@@ -268,8 +268,8 @@ rows were copied in once (kv `listings_migrated`); `posts` is left as it was.
   (`draft_saved`); the size field and Done for adult sizes (the values and tabs are the catalog's, WO25); the
   CAPTCHA wording; every `SEL` entry of Depop's and Vinted's posters (WO30, `post/depop.py`, `post/vinted.py`:
   only Depop's combobox ids came from its logged-in form); the extension's steps that no dry run can show
-  (`ext/selectors.json`: Vinted's `after_publish` and listing page, Vinted's Hide / Depop's Mark as sold, the shop
-  pages' links, Vinted's skirt length and promotion close) — recorded by the owner's supervised publish and WO31. Record them from the
+  (`ext/selectors.json`: Vinted's listing page, Vinted's Hide / Depop's Mark as sold, Depop's shop page links,
+  Vinted's skirt length and promotion close) — recorded by the owner's supervised publishes and WO33's probes. Record them from the
   evidence in `failed/shots/` (`.png`/`.html`/`.json` per run, `<item>-review.json`, `…-after-list.*`) or with
   `playwright codegen --channel chrome https://poshmark.com/create-listing` on the Mac.
 - **Recorded live by the extension (2026-10-06, WO32, five dry runs of one item in the Thrift Chrome, nothing
@@ -312,6 +312,15 @@ rows were copied in once (kv `listings_migrated`); `posts` is left as it was.
   is not the shop's name). Depop's `after_publish` is verified: its unattended loop needs only the owner's
   `marketplaces.depop.autopublish: true`. Live misses fixed: the `/manage/` landing read as "not a listing page", and
   the shop check had no shop to open.
+- **Recorded from the first supervised Vinted publish (2026-10-08, WO33; it is live):** after the one Upload click the
+  tab lands on the seller's member page `/member/<id>?promo_shown=true` (`landing_url`) with an **"Item listed"**
+  dialog — the item card, "List another" `[data-testid=list-promotion-submit-cta]` and "Later"
+  `[data-testid=list-promotion-cancel-cta]`; the page under it shows Bump buttons `[data-testid=bump-button]`. The
+  extension presses **Later** at once (its id AND its text — `listed_later`), never List another or Bump
+  (`never_click`), and the driver's shop check finds the new listing among the member page's items (tiles
+  `a[href='/items/<id>']` whose `title` reads "<title>, brand: …, condition: …, size: …, $35.00"; `shop_links`
+  verified). Vinted's `after_publish` is verified: its unattended loop needs only the owner's
+  `marketplaces.vinted.autopublish: true`. Before this the landing waited 60 s as an "unknown page".
 - Seen in Chromium (WO32 tests): `chrome.tabs.captureVisibleTab` needs `<all_urls>` or `activeTab`; an unpacked
   extension's `chrome.alarms` may tick every 3 s (`poll_minutes` 0.05); a tab opened by the extension can escape a
   Playwright route on its first request — the tests make every host but 127.0.0.1 unresolvable.
@@ -345,6 +354,11 @@ cover's hash, before vs after); otherwise it stays as the owner has it. The line
 `thrift requeue <item> [marketplace] | requeue <batch> | mark-posted <item> <marketplace> <url> | status | show <item>`
 `thrift crosslist <item> | crosslist --dry-run <item> | crosslist --backfill [--dry-run] | crosslist --check-login`
 (WO30, WO32: see "Cross-listing" and "The extension driver")
+`thrift crosslist --hand-listed` (WO33, the poster stopped): her Depop and Vinted shops read through the extension,
+each of our items scored against her listings (`handlisted.py`: brand — a near spelling counts —, the item's words, the
+size, the price), the numbered list (sure and unsure) to the ops chat, nothing recorded; `--hand-listed --apply 1,2`
+records the numbers the owner confirmed (the row `posted` with her listing's address: the backfill skips it, a sale
+elsewhere takes it down).
 `thrift catalogs check | catalogs refresh [--depop] [--vinted]`; `--marketplace poshmark|depop|vinted` on
 `poster --publish-first`, `retry`, `mark-posted` and `requeue`
 `thrift retry <item> [marketplace]` (WO28): an "unconfirmed publish" the owner checked and is NOT on the marketplace goes

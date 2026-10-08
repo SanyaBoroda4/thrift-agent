@@ -3,6 +3,7 @@
   "vinted": {
     "sell_url": "https://www.vinted.com/items/new",
     "listing_url": "^https://www\\.vinted\\.com/items/(\\d+)(?:-[^/?#]*)?/?(?:[?#].*)?$",
+    "landing_url": "^https://www\\.vinted\\.com/member/\\d+(?:[/?#].*)?$",
     "shop_url": "https://www.vinted.com/member/{shop}",
     "pages": {
       "block": {
@@ -205,8 +206,26 @@
         "seen": "2026-10-06, the first extension dry run on the Mac: exactly one [data-testid=upload-form-save-button] reading Upload (never clicked); next to it [data-testid=upload-form-save-draft-button], never clicked either; 2026-10-06, the fourth extension dry run on the Mac: the whole form read back as planned, 6 of 6 photos displayed: still exactly one, never clicked — verified for the supervised publish only"
       },
       "after_publish": {
-        "how": "the tab lands on listing_url within 60 s",
-        "verified": false
+        "how": "Upload lands on the seller's member page (/member/<id>?promo_shown=true, `landing_url`) with an \"Item listed\" dialog: Later is pressed (never List another, never Bump), then the shop check finds the new listing among the member page's items (/items/<id>-<slug>)",
+        "verified": true,
+        "seen": "2026-10-08, the first supervised Vinted publish on the Mac (WO33, from its evidence): after the one Upload click the tab went to /member/<id>?promo_shown=true with an \"Item listed\" dialog (h1 \"Item listed\", the item card, \"List another\" [data-testid=list-promotion-submit-cta], \"Later\" [data-testid=list-promotion-cancel-cta]); the member page also shows Bump buttons [data-testid=bump-button]. The shop check found the new listing among the member page's 20 (/items/<id>-<slug>)."
+      },
+      "listed_later": {
+        "selectors": [
+          "[data-testid='list-promotion-cancel-cta']"
+        ],
+        "text": "^later$",
+        "verified": true,
+        "seen": "2026-10-08, the first supervised Vinted publish on the Mac (WO33, from its evidence): after the one Upload click the tab went to /member/<id>?promo_shown=true with an \"Item listed\" dialog (h1 \"Item listed\", the item card, \"List another\" [data-testid=list-promotion-submit-cta], \"Later\" [data-testid=list-promotion-cancel-cta]); the member page also shows Bump buttons [data-testid=bump-button]. The shop check found the new listing among the member page's 20 (/items/<id>-<slug>)."
+      },
+      "never_click": {
+        "selectors": [
+          "[data-testid='list-promotion-submit-cta']",
+          "[data-testid='bump-button']"
+        ],
+        "note": "List another and Bump: recorded so a test can prove they are never pressed",
+        "verified": true,
+        "seen": "2026-10-08, the first supervised Vinted publish on the Mac (WO33, from its evidence): after the one Upload click the tab went to /member/<id>?promo_shown=true with an \"Item listed\" dialog (h1 \"Item listed\", the item card, \"List another\" [data-testid=list-promotion-submit-cta], \"Later\" [data-testid=list-promotion-cancel-cta]); the member page also shows Bump buttons [data-testid=bump-button]. The shop check found the new listing among the member page's 20 (/items/<id>-<slug>)."
       },
       "listing_title": {
         "selectors": [
@@ -247,7 +266,8 @@
         "selectors": [
           "a[href*='/items/']"
         ],
-        "verified": false
+        "verified": true,
+        "seen": "2026-10-08, the first supervised Vinted publish: the shop check read the member page's 20 listings by their a[href*='/items/'] links and found the new one by its title"
       },
       "details_view": {
         "selectors": [

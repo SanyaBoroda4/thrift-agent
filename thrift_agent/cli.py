@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import threading
 import time
 import traceback
@@ -788,6 +789,11 @@ def crosslist(item_id: str = typer.Argument(None, metavar="[ITEM]"),
                                                                             "Chrome: logged in? (WO32)"),
               one_by_one: bool = typer.Option(False, "--one-by-one", help="--dry-run: the sites one after another "
                                                                           "(the old way), not together (WO33)"),
+              hand_listed: bool = typer.Option(False, "--hand-listed", help="Read the Depop and Vinted shops: which "
+                                               "of our items she already listed by hand? The list goes to the ops "
+                                               "chat; nothing is recorded (WO33)"),
+              apply: str = typer.Option(None, "--apply", metavar="1,2", help="--hand-listed: record the numbers the "
+                                        "owner confirmed (the row posted with her listing's address)"),
               mp: str = MARKETPLACE) -> None:
     """Cross-list on Depop and Vinted (WO30). `thrift crosslist <item>` queues an item already live on Poshmark;
     `--dry-run <item>` fills both forms (the running poster does it between listings), the screenshots and the mapped
@@ -799,6 +805,31 @@ def crosslist(item_id: str = typer.Argument(None, metavar="[ITEM]"),
     bad = [m for m in mps if m not in cl.enabled(s)]
     if bad:
         raise typer.BadParameter(f"{', '.join(bad)}: not enabled, or its catalog doesn't load (thrift catalogs check)")
+    if hand_listed:
+        from thrift_agent import handlisted
+        if apply:
+            numbers = [int(x) for x in re.findall(r"\d+", apply)]
+            for line in handlisted.apply(db, numbers):
+                print(escape(line))
+            return
+        if daily.poster_now(db).running:
+            raise typer.BadParameter("the poster is running (it holds the extension's bridge): stop it first — "
+                                     "bash deploy/services.sh stop poster")
+        if not s.is_prod:
+            raise typer.BadParameter("the dev machine never opens the marketplaces: run it on the Mac")
+        shops = asyncio.run(_shop_listings(s, [m for m in mps if m in ("depop", "vinted")]))
+        items = []
+        for it in db.conn.execute("SELECT * FROM items WHERE status NOT IN ('dropped')").fetchall():
+            render = (loads(it["renders"]) or {}).get("poshmark") or {}
+            items.append({"id": it["id"], "title": render.get("title") or "", "brand": render.get("brand") or "",
+                          "size": render.get("size") or "", "price": it["owner_price"] or render.get("price")})
+        ours = {r["url"] for r in db.conn.execute("SELECT url FROM listings WHERE url IS NOT NULL").fetchall()}
+        found = handlisted.candidates(items, shops, ours)
+        handlisted.save(db, found)
+        text = handlisted.message(found, {m: len(v) for m, v in shops.items()})
+        notify.say(text)
+        print(escape(text))
+        return
     if check_login:
         from thrift_agent.post import runner
         if daily.poster_now(db).running:
@@ -840,6 +871,23 @@ def crosslist(item_id: str = typer.Argument(None, metavar="[ITEM]"),
     queued = cl.queue(s, db, item_id, mps, why="thrift crosslist")
     print(f"[green]queued[/] {item_id}: {', '.join(queued)}" if queued else
           f"{item_id}: already has a row on {', '.join(mps)} (thrift requeue {item_id} --marketplace <m>)")
+
+
+async def _shop_listings(s, mps: list[str]) -> dict[str, list[dict]]:
+    """Her Depop and Vinted shops read through the Thrift Chrome's extension (this process's bridge: the poster
+    stopped). {site: [{url, text}]}."""
+    from thrift_agent.post import runner
+    ps = {mp: p for mp, p in runner.posters(s).items() if mp in mps and getattr(p, "driver", "") == "extension"}
+    b, _ = await runner.open_bridge(s, None, ps, watch=False, strict=True)
+    try:
+        out = {}
+        for mp, p in ps.items():
+            await runner.connect_extension(b, p)
+            out[mp] = await p.shop_listings()
+            print(f"{mp}: {len(out[mp])} listings in the shop")
+        return out
+    finally:
+        await runner.close_bridge(b, None)
 
 
 async def _check_logins(s, db, mps: list[str]) -> list[str]:

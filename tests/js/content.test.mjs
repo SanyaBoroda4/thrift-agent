@@ -545,3 +545,44 @@ for (const site of ["depop", "vinted"]) {
     assert.deepEqual(plain(p.w.clicks), []);
   });
 }
+
+// ---------------------------------------------------------------- WO33: Vinted's landing after Upload
+// Recorded from the first supervised publish: the member page (?promo_shown=true) with an "Item listed" dialog —
+// "List another" and "Later" — and the page's Bump buttons. Only Later is pressed; then the shop check takes over.
+const MEMBER_URL = "https://www.vinted.com/member/1234?promo_shown=true";
+const memberPage = (withDialog = true) => `<html><head><title>Vinted</title></head><body>
+  <h2>tattishop</h2>
+  <div data-testid="grid-item"><a href="/items/9876543210-j-crew-wide-leg-sweater-pants">J. Crew Wide Leg Sweater Pants</a>
+    <button type="button" data-testid="bump-button" id="bump">Bump</button></div>
+  ${withDialog ? `<div role="dialog" class="web_ui__Dialog"><h1>Item listed</h1>
+    <button type="button" data-testid="list-promotion-submit-cta" id="another">List another</button>
+    <button type="button" data-testid="list-promotion-cancel-cta" id="later">Later</button></div>` : ""}
+  <script>
+    window.clicks = [];
+    for (const id of ["bump", "another", "later"]) {
+      const b = document.getElementById(id);
+      if (b) b.addEventListener("click", () => {
+        window.clicks.push(id);
+        if (id === "later") document.querySelector("[role=dialog]").remove();
+      });
+    }
+  </script></body></html>`;
+
+test("vinted: after Upload the member page's Item listed dialog gets Later — never List another, never Bump", async () => {
+  const p = page("vinted", memberPage(), MEMBER_URL);
+  await run(p, { job_id: "vinted-landed", site: "vinted", mode: "after_publish" });
+  await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
+  const end = plain(p.events().find((e) => e.event === "error"));
+  assert.equal(end.page, "landing");
+  assert.match(end.message, /Item listed: Later/);
+  assert.deepEqual(plain(p.w.clicks), ["later"]);
+  assert.ok(!p.d.querySelector("[role=dialog]"));
+});
+
+test("vinted: a member page without the dialog presses nothing", async () => {
+  const p = page("vinted", memberPage(false), "https://www.vinted.com/member/1234");
+  await run(p, { job_id: "vinted-landed-plain", site: "vinted", mode: "after_publish" });
+  await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
+  assert.match(plain(p.events().find((e) => e.event === "error")).message, /no Item listed dialog/);
+  assert.deepEqual(plain(p.w.clicks), []);
+});
