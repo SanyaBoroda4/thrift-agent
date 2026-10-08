@@ -97,6 +97,7 @@ class FakeExtension:
         self.calls: list[tuple[str, bool]] = []
         self.jobs: list[dict] = []
         self.clicks = 0
+        self.commands: list[dict] = []          # every go-ahead / cancel the bridge sent
         self.connected = asyncio.Event()
         self.task: asyncio.Task | None = None
         self.writer = None
@@ -131,7 +132,8 @@ class FakeExtension:
         reader, writer, status = await ws_open(self.port)
         self.writer = writer
         assert " 101 " in status, status
-        ws_send(writer, {"type": "hello", "token": self.token})
+        from thrift_agent.bridge import files_hash
+        ws_send(writer, {"type": "hello", "token": self.token, "loaded": files_hash()})
         commands: asyncio.Queue = asyncio.Queue()
         while True:
             msg = await ws_recv(reader, timeout=3600)
@@ -142,6 +144,7 @@ class FakeExtension:
             elif msg.get("type") == "job":
                 asyncio.get_running_loop().create_task(self.answer(writer, msg["job"], commands))
             elif msg.get("type") in ("submit", "cancel"):
+                self.commands.append(msg)
                 commands.put_nowait(msg)
 
     def event(self, writer, **ev) -> None:
@@ -160,8 +163,11 @@ class FakeExtension:
                 else:
                     self.event(writer, event="result", job_id=jid, page="form")
             else:
-                self.event(writer, event="result", job_id=jid, url=job.get("listing_url"), delisted=True,
-                           live={"body": getattr(res, "body", ""), "photos": 0})
+                live = {"body": getattr(res, "body", ""), "photos": 0}
+                for key in ("title", "price", "shop"):          # what Depop's JSON-LD gives (WO32b)
+                    if getattr(res, key, None):
+                        live[key] = getattr(res, key)
+                self.event(writer, event="result", job_id=jid, url=job.get("listing_url"), delisted=True, live=live)
             await writer.drain()
             return
         self.record(site, (item_of(job), mode == "dry_run"))
@@ -174,11 +180,14 @@ class FakeExtension:
             self.event(writer, event="error", job_id=jid, stage="open", page="unknown", message=str(res))
             await writer.drain()
             return
+        self.event(writer, event="progress", job_id=jid, what="tab opened")
+        n = len(job.get("photos") or [])
         for name in ("photos", "title", "description", "category", "price"):
-            self.event(writer, event="step", job_id=jid, name=name, ok=True)
+            self.event(writer, event="step", job_id=jid, name=name, ok=True, ms=120,
+                       **({"detail": f"{n}/{n} shown"} if name == "photos" else {}))
         self.event(writer, event="screenshot", job_id=jid, label="form", png_b64=base64.b64encode(PNG).decode(),
                    html="<html><body>form</body></html>", url="https://example.invalid/form")
-        seen = seen_for(job)
+        seen = {**seen_for(job), "fill_ms": 1234}
         guesses = list(getattr(res, "guesses", []) or [])
         if res.status == "failed" and not res.clicked:
             self.event(writer, event="error", job_id=jid, stage="form", page="form", message=res.error or "failed")

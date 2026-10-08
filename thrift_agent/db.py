@@ -73,6 +73,7 @@ def new_id(prefix: str) -> str:
 
 
 LISTINGS_MIGRATED = "listings_migrated"      # kv: when the old `posts` rows were copied into `listings` (once)
+ANNOUNCED_MIGRATED = "announced_migrated"    # kv: when the items live before WO32b were marked announced (once)
 _POSH_ID = re.compile(r"-([0-9a-f]{24})/?$")
 
 
@@ -87,8 +88,8 @@ def listing_id_from(mp: str, url: str | None) -> str | None:
     if mp == "vinted":
         m = re.search(r"/items/(\d+)", path)
         return m.group(1) if m else None
-    if mp == "depop":
-        m = re.search(r"/products/([a-z0-9]+(?:-[a-z0-9]+)+)$", path)    # <shop>-<words>, never "create"
+    if mp == "depop":       # <shop>-<words> (never "create"); Post lands on its /manage/ view (WO32b)
+        m = re.search(r"/products/([a-z0-9]+(?:-[a-z0-9]+)+)(?:/manage)?$", path)
         return m.group(1) if m else None
     return None
 
@@ -106,6 +107,30 @@ class DB:
                 if col not in have:
                     self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
         self._migrate_posts()
+        self._migrate_announced()
+
+    def _migrate_announced(self) -> None:
+        """WO32b: every item already live on Poshmark counts as announced in the group — the flow before WO30 said its
+        "Posted ✓" without the posted_announced events (the live miss: a Poshmark listing from days before announced
+        again, with no new link, when Depop was added). Once; from then on the events say it."""
+        with self.tx() as c:
+            if c.execute("SELECT 1 FROM kv WHERE key=?", (ANNOUNCED_MIGRATED,)).fetchone():
+                return
+            n = 0
+            for (iid,) in c.execute("SELECT item_id FROM listings WHERE marketplace='poshmark' AND status='posted'"
+                                    ).fetchall():
+                if c.execute("SELECT 1 FROM events WHERE ref=? AND kind='posted_announced'", (iid,)).fetchone():
+                    continue
+                mps = [r[0] for r in c.execute("SELECT marketplace FROM listings WHERE item_id=? AND status='posted'",
+                                               (iid,))]
+                c.execute("INSERT INTO events VALUES (?,?,?,?)",
+                          (now(), iid, "posted_announced", json.dumps({"mps": mps, "migrated": "WO32b"})))
+                n += 1
+            c.execute("INSERT INTO kv (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                      (ANNOUNCED_MIGRATED, now()))
+            if n:
+                c.execute("INSERT INTO events VALUES (?,?,?,?)", (now(), None, "announced_migrated",
+                                                                  json.dumps({"items": n})))
 
     def _migrate_posts(self) -> None:
         """WO30: the old per-marketplace `posts` rows become `listings` rows, once — every Poshmark-posted item keeps
@@ -239,20 +264,33 @@ class DB:
         self.conn.execute(f"UPDATE listings SET {sets} WHERE item_id=? AND marketplace=?",
                           (*vals, now(), iid, mp))
 
-    def claim_listing(self, iid: str, mp: str) -> bool:
+    def claim_listing(self, iid: str, mp: str, count: bool = True) -> bool:
         """Atomically take (item, marketplace) for posting: True for exactly one caller.
 
         The single conditional UPDATE is the lock — two poster processes can never both open the form for one
         item (invariant 4). Only 'queued' and 'dryrun' rows are claimable; 'posting' (crashed mid-form),
         'posted', 'drafted', 'failed' and 'skipped' rows are refused and need a human to reconcile against the closet.
+        `count`: the attempt is counted here (the Playwright posters: claimed before the form opens); the extension
+        driver counts it when the job starts (begin_attempt) and claims at the go-ahead (WO32b).
         """
         self.conn.execute(
             "INSERT OR IGNORE INTO listings (item_id, marketplace, status, updated_at) VALUES (?,?,'queued',?)",
             (iid, mp, now()))
         cur = self.conn.execute(
-            "UPDATE listings SET status='posting', attempts=attempts+1, error=NULL, updated_at=? "
+            f"UPDATE listings SET status='posting', {'attempts=attempts+1, ' if count else ''}error=NULL, updated_at=? "
             "WHERE item_id=? AND marketplace=? AND status IN ('queued','dryrun')",
             (now(), iid, mp))
+        return cur.rowcount == 1
+
+    def begin_attempt(self, iid: str, mp: str) -> bool:
+        """An extension job starts on (item, marketplace) (WO32b): the attempt counted, the row left as it is — it
+        becomes 'posting' only at the go-ahead (claim_listing). True when the row is one the poster may take."""
+        self.conn.execute(
+            "INSERT OR IGNORE INTO listings (item_id, marketplace, status, updated_at) VALUES (?,?,'queued',?)",
+            (iid, mp, now()))
+        cur = self.conn.execute(
+            "UPDATE listings SET attempts=attempts+1, error=NULL, updated_at=? "
+            "WHERE item_id=? AND marketplace=? AND status IN ('queued','dryrun')", (now(), iid, mp))
         return cur.rowcount == 1
 
     def listed_since(self, since_iso: str, mp: str | None = None) -> int:

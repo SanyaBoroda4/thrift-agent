@@ -210,7 +210,7 @@ def test_an_unsure_category_is_asked_with_real_paths_and_the_models_pick_settles
     assert it["status"] == "awaiting_price" and loads(it["facts"])["category_confidence"] == 1.0
     assert loads(it["gate"])["ask_category"] == [] and loads(it["owner_category"])["subcategory"] == "Circle & Skater"
     assert bot.sent()[-1]["caption"].startswith("Tory Burch")                     # now the price card
-    assert any(text.startswith("✅") for text, _ in bot.buttons())
+    assert any(text.startswith("⭐$") for text, _ in bot.buttons())
 
 
 def test_another_category_reprocesses_the_item_with_it(env, facts, monkeypatch):

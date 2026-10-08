@@ -19,8 +19,10 @@ The Telegram group stays quiet: it shows only the cards, "Posted ✓", and a mes
 technical messages (errors, progress, the Mac waking up) go to Alex privately.
 
 **Cards and questions**
-- **A price card** (photo, title, size, condition, buttons with prices) — tap the price you want, or type a number.
-  This is the only thing it needs from you for most items.
+- **A price card** (photo, title, size, condition, eight price buttons) — tap the price you want, or type a number.
+  The ⭐ button is the Mac's suggestion; one button is $10 below it, the others go up in $10 steps (for a $40
+  suggestion: $30 · ⭐$40 · $50 · $60 / $70 · $80 · $90 · $100). The price you pick goes to all three sites. This is
+  the only thing it needs from you for most items.
 - **"Brand new or worn?" / "Girls or Boys?" / "Which category?"** — tap a button. These come only when the photos
   didn't make it clear.
 - **"Brand: … not sure"** on a card — reply to the card with the brand, for example "J. Crew" (or tap "No brand").
@@ -30,6 +32,8 @@ technical messages (errors, progress, the Mac waking up) go to Alex privately.
 **After publishing**
 - **"Posted ✓ <title> — $35 · Poshmark <link> · Depop <link> · Vinted <link>"** — the item is live on each site the
   line names (one line per item, once its sites are done). A site that couldn't take it is simply not in the line.
+  Each item gets this line **once**: a site added later (say Depop for an item listed on Poshmark last week) is not
+  announced in the group again — Alex sees it privately.
 - **"… — check: brand set to 'J. Crew' (from 'J.Crew')"** at the end of the line — it's live, but the site's list
   didn't have exactly what the listing said, so the Mac picked the closest thing (or left the brand empty). Have a
   quick look on that site and fix it there if it isn't right.
@@ -49,9 +53,10 @@ technical messages (errors, progress, the Mac waking up) go to Alex privately.
 - **"🔋 Mac battery low — plug in or I'll pause; nothing will be lost"** — plug the charger in. The Mac finishes
   the listing it is on and waits until it is charging (or above 20%).
 - **"⚠️ <title>: the Mac went to sleep while publishing and I can't see it in the closet."** (or **"… I pressed List
-  on Poshmark but can't see it in the closet."**) — look in your Poshmark closet:
+  on Poshmark but can't see it in the closet."**, or the same for Post on Depop / Upload on Vinted) — look in your
+  closet or shop on that site. While this question is open it is the item's only message in the group:
   - If the item **is** there, open it, copy its link, and **reply** to that message with `posted ` and the link
-    (for example `posted https://poshmark.com/listing/...`).
+    (for example `posted https://poshmark.com/listing/...` or `posted https://www.depop.com/products/...`).
   - If it **is not** there, **reply** `retry`. It will be listed again.
   - To reply, swipe left on the message, or press and hold it and choose Reply.
 - **"⚠️ Can't read the iCloud inbox — …"** (only after 10 minutes of trying) — on the Mac: System Settings → Privacy &
@@ -63,7 +68,13 @@ technical messages (errors, progress, the Mac waking up) go to Alex privately.
 
 The second Chrome on the Mac (its own icon in the Dock) is where Depop and Vinted are listed from. Leave it open: it
 can sit behind other windows, but don't minimize it. If you quit it by accident, the Mac opens it again within a few
-minutes. Don't use it for your own browsing — use your normal Chrome for that.
+minutes. Don't use it for your own browsing — use your normal Chrome for that. A form fills there in under a minute; a
+tab that opens and then nothing happens for 20 seconds is given up by itself (its screenshot goes to Alex).
+
+**The first listing on Depop or Vinted** (Alex will say when): stop the poster, run the command Alex gives you in
+Terminal — it shows each step as the form fills ("tab opened", "photos 6/6", "category ✓" …), then the summary — check
+the form in the Thrift Chrome and type `POST`. Anything else, or Ctrl+C, cancels: nothing is published, the tab
+closes, the item stays in line. Then start the poster again.
 
 ## The emergency brake
 

@@ -1,18 +1,39 @@
-// Thrift crosslister (WO32): what the Vinted and Depop content scripts share. They run in the extension's isolated
-// world on the two sites' pages and fill the seller's own listing form the way a person would: text typed in chunks
-// through the inputs' native value setter (+ input / change events), real clicks on the real option elements, photos
-// attached as Files, pauses between steps. Every selector comes from selectors.json (sent with the job); nothing is
-// guessed, nothing is read but the sell page and the listing page this job created.
+// Thrift crosslister (WO32, WO32b): what the Vinted and Depop content scripts share. They run in the extension's
+// isolated world on the two sites' pages and fill the seller's own listing form: values through the inputs' native
+// value setter (+ input / change events), real clicks on the real option elements, photos attached as Files. Every
+// selector comes from selectors.json (sent with the job); nothing is guessed, nothing is read but the sell page and the
+// listing page this job created.
+//
+// Speed (WO32b): "fast" (the default) sets each value in one go and waits only for the page — an element appearing, a
+// list rendering, thumbnails loading — through a MutationObserver plus a light poll, never through chains of short
+// timers: a hidden tab throttles timers to one a second, then to one a minute, and that stalled a live run. Fixed
+// settles (≤ 150 ms, where React needs one) count MessageChannel round trips, which no throttling slows. "human" (the
+// job's pace) keeps typing in chunks with pauses. Every step gives up after 20 s (photos: 120 s) with its name and a
+// screenshot.
 (function () {
   const T = (globalThis.Thrift = globalThis.Thrift || {});
   T.sites = T.sites || {};
-  T.pace = T.pace ?? 1;              // 1 in Chrome; the tests set it near 0
+  T.mode = T.mode ?? "fast";         // "fast" | "human" (the job's pace)
+  T.speed = T.speed ?? 1;            // human mode's pauses, × this (the tests set it near 0)
   T.timeoutScale = T.timeoutScale ?? 1;
+  T.off = T.off || new Set();        // the jobs the bridge called off — a cancel may come before its job: kept
 
   const rand = (lo, hi) => lo + Math.random() * (hi - lo);
-  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, ms * T.pace)));
-  T.sleep = sleep;
-  T.pause = () => sleep(rand(250, 900));
+  const fast = () => T.mode !== "human";
+
+  // ---- time without timers: one MessageChannel round trip is a task, never throttled
+  const channel = new MessageChannel();
+  const waiting = [];
+  channel.port1.onmessage = () => { const f = waiting.shift(); if (f) f(); };
+  T.tick = () => new Promise((resolve) => { waiting.push(resolve); channel.port2.postMessage(0); });
+  T.settle = async (ms) => {
+    const end = performance.now() + ms;
+    while (performance.now() < end) await T.tick();
+  };
+  // A fixed wait: fast mode settles at most 150 ms (React re-rendering); human mode waits it out (× speed).
+  T.sleep = (ms) => (fast() ? T.settle(Math.min(ms, 150)) :
+    new Promise((resolve) => setTimeout(resolve, Math.max(0, ms * T.speed))));
+  T.pause = () => (fast() ? T.tick() : T.sleep(rand(250, 900)));
   T.norm = (s) => String(s ?? "").replace(/\s+/g, " ").trim().toLowerCase();
 
   T.$ = (selectors, root = document) => {
@@ -40,31 +61,48 @@
     return true;
   };
 
-  T.waitFor = async (selectors, { timeout = 8000, visible = true, root = document } = {}) => {
-    const end = Date.now() + timeout * T.timeoutScale;
-    for (;;) {
-      const el = T.$$(selectors, root).find((e) => !visible || T.visible(e));
-      if (el) return el;
-      if (Date.now() > end) return null;
-      await new Promise((r) => setTimeout(r, 100));
-    }
-  };
+  // ---- waits on the page itself: true as soon as the DOM changes into it (MutationObserver), else at a light poll
+  // (properties like an input's value or an image's size change without a mutation), else null at the timeout.
+  T.until = (pred, timeout = 8000, { events = [] } = {}) => new Promise((resolve) => {
+    let done = false, timer = null, poll = null, obs = null;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      obs?.disconnect();
+      clearTimeout(timer);
+      clearTimeout(poll);
+      for (const e of events) document.removeEventListener(e, check, true);
+      resolve(v);
+    };
+    const value = () => { try { return pred(); } catch (e) { return null; } };
+    const check = () => { if (!done) { const v = value(); if (v) finish(v); } };
+    // The poll re-arms from a message task, never from its own timer: no timer chain for Chrome to throttle to once a
+    // minute in a hidden tab.
+    const tick = () => { check(); if (!done) T.tick().then(() => { if (!done) poll = setTimeout(tick, 100); }); };
+    obs = new MutationObserver(check);
+    obs.observe(document.documentElement || document, { childList: true, subtree: true, attributes: true,
+                                                        characterData: true });
+    for (const e of events) document.addEventListener(e, check, true);
+    poll = setTimeout(tick, 100);
+    timer = setTimeout(() => finish(value() || null), timeout * T.timeoutScale);
+    check();
+  });
+  T.waitFor = (selectors, { timeout = 8000, visible = true, root = document } = {}) =>
+    T.until(() => T.$$(selectors, root).find((e) => !visible || T.visible(e)), timeout);
   T.need = async (selectors, what, opts = {}) => {
     const el = await T.waitFor(selectors, opts);
     if (!el) throw new Error(`${what}: not on the page (${[].concat(selectors).join(" | ")})`);
     return el;
   };
-  // The photos as a person sees them: images that have loaded (naturalWidth > 0), waited for up to `timeout`.
+  // The photos as a person sees them: images that have loaded (naturalWidth > 0).
   T.loaded = (selectors) => T.$$(selectors).filter((img) => img.complete && img.naturalWidth > 0).length;
   T.waitLoaded = async (selectors, n, timeout) => {
     T.$(selectors)?.scrollIntoView?.({ block: "center" });
-    const end = Date.now() + timeout * T.timeoutScale;
-    while (T.loaded(selectors) < n && Date.now() < end) await new Promise((r) => setTimeout(r, 400));
+    await T.until(() => T.loaded(selectors) >= n, timeout, { events: ["load", "error"] });
     return T.loaded(selectors);
   };
   T.waitCount = async (selectors, n, timeout) => {
-    const end = Date.now() + timeout * T.timeoutScale;
-    while (T.$$(selectors).length < n && Date.now() < end) await new Promise((r) => setTimeout(r, 250));
+    await T.until(() => T.$$(selectors).length >= n, timeout);
     return T.$$(selectors).length;
   };
 
@@ -78,13 +116,16 @@
     el.scrollIntoView?.({ block: "center" });
     el.focus?.();
     T.setValue(el, "");
-    let i = 0;
     const s = String(text);
-    while (i < s.length) {
-      const n = 2 + Math.floor(Math.random() * 9);
-      T.setValue(el, el.value + s.slice(i, i + n));
-      i += n;
-      await sleep(rand(40, 140));
+    if (fast()) {
+      T.setValue(el, s);                                   // in one go
+    } else {
+      for (let i = 0; i < s.length;) {
+        const n = 2 + Math.floor(Math.random() * 9);
+        T.setValue(el, el.value + s.slice(i, i + n));
+        i += n;
+        await T.sleep(rand(40, 140));
+      }
     }
     el.dispatchEvent(new Event("change", { bubbles: true }));
   };
@@ -92,7 +133,7 @@
   // ---- clicking: the pointer moves over the element, then the press, then the element's own click
   T.click = async (el) => {
     el.scrollIntoView?.({ block: "center" });
-    await sleep(rand(120, 320));
+    if (!fast()) await T.sleep(rand(120, 320));
     const r = el.getBoundingClientRect ? el.getBoundingClientRect() : { left: 0, top: 0, width: 0, height: 0 };
     const at = { bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
     const Pointer = typeof PointerEvent === "function" ? PointerEvent : MouseEvent;
@@ -100,7 +141,7 @@
     el.dispatchEvent(new MouseEvent("mouseover", at));
     el.dispatchEvent(new Pointer("pointermove", at));
     el.dispatchEvent(new MouseEvent("mousemove", at));
-    await sleep(rand(60, 180));
+    if (!fast()) await T.sleep(rand(60, 180));
     el.dispatchEvent(new Pointer("pointerdown", at));
     el.dispatchEvent(new MouseEvent("mousedown", at));
     el.focus?.();
@@ -109,7 +150,7 @@
     el.click();
   };
 
-  // ---- photos: Files from the bridge's bytes, set on the file input (else dropped on the drop zone)
+  // ---- photos: Files from the bridge's bytes, all at once on the file input (else dropped on the drop zone)
   T.fileOf = ({ name, type, b64 }) => {
     const bin = atob(b64);
     const bytes = new Uint8Array(bin.length);
@@ -178,13 +219,8 @@
     return "unknown";
   };
   T.settled = async (site, timeout = 15000) => {
-    const end = Date.now() + timeout * T.timeoutScale;
-    let page = T.classify(site);
-    while (page === "unknown" && Date.now() < end) {
-      await new Promise((r) => setTimeout(r, 300));
-      page = T.classify(site);
-    }
-    return page;
+    const page = await T.until(() => { const p = T.classify(site); return p === "unknown" ? null : p; }, timeout);
+    return page || "unknown";
   };
 
   // ---- reporting to the bridge (through the background worker)
@@ -200,18 +236,34 @@
     const html = (document.documentElement?.outerHTML || "").slice(0, 3_000_000);
     try { await chrome.runtime.sendMessage({ type: "screenshot", label, html, url: location.href }); } catch (e) { /* best effort */ }
   };
-  // One step: its event, and in a dry run a step that fails is recorded and the form goes on (WO30's rule). A job the
-  // bridge called off (it gave up on it) stops at the next step, whatever the mode.
-  T.step = async (name, st, fn) => {
-    if (T.cancelled) throw new Error("called off by the bridge");
+  // One step: its event (with how long it took), and in a dry run a step that fails is recorded and the form goes on
+  // (WO30's rule). A step with no progress for its limit (20 s; photos 120 s) ends the job, with its name and a
+  // screenshot (WO32b: fail fast). A job the bridge called off stops at the next step, whatever the mode.
+  class Stalled extends Error {}
+  T.step = async (name, st, fn, { limit = 20000 } = {}) => {
+    if (T.off.has(st.job_id)) throw new Error("called off by the bridge");
+    const t0 = performance.now();
+    let timer = null;
+    const stalled = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Stalled(`${name}: nothing happened for ${Math.round(limit / 1000)} s`)),
+                         limit * T.timeoutScale);
+    });
     try {
-      await fn();
-      T.emit({ event: "step", job_id: st.job_id, name, ok: true });
+      const detail = await Promise.race([fn(), stalled]);
+      T.emit({ event: "step", job_id: st.job_id, name, ok: true, ms: Math.round(performance.now() - t0),
+               ...(typeof detail === "string" ? { detail } : {}) });
     } catch (e) {
       const message = String(e && e.message ? e.message : e).slice(0, 300);
       st.failed.push(`${name}: ${message}`);
-      T.emit({ event: "step", job_id: st.job_id, name, ok: false, detail: message });
+      T.emit({ event: "step", job_id: st.job_id, name, ok: false, detail: message,
+               ms: Math.round(performance.now() - t0) });
+      if (e instanceof Stalled) {
+        await T.screenshot(`stalled-${name.replace(/[^a-z0-9]+/gi, "-")}`);
+        throw e;
+      }
       if (st.strict) throw e;
+    } finally {
+      clearTimeout(timer);
     }
     await T.pause();
   };
@@ -230,13 +282,15 @@
   let go = null;
   T.run = async ({ job, selectors, photos, pace }) => {
     T.selectors = selectors;
-    if (typeof pace === "number") T.pace = pace;
+    const p = pace ?? job.pace;
+    if (typeof p === "number") { T.mode = "human"; T.speed = p; } else if (p) { T.mode = p === "human" ? "human" : "fast"; }
     const site = T.sites[job.site];
     const st = { job_id: job.job_id, failed: [], picked: {}, shown: {}, guesses: [], notes: [],
                  strict: job.mode === "publish" };
-    if (job.mode === "dry_run" || job.mode === "publish") T.cancelled = false;
-    const page = await T.settled(job.site, job.mode === "find" ? 4000 : 15000);
+    T.jobId = job.job_id;
     const fail = (stage, kind, message) => T.emit({ event: "error", job_id: job.job_id, stage, page: kind, message });
+    if (T.off.has(job.job_id)) return fail("cancelled", "unknown", "called off by the bridge");
+    const page = await T.settled(job.site, job.mode === "find" ? 4000 : 15000);
     if (job.mode === "check_login") {
       return page === "form" ? T.emit({ event: "result", job_id: job.job_id, page }) : fail("check_login", kindOf(page), `${page} page`);
     }
@@ -264,7 +318,12 @@
       await T.screenshot(page);
       return fail("open", "unknown", `not the sell form: ${location.href}`);
     }
-    await sleep(rand(2000, 5000));                                   // a person looks at the page first
+    if (!fast()) await T.sleep(rand(2000, 5000));                     // human mode: a person looks at the page first
+    if (document.visibilityState === "hidden") {      // the waits don't mind; the site's own page may not draw
+      T.emit({ event: "progress", job_id: job.job_id,
+               what: "the tab is hidden — is the Thrift Chrome window minimized? (behind other windows is fine)" });
+    }
+    const t0 = performance.now();
     try {
       await site.fill(job, (photos || []).map(T.fileOf), st);
     } catch (e) {
@@ -274,12 +333,13 @@
     }
     const seen = site.readBack(job, st);
     seen.submit_buttons = site.submitButtons().length;               // seen, never clicked in a dry run
+    seen.fill_ms = Math.round(performance.now() - t0);
     T.emit({ event: "step", job_id: job.job_id, name: "submit_seen", ok: seen.submit_buttons === 1,
              detail: `${seen.submit_buttons} button(s)` });
     await T.screenshot("form");
     const report = { job_id: job.job_id, seen, failed: st.failed, guesses: st.guesses, notes: st.notes, shown: st.shown };
     if (job.mode === "dry_run") return T.emit({ event: "result", dry_run: true, ...report });
-    if (T.cancelled) return fail("cancelled", "form", "called off by the bridge");
+    if (T.off.has(job.job_id)) return fail("cancelled", "form", "called off by the bridge");
     T.emit({ event: "ready", ...report });
     const ok = await new Promise((resolve) => { go = resolve; });     // the bridge's go-ahead, after its diff
     go = null;
@@ -288,16 +348,21 @@
   };
   const kindOf = (page) => (STOP.includes(page) ? page : "unknown");
 
-  if (globalThis.chrome && chrome.runtime && chrome.runtime.onMessage) {
+  // Once per page: the manifest injects this at document_idle, and the worker injects it again when the page doesn't
+  // answer (an idle that is late: WO32b) — the second copy must not answer a job a second time.
+  if (globalThis.chrome && chrome.runtime && chrome.runtime.onMessage && !T.listening) {
+    T.listening = true;
     chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (msg.type === "job") {
         T.run(msg).catch((e) => T.emit({ event: "error", job_id: msg.job.job_id, stage: "script", page: "unknown",
                                          message: String(e && e.message ? e.message : e).slice(0, 300) }));
         sendResponse({ ok: true });
       } else if (msg.type === "submit" || msg.type === "cancel") {
-        if (msg.type === "cancel") T.cancelled = true;
-        if (go) go(msg.type === "submit");
-        sendResponse({ ok: !!go || msg.type === "cancel" });
+        const id = msg.job_id || T.jobId;
+        if (msg.type === "cancel") T.off.add(id);
+        const ok = !!go && id === T.jobId;
+        if (ok) go(msg.type === "submit");
+        sendResponse({ ok: ok || msg.type === "cancel" });
       } else if (msg.type === "classify") {
         T.selectors = msg.selectors;
         sendResponse({ page: T.classify(msg.site), url: location.href });

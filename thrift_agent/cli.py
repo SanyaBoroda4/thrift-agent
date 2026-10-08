@@ -833,10 +833,15 @@ async def _crosslist_dry_run(s, db, iid: str, mps: list[str]) -> None:
             if mp not in ps:
                 print(f"{mp}: off (see the ops chat)")
                 continue
-            if getattr(ps[mp], "driver", "") == "extension" and not await ps[mp].wait_connected(120):
-                print(f"{mp}: the Thrift Chrome extension didn't connect in 2 minutes — is the Thrift Chrome open?")
-                continue
-            out = await runner.run_cross(s, db, ps, ctx, iid, mp, dry=True, request=True)
+            if getattr(ps[mp], "driver", "") == "extension":
+                try:
+                    await runner.connect_extension(b, ps[mp])          # seconds; past 30 s it says why (WO32b)
+                except RuntimeError as e:
+                    print(f"{mp}: {e}")
+                    continue
+            print(f"{mp}:")
+            out = await runner.run_cross(s, db, ps, ctx, iid, mp, dry=True, request=True,
+                                         progress=lambda line: print(f"  {line}", flush=True))
             print(f"{mp}: {out.status if out else 'not done (see the ops chat)'}"
                   + (f" — {out.screenshot}" if out and out.screenshot else ""))
     finally:

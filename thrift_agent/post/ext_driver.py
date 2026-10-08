@@ -14,8 +14,14 @@ publish(), delist().
   the terminal when supervised — then ONE go-ahead: the extension clicks once, the tab lands on the listing page, the
   live page is read and compared with the fields (a difference is a note; the listing stays up).
 - A login / block / CAPTCHA / verification page stops the site for the window (AccountBlocked with what it showed).
-- A job lasts at most 6 minutes. After the go-ahead, no listing page (a timeout, an unknown page) → the seller's shop is
-  looked at (a "find" job): the one listing with this title is recorded, else "unconfirmed" — never published again."""
+- A job's form is filled within 3 minutes (WO32b) or given up. After the go-ahead, no listing page (a timeout, an
+  unknown page) → the seller's shop is looked at (a "find" job): the one listing with this title is recorded, else
+  "unconfirmed" — never published again.
+- WO32b: the progress as it happens ("tab opened", "photos 6/6", "category ✓" …) goes to `progress` (the CLI prints
+  it) and to `lines` (a dry run's ops message). The row is taken for posting by `on_go_ahead` — the moment before the
+  one go-ahead is sent, never earlier: before it nothing can be published, so a Ctrl+C, a failure or a form that went
+  away leaves the row as it was. A job given up on is called off in the extension (its tab closed) before post()
+  returns or raises."""
 from __future__ import annotations
 
 import asyncio
@@ -80,6 +86,12 @@ class ExtensionPoster(Poster):
         self.bridge = bridge
         self.fields = None
         self.confirm = None             # the supervised publish: async (fields, site) -> bool
+        self.on_go_ahead = None         # () -> bool: take the row for posting (False: no go-ahead, nothing clicked)
+        self.progress = None            # (line) -> None: each progress line as it comes (the CLI prints them)
+        self.lines: list[str] = []      # the job's progress lines (a dry run's ops message)
+        self.learned_shop = None        # the shop name a listing page showed (Depop's shop link)
+        self.fill_seconds = None        # how long the last form took to fill (the page's own clock)
+        self.shot = None                # the evidence path of the job in hand
         self.strict = False
         self.notes, self.guesses = [], []
         self.created_id = None
@@ -178,6 +190,28 @@ class ExtensionPoster(Poster):
         except OSError:
             pass
 
+    def _say(self, line: str) -> None:
+        if not line:
+            return
+        self.lines.append(line)
+        if self.progress is not None:
+            try:
+                self.progress(line)
+            except Exception:  # noqa: BLE001 — a progress line never breaks the job
+                pass
+
+    def _listen(self, ev: dict) -> None:
+        """A job's step or progress event as one line: "tab opened", "photos 6/6", "category ✓", "size ✗ <why>"."""
+        if ev.get("event") == "progress":
+            return self._say(str(ev.get("what") or ""))
+        name = str(ev.get("name") or "")
+        if name in ("submit_seen", "submit") or not name:
+            return None
+        label = re.sub(r"-input$", "", name).removeprefix("attributes.")
+        if name == "photos" and ev.get("ok") and ev.get("detail"):
+            return self._say(f"photos {str(ev['detail']).split(' ')[0]}")
+        return self._say(f"{label} ✓" if ev.get("ok") else f"{label} ✗ {ev.get('detail') or ''}".rstrip())
+
     def _stop(self, ev: dict) -> AccountBlocked:
         page = ev.get("page")
         return AccountBlocked(f"{self.site}: {WHAT.get(page, page)} — {ev.get('message') or ''}".strip(" —"), page=page)
@@ -190,7 +224,7 @@ class ExtensionPoster(Poster):
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         self.shot = shots / f"{r.sku}-{self.name}-{stamp}.png"
         self.clicked, self.created_id = None, None
-        self.notes, self.guesses = [], []
+        self.notes, self.guesses, self.lines, self.fill_seconds = [], [], [], None
         if self.fields is None:
             return Outcome("failed", error=f"{self.name}: no mapped fields for this item")
         if mode != "publish":
@@ -198,11 +232,16 @@ class ExtensionPoster(Poster):
         bridge = self._bridge()
         shots.mkdir(parents=True, exist_ok=True)
         job = bridge.submit(self.name, "dry_run" if dry_run else "publish", self.payload(r), shot=self.shot)
+        job.listener = self._listen
         try:
             return await self._post(bridge, job, r, dry_run)
         finally:
-            if not job.done:
+            if not job.done:                      # given up on (a timeout, a Ctrl+C): called off, its tab closed
                 bridge.drop(job)
+                try:
+                    await bridge.settle(job, 5.0)
+                except BaseException:  # noqa: BLE001 — a second Ctrl+C: the extension ends it by itself
+                    pass
 
     async def _post(self, bridge: bridge_mod.Bridge, job: bridge_mod.Job, r: Render, dry_run: bool) -> Outcome:
         deadline = job.created + bridge_mod.JOB_TIMEOUT
@@ -225,6 +264,9 @@ class ExtensionPoster(Poster):
         seen = ev.get("seen") or {}
         self.guesses += [g for g in ev.get("guesses") or [] if g]
         self.notes += [*(ev.get("notes") or []), *(f"step {x}" for x in ev.get("failed") or [])]
+        if isinstance(seen.get("fill_ms"), (int, float)):
+            self.fill_seconds = round(seen["fill_ms"] / 1000, 1)
+            self._say(f"filled in {self.fill_seconds} s")
         want = self.expected(r)
         diff = compare(seen, want)
         self._record(job, {"item": r.sku, "seen": seen, "expected": want, "diff": diff})
@@ -248,11 +290,20 @@ class ExtensionPoster(Poster):
             bridge.command(job, "cancel")
             return Outcome("cancelled", screenshot=screenshot, note=_joined(self.notes + [
                 f"not published on {self.site}: the confirmation wasn't typed"]))
+        if refusal is None and (job.final is not None or job.dropped is not None):
+            gone = (job.final or {}).get("message") or "given up on"
+            refusal = f"the form went away before the go-ahead ({gone}): nothing was published"
         if refusal is not None:
             bridge.command(job, "cancel")
             return Outcome("failed", screenshot=screenshot, error=f"PosterError: {refusal}", note=_joined(self.notes),
                            guesses=list(self.guesses))
+        if self.on_go_ahead is not None and not self.on_go_ahead():      # the row → 'posting', or no go-ahead
+            bridge.command(job, "cancel")
+            return Outcome("failed", screenshot=screenshot, note=_joined(self.notes), guesses=list(self.guesses),
+                           error=f"PosterError: {self.site}: the row couldn't be taken for posting (another poster "
+                                 "has it?) — nothing was published")
         self.clicked = True
+        self._say("go-ahead sent: one click")
         bridge.command(job, "submit")
         try:
             ev = await job.wait(("result", "error"), max(deadline - time.monotonic(), AFTER_CLICK_MIN))
@@ -277,17 +328,29 @@ class ExtensionPoster(Poster):
         return Outcome("failed", screenshot=after, clicked=True, note=_joined(self.notes), guesses=list(self.guesses),
                        error=f"after the click no listing page ({why}). It may be live: check the {self.site} shop")
 
+    @staticmethod
+    def shows_title(live: dict, title: str) -> bool:
+        """The listing page shows this title: its own title (Depop: the first line of its description), else its text."""
+        want = _norm(title)[:40]
+        return bool(want) and (want in _norm(live.get("title")) or want in _norm(live.get("body")))
+
+    @staticmethod
+    def shows_price(live: dict, price: int) -> bool:
+        return _shows_price(str(live.get("price") or ""), price) or _shows_price(live.get("body") or "", price)
+
     def _live_check(self, live: dict | None, r: Render) -> None:
         """The listing page against the fields: the title, the price, the size, the photo count — a difference is a
         note for the ops chat; the listing stays up."""
         if not live:
             self.notes.append("live check: the listing page wasn't read")
             return
-        body = _norm(live.get("body"))
+        if live.get("shop"):
+            self.learned_shop = str(live["shop"])
+        body = _norm(f"{live.get('body') or ''} {live.get('attributes') or ''}")
         problems = []
-        if _norm(self._title())[:40] not in body:
+        if not self.shows_title(live, self._title()):
             problems.append("the title isn't on the page")
-        if not _shows_price(live.get("body") or "", int(self.fields.price)):
+        if not self.shows_price(live, int(self.fields.price)):
             problems.append(f"the price ${self.fields.price} isn't on the page")
         if self.fields.size and _norm(self.fields.size) not in body:
             problems.append(f"the size {self.fields.size!r} isn't on the page")
@@ -314,7 +377,7 @@ class ExtensionPoster(Poster):
     async def wait_connected(self, timeout: float = CONNECT_WAIT) -> bool:
         end = time.monotonic() + timeout
         while self.bridge is not None and not self.bridge.connected() and time.monotonic() < end:
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.2)
         return self.available()
 
     async def check_login(self) -> str:
@@ -345,21 +408,23 @@ class ExtensionPoster(Poster):
                 raise self._stop(ev)
             raise PosterError(f"{address}: {ev.get('message')}")
         live = ev.get("live") or {}
-        body = _norm(live.get("body"))
-        if _norm(r.title)[:40] not in body and _norm(self._title() if self.fields else r.title)[:40] not in body:
+        if live.get("shop"):
+            self.learned_shop = str(live["shop"])
+        if not self.shows_title(live, r.title) and not self.shows_title(live, self._title() if self.fields else r.title):
             raise PosterError(f"the listing page at {address} doesn't show the title")
-        if not _shows_price(live.get("body") or "", r.price):
+        if not self.shows_price(live, r.price):
             raise PosterError(f"the listing page at {address} doesn't show the price ${r.price}")
 
     async def find_live(self, ctx, r: Render | None, since: float, created: str | None = None
                         ) -> tuple[str | None, dict]:
         """This listing in the seller's shop after an interrupted publish: the one listing whose text or address
         carries the title's first words. Several, or none: never a guess. No shop configured: it can't look."""
-        if not self.shop:
+        shop = self.shop or self.learned_shop or ""
+        if not shop:
             return None, {"error": f"no {self.name} shop page to look at (set marketplaces.{self.name}.shop)"}
         if not await self.wait_connected():
             raise PosterError(f"{self.site}: the Thrift Chrome extension isn't connected — the shop check waits")
-        ev = await self._job("find", {"shop": self.shop}, 180)
+        ev = await self._job("find", {"shop": shop}, 180)
         if ev.get("event") == "error":
             return None, {"error": ev.get("message"), "page": ev.get("page")}
         listings: dict[str, str] = {}

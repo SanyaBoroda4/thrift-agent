@@ -540,19 +540,18 @@ def card(iid: str, it) -> tuple[str, str] | None:
     return kind, f"{_title(it, iid)}\n{CONDITION_QUESTION if kind == 'condition' else KIDS_QUESTION}"
 
 
-def price_options(price: int, floor: int = 20, step: int = 5) -> list[int]:
-    """Four round prices near the suggestion, for one-tap buttons (WO20): two below and two above it — $5 apart under
-    $100, $10 up to $250, $25 above — each rounded to `step`, never under the floor and never the suggestion itself;
-    a slot that would fall under the floor moves above instead."""
-    gap = 5 if price < 100 else 10 if price < 250 else 25
-    out: list[int] = []
-    for k in (-2, -1, 1, 2, 3, 4, 5, 6):
-        p = max(step, step * math.floor((price + k * gap) / step + 0.5))
-        if p >= floor and p != price and p not in out:
-            out.append(p)
-        if len(out) == 4:
-            break
-    return sorted(out)
+PRICE_STEP = 10          # WO32b: the card's price buttons go in $10 steps from the suggestion
+LOWEST_BUTTON = 5        # ... and none under $5
+
+
+def price_options(price: int, step: int = PRICE_STEP) -> list[int]:
+    """The card's eight one-tap prices (WO32b, the owner's request — mostly up): $10 below the suggestion, the
+    suggestion, then six $10 steps above it; the steps start from the suggestion ($35: 25 · 35 · 45 … 95). No low
+    button when $10 below would be under $5: then the suggestion and seven steps up. Any typed number still works."""
+    low = price - step
+    out = [low] if low >= LOWEST_BUTTON else []
+    out += [price + k * step for k in range(0, 8 - len(out))]
+    return out
 
 
 def asks_brand(gate: dict) -> bool:
@@ -560,16 +559,16 @@ def asks_brand(gate: dict) -> bool:
     return any(q.startswith(("Brand?", "Brand:")) for q in gate.get("questions") or [])
 
 
-def item_buttons(iid: str, price: int | None, floor: int = 20, step: int = 5,
-                 no_brand: bool = False) -> list[list[dict]]:
-    """[✅ $X] / four nearby prices / [No brand] (when the brand is asked, WO25) / [Later] [Change] [Wrong photos]. Every
-    price button sets that price (approve:<item>:<amount>); [No brand] leaves Poshmark's brand empty (nobrand:<item>);
-    [Wrong photos] reopens the batch's grouping (regroup:<item>, WO20b)."""
+def item_buttons(iid: str, price: int | None, no_brand: bool = False) -> list[list[dict]]:
+    """Eight prices in two rows of four — $10 below, ⭐ the suggestion, $10 steps up (WO32b) — / [No brand] (when the
+    brand is asked, WO25) / [Later] [Change] [Wrong photos]. Every price button sets that price
+    (approve:<item>:<amount>); [No brand] leaves Poshmark's brand empty (nobrand:<item>); [Wrong photos] reopens the
+    batch's grouping (regroup:<item>, WO20b)."""
     rows = []
     if price:
-        rows.append([{"text": f"✅ ${price}", "callback_data": f"approve:{iid}:{price}"}])
-        if options := price_options(price, floor, step):
-            rows.append([{"text": f"${p}", "callback_data": f"approve:{iid}:{p}"} for p in options])
+        buttons = [{"text": f"⭐${p}" if p == price else f"${p}", "callback_data": f"approve:{iid}:{p}"}
+                   for p in price_options(price)]
+        rows += [buttons[:4], buttons[4:]]
     if no_brand:
         rows.append([{"text": NO_BRAND_BUTTON, "callback_data": f"nobrand:{iid}"}])
     rows.append([{"text": "Later", "callback_data": f"later:{iid}"}, {"text": "Change", "callback_data": f"change:{iid}"},
@@ -590,8 +589,7 @@ def send_item(s: Settings, db: DB, iid: str) -> None:
         text = f"{caption}\n(thrift price {iid} {price or '<amount>'})"
         notify.group_photo(cover, text) if cover.is_file() else notify.group(text)
         return
-    floor = max(int(s["pricing"]["floor"]), note_floor(it["note"]) or 0)
-    buttons = item_buttons(iid, price, floor, int(s["pricing"]["round_to"]), asks_brand(loads(it["gate"]) or {}))
+    buttons = item_buttons(iid, price, asks_brand(loads(it["gate"]) or {}))
     if cover.is_file() and len(caption) <= MAX_CAPTION:
         mid = bot.send_photo(cover, caption, buttons)
     else:

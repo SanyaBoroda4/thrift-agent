@@ -37,6 +37,16 @@ function page(site, html = read(FIXTURES[site]), url = URLS[site], fixture = {})
   Object.defineProperty(w.HTMLImageElement.prototype, "naturalWidth", {
     configurable: true, get() { return w.__brokenImages ? 0 : 100; } });
   Object.defineProperty(w.HTMLImageElement.prototype, "complete", { configurable: true, get() { return true; } });
+  // jsdom has no MessageChannel (the fast waits' tick): one on Node's setImmediate, which never keeps the run alive.
+  w.MessageChannel = class {
+    constructor() {
+      const a = { onmessage: null }, b = { onmessage: null };
+      a.postMessage = (data) => setImmediate(() => b.onmessage?.({ data }));
+      b.postMessage = (data) => setImmediate(() => a.onmessage?.({ data }));
+      this.port1 = a;
+      this.port2 = b;
+    }
+  };
   const fetches = [];
   w.fetch = (u) => { fetches.push(String(u)); return Promise.resolve({ ok: true, json: async () => ({}) }); };
   const sent = [];
@@ -44,12 +54,12 @@ function page(site, html = read(FIXTURES[site]), url = URLS[site], fixture = {})
   w.chrome = { runtime: { sendMessage: (m) => { sent.push(m); return Promise.resolve({ ok: true }); },
                           onMessage: { addListener: (fn) => listeners.push(fn) } } };
   for (const f of SCRIPTS[site]) w.eval(read(f));
-  w.Thrift.pace = 0;                        // no human pauses in a test
+  w.Thrift.speed = 0;                       // human mode's pauses: none in a test
   w.Thrift.timeoutScale = 0.05;
   const events = () => sent.filter((m) => m.type === "event");
   const last = () => events().at(-1);
   const tell = (msg) => listeners.forEach((fn) => fn(msg, {}, () => {}));
-  return { w, d: w.document, fetches, sent, events, last, tell };
+  return { w, d: w.document, fetches, sent, events, last, tell, listeners };
 }
 
 async function until(cond, ms = 8000) {
@@ -77,7 +87,7 @@ const DEPOP_JOB = {
 };
 const DEPOP_FIX = { sizeLag: 150, brandDelay: 100 };
 
-const run = (p, job) => p.w.Thrift.run({ job, selectors: SELECTORS, photos: [PHOTO], pace: 0 });
+const run = (p, job, pace = "fast") => p.w.Thrift.run({ job, selectors: SELECTORS, photos: [PHOTO], pace });
 
 test("Vinted: a dry run fills every field the way a person would and never submits", async () => {
   const p = page("vinted");
@@ -191,6 +201,94 @@ test("a job the bridge calls off stops at the next step, whatever the mode", asy
   assert.equal(p.last().event, "error");
   assert.match(p.last().message, /called off by the bridge/);
   assert.deepEqual(plain(p.fetches), []);
+});
+
+test("a cancel that reaches the page before its job is kept: the job ends at once, nothing filled", async () => {
+  const p = page("vinted");
+  p.tell({ type: "cancel", job_id: "vinted-early" });                 // the bridge gave up while the tab was opening
+  await run(p, { ...VINTED_JOB, job_id: "vinted-early" });
+  assert.equal(p.last().event, "error");
+  assert.match(p.last().message, /called off by the bridge/);
+  assert.equal(p.d.querySelector("[data-testid='title--input']").value, "");
+  assert.deepEqual(plain(p.fetches), []);
+  await run(p, { ...VINTED_JOB, job_id: "vinted-next" });              // another job on the page is not affected
+  assert.equal(p.last().event, "result");
+});
+
+test("fast mode (the default) sets a text field in one go; human mode types it in chunks", async () => {
+  for (const pace of ["fast", "human"]) {
+    const p = page("vinted");
+    const title = p.d.querySelector("[data-testid='title--input']");
+    const values = [];
+    title.addEventListener("input", () => values.push(title.value));
+    await run(p, { ...VINTED_JOB, job_id: `vinted-${pace}` }, pace);
+    assert.equal(p.last().event, "result", JSON.stringify(p.last()));
+    const typed = values.filter(Boolean);
+    if (pace === "fast") assert.deepEqual(typed, [VINTED_JOB.copy.title]);
+    else assert.ok(typed.length > 3 && typed.at(-1) === VINTED_JOB.copy.title, JSON.stringify(typed));
+    assert.equal(typeof p.last().seen.fill_ms, "number");             // the fill's time, for the report
+    const steps = p.events().filter((e) => e.event === "step");
+    assert.ok(steps.filter((e) => e.name !== "submit_seen").every((e) => typeof e.ms === "number"));   // each step's time
+    assert.match(steps.find((e) => e.name === "photos").detail, /^1\/1 shown$/);
+  }
+});
+
+test("a step with no progress for its limit (20 s) fails, with its name and a screenshot", async () => {
+  const p = page("vinted");
+  p.w.Thrift.timeoutScale = 0.01;                        // 20 s → 0.2 s
+  p.w.Thrift.click = () => new Promise(() => {});        // a click that never comes back: the category step stalls
+  const t0 = Date.now();
+  await run(p, { ...VINTED_JOB, job_id: "vinted-stall" });
+  const err = p.last();
+  assert.equal(err.event, "error", JSON.stringify(err));
+  assert.equal(err.stage, "category");
+  assert.match(err.message, /category: nothing happened for 20 s/);
+  assert.ok(Date.now() - t0 < 5000);
+  assert.ok(p.sent.some((m) => m.type === "screenshot" && m.label === "stalled-category"));
+  assert.ok(p.sent.some((m) => m.type === "screenshot" && m.label === "form"));
+  assert.deepEqual(plain(p.fetches), []);                // nothing submitted
+});
+
+// WO32b §1: Chrome runs a hidden tab's timers at most once a second (once a minute after 5 minutes) — the live stall.
+// Every timer of the page and of our scripts made to wait at least 1 s: the fill still takes seconds, because it waits
+// on the page itself (MutationObserver) and settles on message ticks, never on chains of short timers. (The pacing
+// before WO32b — typing in chunks, pauses between steps, polls — needed well over a minute here.)
+for (const site of ["vinted", "depop"]) {
+  test(`${site}: a hidden tab's throttled timers (every one ≥ 1 s) don't slow the fill`, async () => {
+    const p = page(site, undefined, undefined, site === "depop" ? DEPOP_FIX : {});
+    p.w.Thrift.timeoutScale = 1;                       // the real limits (20 s a step): a timer of 1 s is no stall
+    const real = p.w.setTimeout.bind(p.w);
+    p.w.setTimeout = (fn, ms, ...args) => real(fn, Math.max(1000, Number(ms) || 0), ...args);
+    const t0 = Date.now();
+    await run(p, { ...(site === "vinted" ? VINTED_JOB : DEPOP_JOB), job_id: `${site}-hidden` });
+    assert.equal(p.last().event, "result", JSON.stringify(p.last()));
+    assert.deepEqual(plain(p.last().failed), []);
+    assert.ok(Date.now() - t0 < 8000, `${Date.now() - t0} ms`);
+  });
+}
+
+test("the worker's second injection (a page whose idle came late) never answers a job twice", async () => {
+  const p = page("vinted");
+  for (const f of SCRIPTS.vinted) p.w.eval(read(f));                 // the scripts again, in the same page
+  assert.equal(p.listeners.length, 1);
+  p.tell({ type: "job", job: { ...VINTED_JOB, job_id: "vinted-twice" }, selectors: SELECTORS, photos: [PHOTO],
+           pace: "fast" });
+  await until(() => p.events().some((e) => e.event === "result"));
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(p.events().filter((e) => e.event === "result").length, 1);
+});
+
+test("waits are on the page: an element that appears later is seen at once, without a timer chain", async () => {
+  const p = page("vinted");
+  const T = p.w.Thrift;
+  setTimeout(() => { const el = p.d.createElement("div"); el.id = "late"; p.d.body.append(el); }, 30);
+  const t0 = Date.now();
+  const el = await T.waitFor(["#late"], { timeout: 5000 });
+  assert.ok(el && el.id === "late" && Date.now() - t0 < 1000);
+  assert.equal(await T.until(() => false, 50), null);    // nothing: null at the timeout
+  const s0 = Date.now();
+  await T.sleep(5000);                                   // fast mode: a fixed wait is a settle of 150 ms at most
+  assert.ok(Date.now() - s0 < 1000);
 });
 
 test("Depop: the category under the item's department, the lagging size menu, the package size, Depop's own fill-ins tidied", async () => {

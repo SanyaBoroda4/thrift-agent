@@ -177,7 +177,7 @@ def test_the_socket_needs_an_extension_origin_and_the_token():
         assert (await ws_recv(r)) == {"type": "refused"} and not b.connected()
         w.close()
         r, w, _ = await ws_open(b.port)
-        ws_send(w, {"type": "hello", "token": TOKEN})
+        ws_send(w, {"type": "hello", "token": TOKEN, "loaded": bm.files_hash()})
         welcome = await ws_recv(r)
         assert welcome == {"type": "welcome", "ext_hash": bm.files_hash()} and b.connected()
         w.close()
@@ -194,7 +194,7 @@ def test_jobs_are_pushed_over_the_socket_and_their_evidence_kept(tmp_path):
     async def go():
         b = await _bridge()
         r, w, _ = await ws_open(b.port)
-        ws_send(w, {"type": "hello", "token": TOKEN})
+        ws_send(w, {"type": "hello", "token": TOKEN, "loaded": bm.files_hash()})
         await ws_recv(r)
         shot = tmp_path / "i_1-vinted-x.png"
         job = b.submit("vinted", "publish", {"fields": {"a": 1}, "copy": {}, "price": 85, "photos": []}, shot=shot)
@@ -230,7 +230,7 @@ def test_a_deploy_that_changes_the_extension_is_announced(tmp_path):
     async def go():
         b = await bm.Bridge(TOKEN, port=0, ext_dir=ext).start()
         r, w, _ = await ws_open(b.port)
-        ws_send(w, {"type": "hello", "token": TOKEN})
+        ws_send(w, {"type": "hello", "token": TOKEN, "loaded": bm.files_hash()})
         first = await ws_recv(r)
         assert first == {"type": "welcome", "ext_hash": bm.files_hash(ext)} and b.announce_files() is False
         (ext / "selectors.json").write_text((ext / "selectors.json").read_text(encoding="utf-8") + "\n",
@@ -241,6 +241,42 @@ def test_a_deploy_that_changes_the_extension_is_announced(tmp_path):
         w.close()
         await b.close()
     run(go())
+
+
+def test_an_extension_about_to_reload_gets_no_job_meanwhile(monkeypatch):
+    """WO32b: after a deploy the extension reloads as soon as it is welcomed with the new files' hash — a job handed to it
+    then would be lost with the reload. Its socket gets none for RELOAD_HOLD; one that stays connected gets it after."""
+    monkeypatch.setattr(bm, "RELOAD_HOLD", 0.5)
+
+    async def go():
+        b = await _bridge()
+        try:
+            r, w, _ = await ws_open(b.port)
+            ws_send(w, {"type": "hello", "token": TOKEN, "loaded": "the-files-before-the-deploy"})
+            assert (await ws_recv(r))["type"] == "welcome"
+            job = b.submit("vinted", "dry_run", {"fields": {}, "copy": {}, "price": 1, "photos": []})
+            with pytest.raises((TimeoutError, asyncio.TimeoutError)):
+                await ws_recv(r, timeout=0.3)                       # held: it is reloading
+            got = await ws_recv(r, timeout=3)                       # still here after the hold: it gets the job
+            w.close()                                               # it reloads after all; the new one says it's
+            for _ in range(50):                                     # up to date: a job at once
+                if not b.sockets:
+                    break
+                await asyncio.sleep(0.02)
+            r2, w2, _ = await ws_open(b.port)
+            ws_send(w2, {"type": "hello", "token": TOKEN, "loaded": bm.files_hash()})
+            assert (await ws_recv(r2))["type"] == "welcome"
+            job2 = b.submit("depop", "dry_run", {"fields": {}, "copy": {}, "price": 1, "photos": []})
+            b.jobs[job.id].final, b.jobs[job.id].done = {"event": "result"}, True     # the first one is over
+            b._push()
+            got2 = await ws_recv(r2, timeout=1)
+            w2.close()
+            return got, job, got2, job2
+        finally:
+            await b.close()
+    got, job, got2, job2 = run(go())
+    assert got["type"] == "job" and got["job"]["job_id"] == job.id
+    assert got2["type"] == "job" and got2["job"]["job_id"] == job2.id
 
 
 def test_a_job_given_up_on_ignores_late_events():
@@ -260,7 +296,7 @@ def test_a_job_called_off_is_cancelled_in_the_extension_and_the_next_waits_for_i
     async def go():
         b = await _bridge()
         r, w, _ = await ws_open(b.port)
-        ws_send(w, {"type": "hello", "token": TOKEN})
+        ws_send(w, {"type": "hello", "token": TOKEN, "loaded": bm.files_hash()})
         await ws_recv(r)
         first = b.submit("vinted", "publish", {"fields": {}, "copy": {}, "price": 1, "photos": []})
         assert (await ws_recv(r))["job"]["job_id"] == first.id
@@ -359,13 +395,14 @@ def _poster(mp, b, selectors_path, fields=None, shop=""):
 
 
 async def _with_fake(results, mp="vinted", selectors_path=None, fields=None, shop="", dry=False, confirm=None,
-                     tmp=None):
+                     tmp=None, on_go_ahead=None, progress=None):
     b = await _bridge()
     fake = FakeExtension(b.port, TOKEN, results)
     fake.start()
     await asyncio.wait_for(fake.connected.wait(), 5)
     p = _poster(mp, b, selectors_path, fields, shop)
-    p.confirm = confirm
+    p.confirm, p.on_go_ahead, p.progress = confirm, on_go_ahead, progress
+    p.fake = fake
     try:
         out = await p.post(None, RENDER, "publish", dry, tmp)
     finally:
@@ -480,13 +517,159 @@ def test_a_job_no_extension_takes_is_given_up_before_anything_opens(tmp_path, se
     run(go())
 
 
-def test_a_job_past_six_minutes_fails_with_nothing_submitted(tmp_path, selectors, monkeypatch):
+# ---------------------------------------------------------------- WO32b: progress, the go-ahead, the connect
+
+def test_the_progress_reaches_the_cli_line_by_line(tmp_path, selectors):
+    """What the owner sees at the terminal while the form fills: the tab, the photos, each field, the time it took."""
+    lines = []
+    out, fake, p = run(_with_fake([Outcome("dryrun")], selectors_path=selectors.path, dry=True, tmp=tmp_path,
+                                  progress=lines.append))
+    assert out.status == "dryrun"
+    assert lines == ["tab opened", "photos 1/1", "title ✓", "description ✓", "category ✓", "price ✓",
+                     "filled in 1.2 s"]
+    assert p.lines == lines and p.fill_seconds == 1.2
+    record = json.loads(Path(out.screenshot).with_suffix(".json").read_text(encoding="utf-8"))
+    assert record["steps"][0] == {"name": "photos", "ok": True, "detail": "1/1 shown", "clicked": None, "ms": 120}
+
+
+def test_the_row_is_taken_only_at_the_go_ahead(tmp_path, selectors):
+    """WO32b: the row becomes 'posting' (on_go_ahead) after POST and right before the one click — and a row that can't
+    be taken then is never clicked."""
+    order = []
+
+    async def post_typed(fields, site):
+        order.append("POST")
+        return True
+
+    def take():
+        order.append("taken")
+        return True
+    out, fake, _ = run(_with_fake([Outcome("posted", url="https://www.vinted.com/items/123")],
+                                  selectors_path=selectors("submit"), confirm=post_typed, tmp=tmp_path,
+                                  on_go_ahead=take))
+    assert out.status == "posted" and fake.clicks == 1 and order == ["POST", "taken"]
+    assert [c["type"] for c in fake.commands] == ["submit"]
+    out, fake, _ = run(_with_fake([Outcome("posted", url="https://www.vinted.com/items/123")],
+                                  selectors_path=selectors("submit"), confirm=post_typed, tmp=tmp_path,
+                                  on_go_ahead=lambda: False))
+    assert out.status == "failed" and not out.clicked and fake.clicks == 0 and "couldn't be taken" in out.error
+    assert [c["type"] for c in fake.commands] == ["cancel"]
+
+
+def test_a_form_that_went_away_before_post_is_never_clicked(tmp_path, selectors):
+    """The owner closed the tab (or the extension ended the job) while the terminal waited for POST: no go-ahead,
+    nothing taken, nothing clicked."""
+    taken = []
+    box = {}
+
+    async def post_after_the_tab_closed(fields, site):
+        fake = box["p"].fake
+        fake.event(fake.writer, event="error", job_id=fake.jobs[-1]["job_id"], stage="tab_closed", page="unknown",
+                   message="the job's tab was closed")
+        await fake.writer.drain()
+        await asyncio.sleep(0.3)
+        return True
+
+    async def go():
+        b = await _bridge()
+        fake = FakeExtension(b.port, TOKEN, [Outcome("posted", url="https://www.vinted.com/items/123")])
+        fake.start()
+        await asyncio.wait_for(fake.connected.wait(), 5)
+        p = _poster("vinted", b, selectors("submit"))
+        p.fake, box["p"] = fake, p
+        p.confirm, p.on_go_ahead = post_after_the_tab_closed, lambda: taken.append(1) or True
+        try:
+            return await p.post(None, RENDER, "publish", False, tmp_path), fake
+        finally:
+            fake.stop()
+            await b.close()
+    out, fake = run(go())
+    assert out.status == "failed" and not out.clicked and fake.clicks == 0 and taken == []
+    assert "went away before the go-ahead (the job's tab was closed)" in out.error
+
+
+def test_a_ctrl_c_calls_the_job_off_in_the_extension_before_it_ends(tmp_path, selectors):
+    """A Ctrl+C while the terminal waits for POST: the job is cancelled in the extension (it closes the tab) and its
+    last word is awaited before the CLI goes — never a click."""
+    async def ctrl_c(fields, site):
+        raise asyncio.CancelledError
+
+    async def go():
+        b = await _bridge()
+        fake = FakeExtension(b.port, TOKEN, [Outcome("posted", url="https://www.vinted.com/items/123")])
+        fake.start()
+        await asyncio.wait_for(fake.connected.wait(), 5)
+        p = _poster("vinted", b, selectors("submit"))
+        p.confirm = ctrl_c
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await p.post(None, RENDER, "publish", False, tmp_path)
+            return fake, list(b.jobs.values())[0]
+        finally:
+            fake.stop()
+            await b.close()
+    fake, job = run(go())
+    assert [c["type"] for c in fake.commands] == ["cancel"] and fake.clicks == 0
+    assert job.final and job.final["message"] == "cancelled"            # its end came back before post() returned
+
+
+def test_why_no_extension_is_connected():
+    """The CLI's reason after 30 s: a token refused, the Thrift Chrome not running, or an extension that never
+    knocked."""
+    async def go():
+        b = await _bridge()
+        try:
+            never, not_running = b.why_missing(chrome_running=True), b.why_missing(chrome_running=False)
+            r, w, _ = await ws_open(b.port)
+            ws_send(w, {"type": "hello", "token": "not-the-token-" + "q" * 20})
+            assert (await ws_recv(r))["type"] == "refused"
+            w.close()
+            refused = b.why_missing(chrome_running=True)
+            async with _client(b) as c:
+                await c.get("/jobs/next", headers={"X-Thrift-Token": TOKEN})     # the right token: not refused now
+            return never, not_running, refused, b.why_missing(chrome_running=True)
+        finally:
+            await b.close()
+    never, not_running, refused, later = run(go())
+    assert "never knocked" in never and "chrome://extensions" in never
+    assert "isn't running" in not_running and "services.sh start chrome" in not_running
+    assert "token the bridge refused" in refused and "ext_token" in refused
+    assert "refused" not in later
+
+
+def test_the_cli_waits_seconds_for_the_extension_and_says_why_it_isnt_there(monkeypatch):
+    monkeypatch.setattr(runner, "thrift_chrome_running", lambda: False)
+
+    async def go():
+        b = await _bridge()
+        said = []
+        try:
+            fake = FakeExtension(b.port, TOKEN, [Outcome("dryrun")])
+            fake.start()
+            took = await runner.connect_extension(b, _poster("vinted", b, None), said.append)
+            fake.stop()
+            await asyncio.sleep(0.2)
+            b.last_seen, b.sockets = None, set()                       # gone again
+            with pytest.raises(RuntimeError, match="isn't running"):
+                await runner.connect_extension(b, _poster("vinted", b, None), said.append, first=0.3, then=0.3)
+        finally:
+            await b.close()
+        return took, said
+    took, said = run(go())
+    assert took < 5 and said[0] == "Waiting for the Thrift Chrome extension…" and said[1].startswith(
+        "  extension connected (")
+    assert said[3] == ("  not yet: the Thrift Chrome isn't running — start it: bash ~/thrift-agent/deploy/services.sh "
+                       "start chrome")
+
+
+def test_a_job_past_three_minutes_fails_with_nothing_submitted(tmp_path, selectors, monkeypatch):
+    assert bm.JOB_TIMEOUT == 180.0                                       # WO32b: 3 minutes, not 6
     monkeypatch.setattr(bm, "JOB_TIMEOUT", 0.5)
 
     async def go():
         b = await _bridge()
         r, w, _ = await ws_open(b.port)
-        ws_send(w, {"type": "hello", "token": TOKEN})
+        ws_send(w, {"type": "hello", "token": TOKEN, "loaded": bm.files_hash()})
         await ws_recv(r)
         p = _poster("vinted", b, selectors())
         out = await p.post(None, RENDER, "publish", False, tmp_path)       # the extension takes it, then nothing
@@ -675,7 +858,9 @@ def test_verified_steps_carry_their_evidence_and_the_publish_gate_stays_closed()
             if step.get("verified"):
                 assert step.get("seen"), f"{site} {name}: verified without its evidence"
         # The live dry runs (2026-10-06) recorded the forms and their one publish button: the owner's supervised publish
-        # may go; the unattended loop waits for a real publish to record the page after the click.
+        # may go; the unattended loop waits for a real publish to record the page after the click — Depop's first
+        # supervised publish recorded it (2026-10-07, WO32b), Vinted's is still to come.
         assert not (ext_driver.PUBLISH_NEEDS & ext_driver.unverified(site))
-        assert ext_driver.AUTOPUBLISH_NEEDS & ext_driver.unverified(site) == {"after_publish"}
+        assert ext_driver.AUTOPUBLISH_NEEDS & ext_driver.unverified(site) == ({"after_publish"} if site == "vinted"
+                                                                             else set())
         assert data[site]["pages"]["login"]["verified"]

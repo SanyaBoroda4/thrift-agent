@@ -320,7 +320,7 @@ itself — with the diff in the ops chat).
   mapped skips only that marketplace.
 - **Copy:** Depop — the title as the first line, the Poshmark description, ≤ 5 hashtags, ≤ 1000 characters (only the
   body trimmed), ≤ 8 photos; Vinted — the same title and description, ≤ 20 photos.
-- **Posting:** Poshmark → Depop → Vinted per item, 30–90 s apart, 25 new listings a day per marketplace. Each site
+- **Posting:** Poshmark → Depop → Vinted per item, 5–15 s apart (WO32b), 25 new listings a day per marketplace. Each site
   publishes only with the poster's two keys AND `marketplaces.<m>.autopublish`; otherwise a dry run: the whole form
   filled, the screenshot and the mapped fields to the ops chat, the tab closed. A logged-out / CAPTCHA / verification
   page stops that site for the window (one plain line in the group); a failure before publishing is retried next window
@@ -344,6 +344,18 @@ Vinted and Depop turn away a browser driven over the DevTools protocol, so both 
   Telegram lines can't tell. A dry run fills the form and closes the tab; a publish needs the steps recorded in
   `ext/selectors.json`, then clicks Post / Upload exactly once and checks the listing page; a login / block / CAPTCHA
   page stops that site for the window with one plain line ("Vinted needs you to log in on the Mac.").
+- **Fast (WO32b, `ext.pace: fast`, the default):** each field is set in one go and every wait is on the page itself
+  (the element appears, the list renders, the thumbnails load) — never a chain of short timers, which Chrome runs once a
+  second in a hidden tab (the live stall). A whole form, photos included, in well under 45 s; each step gives up after
+  20 s without progress (photos 120 s) with its name and a screenshot, the job after 3 min. `ext.pace: human` brings
+  back a person's typing and pauses.
+- **Seen in seconds:** the extension retries 1 s, 2 s, 5 s after the bridge goes, then every 5 s, and polls every 30 s;
+  `thrift poster --publish-first <item> --marketplace vinted|depop` sees it within ~5 s, says why after 30 s (token
+  refused, Thrift Chrome not running, extension never knocking), prints the progress line by line ("tab opened",
+  "photos 6/6", "category ✓" … "filled in 21.3 s"), then "Type POST to publish". The row becomes `posting` only when
+  the one go-ahead is sent: a Ctrl+C before POST closes the tab and leaves the item in line.
+- **One group line per item:** "Posted ✓" once, the first time its listings go out; a site added later (a supervised
+  publish, the backfill, a retry, a 'posted <url>' reply) is an ops line, "Added: <title> · Depop <url>".
 - **Setting:** `marketplaces.<m>.driver: extension` (default) | `playwright` (WO30's poster profile) | `api` (Depop's
   Selling API: a stub until its key arrives). `thrift crosslist --check-login` opens the sell pages in the Thrift
   Chrome and says whether they're logged in.
@@ -351,7 +363,8 @@ Vinted and Depop turn away a browser driven over the DevTools protocol, so both 
   in the Thrift Chrome, paste the token (`cat ~/thrift/var/ext_token`) in its options, log in to vinted.com and
   depop.com there, turn both sites on, restart the poster. The window may sit behind others; never minimized.
 - **Tests:** jsdom (`npm ci --prefix tests/js`), Playwright's Chromium with the unpacked extension (`python -m playwright
-  install chromium`), and the bridge / driver / WO30 loop with a scripted stand-in extension.
+  install chromium`), and the bridge / driver / WO30 loop with a scripted stand-in extension. jsdom also runs both
+  fills with every timer forced to ≥ 1 s (a hidden tab): they still take seconds.
 
 ## The daily window (WO28)
 The Mac is mostly closed. About once a day it is opened (often on battery) for ~30 minutes; photos are shared from the

@@ -2,7 +2,7 @@
 goes up on Depop, then Vinted — no extra questions, every dropdown value from the saved catalogs (thrift_agent.catalogs).
 
 - A `listings` row per marketplace: queued when Poshmark posts (or by `thrift crosslist`), then the poster takes it,
-  right after the item's Poshmark listing (30–90 s apart, `crosslist.gap_seconds`), within the hours and
+  right after the item's Poshmark listing (5–15 s apart, `crosslist.gap_seconds`, WO32b), within the hours and
   `marketplaces.<m>.daily_cap` (25 a day each).
 - The same two keys as Poshmark (poster.dry_run off + poster.autopublish_confirmed on) AND
   `marketplaces.<m>.autopublish`; otherwise a dry run: the whole form filled, the screenshot and the mapped fields to the
@@ -91,7 +91,7 @@ def daily_cap(s: Settings, mp: str) -> int:
 
 
 def gap(s: Settings) -> float:
-    lo, hi = s.get("crosslist.gap_seconds") or [30, 90]
+    lo, hi = s.get("crosslist.gap_seconds") or [5, 15]
     return random.uniform(float(lo), float(hi))
 
 
@@ -228,9 +228,10 @@ def fields_summary(fields: dict) -> str:
 
 
 def record(s: Settings, db: DB, iid: str, mp: str, title: str, out, fields: dict, seconds: float | None = None,
-           slept: bool = False) -> None:
+           slept: bool = False, lines: list[str] | None = None) -> None:
     """The listing row, the event, and the messages for one Depop/Vinted Outcome. Nothing here goes to the group but an
-    unconfirmed publish's question (the "Posted ✓" line comes from announce())."""
+    unconfirmed publish's question (the "Posted ✓" line comes from announce()). `lines`: the extension job's progress
+    ("photos 6/6 · category ✓ · … · filled in 21.3 s", WO32b), in a dry run's ops message."""
     from thrift_agent.post import runner           # the poster's own wording for an unconfirmed publish
     stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
     error = out.error
@@ -246,9 +247,11 @@ def record(s: Settings, db: DB, iid: str, mp: str, title: str, out, fields: dict
                       fields_json={**fields, "guesses": guesses, "note": out.note})
     db.log(iid, f"post_{out.status}", {"mp": mp, "url": out.url, "error": error, "shot": out.screenshot,
                                        "note": out.note, "clicked": out.clicked, "guesses": guesses,
-                                       "seconds": round(seconds, 1) if seconds else None, "slept": slept or None})
+                                       "seconds": round(seconds, 1) if seconds else None, "slept": slept or None,
+                                       "progress": list(lines) if lines else None})
     shot = Path(out.screenshot or "")
     note = f"\n{out.note}" if out.note else ""
+    progress = f"\n{' · '.join(lines)}" if lines else ""
     if out.status == "failed" and out.clicked and not out.url:
         runner.ask_unconfirmed(db, iid, mp, runner.unconfirmed_text(title, slept, mp))
     elif out.status == "failed":
@@ -260,7 +263,7 @@ def record(s: Settings, db: DB, iid: str, mp: str, title: str, out, fields: dict
                                f"{iid} --marketplace {mp}{note}")
     elif out.status == "dryrun":
         notify.ops_photo(shot, f"🧪 dry-run {LABEL[mp]} ({iid}): {title} — ${fields.get('price')}\n"
-                               f"{fields_summary(fields)}{note}")
+                               f"{fields_summary(fields)}{progress}{note}")
     elif out.status == "posted" and out.note:
         notify.ops_photo(shot, f"{LABEL[mp]} posted ({iid}) {out.url}: {out.note}")
 
@@ -300,11 +303,37 @@ def posted_line(s: Settings, db: DB, iid: str, mps: list[str], done: bool = Fals
     return text + (f"\n{ALL_DONE_LINE}" if done else "")
 
 
+def unconfirmed(db: DB, iid: str) -> list[str]:
+    """The item's marketplaces where a publish may be live but its address wasn't found (the owner's ⚠️ question)."""
+    return [r["marketplace"] for r in db.listings_for(iid)
+            if r["status"] == "failed" and not r["url"] and (r["error"] or "").startswith(UNCONFIRMED)]
+
+
+def added_line(db: DB, iid: str, mps: list[str]) -> str:
+    """The ops chat's "Added: <title> · Depop <url>" for sites added to an item already announced (WO32b)."""
+    it = db.item(iid)
+    title = (((loads(it["renders"]) or {}).get("poshmark") or {}).get("title") if it else None) or iid
+    rows = {r["marketplace"]: r for r in db.listings_for(iid)}
+    parts = " · ".join(f"{LABEL[mp]} {rows[mp]['url'] or ''}".rstrip() for mp in mps)
+    return f"Added: {title} · {parts}"
+
+
 def announce(s: Settings | None, db: DB, iid: str) -> str | None:
-    """The group's line for every marketplace of the item posted since its last line. Returns it (None: nothing new)."""
+    """The group hears about an item ONCE (WO32b): the first time its listings go out, one "Posted ✓" line with every
+    site that confirmed. While one of its sites is unconfirmed, the ⚠️ question is the item's only group message and the
+    line waits for its answer. Sites added to an item already announced (a supervised publish, the backfill, a retry,
+    a 'posted <url>' reply) go to the ops chat only: "Added: <title> · Depop <url>". Returns the text sent (None:
+    nothing new)."""
     seen = announced(db, iid)
     mps = [r["marketplace"] for r in db.listings_for(iid) if r["status"] == "posted" and r["marketplace"] not in seen]
     if not mps:
+        return None
+    if seen:
+        text = added_line(db, iid, mps)
+        db.log(iid, "posted_announced", {"mps": mps, "to": "ops"})
+        notify.say(text)
+        return text
+    if unconfirmed(db, iid):
         return None
     text = posted_line(s, db, iid, mps, done=s is not None and daily.all_done(s, db))
     db.log(iid, "posted_announced", {"mps": mps})

@@ -37,12 +37,7 @@
   const escape = (el) => el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 
   async function options(cid, timeout = 8000) {
-    const end = Date.now() + timeout * T.timeoutScale;
-    for (;;) {
-      const opts = optionsOf(menuOf(cid));
-      if (opts.length || Date.now() > end) return opts;
-      await new Promise((r) => setTimeout(r, 120));
-    }
+    return (await T.until(() => { const o = optionsOf(menuOf(cid)); return o.length ? o : null; }, timeout)) || [];
   }
 
   async function open(cid) {
@@ -93,7 +88,12 @@
     }
     const box = await open(cid);
     await T.type(box, typed ?? value);                    // T.type clears the field first
-    await T.sleep(500);
+    // The menu filters by the typed text: wait until it offers what we want (an older list may still be showing),
+    // else take what it shows after 4 s.
+    const leaf = T.norm(String(value).split(" > ").pop());
+    const want = (texts) => (prefix ? texts.some((t) => T.norm(t).startsWith(T.norm(value)))
+      : T.matchOption(texts, value, category) >= 0 || (category && texts.some((t) => T.norm(t) === leaf)));
+    await T.until(() => want(optionsOf(menuOf(cid)).map(textOf)), 4000);
     const opts = await options(cid);
     const texts = opts.map(textOf);
     let i = prefix ? texts.findIndex((t) => T.norm(t).startsWith(T.norm(value))) : T.matchOption(texts, value, category);
@@ -117,21 +117,25 @@
     }
     await T.click(opts[i]);
     T.picked(st, cid, value, shown);
-    await T.sleep(400);
+    if (single(cid)) await T.until(() => !optionsOf(menuOf(cid)).length, 1500);       // its menu closes
+    else await T.until(() => T.chipsOf(cid).some((c) => T.norm(c) === T.norm(value)), 1500);   // its chip shows
   }
 
-  // The size menu lags after a category change (the catalog's known gaps): read it until it shows the size.
+  // The size menu lags after a category change (the catalog's known gaps), and a menu opened during the lag keeps its
+  // old list: read it until it shows the size, opening it again every 0.8 s, 12 s at most.
   async function size(st, value) {
     const cid = S().combo.ids.size;
-    const end = Date.now() + 15000 * T.timeoutScale;
+    const end = Date.now() + 12000 * T.timeoutScale;
     let texts = [];
     for (;;) {
       const box = await open(cid);
       T.setValue(box, "");
-      texts = (await options(cid, 3000)).map(textOf);
+      const shown = await T.until(() => {
+        texts = optionsOf(menuOf(cid)).map(textOf);
+        return T.matchOption(texts, value) >= 0;
+      }, 800);
       escape(box);
-      if (T.matchOption(texts, value) >= 0 || Date.now() > end) break;
-      await T.sleep(1000);
+      if (shown || Date.now() > end) break;
     }
     st.sizeMenu = texts.slice(0, 60);
     await choose(st, cid, value);
@@ -157,15 +161,18 @@
     for (const spelling of T.brandSpellings(value, typed)) {
       await open(cid);
       await T.type(box, spelling);
-      const end = Date.now() + 5000 * T.timeoutScale;
-      let opts = [], texts = [], pick = { choice: null, guess: null };
-      for (;;) {
+      let opts = [], texts = [], since = performance.now(), last = "";
+      const pick = (await T.until(() => {                // Depop's server answers: until our brand shows, 5 s at most
         opts = optionsOf(menuOf(cid));
         texts = opts.map(textOf);
-        pick = T.strictPick(value, texts);
-        if (pick.choice || Date.now() > end) break;
-        await new Promise((r) => setTimeout(r, 300));
-      }
+        const p = T.strictPick(value, texts);
+        if (p.choice) return p;
+        const now = texts.join("|");
+        if (now !== last) { last = now; since = performance.now(); }
+        // only "Other", unchanged for 1.2 s: Depop has nothing under this spelling — the next one
+        if (texts.length === 1 && T.norm(texts[0]) === "other" && performance.now() - since > 1200) return { none: true };
+        return null;
+      }, 5000)) || { choice: null, guess: null };
       if (pick.choice) {
         await T.click(opts[texts.indexOf(pick.choice)]);
         T.picked(st, cid, value, pick.choice);
@@ -212,13 +219,15 @@
     async fill(job, files, st) {
       const f = job.fields;
       const ids = S().combo.ids;
-      await T.step("photos", st, async () => {
+      await T.step("photos", st, async () => {         // all at once; up to 120 s for the thumbnails to show
         const input = await T.need(S().photos.selectors, "photos", { visible: false });
+        const n = Math.min(files.length, 8);
         st.attached = await T.attach(input, files.slice(0, 8), S().photos.drop);
-        await T.waitCount(S().photos.thumbs, Math.min(files.length, 8), 90000);
-        st.photosLoaded = await T.waitLoaded(S().photos.thumbs, Math.min(files.length, 8), 30000);
+        await T.waitCount(S().photos.thumbs, n, 60000);
+        st.photosLoaded = await T.waitLoaded(S().photos.thumbs, n, 50000);
         await T.screenshot("photos");
-      });
+        return `${st.photosLoaded}/${n} shown`;
+      }, { limit: 120000 });
       await T.step("description", st, async () =>
         T.type(await T.need(S().description.selectors, "description"), job.copy.description));
       await T.step("category", st, async () =>
@@ -240,7 +249,7 @@
         if (!usps.checked) await T.click(usps);
         if (!usps.checked) throw new Error("the Depop Shipping radio didn't take");
         st.shipping = f.shipping;
-        await T.sleep(600);
+        await T.sleep(150);
       });
       await T.step("package", st, async () => {
         await choose(st, ids.package, f.package_size, { prefix: true });
@@ -251,7 +260,7 @@
         await T.click(b);
         st.notes.push("Boost was on: turned off");
       }
-      st.photosLoadedEnd = await T.waitLoaded(S().photos.thumbs, Math.min(files.length, 8), 20000);
+      st.photosLoadedEnd = await T.waitLoaded(S().photos.thumbs, Math.min(files.length, 8), 15000);
       await T.screenshot("photos-end");
       // Depop's own suggestions that aren't ours: every multi-select keeps only the values we chose; a brand we didn't
       // ask for is cleared (the listing says only what the facts support).
@@ -261,7 +270,7 @@
             if (!want.some((w) => T.norm(w) === T.norm(chipValue(b)))) {
               st.notes.push(`removed '${chipValue(b)}' from ${cid} (Depop's own suggestion)`);
               await T.click(b);
-              await T.sleep(300);
+              await T.until(() => !b.isConnected, 1500);
             }
           }
         }
@@ -316,11 +325,23 @@
       await T.click(buttons[0]);                                        // exactly once
     },
 
+    // The listing page (recorded 2026-10-07: Post lands on /products/<slug>/manage/): its JSON-LD carries our
+    // description (the title its first line), the price and one image per photo; Depop's own h1 is a name it makes up,
+    // never compared. The shop link gives the shop's name (the shop check's page).
     async verify(job) {
-      await T.sleep(1500);
+      const script = await T.waitFor(S().listing_title.selectors, { timeout: 10000, visible: false });
+      let ld = {};
+      try { ld = JSON.parse(script?.textContent || "{}"); } catch (e) { /* the DOM below */ }
       const text = (sel) => (T.$(sel)?.textContent || "").replace(/\s+/g, " ").trim();
-      return { url: location.href, title: text(S().listing_title.selectors), price: text(S().listing_price.selectors),
-               photos: T.$$(S().listing_photos.selectors).length, body: T.textOf().slice(0, 3000) };
+      const description = String(ld.description || "");
+      const title = description.split("\n")[0].trim() || String(ld.name || "");
+      const price = text(S().listing_price.selectors) || (ld.offers?.price ? `$${ld.offers.price}` : "");
+      const photos = Array.isArray(ld.image) ? ld.image.length : T.$$(S().listing_photos.selectors).length;
+      const attributes = text(S().listing_attributes.selectors);
+      const href = T.$(S().shop_link.selectors)?.getAttribute("href") || "";
+      const shop = (href.match(/^\/([^/?#]+)\/?/) || [])[1] || null;
+      return { url: location.href, title, price, photos, attributes, shop,
+               body: [title, price, attributes, description].join("\n").slice(0, 3000) };
     },
 
     async delist(job, st) {
@@ -333,17 +354,20 @@
       }
       T.emit({ event: "step", job_id: job.job_id, name: "mark_sold", ok: true, clicked: true });
       await T.click(button);
-      await T.sleep(1200);
       const cre = new RegExp(S().confirm.text, "i");
-      const confirm = T.$$(S().confirm.selectors).find((b) => T.visible(b) && cre.test(T.norm(b.textContent)));
-      if (confirm) await T.click(confirm);
-      await T.sleep(1500);
+      const confirm = await T.until(() => T.$$(S().confirm.selectors)
+        .find((b) => T.visible(b) && cre.test(T.norm(b.textContent))), 4000);
+      if (confirm) {
+        await T.click(confirm);
+        await T.until(() => !confirm.isConnected, 4000);
+      }
       await T.screenshot("delisted");
       T.emit({ event: "result", job_id: job.job_id, delisted: true, url: location.href });
     },
 
     async find(job, st) {
-      await T.sleep(1500);
+      await T.waitFor(S().shop_links.selectors, { timeout: 8000, visible: false });   // the shop's tiles
+      await T.sleep(150);
       const listings = T.$$(S().shop_links.selectors).map((a) => ({
         url: a.href, text: (a.getAttribute("title") || a.textContent || "").replace(/\s+/g, " ").trim(),
       }));

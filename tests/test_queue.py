@@ -271,30 +271,31 @@ def test_plain_price(text, amount):
 
 # ---------- one-tap prices ----------
 
-@pytest.mark.parametrize("price,floor,expected", [
-    (85, 20, [75, 80, 90, 95]),                     # the owner's example: X-10, X-5, X+5, X+10
-    (45, 20, [35, 40, 50, 55]),
-    (28, 20, [20, 25, 35, 40]),                     # an odd price: round neighbours
-    (25, 20, [20, 30, 35, 40]),                     # 15 would be under the floor: one more above instead
-    (20, 20, [25, 30, 35, 40]),                     # at the floor: all above
-    (35, 30, [30, 40, 45, 50]),                     # a seller's "floor 30"
-    (150, 20, [130, 140, 160, 170]),                # $10 apart from $100
-    (300, 20, [250, 275, 325, 350]),                # $25 apart from $250
+@pytest.mark.parametrize("price,rows", [
+    (40, [["$30", "⭐$40", "$50", "$60"], ["$70", "$80", "$90", "$100"]]),        # the owner's example (WO32b)
+    (35, [["$25", "⭐$35", "$45", "$55"], ["$65", "$75", "$85", "$95"]]),         # steps start from the suggestion
+    (10, [["⭐$10", "$20", "$30", "$40"], ["$50", "$60", "$70", "$80"]]),         # $0 below: no low button, 7 up
+    (150, [["$140", "⭐$150", "$160", "$170"], ["$180", "$190", "$200", "$210"]]),
+    (15, [["$5", "⭐$15", "$25", "$35"], ["$45", "$55", "$65", "$75"]]),          # $5 is not under $5: kept
+    (14, [["⭐$14", "$24", "$34", "$44"], ["$54", "$64", "$74", "$84"]]),         # $4 would be: no low button
 ])
-def test_price_buttons_are_round_and_never_under_the_floor(price, floor, expected):
-    options = price_options(price, floor, 5)
-    assert options == expected
-    assert len(options) == 4 and price not in options and all(p >= floor and p % 5 == 0 for p in options)
+def test_eight_price_buttons_ten_dollars_apart_mostly_up(price, rows):
+    texts = [[b["text"] for b in row] for row in approve.item_buttons("i_x", price)[:2]]
+    assert texts == rows
+    options = price_options(price)
+    assert len(options) == 8 and price in options and all(p >= 5 for p in options)
+    first = [b["callback_data"] for b in approve.item_buttons("i_x", price)[0]]
+    assert first == [f"approve:i_x:{p}" for p in options[:4]]
 
 
-def test_the_card_has_the_suggestion_four_neighbours_later_and_change(env, tmp_path, facts):
+def test_the_card_has_eight_prices_later_change_and_wrong_photos(env, tmp_path, facts):
     s, db, bot = env
     a1 = _item(db, tmp_path, facts, _batch(db, EARLY), 1, price=45)
     approve.pump(s, db)
     rows = bot.calls[-1][1]["reply_markup"]["inline_keyboard"]
-    assert [[b["text"] for b in row] for row in rows] == [["✅ $45"], ["$35", "$40", "$50", "$55"],
+    assert [[b["text"] for b in row] for row in rows] == [["$35", "⭐$45", "$55", "$65"], ["$75", "$85", "$95", "$105"],
                                                           ["Later", "Change", "Wrong photos"]]
-    assert {b["callback_data"] for b in rows[1]} == {f"approve:{a1}:{p}" for p in (35, 40, 50, 55)}
+    assert {b["callback_data"] for b in rows[0] + rows[1]} == {f"approve:{a1}:{p}" for p in range(35, 106, 10)}
 
 
 # ---------- the card in Poshmark's words ----------

@@ -1,15 +1,23 @@
-// Thrift crosslister (WO32) — the background service worker. The link to the bridge inside the poster process on this
-// Mac: a WebSocket to ws://127.0.0.1:8765/ext (the token in the first message, reconnected with back-off, a message
-// every 20 s so the worker stays up while it is open) and, for when it is down (MV3 workers go idle), an alarm every
-// minute that asks GET /jobs/next. One job at a time, in its own tab of this window: the job's photos fetched from the
-// bridge, the content script started on the page, its events relayed, the visible tab captured on request. After the
-// one publish click it watches the tab land on the listing page. It opens nothing a job didn't ask for.
+// Thrift crosslister (WO32, WO32b) — the background service worker. The link to the bridge inside the poster process
+// on this Mac: a WebSocket to ws://127.0.0.1:8765/ext (the token in the first message, a message every 20 s so the
+// worker stays up while it is open), tried again 1 s, 2 s, 5 s after it drops and then every 5 s — a bridge that starts
+// is seen within seconds — and, for when the worker was put to sleep (MV3 workers go idle), an alarm every 30 s that
+// asks GET /jobs/next. One job at a time, in its own tab of this window, opened as its active tab (the window itself is
+// never focused or raised: the owner may be using the Mac): the job's photos fetched from the bridge, the content script
+// started on the page, its events relayed, the visible tab captured on request (10 s at most). After the one publish
+// click it watches the tab land on the listing page. A job whose bridge goes away before the go-ahead can't be
+// published any more: it is called off and its tab closed. It opens nothing a job didn't ask for.
 const BRIDGE = "http://127.0.0.1:8765";
 const WS_URL = "ws://127.0.0.1:8765/ext";
 const PING_MS = 20000;
 const OPEN_MS = 45000;
 const AFTER_CLICK_MS = 60000;
-const STALE_MS = 7 * 60000;     // a job the bridge gave up on long ago (it allows 6 minutes): ours ends too
+const BACKOFF = [1000, 2000, 5000];  // reconnect: 1 s, 2 s, 5 s, then every 5 s
+const REFUSED_MS = 30000;            // after the bridge refused our token: every 30 s (or at once when it is saved)
+const FILL_MS = 4 * 60000;           // a form not filled 4 min after its job came (the bridge gives up at 3): ended
+const READY_MS = 15 * 60000;         // a filled form waits this long for the owner's go-ahead
+const CLICKED_MS = 5 * 60000;        // after the click: the landing page is reported within a minute; this is the end
+const CAPTURE_MS = 10000;            // a capture that doesn't come back (a minimized window isn't drawn): skipped
 const STOP_PAGES = ["login", "block", "captcha", "verify"];
 // The files whose hash tells the bridge's copy (git pull on deploy) from the loaded one: a difference reloads us.
 const FILES = ["manifest.json", "background.js", "content/common.js", "content/vinted.js", "content/depop.js",
@@ -17,7 +25,8 @@ const FILES = ["manifest.json", "background.js", "content/common.js", "content/v
 
 let ws = null;
 let wsReady = false;
-let backoff = 1000;
+let attempt = 0;
+let refused = false;
 let reconnectTimer = null;
 let pingTimer = null;
 let afterTimer = null;
@@ -28,8 +37,14 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const errText = (e) => String(e && e.message ? e.message : e).slice(0, 300);
 
 async function settings() {
-  const { token = "", poll_minutes = 1 } = await chrome.storage.local.get(["token", "poll_minutes"]);
+  const { token = "", poll_minutes = 0.5 } = await chrome.storage.local.get(["token", "poll_minutes"]);
   return { token, poll_minutes };
+}
+
+function withTimeout(promise, ms, what) {
+  let timer;
+  return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(what)), ms); })])
+    .finally(() => clearTimeout(timer));
 }
 
 async function setState(link) {
@@ -90,6 +105,9 @@ async function connect() {
     await setState("no token yet: paste it in the extension's options (cat ~/thrift/var/ext_token)");
     return;
   }
+  // The files it loaded (their hash): the bridge hands no job for a moment to an extension that is about to reload.
+  const { loaded_hash = null } = await chrome.storage.local.get("loaded_hash");
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
   let sock;
   try {
     sock = new WebSocket(WS_URL);
@@ -98,7 +116,8 @@ async function connect() {
     return;
   }
   ws = sock;
-  sock.onopen = () => sock.send(JSON.stringify({ type: "hello", token, version: chrome.runtime.getManifest().version }));
+  sock.onopen = () => sock.send(JSON.stringify({ type: "hello", token, version: chrome.runtime.getManifest().version,
+                                                 loaded: loaded_hash }));
   sock.onmessage = (m) => {
     let msg;
     try {
@@ -110,24 +129,27 @@ async function connect() {
   };
   sock.onclose = () => {
     if (ws !== sock) return;
+    const was = wsReady;
     ws = null;
     wsReady = false;
     clearInterval(pingTimer);
     later();
+    if (was) abandon("the bridge went away before the go-ahead (the poster or the CLI stopped)");
   };
   sock.onerror = () => {};
 }
 
 function later() {
   clearTimeout(reconnectTimer);
-  reconnectTimer = setTimeout(connect, backoff);
-  backoff = Math.min(backoff * 2, 60000);
+  reconnectTimer = setTimeout(connect, refused ? REFUSED_MS : BACKOFF[Math.min(attempt, BACKOFF.length - 1)]);
+  attempt += 1;
 }
 
 async function onBridge(msg) {
   if (msg.type === "welcome") {
     wsReady = true;
-    backoff = 1000;
+    attempt = 0;
+    refused = false;
     clearInterval(pingTimer);
     pingTimer = setInterval(() => {
       if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" }));
@@ -136,7 +158,7 @@ async function onBridge(msg) {
     await maybeReload(msg.ext_hash);
   } else if (msg.type === "refused") {
     wsReady = false;
-    backoff = 60000;
+    refused = true;
     await setState("the bridge refused the token: paste it again (cat ~/thrift/var/ext_token)");
   } else if (msg.type === "job") {
     await startJob(msg.job);
@@ -179,7 +201,20 @@ async function send(event) {
       const { commands = [] } = await r.json();
       for (const c of commands) await onBridge(c);
     }
-  } catch (e) { /* the bridge times the job out */ }
+  } catch (e) {                      // nothing listens on the port: the bridge that gave the job is gone
+    if (event.job_id) abandon("the bridge went away before the go-ahead (the poster or the CLI stopped)", event.job_id);
+  }
+}
+
+// The bridge that gave the job went away (a Ctrl+C at the terminal, the poster stopped) before its go-ahead: nothing can
+// be published from this form any more, and no one waits for it — the page is told, the tab closed. After the click the
+// job stays: its landing page is still reported (the poster looks at the shop when it starts again).
+async function abandon(why, jobId = null) {
+  await restore();
+  if (!current || current.clicked || (jobId && current.job_id !== jobId)) return;
+  const job = current;
+  try { await chrome.tabs.sendMessage(job.tabId, { type: "cancel" }); } catch (e) { /* no page yet */ }
+  await finish({ event: "error", job_id: job.job_id, stage: "cancelled", page: "unknown", message: why });
 }
 
 // While a publish waits for the bridge's go-ahead without a socket: ask every 2 s.
@@ -221,11 +256,21 @@ function loaded(tabId, ms) {
   });
 }
 
-async function toTab(tabId, msg, tries = 20) {
+// The content scripts per site (as the manifest lists them): injected by the worker when the page has none yet.
+const SCRIPTS = { vinted: ["content/common.js", "content/vinted.js"], depop: ["content/common.js", "content/depop.js"] };
+
+// A message to the job's page. Its script comes with the page (the manifest, at document_idle); when it hasn't
+// answered after 2 s — a page whose idle comes late — the worker injects it (scripting), once.
+async function toTab(tabId, msg, tries = 20, site = null) {
   for (let i = 0; ; i++) {
     try {
       return await chrome.tabs.sendMessage(tabId, msg);
     } catch (e) {
+      if (i === 4 && SCRIPTS[site]) {
+        try {
+          await chrome.scripting.executeScript({ target: { tabId }, files: SCRIPTS[site] });
+        } catch (e2) { /* not one of the sites' pages: the tries below say so */ }
+      }
       if (i >= tries) {
         let where = "?";
         try { where = (await chrome.tabs.get(tabId)).url; } catch (e2) { /* closed */ }
@@ -277,18 +322,33 @@ async function startJob(job) {
     return;
   }
   current = { job_id: job.job_id, site: job.site, mode: job.mode, tabId: null, windowId: null, clicked: false,
-              after: false, decided: false, started: Date.now(), job };
+              after: false, decided: false, delivered: false, started: Date.now(), job };
   await remember();
+  // Still this job, and not called off? (A cancel can come while the tab opens: it is ended before the page has it.)
+  const ours = async () => { await restore(); return !!current && current.job_id === job.job_id; };
   try {
     const photos = job.mode === "dry_run" || job.mode === "publish" ? await fetchPhotos(job.photos || []) : [];
     const url = urlFor(job, site);
     const where = await thriftWindow(url);
     const tab = where.tab || (await chrome.tabs.create({ url, active: true, windowId: where.windowId }));
+    if (!(await ours())) {                         // ended meanwhile: the tab it opened goes too
+      try { await chrome.tabs.remove(tab.id); } catch (e) { /* gone */ }
+      return;
+    }
     current.tabId = tab.id;
     current.windowId = tab.windowId;
     await remember();
+    await send({ event: "progress", job_id: job.job_id, what: "tab opened" });
     await loaded(tab.id, OPEN_MS);
-    await toTab(tab.id, { type: "job", job, selectors: sel, photos, pace: job.pace });
+    if ((await ours()) && current.decided) throw new Error("called off before the form opened");
+    await toTab(tab.id, { type: "job", job, selectors: sel, photos, pace: job.pace }, 20, job.site);
+    if (await ours()) {
+      current.delivered = true;
+      await remember();
+      if (current.decided && !current.clicked) {   // the cancel came while the page was being reached: told now
+        try { await chrome.tabs.sendMessage(tab.id, { type: "cancel", job_id: job.job_id }); } catch (e) { /* gone */ }
+      }
+    }
   } catch (e) {
     await finish({ event: "error", job_id: job.job_id, stage: "open", page: "unknown", message: errText(e) });
   }
@@ -301,12 +361,14 @@ async function relay(msg) {
   current.decided = true;
   if (msg.type === "submit") {
     current.clicked = true;
+    current.clickedAt = Date.now();
     clearTimeout(afterTimer);
     afterTimer = setTimeout(afterClickTimeout, AFTER_CLICK_MS);
   }
   await remember();
+  if (msg.type === "cancel" && !current.delivered) return;   // the page hasn't the job yet: startJob ends it / tells it
   try {
-    await toTab(current.tabId, { type: msg.type }, 4);
+    await toTab(current.tabId, { type: msg.type, job_id: current.job_id }, 4);
   } catch (e) {
     await finish({ event: "error", job_id: current.job_id, stage: msg.type, page: "unknown", message: errText(e) });
   }
@@ -319,7 +381,8 @@ async function afterClickTimeout() {
   current.after = true;
   await remember();
   try {
-    await toTab(current.tabId, { type: "job", job: { ...current.job, mode: "after_publish" }, selectors: await selectors() }, 6);
+    await toTab(current.tabId, { type: "job", job: { ...current.job, mode: "after_publish" }, selectors: await selectors() },
+                6, current.site);
   } catch (e) {
     await finish({ event: "error", job_id: current.job_id, stage: "after_publish", page: "unknown", message: errText(e) });
   }
@@ -336,7 +399,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
   clearTimeout(afterTimer);
   await sleep(2500);
   try {
-    await toTab(tabId, { type: "job", job: { ...current.job, mode: "after_publish" }, selectors: sel });
+    await toTab(tabId, { type: "job", job: { ...current.job, mode: "after_publish" }, selectors: sel }, 20, current.site);
   } catch (e) {
     await finish({ event: "result", job_id: current.job_id, url: tab.url, live: null, note: errText(e) });
   }
@@ -376,7 +439,9 @@ async function shoot(msg, tab) {
     try {
       if (tab && !tab.active) await chrome.tabs.update(tab.id, { active: true });
       lastCapture = Date.now();
-      const dataUrl = await chrome.tabs.captureVisibleTab(tab ? tab.windowId : current.windowId, { format: "png" });
+      const dataUrl = await withTimeout(chrome.tabs.captureVisibleTab(tab ? tab.windowId : current.windowId,
+                                                                      { format: "png" }), CAPTURE_MS,
+                                        "no picture in 10 s (is the Thrift Chrome window minimized?)");
       png_b64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
       error = null;
     } catch (e) {
@@ -394,12 +459,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const ev = { ...msg };
       delete ev.type;
       if (ev.event === "result" || ev.event === "error") return finish(ev);
+      if (ev.event === "ready") {
+        await restore();
+        if (current && current.job_id === ev.job_id) {
+          current.readyAt = Date.now();
+          await remember();
+        }
+      }
       await send(ev);
       if (ev.event === "ready" && !wsReady) waitCommands(ev.job_id);
     } else if (msg.type === "screenshot") {
       await shoot(msg, sender.tab);
     } else if (msg.type === "token-saved") {
-      backoff = 1000;
+      attempt = 0;
+      refused = false;
       if (ws) ws.close();
       await connect();
     }
@@ -417,13 +490,19 @@ async function ensureAlarm() {
   }
 }
 
+// A job past its time: still filling 4 min after it came, a filled form left 15 min without a go-ahead, or 5 min after
+// the click.
+function overdue(c, now) {
+  if (c.clicked) return now - (c.clickedAt || c.started || 0) > CLICKED_MS ? "5 minutes after the click" : null;
+  if (c.readyAt) return now - c.readyAt > READY_MS ? "no go-ahead in 15 minutes" : null;
+  return now - (c.started || 0) > FILL_MS ? "the form wasn't filled in 4 minutes" : null;
+}
+
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== "poll") return;
   await restore();
-  if (current && Date.now() - (current.started || 0) > STALE_MS) {
-    await finish({ event: "error", job_id: current.job_id, stage: "stale", page: "unknown",
-                   message: "the job ran past 7 minutes" });
-  }
+  const late = current && overdue(current, Date.now());
+  if (late) await finish({ event: "error", job_id: current.job_id, stage: "stale", page: "unknown", message: late });
   await connect();
   await poll();
 });

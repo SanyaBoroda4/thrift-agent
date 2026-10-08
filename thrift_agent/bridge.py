@@ -12,7 +12,12 @@ no DevTools connection, no automation flags.
   answer the job's commands; `GET /photos/<item>/<n>.jpg` the item's photos (already rotated and resized, the cover
   first), with Access-Control-Allow-Origin only for https://www.vinted.com and https://www.depop.com; `GET /health`.
 - One job at a time per site (the extension runs one at a time in all). Screenshots and the page's HTML are written
-  next to the job's evidence path (<shot>-<label>.png / .html).
+  next to the job's evidence path (<shot>-<label>.png / .html). A job's steps and progress ("tab opened", "photos 6/6",
+  "category ✓") reach its listener as they happen (WO32b: the CLI prints them). A job lasts 3 minutes at most.
+- The pace (WO32b, `ext.pace`): "fast" (the default) fills each field in one go and waits only for the page; "human"
+  types in chunks with a person's pauses.
+- Why no extension is there (WO32b): it never knocked (no Chrome, or the extension off), it knocked with a token the
+  bridge refused, or the port belongs to another process (BridgeError at the start).
 - The watch: no extension for 2 minutes inside the window (the lid open) → the Thrift Chrome is started
   (`services.sh start chrome`); still nothing after 5 → one ops line per window.
 
@@ -40,14 +45,15 @@ EXT_DIR = ROOT / "ext"
 EXT_FILES = ("manifest.json", "background.js", "content/common.js", "content/vinted.js", "content/depop.js",
              "selectors.json", "options.html", "options.js")          # = background.js FILES: the reload check
 SITE_ORIGINS = ("https://www.vinted.com", "https://www.depop.com")
-JOB_TIMEOUT = 360.0          # a job's whole life (WO32 §2): 6 minutes
-PICKUP_TIMEOUT = 150.0       # no extension took the job (the alarm polls every minute): nothing was opened
+JOB_TIMEOUT = 180.0          # a job's whole life before its go-ahead (WO32b): 3 minutes
+PICKUP_TIMEOUT = 150.0       # no extension took the job (it reconnects within 5 s, polls every 30 s): nothing opened
 SEEN_FRESH = 90.0            # an HTTP poll this recent counts as connected
 START_CHROME_AFTER = 120.0   # the watch: no extension this long inside the window → start the Thrift Chrome
 SAY_AFTER = 300.0            # ... still nothing → one ops line
 WATCH_EVERY = 15.0           # the watch's tick
 MAX_BODY = 40 * 1024 * 1024  # a screenshot with the page's HTML fits easily
 DRAIN = 90.0                 # a job called off: the next one waits this long at most for the extension to let it go
+RELOAD_HOLD = 2.0            # an extension told of new files reloads at once: no job for its socket meanwhile
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 FINAL = ("result", "error")
 MISSING_LINE = ("🧩 The Thrift Chrome extension hasn't checked in for 5 minutes, so Depop and Vinted are waiting. On the "
@@ -105,11 +111,13 @@ class Job:
     done: bool = False
     dropped: float | None = None          # when the driver gave up on it
     clicked: bool = False                 # the go-ahead was sent: from here on the listing may be live
+    cancelled: bool = False               # its cancel was sent (once is enough)
     sock: object | None = None            # the socket it was pushed to: its go-ahead goes there first
     steps: list[dict] = field(default_factory=list)
     shots: list[dict] = field(default_factory=list)
     final: dict | None = None
     commands: list[dict] = field(default_factory=list)    # not yet delivered over HTTP
+    listener: object | None = None        # called with each step / progress event as it comes (the CLI's progress)
     _events: asyncio.Queue = field(default_factory=asyncio.Queue)
 
     def message(self) -> dict:
@@ -131,9 +139,9 @@ class Bridge:
     """The server. `submit()` queues a job and returns it; the driver waits on its events and sends its go-ahead."""
 
     def __init__(self, token: str, host: str = HOST, port: int = PORT, ext_dir: Path = EXT_DIR,
-                 pace: float = 1.0, ws_enabled: bool = True):
+                 pace: str | float = "fast", ws_enabled: bool = True):
         self.token, self.host, self.port, self.ext_dir = token, host, port, ext_dir
-        self.pace = pace                    # the extension's pauses (1 = a person's; tests make it near 0)
+        self.pace = pace                    # "fast" | "human" (a number: human pauses scaled — the tests)
         self.ws_enabled = ws_enabled        # tests turn the socket off to prove the alarm's poll
         self.server: asyncio.AbstractServer | None = None
         self.jobs: dict[str, Job] = {}
@@ -144,6 +152,8 @@ class Bridge:
         self.last_seen: float | None = None     # the extension's last authenticated contact
         self.chrome_started: float | None = None
         self.said_missing = False
+        self.knocks = 0                         # WebSocket hellos and token-carrying requests, accepted or not
+        self.refused = 0                        # ... of them with a token that isn't ours
         self.log: list[str] = []
         self.ext_hash = files_hash(ext_dir)     # what the extension was told; a deploy that changes ext/ is re-announced
 
@@ -186,6 +196,19 @@ class Bridge:
             return True
         return self.last_seen is not None and time.monotonic() - self.last_seen < SEEN_FRESH
 
+    def why_missing(self, chrome_running: bool | None = None) -> str:
+        """Why no extension is connected, in the owner's words: its token refused, the Thrift Chrome not running, or
+        the extension not knocking at all (off, not loaded, or its token never saved)."""
+        if self.refused:
+            return ("the extension knocked with a token the bridge refused — open its options in the Thrift Chrome and "
+                    "paste the token again (cat ~/thrift/var/ext_token)")
+        if chrome_running is False:
+            return "the Thrift Chrome isn't running — start it: bash ~/thrift-agent/deploy/services.sh start chrome"
+        if not self.knocks:
+            return ("the Thrift Chrome is open but the extension never knocked — is it on at chrome://extensions, and its "
+                    "token saved in its options?")
+        return "the extension knocked but isn't connected now — it tries again every 5 s"
+
     # ------------------------------------------------------------ jobs
 
     def photo_urls(self, item: str, paths: list[str | Path]) -> list[str]:
@@ -207,6 +230,10 @@ class Bridge:
         """The go-ahead for a filled form ("submit": the one publish click) or its end ("cancel")."""
         if kind == "submit":
             job.clicked = True
+        elif kind == "cancel":
+            if job.cancelled:
+                return
+            job.cancelled = True
         msg = {"type": kind, "job_id": job.id}
         job.commands.append(msg)
         for sock in sorted(self.sockets, key=lambda x: x is not job.sock):      # the job's own socket first
@@ -228,6 +255,14 @@ class Bridge:
             self.command(job, "cancel")
         self._push()
 
+    async def settle(self, job: Job, timeout: float = 5.0) -> bool:
+        """After a job was called off: wait (at most `timeout`) for the extension's last word on it — its tab closed —
+        so a CLI that ends right after doesn't cut the cancel off. True when it came."""
+        end = time.monotonic() + timeout
+        while job.final is None and time.monotonic() < end and job.handed is not None:
+            await asyncio.sleep(0.1)
+        return job.final is not None
+
     def _busy(self) -> bool:
         now = time.monotonic()
         return any(j.handed is not None and j.final is None and (j.dropped is None or now - j.dropped < DRAIN)
@@ -244,9 +279,19 @@ class Bridge:
                 return job
         return None
 
+    def _hold(self, sock: _Socket) -> None:
+        """This socket's extension is about to reload (its files changed: a deploy): no job is handed to it for
+        RELOAD_HOLD seconds — the reload would lose it; one that stays connected gets the jobs after that."""
+        sock.hold_until = time.monotonic() + RELOAD_HOLD
+        try:
+            asyncio.get_running_loop().call_later(RELOAD_HOLD + 0.05, self._push)
+        except RuntimeError:
+            pass                                    # no loop (a test calling it bare): the next event pushes
+
     def _push(self) -> None:
+        now = time.monotonic()
         for sock in self.sockets:
-            if not sock.ready:
+            if not sock.ready or sock.hold_until > now:
                 continue
             job = self._next()
             if job is None:
@@ -273,7 +318,12 @@ class Bridge:
         if kind == "screenshot":
             self._keep_shot(job, ev)
         elif kind == "step":
-            job.steps.append({k: ev.get(k) for k in ("name", "ok", "detail", "clicked")})
+            job.steps.append({k: ev.get(k) for k in ("name", "ok", "detail", "clicked", "ms")})
+        if kind in ("step", "progress") and job.listener is not None:
+            try:
+                job.listener(ev)
+            except Exception as e:  # noqa: BLE001 — a listener never breaks the job
+                self.log.append(f"listener: {type(e).__name__}: {e}")
         if kind in FINAL:
             if job.final is not None:
                 return []
@@ -334,6 +384,7 @@ class Bridge:
         for sock in self.sockets:
             if sock.ready:
                 sock.send({"type": "welcome", "ext_hash": h})
+                self._hold(sock)
         return True
 
     async def watch(self, in_window, start_chrome, say, state=None, every: float | None = None) -> None:
@@ -402,9 +453,13 @@ class Bridge:
             return 204, cors, b""
         if path == "/health":
             return 200, cors, b'{"ok": true}'
+        if headers.get("x-thrift-token"):
+            self.knocks += 1
         if not self._authorized(headers):
+            if headers.get("x-thrift-token"):
+                self.refused += 1
             return 401, cors, b'{"error": "token"}'
-        self.last_seen = time.monotonic()
+        self.last_seen, self.refused = time.monotonic(), 0
         if method == "GET" and path == "/jobs/next":
             job = self._next()
             return (204, cors, b"") if job is None else (200, cors, json.dumps(job.message()).encode())
@@ -441,15 +496,20 @@ class Bridge:
         sock = _Socket(reader, writer)
         try:
             hello = await asyncio.wait_for(sock.receive(), 10)
+            self.knocks += 1
             if not isinstance(hello, dict) or hello.get("type") != "hello" or \
                     not secrets.compare_digest(str(hello.get("token") or ""), self.token):
+                self.refused += 1
                 sock.send({"type": "refused"})
                 await sock.flush()
                 return
             sock.ready = True
+            self.refused = 0                        # the right token now
             self.sockets.add(sock)
             self.last_seen = time.monotonic()
             sock.send({"type": "welcome", "ext_hash": self.ext_hash})
+            if hello.get("loaded") != self.ext_hash:    # it loaded other files than ours: it reloads now (a deploy)
+                self._hold(sock)
             for job in self.jobs.values():          # a go-ahead its old socket never delivered (it reconnected)
                 if job.handed is not None and not job.done and job.commands:
                     for cmd in job.commands:
@@ -518,6 +578,7 @@ class _Socket:
         self.reader, self.writer = reader, writer
         self.ready = False
         self.closed = False
+        self.hold_until = 0.0                       # no job before this (its extension is reloading)
 
     def send(self, obj) -> bool:
         if self.closed:

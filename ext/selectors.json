@@ -261,7 +261,7 @@
   },
   "depop": {
     "sell_url": "https://www.depop.com/products/create/",
-    "listing_url": "^https://www\\.depop\\.com/products/(?!create/?$|edit/?$)([a-z0-9]+(?:-[a-z0-9]+)+)/?(?:[?#].*)?$",
+    "listing_url": "^https://www\\.depop\\.com/products/(?!create/|edit/)([a-z0-9]+(?:-[a-z0-9]+)+)(?:/manage)?/?(?:[?#].*)?$",
     "shop_url": "https://www.depop.com/{shop}/",
     "pages": {
       "block": {
@@ -366,28 +366,49 @@
         "seen": "2026-10-06, the first extension dry run on the Mac: exactly one submit button reading Post (never clicked); 'Save as a draft' and 'Post and add another' next to it, never touched; 2026-10-06, the fourth extension dry run on the Mac: the whole form read back as planned, 6 of 6 photos displayed: still exactly one, never clicked — verified for the supervised publish only"
       },
       "after_publish": {
-        "how": "the tab lands on listing_url within 60 s",
-        "verified": false
+        "how": "the tab lands on listing_url within 60 s: Depop opens /products/<slug>/manage/ (Edit listing, Boost listing, Copy listing under it); the listing's address is /products/<slug>/",
+        "verified": true,
+        "seen": "2026-10-07, the first supervised Depop publish on the Mac (WO32b, from its evidence): after the one Post click the tab went to /products/<slug>/manage/ — the seller's own view of the new listing, 'Listed 0 minutes ago'"
       },
       "listing_title": {
         "selectors": [
-          "[data-testid='product__description']",
-          "main p"
+          "script[data-testid='meta__jsonLd']"
         ],
-        "verified": false
+        "how": "the page's JSON-LD (schema.org Product): the first line of its description is our title (its name is the same line cut short); Depop's own h1 is a name it makes up (brand, department, colour, category), never compared",
+        "verified": true,
+        "seen": "2026-10-07, the first supervised Depop publish on the Mac (WO32b, from its evidence): after the one Post click the tab went to /products/<slug>/manage/ — the seller's own view of the new listing: the JSON-LD's description = the description we typed, title first"
       },
       "listing_price": {
         "selectors": [
-          "[data-testid='product__price']",
-          "[aria-label*='price' i]"
+          "p[aria-description='Price']"
         ],
-        "verified": false
+        "how": "the price as the page shows it ('$35.00'); the JSON-LD's offers.price is the fallback",
+        "verified": true,
+        "seen": "2026-10-07, the first supervised Depop publish on the Mac (WO32b, from its evidence): after the one Post click the tab went to /products/<slug>/manage/ — the seller's own view of the new listing: the price paragraph and offers.price both carried the approved price"
       },
       "listing_photos": {
         "selectors": [
-          "[data-testid*='product' i] img"
+          "img[src*='media-photos.depop.com']"
         ],
-        "verified": false
+        "how": "counted from the JSON-LD's image list (one per photo); the DOM's images are the fallback",
+        "verified": true,
+        "seen": "2026-10-07, the first supervised Depop publish on the Mac (WO32b, from its evidence): after the one Post click the tab went to /products/<slug>/manage/ — the seller's own view of the new listing: 6 images in the JSON-LD for 6 photos posted"
+      },
+      "listing_attributes": {
+        "selectors": [
+          "[data-testid='productPrimaryAttributes']"
+        ],
+        "how": "'Size <size> • <condition> condition • <brand>' under the price",
+        "verified": true,
+        "seen": "2026-10-07, the first supervised Depop publish on the Mac (WO32b, from its evidence): after the one Post click the tab went to /products/<slug>/manage/ — the seller's own view of the new listing"
+      },
+      "shop_link": {
+        "selectors": [
+          "a[aria-label$=\"'s shop\"]"
+        ],
+        "how": "the seller's shop on the listing page: href /<shop>/?… — the shop name the shop check opens",
+        "verified": true,
+        "seen": "2026-10-07, the first supervised Depop publish on the Mac (WO32b, from its evidence): after the one Post click the tab went to /products/<slug>/manage/ — the seller's own view of the new listing: the shop link under Edit listing"
       },
       "mark_sold": {
         "selectors": [

@@ -29,7 +29,8 @@ from thrift_agent.post.cross import Chosen, CrossPoster, Startswith, same_host
 from thrift_agent.schema import Render
 
 BASE = "https://www.depop.com"
-_PRODUCT = re.compile(r"^/products/(?!create/?$|edit/?$)([a-z0-9]+(?:-[a-z0-9]+)+)/?$")   # <shop>-<words>: never create
+# <shop>-<words>: never create / edit; Post lands on the listing's /manage/ view (recorded 2026-10-07, WO32b)
+_PRODUCT = re.compile(r"^/products/(?!create/|edit/)([a-z0-9]+(?:-[a-z0-9]+)+)(?:/manage)?/?$")
 
 SEL = {
     "photo_input": lambda p: p.locator('input[type="file"]'),
@@ -62,7 +63,7 @@ THUMB_MS = 90_000
 
 
 def listing_address(url: str) -> str | None:
-    """https://www.depop.com/products/<slug>/ for a Depop product page, else None."""
+    """https://www.depop.com/products/<slug>/ for a Depop product page (its /manage/ view too), else None."""
     if not same_host(url, ("www.depop.com", "depop.com")):
         return None
     m = _PRODUCT.match(urlparse(url.strip()).path)

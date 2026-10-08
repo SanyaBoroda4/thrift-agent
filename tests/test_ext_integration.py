@@ -1,8 +1,9 @@
 """WO32 end to end: Playwright's own Chromium (not branded Chrome: Chrome 137+ ignores --load-extension) with the
 unpacked extension (ext/) loaded by --disable-extensions-except / --load-extension, the real bridge on 127.0.0.1:8765
 (the extension's address) and the extension driver, against the stand-in forms (tests/fixtures). A full dry run, a
-publish, a logged-out page, a block page, a CAPTCHA page, the 6-minute timeout, a refused token and the alarm's poll
-while the socket is down.
+publish, a logged-out page, a block page, a CAPTCHA page, the job's timeout, a refused token and the alarm's poll
+while the socket is down. WO32b: the fast pace's fill times, a job tab in the background, the extension back within
+seconds of a bridge restart, and a Ctrl+C (or a bridge that goes away) before POST closing the tab with nothing clicked.
 
 No network: the two sites are answered by the test browser's router, and every other hostname resolves nowhere
 (--host-resolver-rules) — a missed route fails the test instead of reaching a real site. Skipped where Playwright's
@@ -10,6 +11,7 @@ Chromium isn't installed (python -m playwright install chromium) or the port is 
 import asyncio
 import json
 import re
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -94,7 +96,7 @@ def fields(mp: str, photos: list[str]):
                            package_size="Large", price=35, photos=photos, guesses=[])
 
 
-async def session(tmp_path, site: Site, *, token=TOKEN, ws=True, poll_minutes=None, pace=0.02):
+async def session(tmp_path, site: Site, *, token=TOKEN, ws=True, poll_minutes=None, pace="fast"):
     """(bridge, Playwright, browser context, the extension's service worker), the extension told its token."""
     try:
         b = await bm.Bridge(TOKEN, port=bm.PORT, pace=pace, ws_enabled=ws).start()
@@ -115,6 +117,11 @@ async def session(tmp_path, site: Site, *, token=TOKEN, ws=True, poll_minutes=No
     sw = ctx.service_workers[0] if ctx.service_workers else await ctx.wait_for_event("serviceworker", timeout=15000)
     settings = {"token": token} | ({"poll_minutes": poll_minutes} if poll_minutes else {})
     await sw.evaluate("s => chrome.storage.local.set(s)", settings)
+    await sw.evaluate("""async () => {           // its files' hash noted (onInstalled) — else it counts as reloading
+      for (let i = 0; i < 100 && !(await chrome.storage.local.get("loaded_hash")).loaded_hash; i++) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }""")
     await sw.evaluate("connect()")
     return b, pw, ctx, sw
 
@@ -159,12 +166,15 @@ def test_a_full_vinted_dry_run_in_chromium(tmp_path):
         b, pw, ctx, sw = await session(tmp_path, site)
         try:
             assert await connected(b)
-            out = await poster("vinted", b, tmp_path).post(None, RENDER, "publish", True, tmp_path / "shots")
-            return out
+            p = poster("vinted", b, tmp_path)
+            out = await p.post(None, RENDER, "publish", True, tmp_path / "shots")
+            return out, p
         finally:
             await close(b, pw, ctx)
-    out = asyncio.run(go())
+    out, p = asyncio.run(go())
     assert out.status == "dryrun", (out.error, out.diff, out.note)
+    assert p.fill_seconds is not None and p.fill_seconds < 15, p.fill_seconds    # WO32b: fast (live target ≤ 45 s)
+    assert p.lines[:2] == ["tab opened", "photos 1/1"] and p.lines[-1].startswith("filled in ")
     assert site.clicks == []                                       # never Upload in a dry run
     png = Path(out.screenshot)
     assert png.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n" and png.stat().st_size > 2000   # the captured tab
@@ -201,7 +211,9 @@ def test_depop_dry_run_then_publish(tmp_path):
         b, pw, ctx, sw = await session(tmp_path, site)
         try:
             assert await connected(b)
-            dry = await poster("depop", b, tmp_path).post(None, RENDER, "publish", True, tmp_path / "shots")
+            dp = poster("depop", b, tmp_path)
+            dry = await dp.post(None, RENDER, "publish", True, tmp_path / "shots")
+            assert dp.fill_seconds is not None and dp.fill_seconds < 15, dp.fill_seconds
             live = await poster("depop", b, tmp_path, verified=True).post(None, RENDER, "publish", False,
                                                                           tmp_path / "shots")
             return dry, live
@@ -285,3 +297,122 @@ def test_with_the_socket_down_the_alarm_polls_for_the_job(tmp_path):
     out, sockets = asyncio.run(go())
     assert out.status == "dryrun", (out.error, out.diff)
     assert sockets == 0 and site.clicks == []
+
+
+# ---------------------------------------------------------------- WO32b
+
+def test_the_fill_completes_with_its_tab_in_the_background(tmp_path):
+    """The job's tab not the active one of its window (the owner on another tab): the form still fills, quickly.
+    (Playwright keeps every page "visible", so Chrome's throttling of a hidden tab is the jsdom test's to prove:
+    tests/js/content.test.mjs, "a hidden tab's throttled timers".)"""
+    site = Site()
+
+    async def go():
+        b, pw, ctx, sw = await session(tmp_path, site)
+        try:
+            assert await connected(b)
+            other = await sw.evaluate("""async () => {
+              const w = await chrome.windows.getLastFocused({ windowTypes: ["normal"] });
+              return (await chrome.tabs.create({ url: "about:blank", active: true, windowId: w.id })).id;
+            }""")
+
+            async def keep_it_behind():          # the owner's tab back on top whenever the job's comes forward
+                while not [pg for pg in ctx.pages if "vinted.com/items/new" in pg.url]:
+                    await asyncio.sleep(0.05)    # (from its first load on: switching tabs while Playwright attaches to a
+                while True:                      # new one leaves it unrouted — a test-browser quirk)
+                    await sw.evaluate("id => chrome.tabs.update(id, { active: true }).catch(() => {})", other)
+                    await asyncio.sleep(0.2)
+            behind = asyncio.create_task(keep_it_behind())
+            p = poster("vinted", b, tmp_path)
+            try:
+                out = await p.post(None, RENDER, "publish", True, tmp_path / "shots")
+            finally:
+                behind.cancel()
+            return out, p
+        finally:
+            await close(b, pw, ctx)
+    out, p = asyncio.run(go())
+    assert out.status == "dryrun", (out.error, out.diff, out.note)
+    assert p.fill_seconds < 15 and site.clicks == []
+
+
+def test_the_extension_is_back_within_seconds_of_a_bridge_restart(tmp_path):
+    """The poster (or the CLI) restarts its bridge: the extension tries again 1 s, 2 s, 5 s after the drop and then every
+    5 s, so it is back within ~5 s of the new bridge — no longer up to a minute (the live waits: 13 s and 30 s)."""
+    site = Site()
+
+    async def go():
+        b, pw, ctx, sw = await session(tmp_path, site)
+        b2 = None
+        try:
+            assert await connected(b)
+            await b.close()
+            await asyncio.sleep(9)                      # long enough for its tries to reach the 5 s rhythm
+            b2 = await bm.Bridge(TOKEN, port=bm.PORT).start()
+            t0 = time.monotonic()
+            ok = await connected(b2, seconds=15)
+            return ok, time.monotonic() - t0
+        finally:
+            await ctx.close()
+            await pw.stop()
+            if b2 is not None:
+                await b2.close()
+    ok, took = asyncio.run(go())
+    assert ok and took < 6.5, took
+
+
+async def _ready_then(tmp_path, site, then):
+    """A supervised Vinted publish up to the terminal's POST prompt, then `then(task, bridge)`; returns the Vinted tabs
+    left open a few seconds later."""
+    b, pw, ctx, sw = await session(tmp_path, site)
+    try:
+        assert await connected(b)
+        p = poster("vinted", b, tmp_path, verified=True)
+        ready = asyncio.Event()
+
+        async def waiting_for_post(fields, site_name):      # the terminal, waiting for POST
+            ready.set()
+            await asyncio.sleep(3600)
+            return True
+        p.confirm = waiting_for_post
+        task = asyncio.create_task(p.post(None, RENDER, "publish", False, tmp_path / "shots"))
+        await asyncio.wait_for(ready.wait(), 60)
+        assert [pg for pg in ctx.pages if "vinted.com/items/new" in pg.url]      # the filled form is open
+        await then(task, b)
+        for _ in range(80):
+            if not [pg for pg in ctx.pages if "vinted.com" in pg.url]:
+                break
+            await asyncio.sleep(0.1)
+        return [pg.url for pg in ctx.pages if "vinted.com" in pg.url]
+    finally:
+        await close(b, pw, ctx)
+
+
+def test_a_ctrl_c_before_post_closes_the_tab_and_clicks_nothing(tmp_path):
+    site = Site()
+
+    async def ctrl_c(task, b):
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    tabs = asyncio.run(_ready_then(tmp_path, site, ctrl_c))
+    assert tabs == [] and site.clicks == []
+
+
+def test_a_bridge_that_goes_away_before_post_closes_the_tab(tmp_path):
+    """The CLI killed outright (no cancel sent): the extension sees its bridge go and calls the job off itself."""
+    site = Site()
+
+    async def gone(task, b):
+        for sock in list(b.sockets):
+            sock.close()
+        b.sockets.clear()
+        b.ws_enabled = False                            # and it doesn't come back for this job
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):     # noqa: BLE001
+            pass
+    tabs = asyncio.run(_ready_then(tmp_path, site, gone))
+    assert tabs == [] and site.clicks == []
+

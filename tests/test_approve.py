@@ -172,9 +172,10 @@ def test_send_item_caption_buttons_and_outbox(env, tmp_path, facts):
     cap = p["caption"]
     # WO20: cover, title, size, condition in Poshmark's words, the price on the buttons; no flaw count, no basis
     assert cap == "Tory Burch Suede Ballet Flats\nSize 7.5\nCondition: Good"
-    assert p["reply_markup"] == {"inline_keyboard": [
-        [{"text": "\u2705 $85", "callback_data": f"approve:{iid}:85"}],
-        [{"text": f"${n}", "callback_data": f"approve:{iid}:{n}"} for n in (75, 80, 90, 95)],
+    price = [{"text": f"⭐${n}" if n == 85 else f"${n}", "callback_data": f"approve:{iid}:{n}"}
+             for n in range(75, 146, 10)]
+    assert p["reply_markup"] == {"inline_keyboard": [          # WO32b: $10 below, ⭐ the suggestion, $10 steps up
+        price[:4], price[4:],
         [{"text": "Later", "callback_data": f"later:{iid}"}, {"text": "Change", "callback_data": f"change:{iid}"},
          {"text": "Wrong photos", "callback_data": f"regroup:{iid}"}]]}
     (row,) = _outbox(db, iid)
@@ -198,7 +199,7 @@ def test_send_item_shows_only_the_allowed_questions_and_the_warnings(env, tmp_pa
                          "\u2753 Brand? Couldn't read it \u2014 reply 'brand \u2026'\n"
                          "Reply to this card with the answer (a price too if you like), e.g. 'size 8, 45'")
     assert "lint" not in p["text"] and "unsure" not in p["text"] and "no price history" not in p["text"]
-    assert [b["text"] for b in p["reply_markup"]["inline_keyboard"][1]] == ["$30", "$35", "$45", "$50"]
+    assert [b["text"] for b in p["reply_markup"]["inline_keyboard"][0]] == ["$30", "⭐$40", "$50", "$60"]
 
 
 def test_send_item_processed_before_wo20_keeps_its_recorded_questions(env, tmp_path, facts):
@@ -655,13 +656,13 @@ def test_the_whole_flow_tap_then_the_price_card_with_the_new_price(env, tmp_path
     iid = db.add_item(bid, 1, str(d))
     pipeline.process_item(s, db, iid)
     assert db.item(iid)["status"] == "awaiting_condition"
-    assert not any("\u2705 $" in str(p.get("reply_markup")) for p in bot.sent("sendPhoto"))   # no price card yet
+    assert not any("⭐$" in str(p.get("reply_markup")) for p in bot.sent("sendPhoto"))   # no price card yet
     guess = loads(db.item(iid)["price"])["list_price"]
     handle_update(s, db, bot, _callback(f"cond:{iid}:nwt"))
     pipeline.process_item(s, db, iid)                                                    # what the worker does next
     card = bot.sent("sendPhoto")[-1]
     price = loads(db.item(iid)["price"])["list_price"]
-    assert price > guess and f"\u2705 ${price}" in str(card["reply_markup"])
+    assert price > guess and f"⭐${price}" in str(card["reply_markup"])
     assert "Condition: NWT (your answer)" in card["caption"]
 
 

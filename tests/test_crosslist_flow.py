@@ -17,7 +17,7 @@ from thrift_agent import approve, crosslist, daily, notify, pipeline
 from thrift_agent.bridge import EXT_DIR
 from thrift_agent.catalogs.common import MappingError
 from thrift_agent.config import Settings
-from thrift_agent.db import DB
+from thrift_agent.db import ANNOUNCED_MIGRATED, DB
 from thrift_agent.post import runner
 from thrift_agent.post.base import AccountBlocked, Outcome
 from thrift_agent.post.ext_driver import ExtensionPoster
@@ -412,3 +412,149 @@ def test_an_asked_for_dry_run_never_stops_the_poster(tmp_path, loop, monkeypatch
     kinds = [json.loads(d)["status"] for (d,) in db.conn.execute(
         "SELECT detail FROM events WHERE kind='crosslist_dry_run' ORDER BY rowid")]
     assert kinds == ["blocked", "dryrun"]
+
+
+# ---------------------------------------------------------------- WO32b: the supervised publish, one group line per item
+
+DEPOP_URL = "https://www.depop.com/products/shopname-tory-burch-red-ballet-7f3a/"
+
+
+@pytest.fixture
+def quiet(monkeypatch):
+    """The group's and the ops chat's messages, collected."""
+    said = SimpleNamespace(group=[], ops=[])
+    monkeypatch.setattr(notify, "group", lambda text: said.group.append(text))
+    monkeypatch.setattr(notify, "group_photo", lambda path, caption: said.group.append(caption))
+    monkeypatch.setattr(notify, "say", lambda text: said.ops.append(text))
+    monkeypatch.setattr(notify, "photo", lambda path, caption: said.ops.append(caption))
+    monkeypatch.setattr(notify, "ops_photo", lambda path, caption: said.ops.append(caption))
+    monkeypatch.setattr(runner, "ask_unconfirmed", lambda db_, i, mp, text: said.group.append(text))
+    return said
+
+
+def _announced_item(tmp_path) -> tuple[Settings, DB, str]:
+    """An item live on Poshmark for days, its "Posted ✓" said back then."""
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid = _item(db)
+    db.upsert_listing(iid, "poshmark", status="posted", url="https://poshmark.com/listing/x-" + "a" * 24,
+                      posted_at="2026-10-05T14:00:00+00:00")
+    db.set_item(iid, status="posted")
+    db.log(iid, "posted_announced", {"mps": ["poshmark"]})
+    return s, db, iid
+
+
+def _supervised(monkeypatch, s, db, iid, stub, confirm, verified_selectors):
+    poster = ExtStub(stub, verified_selectors)
+    monkeypatch.setattr(runner, "posters", lambda s_: {"depop": poster})
+    monkeypatch.setattr(runner, "map_fields", lambda mp, view: fields_for(mp))
+    monkeypatch.setattr(runner.ItemView, "from_row", classmethod(lambda cls, it: SimpleNamespace(
+        render=SimpleNamespace(title=TITLE))))
+    return poster, asyncio.run(runner.publish_first_cross(s, db, iid, "depop", confirm))
+
+
+def test_a_supervised_add_to_an_announced_item_is_one_ops_line(tmp_path, monkeypatch, quiet, verified_selectors,
+                                                                capsys):
+    """WO32b §7: the group heard about the item once; Depop added later goes to the ops chat only."""
+    s, db, iid = _announced_item(tmp_path)
+
+    async def post(fields, site):
+        return True
+    poster, out = _supervised(monkeypatch, s, db, iid, Stub("depop", Outcome("posted", url=DEPOP_URL)), post,
+                              verified_selectors)
+    assert out.status == "posted" and poster.fake.clicks == 1
+    assert db.listing(iid, "depop")["status"] == "posted" and db.listing(iid, "depop")["url"] == DEPOP_URL
+    assert quiet.group == []
+    assert [m for m in quiet.ops if m.startswith("Added:")] == [f"Added: {TITLE} · Depop {DEPOP_URL}"]
+    printed = capsys.readouterr().out                                   # the CLI's progress, line by line
+    for line in ("extension connected", "tab opened", "photos 1/1", "category ✓", "filled in 1.2 s",
+                 "go-ahead sent: one click"):
+        assert line in printed, (line, printed)
+
+
+def test_ctrl_c_before_post_leaves_the_row_queued_and_clicks_nothing(tmp_path, monkeypatch, quiet,
+                                                                     verified_selectors):
+    """WO32b §4: before POST nothing can be published — a Ctrl+C cancels the job (the extension closes the tab) and
+    the row stays 'queued', never 'posting'."""
+    s, db, iid = _announced_item(tmp_path)
+    box = {}
+
+    async def ctrl_c(fields, site):
+        box["status"] = db.listing(iid, "depop")["status"]           # what the row is while the terminal waits
+        raise asyncio.CancelledError
+    with pytest.raises(asyncio.CancelledError):
+        _supervised(monkeypatch, s, db, iid, Stub("depop", Outcome("posted", url=DEPOP_URL)), ctrl_c,
+                    verified_selectors)
+    row = db.listing(iid, "depop")
+    assert box["status"] == "queued" and row["status"] == "queued" and row["url"] is None and row["attempts"] == 1
+    assert [e["kind"] for e in db.conn.execute("SELECT kind FROM events WHERE kind='publish_cancelled'")] == \
+        ["publish_cancelled"]
+    assert quiet.group == [] and runner.publish_first_cross is not None
+    # and it can be run again: nothing is 'posting', nothing to reconcile
+    assert db.claim_listing(iid, "depop", count=False)
+
+
+def test_a_posted_reply_marks_the_depop_row_posted_with_its_address(tmp_path, monkeypatch, quiet):
+    """WO32b: the owner's 'posted <url>' — Depop's /manage/ address as the tab showed it — checked on the listing page in
+    the Thrift Chrome (its title and price), then the row posted with the listing's own address; the item was
+    announced already, so one ops line."""
+    s, db, iid = _announced_item(tmp_path)
+    db.upsert_listing(iid, "depop", status="failed",
+                      error="unconfirmed publish: after the click no listing page (unknown page: not a listing page)")
+    address = pipeline.request_posted(s, db, iid, DEPOP_URL + "manage/", "depop")
+    assert address == DEPOP_URL
+
+    async def go():
+        from thrift_agent.bridge import Bridge
+        b = await Bridge("flow-test-token-" + "x" * 24, port=0).start()
+        fake = FakeExtension(b.port, b.token, [SimpleNamespace(status="ok", title=TITLE, price="$85.00",
+                                                               shop="shopname", body=f"{TITLE}\n$85.00\nSize US 7.5")])
+        fake.start()
+        await asyncio.wait_for(fake.connected.wait(), 5)
+        poster = ExtensionPoster("depop", bridge=b)
+        try:
+            return await runner.serve_requests(s, db, {"depop": poster}, None), fake, poster
+        finally:
+            fake.stop()
+            await b.close()
+    done, fake, poster = asyncio.run(go())
+    row = db.listing(iid, "depop")
+    assert done == [iid] and row["status"] == "posted" and row["url"] == DEPOP_URL
+    assert row["listing_id"] == "shopname-tory-burch-red-ballet-7f3a" and row["error"] is None
+    assert fake.jobs[-1]["mode"] == "verify" and fake.jobs[-1]["listing_url"] == DEPOP_URL
+    assert poster.learned_shop == "shopname"
+    assert quiet.group == [] and f"Added: {TITLE} · Depop {DEPOP_URL}" in quiet.ops
+
+
+def test_a_new_item_waits_for_its_unconfirmed_site_then_gets_one_line(tmp_path, quiet):
+    """WO32b §7: while Depop is unconfirmed, the ⚠️ question is the item's only group message; once it's settled, ONE
+    "Posted ✓" line with every site that confirmed — and never a second."""
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid = _item(db)
+    db.upsert_listing(iid, "poshmark", status="posted", url="https://poshmark.com/listing/x-" + "b" * 24)
+    db.upsert_listing(iid, "vinted", status="posted", url="https://www.vinted.com/items/77")
+    db.upsert_listing(iid, "depop", status="failed", error="unconfirmed publish: no listing page")
+    assert crosslist.announce(s, db, iid) is None and quiet.group == []
+    db.upsert_listing(iid, "depop", status="posted", url=DEPOP_URL, error=None)       # the owner's link, checked
+    text = crosslist.announce(s, db, iid)
+    assert quiet.group == [text] and text.startswith(f"Posted ✓ {TITLE} — $85 · Poshmark https://poshmark.com/")
+    assert f"Depop {DEPOP_URL}" in text and "Vinted https://www.vinted.com/items/77" in text
+    assert crosslist.announce(s, db, iid) is None and len(quiet.group) == 1
+
+
+def test_items_live_before_wo32b_count_as_announced(tmp_path, quiet):
+    """The live miss: a Poshmark listing from days before (announced by the old flow, no event) was announced again —
+    with no new link — when Depop was added. Such items are marked announced once; a site added later is an ops line."""
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid = _item(db)
+    db.upsert_listing(iid, "poshmark", status="posted", url="https://poshmark.com/listing/y-" + "c" * 24)
+    db.conn.execute("DELETE FROM kv WHERE key=?", (ANNOUNCED_MIGRATED,))       # a database from before WO32b
+    db = DB(s.path("db"))
+    assert crosslist.announced(db, iid) == {"poshmark"}
+    db.upsert_listing(iid, "depop", status="posted", url=DEPOP_URL)
+    assert crosslist.announce(s, db, iid) == f"Added: {TITLE} · Depop {DEPOP_URL}"
+    assert quiet.group == []
+    db = DB(s.path("db"))                                                       # once: nothing more marked
+    assert db.conn.execute("SELECT COUNT(*) FROM events WHERE kind='announced_migrated'").fetchone()[0] == 1

@@ -122,12 +122,15 @@ marketplaces:
     shop: ""               # vinted.com/member/<shop> (the member page's path)
 
 crosslist:
-  gap_seconds: [30, 90]    # between an item's marketplaces (Poshmark -> Depop -> Vinted), then the human gap
+  gap_seconds: [5, 15]     # between an item's marketplaces (Poshmark -> Depop -> Vinted), then the human gap (WO32b)
   refresh_days: 7          # the catalogs re-read from the logged-in sites this often, in the daily window (Playwright
                            # driver only: on the extension driver the poster profile never visits the site, WO32)
 
 bridge:                    # WO32: the extension's link to the poster, on 127.0.0.1:8765 (fixed: ext/background.js has it)
   token_file: ~/thrift/var/ext_token   # made by deploy/mac_setup.sh; pasted once into the extension's options
+
+ext:
+  pace: fast               # WO32b: each field set in one go, waits only for the page; "human": typed in chunks, paused
 
 schedule:
   timezone: America/New_York

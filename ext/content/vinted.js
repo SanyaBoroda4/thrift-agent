@@ -20,7 +20,8 @@
   async function open(name) {
     const input = await T.need(S()[name].selectors, name);
     await T.click(input);
-    await T.sleep(350);
+    // its panel shows: the chevron up, rows, or (the brand) its search box
+    await T.until(() => isOpen(input) || (S()[name].search && T.$$(S()[name].search).some(T.visible)), 2000);
     return input;
   }
 
@@ -28,22 +29,20 @@
   const rowText = (r) => (T.$(S().rows.title, r) || r).textContent.replace(/\s+/g, " ").trim();
 
   async function clickRow(text, timeout = 8000) {
-    const end = Date.now() + timeout * T.timeoutScale;
-    for (;;) {
+    let texts = [];
+    const found = await T.until(() => {                  // the row, as soon as the panel shows it
       const rows = T.$$(S().rows.selectors).filter(T.visible);
-      const texts = rows.map(rowText);
+      texts = rows.map(rowText);
       const i = texts.findIndex((t) => T.norm(t) === T.norm(text) || T.norm(t.split(" | ")[0]) === T.norm(text));
-      if (i >= 0) {
-        if (rows[i].getAttribute("aria-checked") !== "true") await T.click(rows[i]);   // chosen already: leave it
-        await T.sleep(300);
-        return texts[i];
-      }
-      if (Date.now() > end) {
-        await T.screenshot(`menu-${T.norm(text).replace(/[^a-z0-9]+/g, "-").slice(0, 30)}`);   // the open list
-        throw new Error(`no '${text}' (offered: ${texts.slice(0, 8).join(", ")})`);
-      }
-      await new Promise((r) => setTimeout(r, 150));
+      return i >= 0 ? { row: rows[i], shown: texts[i] } : null;
+    }, timeout);
+    if (!found) {
+      await T.screenshot(`menu-${T.norm(text).replace(/[^a-z0-9]+/g, "-").slice(0, 30)}`);   // the open list
+      throw new Error(`no '${text}' (offered: ${texts.slice(0, 8).join(", ")})`);
     }
+    if (found.row.getAttribute("aria-checked") !== "true") await T.click(found.row);   // chosen already: leave it
+    await T.sleep(120);
+    return found.shown;
   }
 
   // The package sizes: a cell each, its name in the title's own span ("Recommended" is a badge beside it).
@@ -76,11 +75,11 @@
 
   async function close(input) {
     escape();
-    for (let k = 0; k < 3; k++) {
-      await T.sleep(350);
-      if (!isOpen(input)) return;
+    await T.sleep(60);                                   // React takes the key (a settle, never a throttled timer)
+    for (let k = 0; k < 3 && isOpen(input); k++) {       // a multi-select stays open: its own toggle closes it
       const up = chevronUp(baseOf(input));
       await T.click(up?.closest("[role='button']") || up || input);
+      await T.until(() => !isOpen(input), 1500);
     }
   }
 
@@ -89,7 +88,7 @@
     for (const up of T.$$(["[data-testid$='-chevron-up']"])) {
       st.notes.push(`closed the open ${up.getAttribute("data-testid").replace(/-chevron-up$/, "")} panel`);
       await T.click(up.closest("[role='button']") || up);
-      await T.sleep(350);
+      await T.until(() => !up.isConnected || up.getAttribute("data-testid")?.endsWith("-chevron-down"), 1500);
     }
   }
 
@@ -99,11 +98,13 @@
       await T.dismiss(S().promo_close.selectors);
       await T.step("photos", st, async () => {         // the file input is hidden (u-hidden): found, not "visible"
         const input = await T.need(S().photos.selectors, "photos", { visible: false });
+        const n = Math.min(files.length, 20);
         st.attached = await T.attach(input, files.slice(0, 20), S().photos.drop);
-        await T.waitCount(S().photos.thumbs, Math.min(files.length, 20), 90000);
-        st.photosLoaded = await T.waitLoaded(S().photos.thumbs, Math.min(files.length, 20), 30000);
+        await T.waitCount(S().photos.thumbs, n, 60000);
+        st.photosLoaded = await T.waitLoaded(S().photos.thumbs, n, 50000);
         await T.screenshot("photos");
-      });
+        return `${st.photosLoaded}/${n} shown`;
+      }, { limit: 120000 });
       await T.step("title", st, async () => T.type(await T.need(S().title.selectors, "title"), job.copy.title));
       await T.step("description", st, async () =>
         T.type(await T.need(S().description.selectors, "description"), job.copy.description));
@@ -122,7 +123,7 @@
           if (k >= parts.length) throw new Error(`the leaf ${f.category_id} isn't under ${f.category_path}`);
           await clickRow(parts[k]);
         }
-        await T.sleep(800);
+        await T.until(() => (T.$(S().category.selectors)?.value || "").trim(), 3000);   // the input shows the leaf
         T.picked(st, "category", f.category_path, T.$(S().category.selectors)?.value || "");
         escape();
       });
@@ -131,10 +132,13 @@
           await open("brand");
           const search = await T.waitFor(S().brand.search, { timeout: 3000 });
           await T.type(search || (await T.need(S().brand.selectors, "brand")), f.brand);
-          await T.sleep(900);
-          const rows = T.$$(S().rows.selectors).filter(T.visible);
-          const texts = rows.map(rowText);
-          const { choice, guess } = T.strictPick(f.brand, texts);
+          let rows = [], texts = [];
+          const { choice, guess } = (await T.until(() => {     // Vinted's list answers: until our brand shows, 5 s
+            rows = T.$$(S().rows.selectors).filter(T.visible);
+            texts = rows.map(rowText);
+            const p = T.strictPick(f.brand, texts);
+            return p.choice ? p : null;
+          }, 5000)) || { choice: null, guess: null };
           if (!choice) {
             await T.screenshot("menu-brand");
             st.guesses.push(`brand left empty (Vinted has no '${f.brand}')`);
@@ -160,15 +164,16 @@
           if (!cell) continue;
           const radio = T.$(S().package.radio, cell);
           if (!(radio && radio.checked)) await T.click(cell);
-          await T.sleep(400);
-          if (radio && !radio.checked) throw new Error(`the package size ${PACKAGE[code]} didn't take`);
+          if (radio && !(await T.until(() => radio.checked, 3000))) {
+            throw new Error(`the package size ${PACKAGE[code]} didn't take`);
+          }
           return;
         }
         throw new Error(`package ${f.package_sizes} not offered (${cells.map(cellName).join(", ")})`);
       });
       await T.dismiss(S().promo_close.selectors);
       await closeAll(st);
-      st.photosLoadedEnd = await T.waitLoaded(S().photos.thumbs, Math.min(files.length, 20), 20000);
+      st.photosLoadedEnd = await T.waitLoaded(S().photos.thumbs, Math.min(files.length, 20), 15000);
       await T.screenshot("photos-end");
       T.$(S().details_view?.selectors)?.scrollIntoView?.({ block: "start" });   // the form's screenshot: the details
       await T.sleep(500);
@@ -212,7 +217,7 @@
     },
 
     async verify(job) {
-      await T.sleep(1500);
+      await T.waitFor(S().listing_title.selectors, { timeout: 10000 });
       const text = (sel) => (T.$(sel)?.textContent || "").replace(/\s+/g, " ").trim();
       return { url: location.href, title: text(S().listing_title.selectors), price: text(S().listing_price.selectors),
                photos: T.$$(S().listing_photos.selectors).length, body: T.textOf().slice(0, 3000) };
@@ -227,18 +232,21 @@
       }
       T.emit({ event: "step", job_id: job.job_id, name: "hide", ok: true, clicked: true });
       await T.click(hide);
-      await T.sleep(1200);
       const cre = new RegExp(S().confirm.text, "i");
-      const confirm = T.$$(S().confirm.selectors).find((b) => T.visible(b) && cre.test(T.norm(b.textContent)));
-      if (confirm) await T.click(confirm);
-      await T.sleep(1500);
+      const confirm = await T.until(() => T.$$(S().confirm.selectors)
+        .find((b) => T.visible(b) && cre.test(T.norm(b.textContent))), 4000);
+      if (confirm) {
+        await T.click(confirm);
+        await T.until(() => !confirm.isConnected, 4000);
+      }
       await T.screenshot("delisted");
       T.emit({ event: "result", job_id: job.job_id, delisted: true, url: location.href });
     },
 
     async find(job, st) {
       // The seller's own member page: its listings' addresses and titles, for the check after an interrupted upload.
-      await T.sleep(1500);
+      await T.waitFor(S().shop_links.selectors, { timeout: 8000, visible: false });
+      await T.sleep(150);
       const listings = T.$$(S().shop_links.selectors).map((a) => ({
         url: a.href, text: (a.getAttribute("title") || a.textContent || "").replace(/\s+/g, " ").trim(),
       }));
