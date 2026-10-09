@@ -84,10 +84,12 @@ def test_classify_unknown_marketplace_is_other():
     assert classify("ebay", "You made a sale!", "") == "OTHER"
 
 
-def test_every_site_has_its_own_table_with_the_guards_first():
+def test_every_site_has_its_own_table_with_its_real_subjects_then_the_guards():
     assert set(emails.RULES) == {"poshmark", "depop", "vinted"}
-    for table in emails.RULES.values():
-        assert table[:len(emails.GUARDS)] == emails.GUARDS
+    for site, table in emails.RULES.items():
+        real = emails.REAL[site]                # WO33: the subjects of the seller's own mail come first
+        assert table[:len(real)] == real
+        assert table[len(real):len(real) + len(emails.GUARDS)] == emails.GUARDS
         assert {rule.kind for rule in table} == set(emails.KINDS)
         wheres = [rule.where for rule in table]
         assert wheres == sorted(wheres, key=lambda w: w != "subject")      # every subject rule before a body one
@@ -184,7 +186,7 @@ def test_a_stated_date_in_january_is_next_years():
 def test_parse_errors_and_other():
     with pytest.raises(ParseError):
         parse("poshmark", "SALE", "You made a sale!", "Congrats! Ship within 7 days.", RECEIVED)
-    with pytest.raises(ParseError):
-        parse("vinted", "SHIPPED", "Your parcel is on its way", "Track it in the app.", RECEIVED)
+    # a follow-up with nothing to go on is no error (WO33): the API finds no sale and says so, once
+    assert not any(parse("vinted", "SHIPPED", "Your parcel is on its way", "Track it in the app.", RECEIVED).values())
     assert parse("poshmark", "OTHER", "Hello", "anything", RECEIVED) == {}
     assert parse("depop", "DELIVERED", "Delivered", "Item: Lacoste Tee", RECEIVED)["title"] == "Lacoste Tee"

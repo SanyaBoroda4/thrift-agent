@@ -369,6 +369,14 @@ def _followup(db: Database, kind: str, mp: str, parsed: dict, subject: str | Non
 def _find_sale(db: Database, kind: str, mp: str, parsed: dict) -> tuple[dict | None, str]:
     """The sale a follow-up email is about: its order id; else the open sale of the item its listing / SKU names; else
     the one open sale on this site whose title is close enough. (sale, how) or (None, why not)."""
+    if not any(parsed.get(k) for k in ("order_id", "title", "listing_url", "listing_id", "sku")):
+        # WO33: an email that names nothing but the buyer (Depop's "Your sale to @x was delivered"): the one open sale
+        # on this site, never a guess among several
+        rows = db.query("SELECT * FROM sales WHERE marketplace = ? AND status NOT IN ('cancelled', 'done') "
+                        "ORDER BY sold_at DESC LIMIT 2", (mp,))
+        if len(rows) == 1:
+            return rows[0], "the only open sale on this site"
+        return None, "no order id, title or listing" + (" (several open sales)" if rows else "")
     if parsed.get("order_id"):
         row = db.one("SELECT * FROM sales WHERE marketplace = ? AND order_id = ? ORDER BY created_at DESC LIMIT 1",
                      (mp, parsed["order_id"]))

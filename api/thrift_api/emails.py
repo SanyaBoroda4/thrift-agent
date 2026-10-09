@@ -1,12 +1,12 @@
 """The marketplaces' emails (WO33): who sent one (`marketplace_of`), what it is (`classify`: SALE, SHIPPED, DELIVERED,
 CANCELLED or OTHER) and the few facts the sales tracking needs (`parse`). Pure text work: nothing is read or stored.
 
-PROVISIONAL. The rules were written from the marketplaces' usual wording before any real email was seen; refine them
-against the samples (POST /samples receives 90 days of the seller's marketplace mail for exactly that). Each site has ONE
-table, `RULES[site]`, read top to bottom: the first rule that matches decides, the subject's rules before the body's,
-and an email nothing matches is OTHER. Offers, likes, shares, follows, messages, payouts, promotions, newsletters,
-account mail, shipping reminders, cancellation REQUESTS and the seller's own purchases are OTHER on purpose: the
-`GUARDS` at the top of every table.
+Written from the seller's own mail (WO33: 165 samples of 90 days, Poshmark 120, Depop 26, Vinted 19 —
+scrubbed, in the private repo): each site's table opens with the exact subjects its real emails carry (`REAL`), then
+the general rules. Each site has ONE table, `RULES[site]`, read top to bottom: the first rule that matches decides,
+the subject's rules before the body's, and an email nothing matches is OTHER. Offers, likes, shares, follows,
+messages, payouts, promotions, newsletters, account mail, shipping reminders, cancellation REQUESTS and the seller's
+own purchases are OTHER on purpose: the `GUARDS`, right after the real subjects.
 
 Buyer data never leaves the text: `parse` returns only the fields in `SALE_FIELDS` / `FOLLOWUP_FIELDS` — a title, a
 listing's address and id, our item id, a price, an order id, dates — and a title taken from a sentence is cut before
@@ -75,12 +75,33 @@ GUARDS = (
                              r"|\bconfirm your\b|\bterms\b|\bprivacy\b|\bpolicy\b|\bwelcome\b"),
 )
 
+# The real subjects (WO33, from the samples), ahead of everything else in each site's table.
+REAL = {
+    "poshmark": (
+        # '"<title>" just sold to @x on Poshmark!', 'Thank you for shipping <title>',
+        # 'Please do not ship: "<title>" for @x was canceled'
+        rule("SALE", "subject", r'^\s*"[^"]{3,200}"\s+just sold to\b.*\bon poshmark\b'),
+        rule("SHIPPED", "subject", r"^\s*thank you for shipping\b"),
+        rule("CANCELLED", "subject", r"^\s*please do not ship\b.*\bwas cancel(?:l)?ed\b"),
+    ),
+    "vinted": (
+        rule("SALE", "subject", r"^\s*you sold an item on vinted\b"),
+        rule("SALE", "subject", r"\bshipping label\s*[-–—]\s*use by\b"),    # the label: its "Shipment deadline" fills the sale
+        rule("DELIVERED", "subject", r"^\s*this order is completed\b"),       # the buyer confirmed: the sale is complete
+    ),
+    "depop": (
+        rule("SALE", "subject", r"\bshipping label and sale confirmation\b"),
+        rule("DELIVERED", "subject", r"^\s*your sale to\b.*\bwas delivered\b"),
+    ),
+}
+
 CANCELLED_SUBJECT = r"\bcancel(?:l)?ed\b|\bcancel(?:l)?ation\b"
 CANCELLED_TEXT = r"\b(?:order|sale|transaction) (?:has been|was|is) cancel(?:l)?ed\b"
 DELIVERED_TEXT = r"\b(?:order|package|parcel|shipment|item) (?:has been|was) delivered\b"
 
 RULES: dict[str, tuple[Rule, ...]] = {
     "poshmark": (
+        *REAL["poshmark"],
         *GUARDS,
         rule("CANCELLED", "subject", CANCELLED_SUBJECT),
         rule("DELIVERED", "subject", r"\bdelivered\b"),
@@ -95,6 +116,7 @@ RULES: dict[str, tuple[Rule, ...]] = {
                              r"|\byour (?:item|listing|bundle) (?:has |was )?(?:just )?(?:been )?sold\b"),
     ),
     "depop": (
+        *REAL["depop"],
         *GUARDS,
         rule("CANCELLED", "subject", CANCELLED_SUBJECT),
         rule("DELIVERED", "subject", r"\bdelivered\b"),
@@ -107,6 +129,7 @@ RULES: dict[str, tuple[Rule, ...]] = {
         rule("SALE", "text", r"\byou(?:'ve| have)? (?:just )?sold\b|\byour item (?:has |was )?(?:just )?(?:been )?sold\b"),
     ),
     "vinted": (
+        *REAL["vinted"],
         *GUARDS,
         rule("CANCELLED", "subject", CANCELLED_SUBJECT),
         rule("DELIVERED", "subject", r"\bdelivered\b"),
@@ -132,10 +155,10 @@ LISTING_URLS = {
     "vinted": re.compile(r"https?://(?:www\.)?vinted\.com/items/(?P<id>\d+)(?:-[^\s/?#\"'<>]*)?", re.I),
 }
 ORDER_URLS = {"poshmark": re.compile(r"poshmark\.com/order/sales/(?P<id>[0-9a-f]{24})", re.I)}
-ORDER_ID = re.compile(r"\b(?:order|transaction)[ \t]*(?:id|number|no\.?|#)[ \t]*[:#.]?[ \t]*#?[ \t]*"
+ORDER_ID = re.compile(r"\b(?:order|transaction)[ \t]*(?:id|number|no\.?|#)[ \t]*[:#.]?\s*#?[ \t]*"
                       r"(?P<id>(?=[A-Za-z0-9-]*\d)[A-Za-z0-9][A-Za-z0-9-]{3,40})\b", re.I)
 
-AMOUNT = r"(?:US)?\$[ \t]?(?P<amount>\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)"
+AMOUNT = r"(?:US)?[$£€][ \t]?(?P<amount>\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)"
 PRICES = (re.compile(r"\b(?:sold for|sale price|item price|listing price|price)\b[ \t]*:?[ \t]*(?:of[ \t]+)?" + AMOUNT, re.I),
           re.compile(r"\bfor[ \t]+" + AMOUNT, re.I),
           re.compile(r"\b(?:order total|subtotal|total)\b[ \t]*:?[ \t]*" + AMOUNT, re.I),
@@ -154,6 +177,12 @@ SHIP_BY = re.compile(
 # A title: a labelled line, a quoted name, or the words after "you sold" / between "your item" and "has sold".
 # (pattern, field, cut): `cut` titles come from a sentence and are cut where the sentence goes on.
 TITLES = (
+    # WO33, the real emails: Vinted "<buyer> has bought\n\n<title>", "Your sale of <title> was completed"; Depop "Order
+    # details\n(image)\n<title>"; Poshmark "Thank you for shipping <title>"
+    (re.compile(r"\bhas bought[ \t]*\n+[ \t]*(?P<t>[^\n]{3,200})", re.I), "text", False),
+    (re.compile(r"\byour sale of (?P<t>[^\n]{3,200}?) was completed\b", re.I), "text", False),
+    (re.compile(r"\border details[ \t]*\n(?:[ \t]*(?:image)?[ \t]*\n)*[ \t]*(?P<t>[^\n]{3,200})", re.I), "text", False),
+    (re.compile(r"^\s*thank you for shipping (?P<t>[^\n]{3,200})$", re.I), "subject", False),
     (re.compile(r"^[ \t]*(?:item(?: name)?|title|listing|product)[ \t]*:[ \t]*(?P<t>[^\n]{3,200})$", re.I | re.M), "text",
      False),
     (re.compile(r"\"(?P<t>[^\"\n]{3,200})\""), "subject", False),
@@ -210,14 +239,12 @@ def parse(marketplace: str | None, kind: str, subject: str, text: str, received_
     facts = {"order_id": order_id(mp, both), "title": title(mp, s, t, url), "listing_url": url,
              "listing_id": listing_id, "sku": sku(both)}
     if kind != "SALE":
-        if not any(facts.values()):
-            raise ParseError(f"a {kind.lower()} email with no order id, title or listing")
-        return facts
+        return facts                            # nothing to go on: the API finds no sale and says so (no retries)
     if not (facts["title"] or facts["listing_id"] or facts["sku"]):
         raise ParseError("a sale email with no title, listing or SKU")
     amount = price(t)
     return {**facts, "price": amount if amount is not None else price(s), "sold_at": aware(received_at),
-            "ship_by_stated": ship_by_stated(t, received_at)}
+            "ship_by_stated": ship_by_stated(t, received_at) or ship_by_stated(s, received_at)}
 
 
 # --- the facts, one by one ------------------------------------------------------------------------------------------
@@ -279,16 +306,21 @@ def title(marketplace: str, subject: str, text: str, url: str | None = None) -> 
     return None
 
 
+DEADLINE = re.compile(r"\b(?:shipment deadline|shipping deadline|use by)[ \t]*:?[ \t]*"
+                      r"(?P<m>\d{1,2})/(?P<d>\d{1,2})/(?P<y>\d{4}|\d{2})\b", re.I)
+
+
 def ship_by_stated(text: str, received_at: datetime) -> date | None:
-    """A ship-by date the email states ("Please ship by Fri, Oct 9", "ship before 10/09/2026"): the year is the
-    email's own unless given (a date more than a week back is next year's); a date outside a day before to 45 days
-    after the email is no date."""
-    found = SHIP_BY.search(text)
+    """A ship-by date the email states ("Please ship by Fri, Oct 9", "ship before 10/09/2026", Vinted's label
+    "Shipment deadline: 10/06/2026 09:51 AM"): the year is the email's own unless given (a date more than a week back
+    is next year's); a date outside a day before to 45 days after the email is no date."""
+    found = DEADLINE.search(text) or SHIP_BY.search(text)
     if not found:
         return None
     sent = local(received_at).date()
-    if found.group("mon"):
-        month, day, year = MONTHS[found.group("mon").lower()[:3]], int(found.group("day")), found.group("year")
+    g = found.groupdict()
+    if g.get("mon"):
+        month, day, year = MONTHS[g["mon"].lower()[:3]], int(g["day"]), g.get("year")
     else:
         month, day, year = int(found.group("m")), int(found.group("d")), found.group("y")
     explicit = year is not None
