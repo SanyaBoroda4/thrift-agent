@@ -239,6 +239,24 @@ def test_dry_run_marketplaces_send_their_screenshot_to_the_ops_chat(tmp_path, lo
     assert [r["status"] for r in db.listings_for(iid)] == ["posted", "dryrun", "dryrun"]
 
 
+def test_two_items_settled_together_all_done_on_the_last_line_only(tmp_path, loop):
+    """WO33, seen on a loaded CI runner: both items finished every site before either line went out — each line saw
+    nothing left to do, and both said "All done". While another item's line is due, a line says nothing of the kind."""
+    said, run = loop
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    a, b = _item(db, 1), _item(db, 2)
+    for iid in (a, b):
+        for mp, url in (("poshmark", f"https://poshmark.com/listing/{iid}"),
+                        ("depop", f"https://www.depop.com/products/shop-{iid.replace('_', '-')}/"),
+                        ("vinted", f"https://www.vinted.com/items/{iid}")):
+            db.upsert_listing(iid, mp, status="posted", url=url, posted_at="2026-10-08T20:00:00+00:00")
+        db.set_item(iid, status="posted")
+    assert crosslist.announce(s, db, a) and crosslist.announce(s, db, b)
+    assert len(said.group) == 2 and "All done" not in said.group[0]
+    assert said.group[1].endswith("✓ All done — safe to close the Mac.") and f"/listing/{b}" in said.group[1]
+
+
 def test_all_done_only_when_no_marketplace_has_anything_left(tmp_path, loop):
     said, run = loop
     s = _settings(tmp_path)

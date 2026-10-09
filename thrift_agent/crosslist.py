@@ -352,6 +352,13 @@ def waiting_lines(db: DB) -> list[str]:
         "(SELECT 1 FROM events e WHERE e.ref=l.item_id AND e.kind='posted_announced')").fetchall()]
 
 
+def _line_due(s: Settings, db: DB, iid: str) -> bool:
+    """Another item's first line is due now (settled, not yet sent): "✓ All done" goes on the window's last line, so
+    not on this one (WO33, a loaded CI runner: two items finished every site before either line went out, and both
+    lines said "All done")."""
+    return any(other != iid and settled(s, db, other) for other in waiting_lines(db))
+
+
 def announce(s: Settings | None, db: DB, iid: str) -> str | None:
     """The group hears about an item ONCE (WO32b): the first time its listings go out — once all its sites are settled
     (WO33 A3: posted, failed, skipped, or waiting on the owner's answer to the ⚠️ question) — one "Posted ✓" line with
@@ -369,7 +376,7 @@ def announce(s: Settings | None, db: DB, iid: str) -> str | None:
         return text
     if s is not None and not settled(s, db, iid):
         return None
-    text = posted_line(s, db, iid, mps, done=s is not None and daily.all_done(s, db))
+    text = posted_line(s, db, iid, mps, done=s is not None and daily.all_done(s, db) and not _line_due(s, db, iid))
     db.log(iid, "posted_announced", {"mps": mps})
     notify.group(text)
     return text
