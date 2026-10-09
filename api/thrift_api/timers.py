@@ -38,7 +38,7 @@ def reminders(db: Database, now: datetime, mode: str) -> list[list[str]]:
     """The reminders due now, [sale id, kind] each, recorded and then sent."""
     rows = db.query("SELECT s.id, s.marketplace, s.ship_by, s.shipped_at, s.status, s.title_seen, i.title AS item_title "
                     "FROM sales s LEFT JOIN items i ON i.id = s.item_id WHERE s.shipped_at IS NULL "
-                    "AND s.ship_by IS NOT NULL AND s.status NOT IN ('cancelled', 'double_sale', 'done') "
+                    "AND s.ship_by IS NOT NULL AND s.status NOT IN ('cancelled', 'double_sale', 'done', 'merged') "
                     "ORDER BY s.ship_by, s.sold_at, s.id")
     sent = {(row["sale_id"], row["kind"]) for row in db.query("SELECT sale_id, kind FROM reminders")}
     due = deadlines.reminders_due(now, rows, sent)

@@ -151,3 +151,42 @@ def test_the_replay_refills_an_email_the_live_poll_stored_without_its_text(db, s
     counts = core.replay(db, NOW)
     assert (counts["refilled"], counts["sales"], counts["matched"]) == (1, 1, 1)
     assert db.one("SELECT status FROM email_events WHERE message_id = 's1'")["status"] != "failed"
+
+
+def test_vinteds_sale_email_and_its_label_are_one_sale_for_an_item_not_ours(db, live, sent):
+    """Vinted mails a sale twice: "You sold an item" (no transaction id), then the label (the id, the deadline). For
+    an item that isn't ours (no item to match) the label still finds the sale: the same title, minutes later."""
+    first = core.process_email(db, mail("vinted", VINTED_SALE, "v1", "2026-09-29T15:51:27Z"), NOW)
+    second = core.process_email(db, mail("vinted", VINTED_LABEL, "v2", "2026-09-29T15:54:27Z"), NOW)
+    assert first["status"] == "unmatched" and second["sale_id"] == first["sale_id"] and second["duplicate"]
+    s = sale(db, first["sale_id"])
+    assert (s["order_id"], s["ship_by"], s["ship_by_source"]) == ("22703814298", "2026-10-06", "email")
+    assert len(db.query("SELECT id FROM sales")) == 1
+    assert len([t for t in texts(sent, "ops") if t.startswith("Unmatched sale")]) == 1
+    core.process_email(db, mail("vinted", VINTED_COMPLETED, "v3", "2026-09-30T18:37:20Z"), NOW)
+    assert sale(db, first["sale_id"])["status"] == "done"
+
+
+def test_two_of_a_kind_sold_the_same_week_stay_two_sales(db, live, sent):
+    core.process_email(db, mail("vinted", VINTED_SALE, "v1", "2026-09-29T15:51:27Z"), NOW)
+    core.process_email(db, mail("vinted", VINTED_SALE, "v2", "2026-09-30T10:00:00Z"), NOW)
+    assert len(db.query("SELECT id FROM sales")) == 2
+
+
+def test_a_pair_recorded_before_the_rule_is_merged_never_deleted(db, sent):
+    """The replay's Vinted pairs (before the rule): the label's row folded into the sale's, kept as 'merged' and left
+    out of every list; a second run finds nothing."""
+    rows = (("s_1", None, "2026-09-29T15:51:27+00:00", "2026-10-06", "rule", None, "unmatched", 6.4),
+            ("s_2", "22703814298", "2026-09-29T15:54:27+00:00", "2026-10-06", "email", "2026-09-30T18:37:20+00:00",
+             "done", None))
+    for sale_id, order, sold, ship_by, source, delivered, status, price in rows:
+        db.execute("INSERT INTO sales (id, marketplace, item_id, listing_id, title_seen, price, order_id, sold_at, "
+                   "ship_by, ship_by_source, shipped_at, delivered_at, status, message_id, created_at) VALUES "
+                   "(?, 'vinted', NULL, NULL, 'Kai Run Shoes size 8', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                   (sale_id, price, order, sold, ship_by, source, delivered, delivered, status, f"m{sale_id}", sold))
+    assert core.merge_duplicate_sales(db) == [["s_1", "s_2"]]
+    kept, merged = sale(db, "s_1"), sale(db, "s_2")
+    assert (kept["order_id"], kept["status"], kept["ship_by_source"], kept["price"]) == ("22703814298", "done", "email", 6.4)
+    assert merged["status"] == "merged"                                   # kept, never deleted
+    assert [s["id"] for s in core.sales_list(db, "all")] == ["s_1"]
+    assert core.merge_duplicate_sales(db) == []

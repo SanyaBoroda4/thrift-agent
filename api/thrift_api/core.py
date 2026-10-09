@@ -35,13 +35,15 @@ RESULTS = ("done", "not_found", "failed", "sold")
 MAC_PREFIX = "mac:"
 SALE_COLUMNS = ("id", "marketplace", "item_id", "listing_id", "title_seen", "price", "order_id", "sold_at", "ship_by",
                 "ship_by_source", "shipped_at", "delivered_at", "status", "message_id", "created_at")
-SALE_LISTS = {"open": "s.shipped_at IS NULL AND s.status NOT IN ('cancelled', 'done')",
+SALE_LISTS = {"open": "s.shipped_at IS NULL AND s.status NOT IN ('cancelled', 'done', 'merged')",
               "unmatched": "s.status = 'unmatched'",
-              "all": "1 = 1"}
+              "all": "s.status <> 'merged'"}
 # the sales a follow-up email can be about, when it doesn't name its order
-FOLLOWUP_OPEN = {"SHIPPED": "s.shipped_at IS NULL AND s.status NOT IN ('cancelled', 'done')",
-                 "DELIVERED": "s.status NOT IN ('cancelled', 'done')",
-                 "CANCELLED": "s.status NOT IN ('cancelled', 'done')"}
+FOLLOWUP_OPEN = {"SHIPPED": "s.shipped_at IS NULL AND s.status NOT IN ('cancelled', 'done', 'merged')",
+                 "DELIVERED": "s.status NOT IN ('cancelled', 'done', 'merged')",
+                 "CANCELLED": "s.status NOT IN ('cancelled', 'done', 'merged')"}
+# Vinted mails one sale twice — "You sold an item" (no transaction id), its shipping label minutes later (the id)
+SAME_SALE_WINDOW = timedelta(days=3)
 # tasks made together come out in the sites' order: Poshmark, Depop, Vinted
 SITE_SORT = "CASE {0}marketplace WHEN 'poshmark' THEN 0 WHEN 'depop' THEN 1 WHEN 'vinted' THEN 2 ELSE 3 END"
 TASK_ORDER = f"created_at, {SITE_SORT.format('')}, id"
@@ -157,11 +159,11 @@ def replay(db: Database, now: datetime | None = None) -> dict:
     goes to the ops chat as "[replay] …", no take-down is made — oldest first; an email the live poll already stored
     without its text (the reader's bytes bug) gets the sample's text and is processed again. Then ONE summary to the
     ops chat: emails, sales (matched, unmatched, sold twice), shipped, delivered, cancelled, and the reminders the
-    open sales would get. Run once before going live; a second run changes nothing (each email once)."""
+    open sales would get — counted from the database, so a second run (each email once: nothing new) says the same.
+    Sales recorded twice before the Vinted rule are merged first (`merge_duplicate_sales`)."""
     now = _clock(now)
     mode = "replay"
-    counts = {"emails": 0, "new": 0, "refilled": 0, "duplicates": 0, "sales": 0, "matched": 0, "unmatched": 0,
-              "double": 0, "shipped": 0, "delivered": 0, "cancelled": 0, "other": 0}
+    counts = {"emails": 0, "new": 0, "refilled": 0, "duplicates": 0}
     for row in db.query("SELECT * FROM samples WHERE COALESCE(text, '') <> '' ORDER BY received_at"):
         counts["emails"] += 1
         payload = {"message_id": row["message_id"], "from": REPLAY_FROM.get(row["marketplace"], ""),
@@ -174,26 +176,28 @@ def replay(db: Database, now: datetime | None = None) -> dict:
             db.execute("UPDATE email_events SET raw_text = ?, kind = ?, status = 'failed' WHERE message_id = ?",
                        (row["text"], read, row["message_id"]))
             counts["refilled"] += 1
-            out = retry_email(db, row["message_id"], now, mode)
+            retry_email(db, row["message_id"], now, mode)
         elif event is not None:
             counts["duplicates"] += 1
             continue
         else:
             counts["new"] += 1
-            out = process_email(db, payload, now, mode)
-        kind = (db.one("SELECT kind FROM email_events WHERE message_id = ?", (row["message_id"],)) or {}).get("kind")
-        if kind == "SALE":
-            if out.get("duplicate"):
-                continue                                  # a second email about a sale already counted (a label)
-            counts["sales"] += 1
-            status = out.get("sale_status") or out.get("status")
-            counts["double" if status == "double_sale" else "unmatched" if status == "unmatched" else "matched"] += 1
-        elif kind in ("SHIPPED", "DELIVERED", "CANCELLED"):
-            counts[{"SHIPPED": "shipped", "DELIVERED": "delivered", "CANCELLED": "cancelled"}[kind]] += 1
-        else:
-            counts["other"] += 1
+            process_email(db, payload, now, mode)
+    counts["merged"] = len(merge_duplicate_sales(db))
+    # the summary from the database: the same however many times the replay runs
+    sales = db.query("SELECT s.item_id, s.status FROM sales s JOIN samples m ON m.message_id = s.message_id "
+                     "WHERE s.status <> 'merged'")
+    counts["sales"] = len(sales)
+    counts["double"] = sum(1 for s in sales if s["status"] == "double_sale")
+    counts["matched"] = sum(1 for s in sales if s["item_id"] and s["status"] != "double_sale")
+    counts["unmatched"] = sum(1 for s in sales if not s["item_id"])
+    kinds = {row["kind"]: int(row["n"]) for row in db.query(
+        "SELECT e.kind, COUNT(*) AS n FROM email_events e JOIN samples m ON m.message_id = e.message_id GROUP BY e.kind")}
+    for kind in ("SHIPPED", "DELIVERED", "CANCELLED"):
+        counts[kind.lower()] = kinds.get(kind, 0)
+    counts["other"] = sum(n for kind, n in kinds.items() if kind not in ("SALE", "SHIPPED", "DELIVERED", "CANCELLED"))
     open_sales = db.query("SELECT ship_by FROM sales WHERE shipped_at IS NULL AND status NOT IN ('cancelled', 'done', "
-                          "'double_sale') AND ship_by IS NOT NULL")
+                          "'double_sale', 'merged') AND ship_by IS NOT NULL")
     today = deadlines.local(now).date()
     counts["reminders_ahead"] = sum(1 for s in open_sales if date.fromisoformat(s["ship_by"]) >= today)
     counts["overdue"] = sum(1 for s in open_sales if date.fromisoformat(s["ship_by"]) < today)
@@ -305,7 +309,7 @@ def _sale(db: Database, mp: str, parsed: dict, message_id: str, subject: str | N
     what the first lacked), matched to an item; live, the take-down tasks; acting, the group's message."""
     sold_at = util.aware(parsed.get("sold_at") or now)
     item_id, how = match.match_sale(db, mp, parsed)
-    same = _same_sale(db, mp, parsed.get("order_id"), item_id)
+    same = _same_sale(db, mp, parsed.get("order_id"), item_id, parsed.get("title"), sold_at)
     if same is not None:
         _fill_sale(db, same, parsed)
         return {"status": "parsed", "sale_id": same["id"], "sale_status": same["status"], "item_id": same["item_id"],
@@ -337,20 +341,73 @@ def _sale(db: Database, mp: str, parsed: dict, message_id: str, subject: str | N
             "item_id": item_id, "matched_by": how, "ship_by": ship_day.isoformat(), "tasks": [t["id"] for t in tasks]}
 
 
-def _same_sale(db: Database, mp: str, order_id: str | None, item_id: str | None) -> dict | None:
+def _same_sale(db: Database, mp: str, order_id: str | None, item_id: str | None, title: str | None = None,
+               sold_at: datetime | None = None) -> dict | None:
     """The sale a second email is about: the same order on this site, else this item's open sale on this site (one
-    listing sells once) unless its order id says it's another order."""
+    listing sells once) unless its order id says it's another order; else (WO33, an item that isn't ours) the sale
+    whose first email had no order id, with this title, on this site, at most 3 days before — Vinted's "You sold an
+    item" and its shipping label. Never two emails without an order id: two of a kind sold the same week stay two."""
     if order_id:
-        row = db.one("SELECT * FROM sales WHERE marketplace = ? AND order_id = ? ORDER BY created_at LIMIT 1",
-                     (mp, order_id))
+        row = db.one("SELECT * FROM sales WHERE marketplace = ? AND order_id = ? AND status <> 'merged' "
+                     "ORDER BY created_at LIMIT 1", (mp, order_id))
         if row:
             return row
     if item_id:
-        row = db.one("SELECT * FROM sales WHERE marketplace = ? AND item_id = ? AND status <> 'cancelled' "
+        row = db.one("SELECT * FROM sales WHERE marketplace = ? AND item_id = ? AND status NOT IN ('cancelled', 'merged') "
                      "ORDER BY created_at LIMIT 1", (mp, item_id))
         if row and (not order_id or not row["order_id"] or row["order_id"] == order_id):
             return row
+    elif order_id and title and sold_at:
+        return _first_of_pair(db, mp, title, sold_at)
     return None
+
+
+def _first_of_pair(db: Database, mp: str, title: str | None, sold_at: datetime | None) -> dict | None:
+    """The sale recorded from an email without an order id (Vinted's "You sold an item"), with this title, on this
+    site, at most 3 days before `sold_at`; not one of ours (ours are found by their item)."""
+    if not title or not sold_at:
+        return None
+    rows = db.query("SELECT * FROM sales WHERE marketplace = ? AND item_id IS NULL AND order_id IS NULL "
+                    "AND status NOT IN ('cancelled', 'merged') ORDER BY created_at", (mp,))
+    for row in rows:
+        first = parse_time(row["sold_at"])
+        if same_title(row["title_seen"], title) and first and timedelta(0) <= sold_at - first <= SAME_SALE_WINDOW:
+            return row
+    return None
+
+
+def same_title(a: str | None, b: str | None) -> bool:
+    """The same title, case, spacing and punctuation aside."""
+    words = lambda t: re.findall(r"\w+", (t or "").casefold())  # noqa: E731
+    return bool(words(a)) and words(a) == words(b)
+
+
+def merge_duplicate_sales(db: Database) -> list[list[str]]:
+    """WO33: the sales recorded twice before the rule above (the replay's Vinted pairs): the later row — the label's,
+    with the order id — folded into the first (the order id, a stated ship-by, shipped / delivered / done / cancelled)
+    and kept as 'merged' (never deleted; every list leaves it out). Items of ours are never in a pair: their second
+    email always found the first. [[kept, merged], …]; a second run finds none."""
+    pairs = []
+    with db.tx():
+        later = db.query("SELECT * FROM sales WHERE item_id IS NULL AND order_id IS NOT NULL "
+                         "AND status NOT IN ('merged') ORDER BY created_at")
+        for s2 in later:
+            first = _first_of_pair(db, s2["marketplace"], s2["title_seen"], parse_time(s2["sold_at"]))
+            if first is None or first["id"] == s2["id"]:
+                continue
+            updates = {"order_id": s2["order_id"]}
+            if s2["ship_by_source"] == "email" and first["ship_by_source"] != "email":
+                updates.update(ship_by=s2["ship_by"], ship_by_source="email")
+            for column in ("listing_id", "price", "shipped_at", "delivered_at"):
+                if first[column] in (None, "") and s2[column] not in (None, ""):
+                    updates[column] = s2[column]
+            if s2["status"] in ("done", "cancelled") and first["status"] not in ("done", "cancelled"):
+                updates["status"] = s2["status"]
+            sets = ", ".join(f"{column} = ?" for column in updates)
+            db.execute(f"UPDATE sales SET {sets} WHERE id = ?", (*updates.values(), first["id"]))
+            db.execute("UPDATE sales SET status = 'merged' WHERE id = ?", (s2["id"],))
+            pairs.append([first["id"], s2["id"]])
+    return pairs
 
 
 def _fill_sale(db: Database, sale: dict, parsed: dict) -> None:
@@ -369,7 +426,8 @@ def _fill_sale(db: Database, sale: dict, parsed: dict) -> None:
 
 def _sale_elsewhere(db: Database, item_id: str, mp: str, exclude: str | None = None) -> dict | None:
     """The item's first sale that stands (not cancelled) on another marketplace."""
-    return db.one("SELECT * FROM sales WHERE item_id = ? AND marketplace <> ? AND status <> 'cancelled' AND id <> ? "
+    return db.one("SELECT * FROM sales WHERE item_id = ? AND marketplace <> ? AND status NOT IN ('cancelled', 'merged') "
+                  "AND id <> ? "
                   "ORDER BY sold_at, created_at LIMIT 1", (item_id, mp, exclude or ""))
 
 
@@ -431,14 +489,14 @@ def _find_sale(db: Database, kind: str, mp: str, parsed: dict) -> tuple[dict | N
     if not any(parsed.get(k) for k in ("order_id", "title", "listing_url", "listing_id", "sku")):
         # WO33: an email that names nothing but the buyer (Depop's "Your sale to @x was delivered"): the one open sale
         # on this site, never a guess among several
-        rows = db.query("SELECT * FROM sales WHERE marketplace = ? AND status NOT IN ('cancelled', 'done') "
+        rows = db.query("SELECT * FROM sales WHERE marketplace = ? AND status NOT IN ('cancelled', 'done', 'merged') "
                         "ORDER BY sold_at DESC LIMIT 2", (mp,))
         if len(rows) == 1:
             return rows[0], "the only open sale on this site"
         return None, "no order id, title or listing" + (" (several open sales)" if rows else "")
     if parsed.get("order_id"):
-        row = db.one("SELECT * FROM sales WHERE marketplace = ? AND order_id = ? ORDER BY created_at DESC LIMIT 1",
-                     (mp, parsed["order_id"]))
+        row = db.one("SELECT * FROM sales WHERE marketplace = ? AND order_id = ? AND status <> 'merged' "
+                     "ORDER BY created_at DESC LIMIT 1", (mp, parsed["order_id"]))
         if row:
             return row, "order"
     where = FOLLOWUP_OPEN[kind]
@@ -729,7 +787,7 @@ def _mac_shipped(db: Database, words: object, now: datetime, mode: str) -> dict:
         raise BadRequest("words is required")
     rows = db.query("SELECT s.id, s.marketplace, s.title_seen, i.title AS item_title FROM sales s "
                     "LEFT JOIN items i ON i.id = s.item_id WHERE s.shipped_at IS NULL "
-                    "AND s.status NOT IN ('cancelled', 'double_sale', 'done') ORDER BY s.sold_at")
+                    "AND s.status NOT IN ('cancelled', 'double_sale', 'done', 'merged') ORDER BY s.sold_at")
     hits = [row for row in rows if any(all(w in title.lower() for w in wanted)
                                        for title in (row["item_title"], row["title_seen"]) if title)]
     if len(hits) != 1:
@@ -800,7 +858,8 @@ def sold_items(db: Database, now: datetime | None = None, mode: str | None = Non
         return []
     since = max(go_live(db, now), now - timedelta(days=30))
     rows = db.query("SELECT DISTINCT s.item_id FROM sales s JOIN email_events e ON e.message_id = s.message_id "
-                    "WHERE s.item_id IS NOT NULL AND s.status <> 'cancelled' AND e.received_at >= ? ORDER BY s.item_id",
+                    "WHERE s.item_id IS NOT NULL AND s.status NOT IN ('cancelled', 'merged') AND e.received_at >= ? "
+                    "ORDER BY s.item_id",
                     (iso(since),))
     return [row["item_id"] for row in rows]
 
@@ -882,7 +941,8 @@ def health(db: Database, now: datetime | None = None, mode: str | None = None) -
     return {"ok": True, "db": "ok", "mode": mode,
             "heartbeats": {row["source"]: row["last_seen"]
                            for row in db.query("SELECT source, last_seen FROM heartbeats ORDER BY source")},
-            "open_sales": count("SELECT COUNT(*) AS n FROM sales WHERE shipped_at IS NULL AND status <> 'cancelled'"),
+            "open_sales": count("SELECT COUNT(*) AS n FROM sales WHERE shipped_at IS NULL "
+                                "AND status NOT IN ('cancelled', 'merged')"),
             "unmatched_sales": count("SELECT COUNT(*) AS n FROM sales WHERE status = 'unmatched'"),
             "open_tasks": count("SELECT COUNT(*) AS n FROM delist_tasks WHERE status IN ('pending', 'running')"),
             "failed_emails": count("SELECT COUNT(*) AS n FROM email_events WHERE status = 'failed'"),
@@ -901,7 +961,7 @@ def dashboard_data(db: Database, now: datetime | None = None) -> dict:
     rank = {"cancelled": 0, "double_sale": 1}
     chosen: dict[str, tuple] = {}
     for row in db.query("SELECT item_id, marketplace, sold_at, price, ship_by, shipped_at, status FROM sales "
-                        "WHERE item_id IS NOT NULL"):
+                        "WHERE item_id IS NOT NULL AND status <> 'merged'"):
         key = (rank.get(row["status"], 2), row["sold_at"] or "")
         if row["item_id"] in items and (row["item_id"] not in chosen or key > chosen[row["item_id"]][0]):
             chosen[row["item_id"]] = (key, row)

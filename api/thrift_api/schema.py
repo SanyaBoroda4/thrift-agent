@@ -30,6 +30,8 @@ TABLES = (
         id TEXT PRIMARY KEY, marketplace TEXT NOT NULL, item_id TEXT, listing_id TEXT, title_seen TEXT,
         price DOUBLE PRECISION, order_id TEXT, sold_at TEXT, ship_by TEXT, ship_by_source TEXT, shipped_at TEXT,
         delivered_at TEXT, status TEXT NOT NULL, message_id TEXT, created_at TEXT NOT NULL)""",
+    # sales.status: unmatched | matched | delisting | double_sale | done | cancelled | merged (WO33: a second row of
+    # the same sale, folded into the first and kept — never deleted; every list and lookup leaves it out)
     # status pending | running | done | failed | not_found | cancelled; sale_id NULL for a take-down the Mac asked for
     # (mac-event not_for_sale: the item is no longer for sale on one site, no sale of ours behind it)
     """CREATE TABLE IF NOT EXISTS delist_tasks (
