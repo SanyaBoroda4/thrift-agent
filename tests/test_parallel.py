@@ -17,18 +17,36 @@ from thrift_agent.post.base import AccountBlocked, Outcome
 from test_crosslist_flow import TITLE, ExtStub, _item, _settings, fields_for
 
 
+class Meeting:
+    """Each site's first listing waits (≤ 10 s) until every site has begun its own: they meet only when the sites run
+    side by side — a proof of "at once" that no slow runner's clock can fake (WO33: a 0.5 s start spread failed on a
+    loaded Windows CI runner)."""
+
+    def __init__(self, sites=3, timeout=10.0):
+        self.sites, self.timeout, self.started, self.met = sites, timeout, set(), {}
+
+    async def arrive(self, site):
+        self.started.add(site)
+        end = time.monotonic() + self.timeout
+        while len(self.started) < self.sites and time.monotonic() < end:
+            await asyncio.sleep(0.01)
+        self.met[site] = len(self.started) >= self.sites
+
+
 class Timed:
     """A poster that takes `delay` seconds per listing and posts (or raises `fail` for the items in `fail_for`)."""
 
-    def __init__(self, name, delay, driver="stub", fail=None, fail_for=()):
+    def __init__(self, name, delay, driver="stub", fail=None, fail_for=(), meet=None):
         self.name, self.delay, self.driver = name, delay, driver
-        self.fail, self.fail_for = fail, set(fail_for)
+        self.fail, self.fail_for, self.meet = fail, set(fail_for), meet
         self.calls, self.fields, self.confirm, self.strict = [], None, None, False
         self.on_go_ahead = self.progress = None
         self.lines = []
 
     async def post(self, ctx, r, mode, dry_run, shots, stage="form"):
         self.calls.append((r.sku, time.monotonic()))
+        if self.meet is not None and len(self.calls) == 1:
+            await self.meet.arrive(self.name)
         await asyncio.sleep(self.delay)
         if self.fail is not None and r.sku in self.fail_for:
             raise self.fail
@@ -84,8 +102,9 @@ def _run(s, db, ps):
 
 
 def test_an_item_takes_its_slowest_site_not_the_sum(tmp_path, quick):
-    """3 items × 3 sites: Poshmark 0.6 s, Depop 0.4 s, Vinted 0.2 s a listing — one after the other that is 3.6 s; the
-    workers side by side take about Poshmark's 1.8 s."""
+    """3 items × 3 sites: Poshmark 1.2 s, Depop 0.8 s, Vinted 0.4 s a listing — one after the other that is 7.2 s; the
+    workers side by side take about Poshmark's 3.6 s. (WO33: the times doubled and the bound set between the two, so a
+    loaded CI runner's overhead — 1.6 s seen on Windows — can't cross it.)"""
     # The machine's own overhead first (workers starting, the idle turns before the end): the same run with listings
     # that take no time — a slow CI runner pays it in both runs.
     (tmp_path / "base").mkdir()
@@ -98,13 +117,14 @@ def test_an_item_takes_its_slowest_site_not_the_sum(tmp_path, quick):
     s = _settings(tmp_path, parallel=True)
     db = DB(s.path("db"))
     items = [_item(db, n) for n in (1, 2, 3)]
-    ps = {"poshmark": Timed("poshmark", 0.6), "depop": Timed("depop", 0.4), "vinted": Timed("vinted", 0.2)}
+    meet = Meeting()
+    ps = {"poshmark": Timed("poshmark", 1.2, meet=meet), "depop": Timed("depop", 0.8, meet=meet),
+          "vinted": Timed("vinted", 0.4, meet=meet)}
     took = _run(s, db, ps)
     assert all(db.listing(i, mp)["status"] == "posted" for i in items for mp in ps), [
         dict(r) for r in db.conn.execute("SELECT item_id, marketplace, status, error FROM listings")]
-    assert took - base < 2.9, (took, base)                         # about Poshmark's 1.8 s, not the 3.6 s sum
-    first = {mp: p.calls[0][1] for mp, p in ps.items()}
-    assert max(first.values()) - min(first.values()) < 0.5          # one item, three sites at once
+    assert meet.met == {"poshmark": True, "depop": True, "vinted": True}   # one item, three sites at once
+    assert took - base < 6.0, (took, base)                         # about Poshmark's 3.6 s, not the 7.2 s sum
 
 
 def test_one_line_per_item_in_order_and_all_done_last(tmp_path, quick):
