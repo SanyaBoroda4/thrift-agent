@@ -258,7 +258,7 @@
     let timer = null;
     const stalled = new Promise((_, reject) => {
       timer = setTimeout(() => reject(new Stalled(`${name}: nothing happened for ${Math.round(limit / 1000)} s`)),
-                         limit * T.timeoutScale);
+                         Math.max(limit * T.timeoutScale, T.minStepMs || 0));   // minStepMs: the tests' floor
     });
     try {
       const detail = await Promise.race([fn(), stalled]);

@@ -56,6 +56,8 @@ function page(site, html = read(FIXTURES[site]), url = URLS[site], fixture = {})
   for (const f of SCRIPTS[site]) w.eval(read(f));
   w.Thrift.speed = 0;                       // human mode's pauses: none in a test
   w.Thrift.timeoutScale = 0.05;
+  w.Thrift.minStepMs = 5000;                // a step's no-progress limit (20 s × 0.05 = 1 s) at least 5 s: a loaded
+                                            // Windows CI runner took longer than 1 s over a step (WO33, two flakes)
   const events = () => sent.filter((m) => m.type === "event");
   const last = () => events().at(-1);
   const tell = (msg) => listeners.forEach((fn) => fn(msg, {}, () => {}));
@@ -236,6 +238,7 @@ test("fast mode (the default) sets a text field in one go; human mode types it i
 test("a step with no progress for its limit (20 s) fails, with its name and a screenshot", async () => {
   const p = page("vinted");
   p.w.Thrift.timeoutScale = 0.01;                        // 20 s → 0.2 s
+  p.w.Thrift.minStepMs = 0;                              // no floor: the stall itself is under test
   p.w.Thrift.click = () => new Promise(() => {});        // a click that never comes back: the category step stalls
   const t0 = Date.now();
   await run(p, { ...VINTED_JOB, job_id: "vinted-stall" });
