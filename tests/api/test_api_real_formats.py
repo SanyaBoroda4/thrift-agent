@@ -108,3 +108,46 @@ def test_depops_delivered_email_closes_the_one_open_depop_sale(db, live, sent):
     assert first["item_id"] == "i_260923_bbbbbb"
     core.process_email(db, mail("depop", DEPOP_DELIVERED, "d2", "2026-10-03T23:41:34Z"), NOW)
     assert sale(db, first["sale_id"])["status"] == "done"
+
+
+def test_the_replay_runs_the_samples_through_in_replay_mode_and_sums_them_up(db, sent, monkeypatch):
+    """WO33 Part I.6: the 90 days of samples in REPLAY mode — every message to the ops chat as "[replay]", none to the
+    group, no take-downs — oldest first, then one summary; a second run changes nothing."""
+    monkeypatch.setenv("SALES_MODE", "replay")
+    seed(db, item_id="i_260929_aaaaaa", title="Kai Run Shoes size 8", sites=("vinted", "poshmark"), price=6.4,
+         urls={"vinted": "https://www.vinted.com/items/7000000001-kai-run",
+               "poshmark": "https://poshmark.com/listing/Kai-Run-Shoes-size-8-6ab7cb1fff8a471e6bfa36aa"},
+         ids={"vinted": "7000000001", "poshmark": "6ab7cb1fff8a471e6bfa36aa"})
+    for mid, site, shape, date in (("s1", "vinted", VINTED_SALE, "2026-09-29T15:51:27+00:00"),
+                                   ("s2", "vinted", VINTED_LABEL, "2026-09-29T15:54:27+00:00"),
+                                   ("s3", "vinted", VINTED_COMPLETED, "2026-09-30T18:37:20+00:00"),
+                                   ("s4", "poshmark", POSH_SALE, "2026-09-26T13:39:48+00:00"),
+                                   ("s5", "poshmark", POSH_LIKED_SOLD, "2026-09-27T10:00:00+00:00")):
+        db.execute("INSERT INTO samples (message_id, marketplace, subject, received_at, text) VALUES (?, ?, ?, ?, ?)",
+                   (mid, site, shape[0], date, shape[1]))
+    counts = core.replay(db, NOW)
+    assert (counts["sales"], counts["matched"], counts["unmatched"], counts["delivered"], counts["other"]) == (2, 1, 1, 1, 1)
+    assert not texts(sent, "group")                                       # replay: nothing to the group
+    ops = texts(sent, "ops")
+    assert all(t.startswith("[replay] ") for t in ops)
+    assert any("💰 Sold on Vinted: Kai Run Shoes size 8" in t for t in ops)
+    assert ops[-1].startswith("[replay] Replay of 5 emails (90 days): 2 sales — 1 matched")
+    assert not db.query("SELECT * FROM delist_tasks")                      # never a take-down in replay
+    before = len(sent)
+    again = core.replay(db, NOW)
+    assert again["duplicates"] == 5 and len(sent) == before + 1           # only the summary again
+
+
+def test_the_replay_refills_an_email_the_live_poll_stored_without_its_text(db, sent, monkeypatch):
+    """The reader's bytes bug: the live poll stored a Vinted sale email with empty text (failed); its sample has the
+    text — the replay puts it in and processes it once."""
+    monkeypatch.setenv("SALES_MODE", "replay")
+    seed(db, item_id="i_260929_aaaaaa", title="Kai Run Shoes size 8", sites=("vinted",), price=6.4,
+         urls={"vinted": "https://www.vinted.com/items/7000000001-kai-run"}, ids={"vinted": "7000000001"})
+    stored = core.process_email(db, mail("vinted", (VINTED_SALE[0], ""), "s1", "2026-09-29T15:51:27Z"), NOW)
+    assert stored["status"] == "failed"                                    # a sale by its subject, no text to parse
+    db.execute("INSERT INTO samples (message_id, marketplace, subject, received_at, text) VALUES (?, ?, ?, ?, ?)",
+               ("s1", "vinted", VINTED_SALE[0], "2026-09-29T15:51:27+00:00", VINTED_SALE[1]))
+    counts = core.replay(db, NOW)
+    assert (counts["refilled"], counts["sales"], counts["matched"]) == (1, 1, 1)
+    assert db.one("SELECT status FROM email_events WHERE message_id = 's1'")["status"] != "failed"

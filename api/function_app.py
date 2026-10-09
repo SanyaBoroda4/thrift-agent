@@ -64,6 +64,11 @@ def post_sale_match(req: func.HttpRequest) -> func.HttpResponse:
     return _respond(req, f"/sales/{req.route_params.get('sale_id', '')}/match")
 
 
+@app.route(route="replay", methods=["POST"], auth_level=FUNCTION)
+def post_replay(req: func.HttpRequest) -> func.HttpResponse:
+    return _respond(req, "/replay")
+
+
 @app.route(route="test-message", methods=["POST"], auth_level=FUNCTION)
 def post_test_message(req: func.HttpRequest) -> func.HttpResponse:
     return _respond(req, "/test-message")

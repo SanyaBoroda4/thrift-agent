@@ -9,7 +9,7 @@ from thrift_agent.config import ROOT
 
 ROUTES = {("POST", "email"), ("POST", "samples"), ("POST", "heartbeat"), ("POST", "sync"), ("GET", "tasks"),
           ("POST", "tasks/{task_id}"), ("POST", "mac-event"), ("GET", "sales"), ("POST", "sales/{sale_id}/match"),
-          ("POST", "test-message"), ("GET", "dashboard"), ("GET", "health")}
+          ("POST", "test-message"), ("GET", "dashboard"), ("GET", "health"), ("POST", "replay")}
 
 
 @pytest.fixture(scope="module")

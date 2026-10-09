@@ -148,6 +148,65 @@ def retry_email(db: Database, message_id: str, now: datetime | None = None, mode
     return _process(db, event, now, mode, fresh=False)
 
 
+REPLAY_FROM = {"poshmark": "Poshmark <replay@poshmark.com>", "depop": "Depop <replay@depop.com>",
+               "vinted": "Vinted <replay@vinted.com>"}
+
+
+def replay(db: Database, now: datetime | None = None) -> dict:
+    """WO33 Part I.6: the 90 days of samples through the pipeline in REPLAY mode — every message they would have sent
+    goes to the ops chat as "[replay] …", no take-down is made — oldest first; an email the live poll already stored
+    without its text (the reader's bytes bug) gets the sample's text and is processed again. Then ONE summary to the
+    ops chat: emails, sales (matched, unmatched, sold twice), shipped, delivered, cancelled, and the reminders the
+    open sales would get. Run once before going live; a second run changes nothing (each email once)."""
+    now = _clock(now)
+    mode = "replay"
+    counts = {"emails": 0, "new": 0, "refilled": 0, "duplicates": 0, "sales": 0, "matched": 0, "unmatched": 0,
+              "double": 0, "shipped": 0, "delivered": 0, "cancelled": 0, "other": 0}
+    for row in db.query("SELECT * FROM samples WHERE COALESCE(text, '') <> '' ORDER BY received_at"):
+        counts["emails"] += 1
+        payload = {"message_id": row["message_id"], "from": REPLAY_FROM.get(row["marketplace"], ""),
+                   "subject": row["subject"], "date": row["received_at"], "text": row["text"]}
+        event = db.one("SELECT * FROM email_events WHERE message_id = ?", (row["message_id"],))
+        read = emails.classify(row["marketplace"], row["subject"] or "", row["text"] or "")
+        if (event is not None and read != "OTHER" and not (event["raw_text"] or "").strip()
+                and event["status"] in ("failed", "new", "ignored")):
+            # stored by the live poll without its text (the reader's bytes bug): the sample's text, processed again
+            db.execute("UPDATE email_events SET raw_text = ?, kind = ?, status = 'failed' WHERE message_id = ?",
+                       (row["text"], read, row["message_id"]))
+            counts["refilled"] += 1
+            out = retry_email(db, row["message_id"], now, mode)
+        elif event is not None:
+            counts["duplicates"] += 1
+            continue
+        else:
+            counts["new"] += 1
+            out = process_email(db, payload, now, mode)
+        kind = (db.one("SELECT kind FROM email_events WHERE message_id = ?", (row["message_id"],)) or {}).get("kind")
+        if kind == "SALE":
+            if out.get("duplicate"):
+                continue                                  # a second email about a sale already counted (a label)
+            counts["sales"] += 1
+            status = out.get("sale_status") or out.get("status")
+            counts["double" if status == "double_sale" else "unmatched" if status == "unmatched" else "matched"] += 1
+        elif kind in ("SHIPPED", "DELIVERED", "CANCELLED"):
+            counts[{"SHIPPED": "shipped", "DELIVERED": "delivered", "CANCELLED": "cancelled"}[kind]] += 1
+        else:
+            counts["other"] += 1
+    open_sales = db.query("SELECT ship_by FROM sales WHERE shipped_at IS NULL AND status NOT IN ('cancelled', 'done', "
+                          "'double_sale') AND ship_by IS NOT NULL")
+    today = deadlines.local(now).date()
+    counts["reminders_ahead"] = sum(1 for s in open_sales if date.fromisoformat(s["ship_by"]) >= today)
+    counts["overdue"] = sum(1 for s in open_sales if date.fromisoformat(s["ship_by"]) < today)
+    out = Outbox(now, mode)
+    out.ops(f"Replay of {counts['emails']} emails (90 days): {counts['sales']} sales — {counts['matched']} matched to our "
+            f"items, {counts['unmatched']} unmatched (listed by hand before the agent), {counts['double']} sold twice; "
+            f"{counts['shipped']} shipped, {counts['delivered']} delivered / completed, {counts['cancelled']} cancelled; "
+            f"{counts['other']} other (offers, likes, promotions). Open sales not shipped: "
+            f"{counts['reminders_ahead']} with reminders still ahead, {counts['overdue']} past their ship-by.")
+    out.flush()
+    return counts
+
+
 def store_samples(db: Database, samples: object) -> dict:
     """The developer's examples ({"samples": [the /email payloads]}): each message once; one not from a marketplace
     address, or without a message_id, is skipped."""

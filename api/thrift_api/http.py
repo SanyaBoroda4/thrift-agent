@@ -107,6 +107,10 @@ def _match(db, body, query, params, now):
     return 200, core.match_sale(db, params["sale_id"], body.get("item_id"), now)
 
 
+def _replay(db, body, query, params, now):
+    return 200, core.replay(db, now)
+
+
 def _test_message(db, body, query, params, now):
     chat = body.get("chat", "ops")
     if chat not in ("ops", "group"):
@@ -134,6 +138,7 @@ ROUTES: tuple[Route, ...] = (
     ("GET", re.compile(r"/sales"), _sales, True),
     ("POST", re.compile(r"/sales/(?P<sale_id>[^/]+)/match"), _match, True),
     ("POST", re.compile(r"/test-message"), _test_message, False),
+    ("POST", re.compile(r"/replay"), _replay, True),
     ("GET", re.compile(r"/dashboard"), _dashboard, True),
     ("GET", re.compile(r"/health"), _health, True),
 )
