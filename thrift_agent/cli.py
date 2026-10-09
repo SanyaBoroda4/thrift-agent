@@ -417,24 +417,35 @@ def reprocess(item_id: str) -> None:
 @app.command()
 def edit(item_id: str,
          title: str = typer.Option(None, "--title", help="the listing's title, exactly (at most 80 characters)"),
-         brand: str = typer.Option(None, "--brand", help="the brand, spelled as Poshmark lists it ('no brand' for none)")
+         brand: str = typer.Option(None, "--brand", help="the brand, spelled as Poshmark lists it ('no brand' for none)"),
+         sizes: str = typer.Option(None, "--sizes", help="a set's pieces and their sizes: 'Cardigan=S,Pants=XS'")
          ) -> None:
     """Set an item's title and/or brand exactly as given (WO27): the owner's words, kept through any reprocessing; no
-    model call, the price kept. Not for an item already on the marketplace.
-    e.g.  thrift edit i_... --brand 'J. Crew' --title 'J. Crew 100% Merino Wide Leg Sweater Pants Blue size M'"""
-    if title is None and brand is None:
-        print("[red]nothing to set[/]: give --title and/or --brand")
+    model call, the price kept. Not for an item already on the marketplace. `--sizes` (WO33): a set's pieces with
+    their own sizes — listed under the bigger one, the description says which piece is which.
+    e.g.  thrift edit i_... --brand 'J. Crew' --title 'J. Crew 100% Merino Wide Leg Sweater Pants Blue size M'
+          thrift edit i_... --sizes 'Cardigan=S,Pants=XS'"""
+    if title is None and brand is None and sizes is None:
+        print("[red]nothing to set[/]: give --title, --brand and/or --sizes")
         raise typer.Exit(1)
     s, db = settings(), _db()
     try:
-        status = pipeline.edit_listing(s, db, item_id, title=title, brand=brand)
+        status = db.item(item_id)["status"] if db.item(item_id) else None
+        if sizes is not None:
+            pairs = [tuple(part.replace(":", "=").split("=", 1)) for part in sizes.split(",") if part.strip()]
+            if any(len(pair) != 2 for pair in pairs):
+                raise ValueError("--sizes takes piece=size pairs: 'Cardigan=S,Pants=XS'")
+            status = pipeline.set_piece_sizes(s, db, item_id, pairs)
+        if title is not None or brand is not None:
+            status = pipeline.edit_listing(s, db, item_id, title=title, brand=brand)
     except ValueError as e:
         print(f"[red]not set[/] {item_id}: {escape(str(e))}")
         raise typer.Exit(1) from None
     posh = (loads(db.item(item_id)["renders"]) or {}).get("poshmark") or {}
     print(f"[green]set[/] {item_id}: {escape(str(posh.get('title')))} · brand {escape(str(posh.get('brand')))} · "
           f"${posh.get('price')} · {status}")
-    approve.announce(s, f"{item_id}: " + ", ".join(f"{k} '{v}'" for k, v in (("title", title), ("brand", brand)) if v)
+    approve.announce(s, f"{item_id}: " + ", ".join(f"{k} '{v}'" for k, v in (("title", title), ("brand", brand),
+                                                                            ("sizes", sizes)) if v)
                      + " set from the CLI")
     approve.pump(s, db)
 

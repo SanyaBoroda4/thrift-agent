@@ -22,7 +22,7 @@ from thrift_agent.brain.verify import fit_style_tags, lint, verify
 from thrift_agent.config import Settings, load_yaml
 from thrift_agent.db import DB, loads, now
 from thrift_agent.ingest import prep, segment as seg
-from thrift_agent.schema import ITEM_ALONE, CopyOut, Ev, Facts, FrontOut, Premium, PriceResult, Render
+from thrift_agent.schema import ITEM_ALONE, CopyOut, Ev, Facts, FrontOut, PieceSize, Premium, PriceResult, Render
 
 MAX_SEGMENT_PHOTOS = 90        # the Messages API takes at most 100 image blocks per request; keep headroom
 ANSWERABLE = ("needs_info", "ready", "failed", "new", "awaiting_price", "needs_owner",   # a note resets these to 'new'
@@ -612,7 +612,16 @@ def owner_answers(it) -> list[str]:
         lines.append("Brand: none — the owner says the item has no brand")
     elif it["owner_brand"]:
         lines.append(f"Brand (the owner's answer): {it['owner_brand']}")
+    if pieces := owner_sizes(it):
+        lines.append("Sizes of the set's pieces (the owner's answer): "
+                     + ", ".join(f"{p.piece} {p.size}" for p in pieces))
     return lines
+
+
+def owner_sizes(it) -> list[PieceSize]:
+    """The set's pieces and sizes the owner gave (items.owner_sizes, WO33), else none."""
+    raw = it["owner_sizes"] if "owner_sizes" in it.keys() else None
+    return [PieceSize(piece=p["piece"], size=p["size"]) for p in (loads(raw) or []) if p.get("piece") and p.get("size")]
 
 
 def apply_owner_answers(it, facts: Facts) -> Facts:
@@ -625,7 +634,35 @@ def apply_owner_answers(it, facts: Facts) -> Facts:
         update["brand"] = Ev(value=None, photos=[], source="owner", confidence=1.0)
     elif it["owner_brand"]:                              # the owner's spelling (WO27): "J. Crew"
         update["brand"] = Ev(value=it["owner_brand"], photos=facts.brand.photos, source="owner", confidence=1.0)
+    if pieces := owner_sizes(it):                        # the set's pieces, the owner's sizes (WO33)
+        update["piece_sizes"] = pieces
+        update["size_us"] = Ev(value=sizes.bigger_size([p.size for p in pieces]), photos=facts.size_us.photos,
+                               source="owner", confidence=1.0)
     return facts.model_copy(update=update) if update else facts
+
+
+_PIECE_IN_VALUE = re.compile(r"([A-Za-z0-9./]+)\s*\(([A-Za-z][\w' -]{1,30})\)")
+
+
+def _pieces_in(value: str | None) -> list[PieceSize]:
+    """The pieces a size reading names itself — live: "S (cardigan), XS (pants)" — else none."""
+    found = _PIECE_IN_VALUE.findall(value or "")
+    return [PieceSize(piece=piece.strip(), size=size) for size, piece in found] if len(found) >= 2 else []
+
+
+def settle_set_size(facts: Facts) -> Facts:
+    """A set whose pieces carry different sizes is listed under the bigger one (WO33, the owner's rule) — the size
+    field and the title — with no size question (source derived, 0.95); the description says which piece is which
+    (copy.ensure_piece_sizes). The owner's own size stands. Nothing for one garment or one shared size."""
+    pieces = [p for p in facts.piece_sizes if p.size.strip()] or _pieces_in(facts.size_us.value)
+    if len(pieces) < 2 or facts.size_us.source == "owner":
+        return facts
+    size = sizes.bigger_size([p.size for p in pieces])
+    if size is None:
+        return facts
+    photos = sorted({i for p in pieces for i in p.photos} | set(facts.size_us.photos))
+    return facts.model_copy(update={"size_us": Ev(value=size, photos=photos, source="derived", confidence=0.95),
+                                    "piece_sizes": pieces})
 
 
 # A set of two garments goes under its bottom (WO27, the owner's rule made code): pants -> Pants & Jumpsuits, skirt ->
@@ -710,6 +747,7 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
     if it["owner_kids_gender"]:                          # the owner's [Girls]/[Boys]: never asked again
         facts = facts.model_copy(update={"kids_gender": it["owner_kids_gender"], "kids_gender_confidence": 1.0})
     facts = settle_set(facts, it["owner_category"])      # a set goes under its bottom, no question (WO27)
+    facts = settle_set_size(facts)                       # pieces of different sizes: the bigger one (WO33)
     facts, fit_notes, fit_questions = taxonomy.fit(facts)   # Poshmark's own category names (Kids Tops -> Shirts & Tops)
     facts = settle_kids_size(s, facts, photos)            # a kids label's cm or age -> Poshmark's size, no question
     ask_kids = kids_question(facts)                      # Girls or Boys, below 0.70 sure: a question before the price
@@ -739,12 +777,15 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
     final = copywriter.condition_rule(final, facts)      # wear is shown in the photos, never put in words
     final.poshmark_title = copywriter.ensure_set_title(final.poshmark_title, facts)   # "… 2-Piece Set size M"
     final.poshmark_title = (it["owner_title"] or                 # the owner's own title stays as it is (WO27)
-                            premium.title_with_feature(final.poshmark_title, facts, pcfg))   # brand first, the feature
+                            premium.title_with_feature(copywriter.ensure_title_size(final.poshmark_title, facts),
+                                                       facts, pcfg))   # the listing's size; brand first, the feature
     final.poshmark_description = premium.ensure_feature_lines(final.poshmark_description, facts, pcfg)
     final.depop_description = premium.ensure_feature_lines(final.depop_description, facts, pcfg)
     final.poshmark_description = copywriter.ensure_retail_line(final.poshmark_description, facts)
     final.poshmark_description = copywriter.ensure_label_size(final.poshmark_description, facts)   # "104 cm / 4 ans"
     final.depop_description = copywriter.ensure_label_size(final.depop_description, facts)
+    final.poshmark_description = copywriter.ensure_piece_sizes(final.poshmark_description, facts)  # "Pants: size XS."
+    final.depop_description = copywriter.ensure_piece_sizes(final.depop_description, facts)
     final.poshmark_style_tags = fit_style_tags(final.poshmark_style_tags, facts)   # Poshmark's curated tags only
     problems = lint(facts, final, shown, known_brands(tiers))
     if not audit.unsupported:
@@ -935,9 +976,10 @@ def relist(s: Settings, it, facts: Facts, renders: dict) -> dict:
         out[mp] = {**r, "photos": [str(cover)] + [str(photos[i]) for i in shown[1:]], "category": facts.category,
                    "subcategory": facts.subcategory, "size": sizes.size_label(facts), "size_tab": tab,
                    "size_value": value, "brand": facts.brand.value,
-                   "title": it["owner_title"] or premium.title_with_feature(r.get("title") or "", facts, pcfg),
+                   "title": it["owner_title"] or premium.title_with_feature(
+                       copywriter.ensure_title_size(r.get("title") or "", facts), facts, pcfg),
                    "original_price": _dollars(facts.retail_price.value) or r.get("original_price"),
-                   "description": copywriter.ensure_label_size(text, facts)}
+                   "description": copywriter.ensure_piece_sizes(copywriter.ensure_label_size(text, facts), facts)}
     return out
 
 
@@ -1020,7 +1062,7 @@ def recover_item(s: Settings, db: DB, iid: str, recheck: bool = False, relabel: 
     before = {"cover": _listed_cover(it, photos), "category": facts.category, "subcategory": facts.subcategory,
               "size": facts.size_us.value}
     was = (approve.card(iid, it), _digest(d / "cover.jpg"))
-    facts, _, _ = taxonomy.fit(settle_set(facts, it["owner_category"]))
+    facts, _, _ = taxonomy.fit(settle_set_size(settle_set(apply_owner_answers(it, facts), it["owner_category"])))
     facts = settle_kids_size(s, facts, photos)
     stored = None if recheck else _stored_check(it)
     check = stored or front_view(s, db, iid, photos, facts, kinds)
@@ -1199,6 +1241,28 @@ def set_brand(s: Settings, db: DB, iid: str, brand: str) -> str:
     with db.tx():
         db.set_item(iid, owner_brand=brand, facts=facts.model_dump(), renders=renders, gate=doc, status=status)
         db.log(iid, "brand_set", {"brand": brand, "was": old, "status": status})
+        _close_changed_card(db, iid, was)
+    return status
+
+
+def set_piece_sizes(s: Settings, db: DB, iid: str, pieces: list[tuple[str, str]]) -> str:
+    """The owner's sizes for a set's pieces (WO33: `thrift edit --sizes "Cardigan=S,Pants=XS"`): kept as
+    items.owner_sizes through any reprocessing; the listing under the bigger size — its size field and title — and the
+    description's line "Cardigan: size S. Pants: size XS."; no model call, the price kept. Returns the status."""
+    pieces = [(p.strip(), z.strip()) for p, z in pieces if p and p.strip() and z and z.strip()]
+    if len(pieces) < 2:
+        raise ValueError("give every piece with its size: Cardigan=S,Pants=XS")
+    it = _answerable(db, iid, "sizes")
+    stored = [{"piece": p, "size": z} for p, z in pieces]
+    it2 = {**dict(it), "owner_sizes": json.dumps(stored)}
+    facts = apply_owner_answers(it2, Facts.model_validate(loads(it["facts"])))
+    renders = relist(s, it2, facts, loads(it["renders"]) or {})
+    photos, kinds = _photos_of(it)
+    doc, status = _regate(s, it2, facts, renders, photos, kinds, (loads(it["gate"]) or {}).get("notes") or [])
+    was = approve.card(iid, it)
+    with db.tx():
+        db.set_item(iid, owner_sizes=stored, facts=facts.model_dump(), renders=renders, gate=doc, status=status)
+        db.log(iid, "sizes_set", {"pieces": stored, "size": facts.size_us.value, "status": status})
         _close_changed_card(db, iid, was)
     return status
 

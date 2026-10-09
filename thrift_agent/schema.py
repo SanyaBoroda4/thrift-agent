@@ -145,6 +145,20 @@ class CategoryPath(BaseModel):
     subcategory: str | None = None
 
 
+class PieceSize(BaseModel):
+    """One piece of a set and the size its own label gives (WO33: a cardigan S with pants XS)."""
+    piece: str = Field(description="The piece as a buyer names it: 'cardigan', 'pants', 'top', 'skirt'")
+    size: str = Field(description="Its US size as its own label gives it: 'S', 'XS', '4'")
+    photos: list[int] = Field(default_factory=list, description="Indices of the photos of that piece's label")
+
+    @field_validator("size", mode="before")
+    @classmethod
+    def _coerce_size(cls, v):
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return str(int(v)) if isinstance(v, float) and v.is_integer() else str(v)
+        return v
+
+
 class Facts(BaseModel):
     item_type: str = Field(description="Plain noun phrase, e.g. 'suede ankle boots', 'wrap midi dress'")
     department: Literal["Women", "Men", "Kids", "Unisex", "Home"]
@@ -176,7 +190,12 @@ class Facts(BaseModel):
                                                            "retail screenshot, e.g. 'Gizeh', 'Arizona'")
     size_printed: Ev = Field(description="Size exactly as printed on the label/insole, every system and unit "
                                          "('4 ans / 104 cm', '4A', 'EU 38 / US 7.5', 'M')")
-    size_us: Ev = Field(description="US size. For EU shoe sizes use source=derived")
+    size_us: Ev = Field(description="US size. For EU shoe sizes use source=derived. A set whose pieces have "
+                                    "different sizes: the bigger one (and piece_sizes)")
+    piece_sizes: list[PieceSize] = Field(default_factory=list, description="A set (set_pieces) whose pieces carry "
+                                         "their own size labels: one entry per piece, e.g. [{piece: 'cardigan', size: "
+                                         "'S'}, {piece: 'pants', size: 'XS'}]. Empty for one garment, or when the set "
+                                         "has one size label")
     size_eu: Ev = Field(default_factory=Ev)
     colors: list[Color] = Field(description="1-2 main colors from the palette")
     color_name: str | None = Field(None, description="Natural color words for copy, e.g. 'chocolate brown'; the "

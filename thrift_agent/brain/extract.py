@@ -31,6 +31,9 @@ Rules:
   or shorts: Skirts > Skirt Sets, then Shorts); the owner picks one.
 - set_pieces: 2 (or 3) when the listing is separate garments sold together as a matching set; null for one garment,
   a pair of shoes, a bikini or a jewelry set.
+- piece_sizes: a set whose pieces have their own size labels — one entry per piece with the size its label gives
+  (a cardigan S and pants XS: [{piece: cardigan, size: S}, {piece: pants, size: XS}]); size_us is then the BIGGER of
+  them. Leave it empty for one garment or when the set has one size label.
 - size_printed: copy the size label exactly, every system and unit on it ("4 ans / 104 cm", "4A", "EU 38 / US 7.5").
 - Kids items: kids_gender = girls | boys | unisex, your best reading of the item itself (style, colour, the box
   or label, a retailer page), with kids_gender_confidence (0..1). It picks Poshmark's Girls or Boys size list; when

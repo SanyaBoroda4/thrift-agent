@@ -9,7 +9,7 @@ from thrift_agent.brain.gate import evaluate
 from thrift_agent.brain.verify import lint
 from thrift_agent.config import Settings, settings
 from thrift_agent.db import DB, loads
-from thrift_agent.schema import CategoryPath, CopyOut, Ev, PriceResult, VerifyOut
+from thrift_agent.schema import CategoryPath, CopyOut, Ev, PieceSize, PriceResult, VerifyOut
 from thrift_agent.telegram import Bot
 
 CHAT, OWNER = 100, 7
@@ -471,6 +471,68 @@ def test_edit_sets_the_owners_title_and_brand_and_both_stay(env, facts, monkeypa
         pipeline.edit_listing(s, db, iid, title="New title")
 
 
+def _set_facts(facts, **kw):
+    base = dict(item_type="knit cardigan and pants set", category="Pants & Jumpsuits", subcategory="Wide Leg",
+                condition="like_new", colors=["Tan"], set_pieces=2,
+                brand=Ev(value="MNG", photos=[1], source="photo", confidence=0.95),
+                size_printed=Ev(value="S", photos=[2], source="photo", confidence=0.9))
+    return facts(**{**base, **kw})
+
+
+@pytest.mark.parametrize("read", ["pieces", "one value"])
+def test_a_set_whose_pieces_have_two_sizes_is_listed_under_the_bigger_one(env, facts, monkeypatch, read):
+    """WO33, the owner's rule (live: the MNG cardigan S with pants XS — asked, then held): the bigger size in the size
+    field and the title, the description says which piece is which; no size question. The model may name the pieces
+    in piece_sizes, or — as live — in one size value: "S (cardigan), XS (pants)"."""
+    s, db, bot = env
+    if read == "pieces":
+        kw = dict(size_us=Ev(value="XS", photos=[2], source="photo", confidence=0.6),
+                  piece_sizes=[PieceSize(piece="cardigan", size="S", photos=[2]), PieceSize(piece="pants", size="XS")])
+    else:
+        kw = dict(size_us=Ev(value="S (cardigan), XS (pants)", photos=[2], source="photo", confidence=0.6))
+    state = {"facts": lambda: _set_facts(facts, **kw), "title": "MNG Knit Cardigan & Wide Leg Pants Tan 2-Piece Set size XS"}
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", _model(state))
+    iid = _item(s.path("db").parent, db)
+    pipeline.process_item(s, db, iid)
+    it = db.item(iid)
+    f, posh, gate = loads(it["facts"]), loads(it["renders"])["poshmark"], loads(it["gate"])
+    assert (f["size_us"]["value"], f["size_us"]["source"]) == ("S", "derived")
+    assert posh["size"] == "S" and posh["title"] == "MNG Knit Cardigan & Wide Leg Pants Tan 2-Piece Set size S"
+    assert f"Red flats.\nCardigan: size S. Pants: size XS.\n{LINE}" == posh["description"]
+    assert not any("size" in q.lower() for q in gate["questions"]) and "❓" not in bot.sent()[-1]["caption"]
+
+
+def test_the_owners_sizes_for_a_sets_pieces_stay_through_reprocessing(env, facts, monkeypatch):
+    """`thrift edit --sizes 'Cardigan=S,Pants=XS'` (WO33): the bigger size in the size field and the title, the line
+    in the description, the price kept — and the owner's sizes stay when the model reads the item again."""
+    s, db, bot = env
+    state = {"facts": lambda: _set_facts(facts, size_us=Ev(value="XS", photos=[2], source="photo", confidence=0.9)),
+             "title": "MNG Knit Cardigan & Wide Leg Pants Tan 2-Piece Set size XS"}
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", _model(state))
+    iid = _item(s.path("db").parent, db)
+    pipeline.process_item(s, db, iid)
+    pipeline.set_price(s, db, iid, 100)
+    for run in ("set", "reprocessed"):
+        if run == "set":
+            assert pipeline.set_piece_sizes(s, db, iid, [("Cardigan", "S"), ("Pants", "XS")]) == "ready"
+        else:
+            pipeline.reprocess(s, db, iid)
+        it = db.item(iid)
+        posh = loads(it["renders"])["poshmark"]
+        assert (posh["size"], posh["price"], it["owner_price"], it["status"]) == ("S", 100, 100, "ready"), run
+        assert posh["title"].endswith("2-Piece Set size S"), run
+        assert "Cardigan: size S. Pants: size XS." in posh["description"], run
+        assert loads(it["owner_sizes"]) == [{"piece": "Cardigan", "size": "S"}, {"piece": "Pants", "size": "XS"}]
+    with pytest.raises(ValueError, match="every piece"):
+        pipeline.set_piece_sizes(s, db, iid, [("Cardigan", "S")])
+
+
+def test_the_bigger_size_and_the_pieces_line():
+    assert [sizes.bigger_size(v) for v in (["S", "XS"], ["XS", "S"], ["M", "L"], ["4", "2"], ["XS", "4"], ["S", "38"])] \
+        == ["S", "S", "L", "4", "4", "38"]
+    assert sizes.bigger_size(["one", "two"]) == "one"                       # not comparable: the first piece's
+
+
 def test_the_learned_spelling_is_used_from_the_start(env, facts, monkeypatch):
     s, db, bot = env
     monkeypatch.setattr("thrift_agent.brain.llm.ask", _model({"facts": lambda: facts(
@@ -505,4 +567,4 @@ def test_the_edit_command(tmp_path, monkeypatch, facts):
     assert "J. Crew Pants size S · brand J. Crew · $35 · ready" in " ".join(r.output.split())
     assert said == [f"{iid}: title 'J. Crew Pants size S', brand 'J. Crew' set from the CLI"]
     r = CliRunner().invoke(cli.app, ["edit", iid], terminal_width=200)
-    assert r.exit_code == 1 and "give --title and/or --brand" in " ".join(r.output.split())
+    assert r.exit_code == 1 and "give --title, --brand and/or --sizes" in " ".join(r.output.split())

@@ -73,6 +73,39 @@ def kids_parts(facts: Facts) -> tuple[str | None, str, str] | None:
     return eu, _segment(float(n), letter, float(eu) if eu else None), n
 
 
+LETTER_ORDER = ("XXXS", "XXS", "XS", "S", "M", "L", "XL", "XXL", "XXXL", "4XL", "5XL")
+_LETTER_ALIASES = {"2XS": "XXS", "3XS": "XXXS", "2XL": "XXL", "3XL": "XXXL", "SMALL": "S", "MEDIUM": "M",
+                   "LARGE": "L", "X-SMALL": "XS", "X-LARGE": "XL", "XSMALL": "XS", "XLARGE": "XL"}
+# women's numeric sizes on the letter scale, only to compare a number with a letter (Vinted's own table, WO30)
+_NUM_AS_LETTER = ((0, "XXS"), (2, "XS"), (6, "S"), (10, "M"), (14, "L"), (18, "XL"), (22, "XXL"))
+
+
+def _size_rank(size: str) -> float | None:
+    """A size's place on one scale: the letters in order, a number by the women's table between them."""
+    key = _LETTER_ALIASES.get(size.strip().upper(), size.strip().upper())
+    if key in LETTER_ORDER:
+        return float(LETTER_ORDER.index(key))
+    try:
+        n = float(key)
+    except ValueError:
+        return None
+    letter = next((letter for top, letter in _NUM_AS_LETTER if n <= top), "XXXL")
+    return LETTER_ORDER.index(letter) + min(n, 30) / 100.0      # 4 < 6 within S, both below M
+
+
+def bigger_size(sizes: list[str]) -> str | None:
+    """The bigger of a set's sizes (WO33, the owner's rule: a set whose pieces have different sizes is listed under
+    the bigger one): letters in order (XS < S < M), numbers by value, a number against a letter by the women's table;
+    sizes that can't be compared: the first one. As the pieces' labels spell it."""
+    sizes = [s.strip() for s in sizes if s and s.strip()]
+    if not sizes:
+        return None
+    ranked = [(r, s) for s in sizes if (r := _size_rank(s)) is not None]
+    if len(ranked) != len(sizes):
+        return sizes[0]
+    return max(ranked, key=lambda rs: rs[0])[1]
+
+
 def size_label(facts: Facts) -> str | None:
     """The full size for the description and the listing form.
 

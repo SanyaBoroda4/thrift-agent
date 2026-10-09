@@ -89,7 +89,8 @@ MIGRATIONS = {"items": {"cover_hash": "TEXT", "owner_price": "INTEGER", "owner_c
                         "owner_cover": "INTEGER", "views": "TEXT",
                         "owner_brand": "TEXT",           # WO25: "none" = the owner said the item has no brand
                         "owner_category": "TEXT",        # WO25: {"department", "category", "subcategory"} the owner picked
-                        "owner_title": "TEXT"}}          # WO27: the owner's exact title (`thrift edit --title`)
+                        "owner_title": "TEXT",           # WO27: the owner's exact title (`thrift edit --title`)
+                        "owner_sizes": "TEXT"}}          # WO33: [{"piece", "size"}] a set's pieces, the owner's
 
 
 def now() -> str:

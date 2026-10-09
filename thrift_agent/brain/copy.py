@@ -291,6 +291,51 @@ def ensure_retail_line(description: str, facts: Facts) -> str:
     return f"{text}\nOriginal retail ${int(float(m.group()))}."
 
 
+def piece_size_line(facts: Facts) -> str | None:
+    """A set whose pieces have different sizes says which piece is which (WO33, the owner's rule): "Cardigan: size S.
+    Pants: size XS." None for one size."""
+    pieces = [p for p in facts.piece_sizes if p.piece.strip() and p.size.strip()]
+    if len(pieces) < 2 or len({p.size.strip().upper() for p in pieces}) < 2:
+        return None
+    return " ".join(f"{p.piece.strip()[:1].upper()}{p.piece.strip()[1:]}: size {p.size.strip()}." for p in pieces)
+
+
+_PIECE_LINE = re.compile(r"^\s*[\w' -]{2,30}:\s*size\s+\S+\.(?:\s+[\w' -]{2,30}:\s*size\s+\S+\.)+\s*$", re.I)
+
+
+def ensure_piece_sizes(description: str, facts: Facts) -> str:
+    """The pieces' sizes in a line of their own, right before the condition line (else at the end) — where the
+    premium feature lines go too; an older such line is replaced, never doubled. Run it twice, same text."""
+    line = piece_size_line(facts)
+    rows = description.rstrip().split("\n")
+    kept = [r for r in rows if not _PIECE_LINE.match(r)]
+    if line is None:
+        return "\n".join(kept) if len(kept) != len(rows) else description
+    at = next((i for i, r in enumerate(kept) if HAS_CONDITION_LINE.search(r) or _NEW_LINE.match(r)), len(kept))
+    return "\n".join(kept[:at] + [line] + kept[at:])
+
+
+_NEW_LINE = re.compile(r"^\s*new (?:with|without) tags\.|^\s*new in box\.", re.I)
+
+
+_TITLE_SIZE = re.compile(r"\b(?:(?:Toddler|Little Kid|Big Kid)\s+)?size\s+[A-Za-z0-9./-]+", re.I)
+
+
+def ensure_title_size(title: str, facts: Facts) -> str:
+    """The title's size is the listing's (WO33): a "size …" that says another size becomes this one; a title without
+    one gets it at the end ("… 2-Piece Set size S"). Nothing without a US size."""
+    phrase = title_size(facts)
+    if not phrase:
+        return title
+    found = list(_TITLE_SIZE.finditer(title))
+    if found:
+        last = found[-1]
+        if last.group(0).lower() == phrase.lower():
+            return title
+        return f"{title[:last.start()]}{phrase}{title[last.end():]}".strip()
+    return f"{title.rstrip()} {phrase}"
+
+
 def ensure_label_size(description: str, facts: Facts) -> str:
     """A kids size settled from the label's height or age (WO23): the label as printed goes in the description too,
     "Label size: 4 ans / 104 cm." — the buyer sees the US size on the listing and what the garment itself says.
