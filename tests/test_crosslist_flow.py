@@ -420,6 +420,32 @@ def test_backfill_takes_todays_poshmark_price_and_tells_the_ops_chat(tmp_path, m
     assert f"{TITLE}: $85 → $65" in said[0]                                 # owner_price is what Depop and Vinted get
 
 
+def test_poshmark_pages_are_read_with_a_classic_tls_handshake(monkeypatch):
+    """WO33, live: Poshmark's CloudFront answered 403 to the Mac's default OpenSSL 3.5 handshake for every public page;
+    the reads use a context limited to P-256 — and still read the page: for sale + price, sold, gone, blocked."""
+    import ssl
+    from types import SimpleNamespace as NS
+
+    import httpx
+
+    seen = []
+    state = '<script>window.__INITIAL_STATE__ = {"$_listing_details": {"listingDetails": %s}};</script>'
+    pages = {"live": NS(status_code=200, text=state % '{"inventory": {"status": "available"}, '
+                                                       '"price_amount": {"val": "45.00"}}'),
+             "sold": NS(status_code=200, text=state % '{"inventory": {"status": "sold_out"}}'),
+             "gone": NS(status_code=404, text=""), "blocked": NS(status_code=403, text="Request blocked")}
+
+    def get(url, **kw):
+        seen.append(kw.get("verify"))
+        return pages[url.rsplit("/", 1)[-1]]
+    monkeypatch.setattr(httpx, "get", get)
+    assert crosslist.poshmark_page("https://poshmark.com/listing/live") == (True, 45)
+    assert crosslist.poshmark_page("https://poshmark.com/listing/sold") == (False, None)
+    assert crosslist.poshmark_page("https://poshmark.com/listing/gone") == (False, None)
+    assert crosslist.poshmark_page("https://poshmark.com/listing/blocked") == (None, None)   # unknown, never a guess
+    assert all(isinstance(v, ssl.SSLContext) for v in seen) and len(seen) == 4
+
+
 def test_a_new_window_lifts_blocks_and_never_retries_an_unconfirmed_publish(tmp_path):
     s = _settings(tmp_path)
     db = DB(s.path("db"))

@@ -394,13 +394,33 @@ def poshmark_live(url: str) -> bool | None:
     return poshmark_page(url)[0]
 
 
+_TLS = None
+
+
+def _tls():
+    """The TLS settings for Poshmark's public pages: a classic key exchange (P-256). Its CloudFront refuses OpenSSL
+    3.5's default handshake — the post-quantum key share python.org's Python 3.14 on the Mac offers: every public page
+    answered 403 "Request blocked" there (WO33, live), while the same request with P-256 — what OpenSSL 3.0 on the PC
+    offers by default — is answered as it should be (404 for a deleted listing, 200 for a live one)."""
+    global _TLS
+    if _TLS is None:
+        import ssl
+
+        import certifi
+        ctx = ssl.create_default_context(cafile=certifi.where())
+        ctx.set_ecdh_curve("prime256v1")
+        _TLS = ctx
+    return _TLS
+
+
 def poshmark_page(url: str) -> tuple[bool | None, int | None]:
     """(still for sale — as poshmark_live —, its price today: listingDetails.price_amount, whole dollars, or None)."""
     import httpx
 
     from thrift_agent.harvest import parse_state
     try:
-        r = httpx.get(url, headers={"User-Agent": UA, "Accept": "text/html"}, timeout=20, follow_redirects=True)
+        r = httpx.get(url, headers={"User-Agent": UA, "Accept": "text/html"}, timeout=20, follow_redirects=True,
+                      verify=_tls())
     except httpx.HTTPError:
         return None, None
     if r.status_code in (404, 410):
