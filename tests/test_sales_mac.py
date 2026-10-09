@@ -186,6 +186,7 @@ def test_the_owners_take_down_of_one_poshmark_listing(tmp_path, monkeypatch):
     monkeypatch.setattr(takedown, "_open", fake_open)
     monkeypatch.setattr(takedown, "_close", fake_close)
     monkeypatch.setattr(takedown.parallel, "delist_ready", lambda mp, poster: None)
+    monkeypatch.setattr(takedown.crosslist, "poshmark_live", lambda url: True)        # for sale: the edit page
     lines = asyncio.run(takedown.take_down(s, db, iid))
     assert taker.urls == ["https://poshmark.com/listing/Lacoste-Tee-6ac2f8dc64865578bc9aed94"]
     assert lines == ["Poshmark: Not For Sale — https://poshmark.com/listing/Lacoste-Tee-6ac2f8dc64865578bc9aed94"]
@@ -194,6 +195,24 @@ def test_the_owners_take_down_of_one_poshmark_listing(tmp_path, monkeypatch):
     assert "nothing to take down" in asyncio.run(takedown.take_down(s, db, other))[0]
     assert taker.urls == ["https://poshmark.com/listing/Lacoste-Tee-6ac2f8dc64865578bc9aed94"]
     assert "by hand" in asyncio.run(takedown.take_down(s, db, iid, "vinted"))[0]
+
+
+def test_the_owners_take_down_of_a_listing_already_gone_opens_no_browser(tmp_path, monkeypatch):
+    """WO33, live: the Lacoste tee's Poshmark page answered 404 (deleted by hand) — the row is recorded delisted, the
+    poster's Chrome never opened."""
+    from thrift_agent.post import takedown
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid = _item(db)
+    db.upsert_listing(iid, "poshmark", status="posted", url="https://poshmark.com/listing/Lacoste-Tee-6ac2f8dc64865578bc9aed94")
+
+    async def no_browser(s, sites):
+        raise AssertionError("the browser must not open for a listing already gone")
+    monkeypatch.setattr(takedown, "_open", no_browser)
+    lines = asyncio.run(takedown.take_down(s, db, iid, live=lambda url: False))
+    assert lines == ["Poshmark: already not for sale there (its public page) — "
+                     "https://poshmark.com/listing/Lacoste-Tee-6ac2f8dc64865578bc9aed94"]
+    assert db.listing(iid, "poshmark")["status"] == "delisted"
 
 
 def test_a_take_down_skips_the_sold_items_queued_rows_and_reports_done(tmp_path, api, said):

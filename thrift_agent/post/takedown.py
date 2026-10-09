@@ -125,15 +125,22 @@ async def practice(s: Settings, db: DB, url: str) -> str:
     return line
 
 
-async def take_down(s: Settings, db: DB, iid: str, mp: str = "poshmark") -> list[str]:
-    """The owner's take-down of one listing (`thrift delist --item`): Poshmark's Availability to Not For Sale, then
-    the public page read until it's no longer for sale (`set_availability`); the row `delisted`. Depop and Vinted:
-    by hand here (their take-downs come with a sale's task)."""
+async def take_down(s: Settings, db: DB, iid: str, mp: str = "poshmark", live=None) -> list[str]:
+    """The owner's take-down of one listing (`thrift delist --item`): its public page first — already gone or not for
+    sale (WO33, live: the Lacoste tee's page answered 404, deleted by hand): the row `delisted`, no browser opened;
+    else Poshmark's Availability to Not For Sale, then the public page read until it's no longer for sale
+    (`set_availability`); the row `delisted`. Depop and Vinted: by hand here (their take-downs come with a sale's
+    task)."""
     if mp != "poshmark":
         return [f"{crosslist.LABEL.get(mp, mp)}: take it down by hand (this command does Poshmark)"]
     row = db.listing(iid, "poshmark")
     if row is None or row["status"] != "posted" or not row["url"]:
         return [f"{iid}: not live on Poshmark ({row['status'] if row else 'no listing'}) — nothing to take down"]
+    if (live or crosslist.poshmark_live)(row["url"]) is False:
+        db.upsert_listing(iid, "poshmark", status="delisted")
+        lines = [f"Poshmark: already not for sale there (its public page) — {row['url']}"]
+        db.log(iid, "takedown_owner", {"mp": mp, "lines": lines})
+        return lines
     ps, bridge, pw, ctx = await _open(s, ["poshmark"])
     try:
         if why := parallel.delist_ready("poshmark", ps["poshmark"]):

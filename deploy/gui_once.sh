@@ -48,13 +48,16 @@ launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
 : > "$LOG"
 launchctl bootstrap "$DOMAIN" "$PLIST"
 
+# Done only when launchd shows a real exit code: right after the bootstrap the job is "not running" with "last exit
+# code = (never exited)" for a moment (the first version stopped there and unloaded a job that hadn't run).
 code=""
 for _ in $(seq 1 600); do
   info=$(launchctl print "$DOMAIN/$LABEL" 2>/dev/null || true)
-  runs=$(printf '%s\n' "$info" | awk -F'= ' '/^[[:space:]]*runs = /{print $2; exit}')
   state=$(printf '%s\n' "$info" | awk -F'= ' '/^[[:space:]]*state = /{print $2; exit}')
-  if [ "${runs:-0}" -ge 1 ] && [ "$state" != "running" ]; then
-    code=$(printf '%s\n' "$info" | awk -F'= ' '/^[[:space:]]*last exit code = /{print $2; exit}')
+  last=$(printf '%s\n' "$info" | awk -F'= ' '/^[[:space:]]*last exit code = /{print $2; exit}')
+  last="${last%%:*}"
+  if [ "$state" != "running" ] && [[ "$last" =~ ^-?[0-9]+$ ]]; then
+    code="$last"
     break
   fi
   sleep 1
