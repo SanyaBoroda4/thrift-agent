@@ -190,3 +190,13 @@ def test_a_pair_recorded_before_the_rule_is_merged_never_deleted(db, sent):
     assert merged["status"] == "merged"                                   # kept, never deleted
     assert [s["id"] for s in core.sales_list(db, "all")] == ["s_1"]
     assert core.merge_duplicate_sales(db) == []
+
+
+@pytest.mark.parametrize("details", ["Order details             \nimage         {t}\n", "Order details\nimage\n{t}\n",
+                                     "Order details\n{t}\n"])
+def test_depops_title_with_or_without_the_photos_alt_text_and_cut_short(details):
+    """Depop's raw mail has "image" (the photo's alt text) before the title, on the title's line; Depop cuts a long
+    title with ",..." — kept as an ellipsis, so the matcher compares it with as much of ours."""
+    text = "You've made a sale!\n" + details.format(t="Madewell Italian yarn striped sweater in blue,...") + " Size:\nS\n"
+    title = emails.parse("depop", "SALE", DEPOP_SALE[0], text, AT)["title"]
+    assert title == "Madewell Italian yarn striped sweater in blue,…"

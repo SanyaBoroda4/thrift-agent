@@ -181,7 +181,8 @@ TITLES = (
     # details\n(image)\n<title>"; Poshmark "Thank you for shipping <title>"
     (re.compile(r"\bhas bought[ \t]*\n+[ \t]*(?P<t>[^\n]{3,200})", re.I), "text", False),
     (re.compile(r"\byour sale of (?P<t>[^\n]{3,200}?) was completed\b", re.I), "text", False),
-    (re.compile(r"\border details[ \t]*\n(?:[ \t]*(?:image)?[ \t]*\n)*[ \t]*(?P<t>[^\n]{3,200})", re.I), "text", False),
+    # Depop: "image" (the photo's alt text) before the title, on its own line or on the title's
+    (re.compile(r"\border details\s*(?:image\b\s*)?(?P<t>\S[^\n]{2,199})", re.I), "text", False),
     (re.compile(r"^\s*thank you for shipping (?P<t>[^\n]{3,200})$", re.I), "subject", False),
     (re.compile(r"^[ \t]*(?:item(?: name)?|title|listing|product)[ \t]*:[ \t]*(?P<t>[^\n]{3,200})$", re.I | re.M), "text",
      False),
