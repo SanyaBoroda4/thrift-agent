@@ -788,7 +788,7 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
     final = copywriter.clean(CopyOut(
         poshmark_title=audit.poshmark_title, poshmark_description=audit.poshmark_description,
         poshmark_style_tags=draft.poshmark_style_tags, depop_description=audit.depop_description,
-        depop_hashtags=draft.depop_hashtags))
+        depop_hashtags=draft.depop_hashtags, short_name=draft.short_name))
     final = copywriter.condition_rule(final, facts)      # wear is shown in the photos, never put in words
     final.poshmark_title = copywriter.ensure_set_title(final.poshmark_title, facts)   # "… 2-Piece Set size M"
     final.poshmark_title = (it["owner_title"] or                 # the owner's own title stays as it is (WO27)
@@ -1852,6 +1852,7 @@ def build_renders(s: Settings, iid: str, d: Path, photos: list[Path], facts: Fac
             title=c.poshmark_title,
             description=c.poshmark_description if is_posh else c.depop_description,
             tags=c.poshmark_style_tags if is_posh else c.depop_hashtags,
+            short_name=copywriter.short_name(c.short_name, c.poshmark_title, facts),   # WO34: the group's name
             price=pr.by_marketplace.get(mp, pr.list_price or 0),
             photos=paths(mcfg["max_photos"]),
             **common,

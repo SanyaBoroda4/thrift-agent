@@ -31,7 +31,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from thrift_agent import bridge as bridge_mod
+from thrift_agent import brands, bridge as bridge_mod
 from thrift_agent.post.base import (AccountBlocked, Mode, Outcome, Poster, PosterError, _joined, _norm, _shows_price,
                                     compare)
 from thrift_agent.schema import Render
@@ -147,12 +147,14 @@ class ExtensionPoster(Poster):
         f = self.fields
         if self.name == "vinted":
             fields = {"category_id": f.category_id, "category_path": f.category_path, "brand": f.brand,
+                      "brand_candidates": brands.candidates(f.brand),       # WO34: "MNG (Mango)" -> MNG, Mango
                       "size": f.size, "condition": f.condition, "colors": list(f.colors), "materials": list(f.materials),
                       "skirt_length": f.skirt_length, "package_sizes": list(f.package_sizes)}
             copy = {"title": f.title, "description": f.description}
         else:
             spelled = self.aliases.spell(f.brand) if (self.aliases is not None and f.brand) else None
-            fields = {"category": f.category, "brand": f.brand, "brand_typed": spelled or f.brand, "size": f.size,
+            fields = {"category": f.category, "brand": f.brand, "brand_typed": spelled or f.brand,
+                      "brand_candidates": brands.candidates(f.brand, self.aliases), "size": f.size,
                       "condition": f.condition, "colors": list(f.colors), "source": list(f.source), "age": f.age,
                       "style": list(f.style), "attributes": dict(f.attributes), "shipping": f.shipping,
                       "package_size": f.package_size, "sku": r.sku}

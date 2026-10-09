@@ -133,10 +133,10 @@ def test_one_line_per_item_in_order_and_all_done_last(tmp_path, quick):
     items = [_item(db, n) for n in (1, 2)]
     ps = {"poshmark": Timed("poshmark", 0.2), "depop": Timed("depop", 0.1), "vinted": Timed("vinted", 0.3)}
     _run(s, db, ps)
-    lines = [g for g in quick.group if g.startswith("Posted ✓")]
+    lines = [g for g in quick.group if g.startswith("✅")]                 # WO34: one card per item
     assert len(lines) == 2
     for line in lines:
-        assert line.index("Poshmark https://") < line.index("Depop https://") < line.index("Vinted https://")
+        assert line.index("Poshmark</a>") < line.index("Depop</a>") < line.index("Vinted</a>")
     assert "All done" in lines[-1] and "All done" not in lines[0]
     assert sorted(i for line in lines for i in items if i in line) == sorted(items)
 
@@ -155,8 +155,8 @@ def test_one_site_turned_away_never_stops_the_others(tmp_path, quick):
     assert all(db.listing(i, "vinted")["status"] == "posted" for i in items)
     assert crosslist.blocked(db, "depop") and len(ps["depop"].calls) == 1
     assert quick.group.count("Depop needs you to log in on the Mac.") == 1
-    lines = [g for g in quick.group if g.startswith("Posted ✓")]
-    assert len(lines) == 3 and all("Depop" not in line and "Vinted" in line for line in lines)
+    lines = [g for g in quick.group if g.startswith("✅")]
+    assert len(lines) == 3 and all("Depop</a>" not in c and "⏳ Depop — later" in c and "Vinted</a>" in c for c in lines)
 
 
 def test_a_poshmark_failure_stops_poshmark_alone(tmp_path, quick):

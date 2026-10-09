@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from cards import ALL_DONE, card
 from thrift_agent import daily, notify, pipeline, power
 from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
@@ -16,6 +17,7 @@ from thrift_agent.post.ext_driver import ExtensionPoster
 from thrift_agent.post.poshmark import PoshmarkPoster
 from thrift_agent.schema import Render
 
+NAME = "Tory Burch Red Flats"                    # WO34: the card's short name
 RENDER = Render(marketplace="poshmark", title="Tory Burch Red Flats size 7.5", description="Red flats.", brand="Tory Burch",
                 department="Women", category="Shoes", subcategory=None, size="7.5", colors=["Red"], condition="excellent",
                 price=85, photos=[], sku="i_1")
@@ -285,8 +287,7 @@ def test_run_records_a_posted_outcome(tmp_path, monkeypatch, harness):
     assert row["url"] == "https://poshmark.com/listing/abc"
     assert row["posted_at"] and db.listed_since("2000-01-01T00:00:00+00:00") == 1
     assert db.item(iid)["status"] == "posted"
-    assert said.group == [f"Posted ✓ {RENDER.title} — $85 · Poshmark https://poshmark.com/listing/abc\n"   # nothing guessed:
-                          "✓ All done — safe to close the Mac."]                          # no "check"; the last one
+    assert said.group == [card(NAME, 85, [("poshmark", "https://poshmark.com/listing/abc")], ALL_DONE)]   # WO34
     assert not s.flag("PAUSE").exists()
     assert [e["kind"] for e in db.conn.execute("SELECT kind FROM events WHERE ref=?", (iid,))] == [
         "post_posted", "posted_announced"]                    # its one "Posted ✓" line (WO30) was said
@@ -301,9 +302,10 @@ def test_the_posted_message_lists_the_posters_guesses(tmp_path, monkeypatch, har
     guesses = ["brand set to 'J. Crew' (from 'J.Crew')", "size set to '12' (from '12.5')"]
     _run(monkeypatch, s, db, StubPoster(Outcome("posted", url="https://poshmark.com/listing/abc", guesses=guesses)),
          once=True)
-    assert said.group == [f"Posted ✓ {RENDER.title} — $85 · Poshmark https://poshmark.com/listing/abc — check: brand set to "
-                          "'J. Crew' (from 'J.Crew'); size set to '12' (from '12.5')\n✓ All done — safe to close the "
-                          "Mac."]
+    assert said.group == [card(NAME, 85, [("poshmark", "https://poshmark.com/listing/abc")], ALL_DONE)]   # WO34:
+    assert [m for m in said if m.startswith("Check —")] == [                       # the notes go to the ops chat, once
+        f"Check — {RENDER.title}:\n- Poshmark: brand set to 'J. Crew' (from 'J.Crew')\n"
+        "- Poshmark: size set to '12' (from '12.5')"]
     detail = loads(db.conn.execute("SELECT detail FROM events WHERE ref=? AND kind='post_posted'", (iid,)).fetchone()[0])
     assert detail["guesses"] == guesses
 
@@ -521,11 +523,11 @@ def test_the_live_loop_end_to_end(tmp_path, monkeypatch, harness):
     assert db.listing(unpriced, "poshmark") is None
     started = [m for m in said if m.startswith("Poster started")]
     assert started and all("LIVE" in m for m in started)
-    posted = [m for m in said.group if m.startswith("Posted ✓")]
-    assert posted == [f"Posted ✓ {RENDER.title} — $85 · Poshmark https://poshmark.com/listing/1 — check: colour 'Teal' left out",
-                      f"Posted ✓ {RENDER.title} — $85 · Poshmark https://poshmark.com/listing/2",
-                      f"Posted ✓ {RENDER.title} — $85 · Poshmark https://poshmark.com/listing/4\n"
-                      "✓ All done — safe to close the Mac."]          # WO33: nothing held, so the last says All done
+    posted = [m for m in said.group if m.startswith("✅")]                      # WO34: the cards
+    assert posted == [card(NAME, 85, [("poshmark", "https://poshmark.com/listing/1")]),
+                      card(NAME, 85, [("poshmark", "https://poshmark.com/listing/2")]),
+                      card(NAME, 85, [("poshmark", "https://poshmark.com/listing/4")], ALL_DONE)]
+    assert any(m.startswith("Check —") and "colour 'Teal' left out" in m for m in said)   # the guess: ops chat
     assert not any(m.startswith("⏸") for m in [*said, *said.group])
 
 
@@ -711,7 +713,7 @@ def test_publish_first_publishes_once_and_records_the_listing(tmp_path, monkeypa
     assert poster.confirm == "the LIST prompt"
     row = db.listing(iid, "poshmark")
     assert (row["status"], row["url"]) == ("posted", "https://poshmark.com/listing/naturino-6ad")
-    assert db.item(iid)["status"] == "posted" and any(m.startswith(f"Posted ✓ {RENDER.title}") for m in said)
+    assert db.item(iid)["status"] == "posted" and any(m.startswith(f"✅ {NAME} · $85") for m in said)
 
 
 def test_publish_first_cancelled_at_the_prompt_goes_back_to_the_queue(tmp_path, monkeypatch, harness):
@@ -843,7 +845,7 @@ def test_mark_posted_records_a_listing_found_by_hand(tmp_path, monkeypatch, harn
     assert (row["status"], row["url"], row["error"]) == ("posted", LIVE_URL, None)
     assert row["posted_at"] == before["updated_at"]                     # when it went live, as near as known
     assert db.item(iid)["status"] == "posted"
-    assert said.group == [f"Posted ✓ {RENDER.title} — $85 · Poshmark {LIVE_URL}\n✓ All done — safe to close the Mac."]
+    assert said.group == [card(NAME, 85, [("poshmark", LIVE_URL)], ALL_DONE)]
     assert f"✅ {iid} confirmed live on poshmark (the owner's link): {LIVE_URL}" in said      # the ops chat
     assert "post_confirmed" in [e["kind"] for e in db.conn.execute("SELECT kind FROM events WHERE ref=?", (iid,))]
     assert list((s.path("failed") / "shots").glob(f"{iid}-poshmark-*-confirm.json"))   # the evidence of the check
@@ -1016,7 +1018,7 @@ def test_a_publish_the_mac_slept_through_is_found_in_the_closet_and_posted(tmp_p
     row = db.listing(iid, "poshmark")
     assert (row["status"], row["url"], row["error"]) == ("posted", url, None)
     assert db.item(iid)["status"] == "posted"
-    assert any(m.startswith(f"Posted ✓ {RENDER.title}") and url in m for m in said)   # the normal message
+    assert any(m.startswith(f"✅ {NAME}") and url in m for m in said)               # the normal card
     assert not any(m.startswith("⚠️") for m in said)
 
 
@@ -1077,7 +1079,7 @@ def test_a_listing_still_posting_at_start_is_looked_for_in_the_closet(tmp_path, 
     assert db.listing(found, "poshmark")["status"] == "posted" and db.listing(found, "poshmark")["url"] == url
     row = db.listing(lost, "poshmark")
     assert row["status"] == "failed" and row["error"].startswith(runner.UNCONFIRMED)   # never retried
-    assert any(m.startswith("Posted ✓") for m in said) and sum(m.startswith("⚠️") for m in said) == 1
+    assert any(m.startswith("✅") for m in said) and sum(m.startswith("⚠️") for m in said) == 1
 
 
 def test_the_owners_posted_url_is_checked_by_the_poster_between_listings(tmp_path, monkeypatch, harness):
@@ -1092,7 +1094,7 @@ def test_the_owners_posted_url_is_checked_by_the_poster_between_listings(tmp_pat
     poster = _seeing()
     done = asyncio.run(runner.serve_requests(s, db, {"poshmark": poster}, PageCtx()))
     assert done == [iid] and db.listing(iid, "poshmark")["url"] == LIVE_URL and db.item(iid)["status"] == "posted"
-    assert any(m.startswith(f"Posted ✓ {RENDER.title} — $85 · Poshmark {LIVE_URL}") for m in said.group)
+    assert any(m.startswith(card(NAME, 85, [("poshmark", LIVE_URL)])) for m in said.group)
     assert pipeline.take_requests(db) == []                                     # taken once
 
     other = _ready_item(db, seq=2)

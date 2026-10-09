@@ -194,6 +194,9 @@
   const words = (s) => (String(s).normalize("NFKD").toLowerCase().replace(/&/g, " and ").replace(/'/g, "")
     .match(/[a-z0-9]+/g) || []);
   const key = (s) => words(s).join("");
+  // WO34: the names to try for a brand, in order — the job's candidates (the full name, then each part: "MNG
+  // (Mango)" -> MNG, Mango), else the name alone
+  T.brandNames = (f) => [...new Set([...(f.brand_candidates || []), f.brand].filter(Boolean))];
   T.strictPick = (ours, options) => {
     const mine = new Set(words(ours));
     const usable = options.filter((o) => o && !words(o).some((w) => !mine.has(w) && QUALIFIERS.has(w)));

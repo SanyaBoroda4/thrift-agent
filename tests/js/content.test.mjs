@@ -373,6 +373,27 @@ test("Depop: the brand typed as Depop spells it when our spelling finds nothing"
   assert.ok(plain(r.guesses).includes("brand set to 'J.Crew' (from 'J. Crew')"));
 });
 
+// WO34, the owner: "MNG (Mango)" left the brand empty — the full name, then each part, on every site
+const MNG = { brand: "MNG (Mango)", brand_typed: "MNG (Mango)", brand_candidates: ["MNG (Mango)", "MNG", "Mango"] };
+
+test("Depop: a two-part brand finds the part Depop lists (MNG (Mango) -> Mango)", async () => {
+  const p = page("depop", undefined, undefined, { ...DEPOP_FIX, ai: false });
+  await run(p, { ...DEPOP_JOB, fields: { ...DEPOP_JOB.fields, ...MNG } });
+  const r = p.last();
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(p.w.__picked["brand-input"], "Mango");
+  assert.ok(plain(r.guesses).includes("brand set to 'Mango' (from 'MNG (Mango)')"), JSON.stringify(r.guesses));
+});
+
+test("Vinted: a two-part brand finds the part Vinted lists (MNG (Mango) -> Mango)", async () => {
+  const p = page("vinted");
+  await run(p, { ...VINTED_JOB, fields: { ...VINTED_JOB.fields, ...MNG } });
+  const r = p.last();
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(p.d.getElementById("brand").value, "Mango");
+  assert.ok(plain(r.guesses).includes("brand set to 'Mango' (from 'MNG (Mango)')"), JSON.stringify(r.guesses));
+});
+
 test("Depop: the brand spellings tried", () => {
   const { w } = page("depop");
   assert.deepEqual(plain(w.Thrift.brandSpellings("J. Crew", "J. Crew")), ["J. Crew", "J.Crew", "J Crew"]);

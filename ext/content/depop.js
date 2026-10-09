@@ -191,35 +191,41 @@
                                                     String(value).replace(/[^A-Za-z0-9& ]+/g, "").replace(/\s+/g, " ")]
                                                    .filter(Boolean))];
 
-  async function brand(st, value, typed) {
+  async function brand(st, value, typed, names = [value]) {
     const cid = S().combo.ids.brand;
     const box = document.getElementById(cid);
-    const already = box && box.value && T.strictPick(value, [box.value]);
-    if (already && already.choice) {                    // Depop filled our brand in by itself
-      T.picked(st, cid, value, box.value);
-      if (already.guess) st.guesses.push(already.guess);
-      return;
-    }
-    for (const spelling of T.brandSpellings(value, typed)) {
-      await open(cid);
-      await T.type(box, spelling);
-      let opts = [], texts = [], since = performance.now(), last = "";
-      const pick = (await T.until(() => {                // Depop's server answers: until our brand shows, 5 s at most
-        opts = optionsOf(menuOf(cid));
-        texts = opts.map(textOf);
-        const p = T.strictPick(value, texts);
-        if (p.choice) return p;
-        const now = texts.join("|");
-        if (now !== last) { last = now; since = performance.now(); }
-        // only "Other", unchanged for 1.2 s: Depop has nothing under this spelling — the next one
-        if (texts.length === 1 && T.norm(texts[0]) === "other" && performance.now() - since > 1200) return { none: true };
-        return null;
-      }, 5000)) || { choice: null, guess: null };
-      if (pick.choice) {
-        await T.click(opts[texts.indexOf(pick.choice)]);
-        T.picked(st, cid, value, pick.choice);
-        if (pick.guess) st.guesses.push(pick.guess);
+    for (const name of names) {                          // Depop filled one of our names in by itself
+      const already = box && box.value && T.strictPick(name, [box.value]);
+      if (already && already.choice) {
+        T.picked(st, cid, value, box.value);
+        if (name !== value) st.guesses.push(`brand set to '${box.value}' (from '${value}')`);
+        else if (already.guess) st.guesses.push(already.guess);
         return;
+      }
+    }
+    for (const name of names) {                          // WO34: the full name, then each part ("MNG", "Mango")
+      for (const spelling of T.brandSpellings(name, name === value ? typed : name)) {
+        await open(cid);
+        await T.type(box, spelling);
+        let opts = [], texts = [], since = performance.now(), last = "";
+        const pick = (await T.until(() => {              // Depop's server answers: until our brand shows, 5 s at most
+          opts = optionsOf(menuOf(cid));
+          texts = opts.map(textOf);
+          const p = T.strictPick(name, texts);
+          if (p.choice) return p;
+          const now = texts.join("|");
+          if (now !== last) { last = now; since = performance.now(); }
+          // only "Other", unchanged for 1.2 s: Depop has nothing under this spelling — the next one
+          if (texts.length === 1 && T.norm(texts[0]) === "other" && performance.now() - since > 1200) return { none: true };
+          return null;
+        }, 5000)) || { choice: null, guess: null };
+        if (pick.choice) {
+          await T.click(opts[texts.indexOf(pick.choice)]);
+          T.picked(st, cid, value, pick.choice);
+          if (name !== value) st.guesses.push(`brand set to '${pick.choice}' (from '${value}')`);
+          else if (pick.guess) st.guesses.push(pick.guess);
+          return;
+        }
       }
     }
     await T.screenshot(`menu-${cid}`);
@@ -285,7 +291,7 @@
       await T.step("category", st, async () =>
         choose(st, ids.category, f.category, { typed: f.category.split(" > ").pop(), category: true }));
       if (f.size) await T.step("size", st, async () => size(st, f.size));
-      if (f.brand) await T.step("brand", st, async () => brand(st, f.brand, f.brand_typed));
+      if (f.brand) await T.step("brand", st, async () => brand(st, f.brand, f.brand_typed, T.brandNames(f)));
       await T.step("condition", st, async () => choose(st, ids.condition, f.condition));
       for (const c of (f.colors || []).slice(0, 2)) await T.step(ids.colour, st, async () => choose(st, ids.colour, c));
       for (const v of f.source || []) await T.step(ids.source, st, async () => choose(st, ids.source, v, { optional: true }));
@@ -342,9 +348,9 @@
           st.notes.push(`Depop changed the package size to '${pkg.value}': set back to ${f.package_size}`);
           await choose(st, ids.package, f.package_size, { prefix: true });
         }
-        if (f.brand && brandBox && brandBox.value && !T.strictPick(f.brand, [brandBox.value]).choice) {
+        if (f.brand && brandBox && brandBox.value && !T.brandNames(f).some((n) => T.strictPick(n, [brandBox.value]).choice)) {
           st.notes.push(`Depop changed the brand to '${brandBox.value}': set back`);
-          await brand(st, f.brand, f.brand_typed);
+          await brand(st, f.brand, f.brand_typed, T.brandNames(f));
         }
         // Our values a multi-select lost: added back.
         for (const [cid, want] of Object.entries(planned(f))) {

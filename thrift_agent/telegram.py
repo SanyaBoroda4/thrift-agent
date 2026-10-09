@@ -48,18 +48,21 @@ class Bot:
             raise RuntimeError(f"telegram {method} failed: {desc or f'HTTP {r.status_code}'}")
         return body.get("result")
 
-    def send_message(self, text: str, buttons: list[list[dict]] | None = None, reply_to: int | None = None) -> int:
-        """Returns the sent message_id. `buttons` = rows of {"text": ..., "callback_data": ...}."""
+    def send_message(self, text: str, buttons: list[list[dict]] | None = None, reply_to: int | None = None,
+                     parse_mode: str | None = None) -> int:
+        """Returns the sent message_id. `buttons` = rows of {"text": ..., "callback_data": ...}. `parse_mode` "HTML":
+        the group's "✅ …" card with its site links (WO34). Link previews are always off."""
         res = self.call("sendMessage", chat_id=self.chat_id, text=text[:MAX_TEXT],
                         reply_markup={"inline_keyboard": buttons} if buttons else None,
                         reply_to_message_id=reply_to, allow_sending_without_reply=True if reply_to else None,
-                        disable_web_page_preview=True)
+                        disable_web_page_preview=True, parse_mode=parse_mode)
         return int(res["message_id"])
 
-    def edit_message(self, message_id: int, text: str) -> None:
-        """Change the text of a message the bot sent (the daily window's status message, WO28)."""
+    def edit_message(self, message_id: int, text: str, parse_mode: str | None = None) -> None:
+        """Change the text of a message the bot sent (the daily window's status message, WO28; the group's card, a
+        site's link put in once it posts, WO34)."""
         self.call("editMessageText", chat_id=self.chat_id, message_id=int(message_id), text=text[:MAX_TEXT],
-                  disable_web_page_preview=True)
+                  disable_web_page_preview=True, parse_mode=parse_mode)
 
     def set_buttons(self, message_id: int, buttons: list[list[dict]] | None) -> None:
         """Replace a message's buttons — an answered card gets one "✓ …" button (WO29); None removes them."""

@@ -39,7 +39,10 @@ ALERTS = {"login": "{site} needs you to log in on the Mac.",
           "verify": "{site} asks for a check — open it on the Mac.",
           "block": "{site} turned the Mac away for now — I'll try again next time the Mac is open."}
 DRIVERS = {"depop": ("extension", "playwright", "api"), "vinted": ("extension", "playwright")}
-ALL_DONE_LINE = "✓ All done — safe to close the Mac."
+ALL_DONE_LINE = "💤 All done — you can close the Mac."          # WO34: the group card's last line
+DOT = {"poshmark": "🟣", "depop": "🔴", "vinted": "🟢"}
+CARRIER = "posted_done_carrier"         # kv: the item whose group card carries the 💤 line now (WO34)
+LATER = ("queued", "posting", "dryrun", "failed")   # a site still to come: "⏳ Vinted — later"
 
 
 def enabled(s: Settings) -> list[str]:
@@ -287,6 +290,116 @@ def announced(db: DB, iid: str) -> set[str]:
     return done
 
 
+def done_line(state: list[str] | None) -> str | None:
+    """The card's last line (WO34): "💤 All done — you can close the Mac." when nothing is left on any site; "💤 Done for
+    now — you can close the Mac. Vinted catches up next time." when a stopped site still has listings; None while
+    there is work."""
+    if state is None:
+        return None
+    if not state:
+        return ALL_DONE_LINE
+    names = [LABEL.get(mp, mp) for mp in state]
+    joined = names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+    return f"💤 Done for now — you can close the Mac. {joined} catch{'es' if len(names) == 1 else ''} up next time."
+
+
+def card_text(s: Settings, db: DB, iid: str, last: str | None = None) -> str:
+    """The group's card for an item (WO34, the owner: separate lines, little text, some emoji): "✅ <short name> ·
+    $<price>", then each site on its own line — its name the link (HTML), "⏳ Vinted — later" while it hasn't posted —
+    with an empty line between, and the 💤 line when it is the window's last. Nothing technical."""
+    import html
+
+    from thrift_agent.brain import copy as copywriter
+    from thrift_agent.schema import Facts
+    it = db.item(iid)
+    render = ((loads(it["renders"]) or {}).get("poshmark") or {}) if it else {}
+    try:
+        facts = Facts.model_validate(loads(it["facts"])) if it and it["facts"] else None
+    except Exception:  # noqa: BLE001 — the name falls back to the title alone
+        facts = None
+    name = copywriter.short_name(render.get("short_name"), render.get("title") or iid, facts)
+    rows = {r["marketplace"]: r for r in db.listings_for(iid)}
+    price = (it["owner_price"] if it else None) or render.get("price") or \
+        next((r["price"] for r in rows.values() if r["price"]), "")
+    lines = [f"✅ {html.escape(name)} · ${price}"]
+    sites = [*(["poshmark"] if s is None or s.get("marketplaces.poshmark.enabled", True) else []),
+             *(enabled(s) if s is not None else [m for m in ORDER if m != "poshmark" and m in rows])]
+    for mp in sites:
+        row = rows.get(mp)
+        if row is None:
+            continue
+        if row["status"] == "posted" and row["url"]:
+            lines.append(f'{DOT.get(mp, "•")} <a href="{html.escape(row["url"], quote=True)}">{LABEL.get(mp, mp)}</a>')
+        elif row["status"] in LATER and not (row["status"] == "failed" and row["error"]
+                                             and row["error"].startswith(UNCONFIRMED)) \
+                and not (row["status"] == "dryrun" and not (s is not None and live(s, mp))):
+            lines.append(f"⏳ {LABEL.get(mp, mp)} — later")     # a dry run on a site that won't publish: left out
+    if last:
+        lines.append(last)
+    return "\n\n".join(lines)
+
+
+def _card(s: Settings, db: DB, iid: str, text: str, edit: bool) -> None:
+    """The card out (`edit`: the same message changed — never a new one), HTML, previews off; on the dev machine
+    (no bot) printed."""
+    from thrift_agent import approve
+    bot = approve.bot_for(s) if s is not None else None
+    row = db.conn.execute("SELECT * FROM outbox WHERE kind='posted' AND ref=? ORDER BY rowid DESC LIMIT 1",
+                          (iid,)).fetchone()
+    if bot is None:
+        notify.group(text)
+        if row is None:
+            db.add_outbox("dev", 0, "posted", iid, text=text)
+            db.outbox_resolve("posted", iid)
+        return
+    if edit and row is not None and str(row["chat_id"]) == str(bot.chat_id) and int(row["message_id"]):
+        try:
+            bot.edit_message(int(row["message_id"]), text, parse_mode="HTML")
+            db.conn.execute("UPDATE outbox SET text=? WHERE rowid=(SELECT rowid FROM outbox WHERE kind='posted' "
+                            "AND ref=? ORDER BY rowid DESC LIMIT 1)", (text, iid))
+        except Exception as e:  # noqa: BLE001 — "message is not modified" and the like: the card stays as it is
+            db.log(iid, "card_edit", {"error": str(e)[:200]})
+        return
+    mid = bot.send_message(text, parse_mode="HTML")
+    db.add_outbox(bot.chat_id, mid, "posted", iid, text=text)
+    db.outbox_resolve("posted", iid)
+
+
+def _say_checks(db: DB, iid: str, mps: list[str]) -> None:
+    """The posters' notes (a brand left empty, a size taken as the nearest, …) to the ops chat, each once per item —
+    never to the group (WO34, the owner: nothing technical in the group; the MNG card had a Depop note twice)."""
+    said = set()
+    for (detail,) in db.conn.execute("SELECT detail FROM events WHERE ref=? AND kind='checks_said'", (iid,)):
+        said |= set((loads(detail) or {}).get("notes") or [])
+    rows = {r["marketplace"]: r for r in db.listings_for(iid)}
+    notes = []
+    for mp in mps:
+        f = loads((rows.get(mp) or {})["fields_json"]) if rows.get(mp) and rows[mp]["fields_json"] else {}
+        for c in [*(f.get("guesses") or []), *(f"copy: {x}" for x in (f.get("checks") or []))]:
+            note = f"{LABEL.get(mp, mp)}: {c}"
+            if note not in said and note not in notes:
+                notes.append(note)
+    if notes:
+        it = db.item(iid)
+        title = (((loads(it["renders"]) or {}).get("poshmark") or {}).get("title") if it else None) or iid
+        db.log(iid, "checks_said", {"notes": notes})
+        notify.say(f"Check — {title}:\n" + "\n".join(f"- {n}" for n in notes))
+
+
+def _carry_done(s: Settings, db: DB, iid: str | None) -> None:
+    """The 💤 line rides on the newest card (WO34): `iid` takes it (None: it stays where it is) and the card that had
+    it is edited without it; the carrier's line follows the state (Done for now -> All done once Vinted caught up)."""
+    from thrift_agent import daily
+    before = db.kv_get(CARRIER)
+    if iid is not None and before and before != iid:
+        _card(s, db, before, card_text(s, db, before), edit=True)
+    carrier = iid or before
+    if carrier:
+        db.kv_set(CARRIER, carrier)
+        if iid is None:                                  # only the line may have changed: the carrier's card again
+            _card(s, db, carrier, card_text(s, db, carrier, done_line(daily.done_state(s, db))), edit=True)
+
+
 def posted_line(s: Settings, db: DB, iid: str, mps: list[str], done: bool = False) -> str:
     """ "Posted ✓ <title> — $X · Poshmark <url> · Depop <url> · Vinted <url>" (+ " — check: …"; + "✓ All done …")."""
     it = db.item(iid)
@@ -371,16 +484,30 @@ def announce(s: Settings | None, db: DB, iid: str) -> str | None:
     mps = [r["marketplace"] for r in db.listings_for(iid) if r["status"] == "posted" and r["marketplace"] not in seen]
     if not mps:
         return None
-    if seen:
+    has_card = db.conn.execute("SELECT 1 FROM outbox WHERE kind='posted' AND ref=? LIMIT 1", (iid,)).fetchone()
+    if seen and has_card and s is not None:            # WO34: its card is out — the new link in place, no new message
+        carrier = db.kv_get(CARRIER) == iid
+        text = card_text(s, db, iid, done_line(daily.done_state(s, db)) if carrier else None)
+        _card(s, db, iid, text, edit=True)
+        db.log(iid, "posted_announced", {"mps": mps, "to": "edit"})
+        _say_checks(db, iid, mps)
+        if not carrier:
+            _carry_done(s, db, None)
+        return text
+    if seen:                                           # announced before WO34 (the one-line message): the ops chat
         text = added_line(db, iid, mps)
         db.log(iid, "posted_announced", {"mps": mps, "to": "ops"})
         notify.say(text)
         return text
     if s is not None and not settled(s, db, iid):
         return None
-    text = posted_line(s, db, iid, mps, done=s is not None and daily.all_done(s, db) and not _line_due(s, db, iid))
+    state = daily.done_state(s, db) if s is not None and not _line_due(s, db, iid) else None
+    text = card_text(s, db, iid, done_line(state))
     db.log(iid, "posted_announced", {"mps": mps})
-    notify.group(text)
+    _card(s, db, iid, text, edit=False)
+    _say_checks(db, iid, mps)
+    if state is not None:
+        _carry_done(s, db, iid)
     return text
 
 

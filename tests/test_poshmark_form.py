@@ -352,6 +352,18 @@ def test_j_crew_is_poshmarks_j_crew_never_the_factory_line_and_is_learned(chrome
     assert events == ["brand:J. Crew"] and posh.guesses == []             # the second time: no guess to report
 
 
+def test_a_two_part_brand_finds_the_part_poshmark_lists(chrome, posh, photos, tmp_path, monkeypatch):
+    """WO34, live: "MNG (Mango)" left the brand empty — the full name, then each part ("MNG", "Mango"), case aside;
+    the part Poshmark lists is picked, reported once and learned."""
+    monkeypatch.setattr(brands, "SEED", {})
+    posh.aliases = brands.Aliases(tmp_path / "brand_aliases.yaml")
+    r = render(photos, brand="MNG (Mango)", title="MNG (Mango) Knit Cardigan size S")
+    seen, events = fill_and_read(chrome, posh, r, steps=["_brand"])
+    assert events == ["brand:Mango"] and seen["brand"] == "Mango"
+    assert posh.guesses == ["brand set to 'Mango' (from 'MNG (Mango)')"]
+    assert posh.aliases.spell("MNG (Mango)") == "Mango"                   # learned: straight to it next time
+
+
 def test_the_factory_line_is_picked_only_for_the_factory_line(chrome, posh, photos, monkeypatch):
     monkeypatch.setattr(brands, "SEED", {})
     r = render(photos, brand="J.Crew Factory")

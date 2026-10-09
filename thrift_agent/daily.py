@@ -214,6 +214,24 @@ def all_done(s: Settings, db: DB) -> bool:
     return not (w.new_shares or w.processing or w.cards or w.to_publish or w.held)
 
 
+def done_state(s: Settings, db: DB) -> list[str] | None:
+    """WO34: None while there is work; [] when nothing is left on ANY site ("💤 All done"); else the sites that still
+    have listings to put up but are stopped for the window, at their cap or without their Chrome ("💤 Done for now …
+    Vinted catches up next time") — live, those had counted as done and the group heard "safe to close the Mac" while
+    three sets waited for Vinted."""
+    if not all_done(s, db):
+        return None
+    from thrift_agent import crosslist
+    waiting = []
+    for mp in crosslist.enabled(s):
+        states = ("queued", "posting", "dryrun") if crosslist.live(s, mp) else ("queued", "posting")
+        marks = ",".join("?" * len(states))
+        if db.conn.execute(f"SELECT 1 FROM listings WHERE marketplace=? AND status IN ({marks}) LIMIT 1",
+                           (mp, *states)).fetchone():
+            waiting.append(mp)
+    return waiting
+
+
 def back_online(w: Work) -> str | None:
     """ "Back online — 2 new shares, 3 items waiting" (WO28 §1), or None when there is no work."""
     parts = [_n(w.new_shares, "new share")] if w.new_shares else []

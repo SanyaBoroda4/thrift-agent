@@ -78,6 +78,30 @@ def strict_pick(ours: str, options: list[str]) -> tuple[str | None, str | None]:
     return None, f"brand left empty (no '{ours}' in its brand list)"
 
 
+def candidates(name: str | None, aliases: "Aliases | None" = None) -> list[str]:
+    """The names to try for a brand on every site, in order (WO34, the owner: "MNG (Mango)" left the brand empty on
+    Poshmark and Depop): the full name and its known spelling, then each part of a two-part name ("MNG", "Mango" —
+    split at brackets and slashes, never at "&": H&M), each part's known spelling. One entry per name (case ignored)."""
+    if not name or not name.strip():
+        return []
+    parts = [p.strip(" -") for p in re.split(r"[()\[\]/]", name) if p.strip(" -")]
+    out: list[str] = []
+    for n in [name.strip(), *(parts if len(parts) > 1 else [])]:
+        for v in (n, aliases.spell(n) if aliases is not None else None):
+            if v and key(v) and key(v) not in {key(o) for o in out}:
+                out.append(v)
+    return out
+
+
+def pick_any(names: list[str], options: list[str]) -> tuple[str | None, str | None]:
+    """The first of our names (candidates()) a site's list has, case and punctuation aside — then, for the full name
+    only, pick()'s looser rules (Poshmark). (choice, guess) as pick(): a different spelling is reported."""
+    for n in names:
+        if same := [o for o in dict.fromkeys(options) if o and key(o) == key(n)]:
+            return same[0], None if same[0].lower() == names[0].lower() else f"brand set to '{same[0]}' (from '{names[0]}')"
+    return pick(names[0], options) if names else (None, None)
+
+
 def for_settings(s) -> "Aliases":
     """The aliases of these settings' file (paths.brand_aliases), or the seed alone when none is set."""
     return Aliases(s.path("brand_aliases") if s.get("paths.brand_aliases") else None)

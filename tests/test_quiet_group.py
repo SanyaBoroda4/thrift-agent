@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from cards import ALL_DONE, card as card_of
 from thrift_agent import alerts, approve, cli, daily, notify, pipeline
 from thrift_agent.config import Settings, settings
 from thrift_agent.db import DB
@@ -18,6 +19,12 @@ from thrift_agent.telegram import Bot
 CHAT, OPS, OWNER = 100, 5550001, 7
 LINE = "Gently pre-loved, please see photos for condition."
 TITLE = "Tory Burch Red Ballet Flats size 7.5"
+NAME = "Tory Burch Ballet Flats"     # WO34: the card's short name
+
+
+def _cards(bot):
+    """The group's cards (WO34): HTML messages through the bot."""
+    return [p["text"] for m, p in bot.calls if m == "sendMessage" and p.get("parse_mode") == "HTML"]
 
 
 class FakeBot(Bot):
@@ -158,8 +165,8 @@ def test_a_whole_run_shows_the_group_only_the_card_and_posted(mac, tmp_path, mon
             if m == "editMessageReplyMarkup"] == ["✓ $85 — queued"]    # the card itself says it
     _publish(monkeypatch, s, db)                                       # the poster lists it
     window.update()
-    assert said["group"] == [f"Posted ✓ {TITLE} — $85 · Poshmark https://poshmark.com/listing/{iid}\n"
-                             "✓ All done — safe to close the Mac."]     # the group: the card and this, nothing else
+    assert _cards(group) == [card_of(NAME, 85, [("poshmark", f"https://poshmark.com/listing/{iid}")], ALL_DONE)]
+    assert said["group"] == []                                         # the group: the card and this, nothing else
     assert any(t.startswith("Poster started (LIVE)") for t in said["ops"])          # the ops chat: the rest
     status = [p["text"] for m, p in ops.calls if m in ("sendMessage", "editMessageText")]
     assert status and status[-1] == "✓ All done — safe to close the Mac."          # the status message: ops
@@ -174,9 +181,8 @@ def test_all_done_comes_only_with_the_windows_last_listing(mac, tmp_path, monkey
         pipeline.set_price(s, db, iid, 85)
     _publish(monkeypatch, s, db)                                       # the first listing: one more to go
     _publish(monkeypatch, s, db)                                       # the second: the window's last
-    assert said["group"] == [f"Posted ✓ {TITLE} — $85 · Poshmark https://poshmark.com/listing/{a}",
-                             f"Posted ✓ {TITLE} — $85 · Poshmark https://poshmark.com/listing/{b}\n"
-                             "✓ All done — safe to close the Mac."]
+    assert _cards(group) == [card_of(NAME, 85, [("poshmark", f"https://poshmark.com/listing/{a}")]),
+                             card_of(NAME, 85, [("poshmark", f"https://poshmark.com/listing/{b}")], ALL_DONE)]
 
 
 def test_a_card_still_waiting_keeps_all_done_back(mac, tmp_path, monkeypatch):
@@ -185,7 +191,7 @@ def test_a_card_still_waiting_keeps_all_done_back(mac, tmp_path, monkeypatch):
     cli._tick(s, db)
     pipeline.set_price(s, db, a, 85)                                   # b still waits for its price
     _publish(monkeypatch, s, db)
-    assert said["group"] == [f"Posted ✓ {TITLE} — $85 · Poshmark https://poshmark.com/listing/{a}"]
+    assert _cards(group) == [card_of(NAME, 85, [("poshmark", f"https://poshmark.com/listing/{a}")])]
 
 
 def test_no_traceback_or_errno_ever_reaches_the_group(mac, tmp_path, monkeypatch):

@@ -551,14 +551,20 @@ The owner shares retailer screenshots (product page with price, style name, colo
   restart re-sends only the open message; older unanswered copies are closed (their buttons still work). Info-only
   messages are not queued; a successful dry-run says nothing unless `poster.notify_dry_runs`.
 - **A quiet group (owner rule, WO29).** The GROUP (`TELEGRAM_CHAT_ID`) gets only: (a) the cards and the allowed
-  questions; (b) ONE line per item, ONCE — the first time its listings go out, when its marketplaces are done (WO30,
-  WO32b, `crosslist.announce`): "Posted ✓ <title> — $X · Poshmark <url> · Depop <url> · Vinted <url>" (+ " — check: …"
-  when a poster guessed; a marketplace that failed or was skipped is left out); while one of its sites is unconfirmed
-  the ⚠️ question is the item's only group message (the line waits for the answer); a site added to an item already
-  announced (a supervised publish, the backfill, a retry, a 'posted <url>' reply) is an ops line only, "Added: <title> ·
-  Depop <url>" (the items live before WO32b counted as announced once: kv `announced_migrated`), and on the window's
-  LAST one (`daily.all_done`: nothing to process, no card waiting,
-  nothing left to publish on ANY marketplace) a second line "✓ All done — safe to close the Mac."; (c) action-needed
+  questions; (b) ONE card per item (WO34, the owner: separate lines, little text, some emoji; `crosslist.card_text`,
+  HTML, link previews off): "✅ <short name> · $X", an empty line, then "🟣 Poshmark", "🔴 Depop", "🟢 Vinted" each on
+  its own line with an empty line between — the site's name is the link (`<a href>`); a site that hasn't posted yet
+  "⏳ Vinted — later" (no link); a site that failed for good or was skipped is left out. Sent once the item's sites are
+  settled (WO33 A3); a site that posts later EDITS that same message (outbox kind `posted`) — never a new one. The short
+  name is the copy step's `short_name` (brand + item, ≤ 6 words, no size, no colour; `copy.short_name`), for older items
+  the title cut at a word near 40 characters. Nothing technical: the posters' notes ("brand left empty …") go to the ops
+  chat as ONE "Check — <title>:" message per item, each note once (event `checks_said`). While one of its sites is
+  unconfirmed the ⚠️ question waits as before; an item announced before WO34 (the old one-liner) gets an ops "Added:"
+  line. The window's last card ends with "💤 All done — you can close the Mac." when nothing is left on ANY site, or
+  "💤 Done for now — you can close the Mac. Vinted catches up next time." when a site stopped for the window, at its cap
+  or without its Chrome still has listings (`daily.done_state`; WO34 — live, those had counted as done and the group
+  heard "safe to close the Mac" while three sets waited for Vinted); the 💤 line rides on the newest card (kv
+  `posted_done_carrier`: the card that had it is edited without it, and its wording follows the state); (c) action-needed
   alerts, one plain sentence each, once per episode: "Depop needs you to log in on the Mac." / "Vinted asks for a
   check — open it on the Mac." (WO30); 🔋 battery low; the
   Mac slept while publishing / "I pressed List but can't see it" (reply `posted <url>` / `retry`); "Can't read the
@@ -745,7 +751,10 @@ Every item live on Poshmark goes on Depop, then Vinted — the same approved pri
     model with the enum). Depop: Source Preloved (Vintage only with the label's vintage cue), Age Modern unless a
     decade, optional attributes only the facts support (material, dress-length, bottom-style, body-fit). Package size
     from a weight class (X_SMALL only where the Vinted leaf offers it).
-  - Brand at fill time: Vinted's brands API / Depop's brand menu, exact or normalised only (`brands.strict_pick`);
+  - Brand at fill time (WO34, on all three sites): the full name, its known spelling, then each part of a two-part name
+    ("MNG (Mango)" → "MNG", "Mango"; `brands.candidates`), case aside — the first a site lists is picked
+    (`brands.pick_any`; the extension's `T.brandNames` with the job's `brand_candidates`); otherwise as before:
+    Vinted's brands API / Depop's brand menu, exact or normalised only (`brands.strict_pick`);
     none → empty, said in "Posted ✓ … — check:"; a Vinted brand flagged for authenticity / luxury: listed, ops note.
   - Copy: Depop — the Poshmark title as the first line, a blank line, the Poshmark description, ≤ 5 hashtags (brand,
     item, style, colour, era), ≤ 1000 characters (only the body is trimmed). Vinted — Poshmark's title and
@@ -938,9 +947,9 @@ sequential loop): an approved item goes to every site at once — about its slow
 - **The group line (A3):** once every enabled site of the item is settled (`crosslist.settled`): posted, failed (an
   unconfirmed publish too — its ⚠️ question waits), skipped, drafted, dry-run; or queued on a site stopped for the
   window, at its daily cap, or whose extension has been away 10 minutes since the item's first live listing (a
-  moment's disconnect never sends it early; the housekeeping sweeps such items). Links Poshmark · Depop · Vinted; a
-  site confirmed later is an ops "Added:" line. "✓ All done" only when nothing is left to list and no take-down is
-  pending (`daily.all_done`).
+  moment's disconnect never sends it early; the housekeeping sweeps such items). The card (WO34, see Telegram): a
+  site confirmed later edits it. "💤 All done" only when nothing is left to list on any site and no take-down is pending;
+  "💤 Done for now … <Site> catches up next time." when only a stopped site waits (`daily.done_state`).
 - **The extension (A2):** one job per site (`Bridge._busy(site)`, `_next`), each site in its own window of the Thrift
   Chrome (`siteWindow`: found by its idle page `ext/idle.html?site=…`, made once if missing, never focused), each job
   in a tab of its own that is its window's active tab, captured per window; a job's photos are served under its site

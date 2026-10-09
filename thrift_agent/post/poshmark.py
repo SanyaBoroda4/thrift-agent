@@ -641,22 +641,33 @@ class PoshmarkPoster(Poster):
         if not r.brand:
             return
         ours = self.aliases.spell(r.brand) or r.brand
+        names = list(dict.fromkeys([ours, *brands.candidates(r.brand, self.aliases)]))   # WO34: then each part
         box = SEL["brand"](page)
         options: list[str] = []
-        for query in _brand_queries(ours):
-            await _type(box, _straight(query))
-            picked, options = await self._choose(page, SEL["brand_options"](page), ours, timeout_ms=SUGGEST_TIMEOUT_MS)
-            if picked:                                     # exact, or a spelling learned before: nothing to report
-                self.chosen["brand"] = ours
-                await settle(page)
-                return
-            if options:
-                break
-        choice, guess = brands.pick(ours, options)
-        if choice is not None and (await self._choose(page, SEL["brand_options"](page), choice))[0]:
+        for name in names:
+            for query in _brand_queries(name):
+                await _type(box, _straight(query))
+                picked, offered = await self._choose(page, SEL["brand_options"](page), name,
+                                                     timeout_ms=SUGGEST_TIMEOUT_MS)
+                if picked:                                 # exact, or a spelling learned before
+                    self.chosen["brand"] = name
+                    if brands.key(name) != brands.key(ours):
+                        self.aliases.learn(r.brand, name)
+                        self.guesses.append(f"brand set to '{name}' (from '{r.brand}')")
+                    await settle(page)
+                    return
+                if offered:
+                    options += [o for o in offered if o not in options]
+                    break
+        choice, guess = brands.pick_any(names, options)
+        shown = choice is not None and (await self._choose(page, SEL["brand_options"](page), choice))[0]
+        if choice is not None and not shown:               # it came from an earlier query: asked for by its own name
+            await _type(box, _straight(choice))
+            shown = (await self._choose(page, SEL["brand_options"](page), choice, timeout_ms=SUGGEST_TIMEOUT_MS))[0]
+        if shown:
             self.chosen["brand"] = choice
             self.aliases.learn(r.brand, choice)
-            guess = f"brand set to '{choice}' (from '{r.brand}')" if choice != r.brand else guess
+            guess = f"brand set to '{choice}' (from '{r.brand}')" if choice.lower() != r.brand.lower() else guess
         else:
             await box.fill("")                             # optional: left empty rather than a wrong brand
             self.chosen["brand"] = None

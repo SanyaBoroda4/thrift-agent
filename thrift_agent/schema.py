@@ -257,6 +257,8 @@ class CopyOut(BaseModel):
     poshmark_style_tags: list[str] = Field(default_factory=list, description="Up to 3 short style tags")
     depop_description: str = Field(min_length=1, description="≤1000 chars INCLUDING the hashtag line")
     depop_hashtags: list[str] = Field(description="Exactly 5, no # sign")
+    short_name: str = Field("", description="The item's short name for the owner's group: brand + item, at most 6 "
+                                            "words, no size, no colour — 'MNG Knit Cardigan & Pants Set'")
 
 
 class Render(BaseModel):
@@ -280,6 +282,7 @@ class Render(BaseModel):
     original_price: int | None = None
     photos: list[str]
     sku: str
+    short_name: str | None = None     # WO34: the group's "✅ <short name> · $X" (brand + item, ≤ 6 words)
 
 
 class Unsupported(BaseModel):

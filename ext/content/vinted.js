@@ -131,23 +131,27 @@
         await T.step("brand", st, async () => {
           await open("brand");
           const search = await T.waitFor(S().brand.search, { timeout: 3000 });
-          await T.type(search || (await T.need(S().brand.selectors, "brand")), f.brand);
-          let rows = [], texts = [];
-          const { choice, guess } = (await T.until(() => {     // Vinted's list answers: until our brand shows, 5 s
-            rows = T.$$(S().rows.selectors).filter(T.visible);
-            texts = rows.map(rowText);
-            const p = T.strictPick(f.brand, texts);
-            return p.choice ? p : null;
-          }, 5000)) || { choice: null, guess: null };
-          if (!choice) {
-            await T.screenshot("menu-brand");
-            st.guesses.push(`brand left empty (Vinted has no '${f.brand}')`);
-            escape();
-            return;
+          const box = search || (await T.need(S().brand.selectors, "brand"));
+          for (const name of T.brandNames(f)) {            // WO34: the full name, then each part ("MNG", "Mango")
+            await T.type(box, name);
+            let rows = [], texts = [];
+            const { choice, guess } = (await T.until(() => {   // Vinted's list answers: until the name shows, 5 s
+              rows = T.$$(S().rows.selectors).filter(T.visible);
+              texts = rows.map(rowText);
+              const p = T.strictPick(name, texts);
+              return p.choice ? p : null;
+            }, 5000)) || { choice: null, guess: null };
+            if (choice) {
+              await T.click(rows[texts.indexOf(choice)]);
+              T.picked(st, "brand", f.brand, choice);
+              if (name !== f.brand) st.guesses.push(`brand set to '${choice}' (from '${f.brand}')`);
+              else if (guess) st.guesses.push(guess);
+              escape();
+              return;
+            }
           }
-          await T.click(rows[texts.indexOf(choice)]);
-          T.picked(st, "brand", f.brand, choice);
-          if (guess) st.guesses.push(guess);
+          await T.screenshot("menu-brand");
+          st.guesses.push(`brand left empty (Vinted has no '${f.brand}')`);
           escape();
         });
       }

@@ -83,6 +83,8 @@ POSHMARK
   No brand in the facts (unreadable, or the owner says the item has none): the title starts with the item, and no
   brand or designer name appears anywhere — never one guessed from the style.
   Decimal sizes use a dot (7.5), never a comma. No emojis, no ALL CAPS words except brand styling.
+- short_name: the item's name for the owner's chat — brand + item, at most 6 words, no size,
+  no colour ("MNG Knit Cardigan & Pants Set", "Tory Burch Ballet Flats").
 - Sizes in the TITLE are US only, never EU: adults end with title_size ("size 7.5"); kids shoes use title_size
   verbatim ("Toddler size 7.5" / "Little Kid size 13" / "Big Kid size 4"), never a bare "size 7.5" and never
   "EU 24" in the title. The kids groups are Poshmark's (Toddler up to 12C, Little Kid 12.5-13.5C and 1-3Y, Big Kid
@@ -334,6 +336,31 @@ def ensure_title_size(title: str, facts: Facts) -> str:
             return title
         return f"{title[:last.start()]}{phrase}{title[last.end():]}".strip()
     return f"{title.rstrip()} {phrase}"
+
+
+SHORT_WORDS, SHORT_CHARS = 6, 40
+
+
+def short_name(proposed: str | None, title: str, facts: Facts | None = None) -> str:
+    """The item's short name for the group's "✅ <short name> · $X" (WO34, the owner: brand + item, about 6 words at
+    most, no size, no colour): the copy step's own, when it is that; else the title, its size phrase and colours taken
+    out, cut at a word near 40 characters (the items from before WO34 have only a title)."""
+    colors = {c.lower() for c in (facts.colors if facts else [])} | {w.lower() for w in
+                                                                     ((facts.color_name or "").split() if facts else [])}
+
+    def clean(text: str) -> str:
+        text = re.sub(r"\b(?:(?:Toddler|Little Kid|Big Kid)\s+)?size\s+\S+", "", text or "", flags=re.I)
+        words = [w for w in text.split() if w.lower().strip(",.") not in colors]
+        return re.sub(r"\s{2,}", " ", " ".join(words)).strip(" ,-·")
+
+    mine = clean(proposed or "")
+    if mine and len(mine.split()) <= SHORT_WORDS and len(mine) <= SHORT_CHARS + 15:
+        return mine
+    text = clean(title)
+    if len(text) <= SHORT_CHARS:
+        return text
+    cut = text[:SHORT_CHARS + 1].rsplit(" ", 1)[0]
+    return re.sub(r"\s*(?:&|and|with|in|of|-)$", "", cut, flags=re.I).strip(" ,-·") or text[:SHORT_CHARS]
 
 
 def fix_title(title: str, facts: Facts) -> str:

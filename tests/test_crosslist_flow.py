@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 from ext_fake import FakeExtension
 
+from cards import ALL_DONE, card, done_for_now
 from thrift_agent import approve, crosslist, daily, notify, pipeline
 from thrift_agent.bridge import EXT_DIR
 from thrift_agent.catalogs.common import MappingError
@@ -24,6 +25,7 @@ from thrift_agent.post.ext_driver import ExtensionPoster
 from thrift_agent.schema import Render
 
 TITLE = "Tory Burch Red Ballet Flats size 7.5"
+NAME = "Tory Burch Red Ballet Flats"           # WO34: the card's short name (no size)
 RENDER = Render(marketplace="poshmark", title=TITLE, description="Red flats.", tags=[], brand="Tory Burch",
                 department="Women", category="Shoes", subcategory="Flats & Loafers", size="7.5", colors=["Red"],
                 condition="good", price=85, photos=[], sku="i_1")
@@ -213,9 +215,9 @@ def test_one_item_on_three_marketplaces_one_line(tmp_path, loop):
     ps = _posters()
     run(s, db, ps)
     assert [len(p.calls) for p in ps.values()] == [1, 1, 1]
-    assert said.group == [f"Posted ✓ {TITLE} — $85 · Poshmark https://poshmark.com/listing/{iid} · Depop "
-                          f"https://www.depop.com/products/shop-{iid.replace('_', '-')}/ · Vinted https://www.vinted.com/items/{iid}\n"
-                          "✓ All done — safe to close the Mac."]
+    assert said.group == [card(NAME, 85, [("poshmark", f"https://poshmark.com/listing/{iid}"),
+                                          ("depop", f"https://www.depop.com/products/shop-{iid.replace('_', '-')}/"),
+                                          ("vinted", f"https://www.vinted.com/items/{iid}")], ALL_DONE)]   # WO34
     assert all(30 <= p <= 90 for p in said.pauses[:2]) and said.pauses[2] >= 150      # then the human gap
     rows = {r["marketplace"]: r for r in db.listings_for(iid)}
     assert [rows[m]["status"] for m in ("poshmark", "depop", "vinted")] == ["posted"] * 3
@@ -232,8 +234,7 @@ def test_dry_run_marketplaces_send_their_screenshot_to_the_ops_chat(tmp_path, lo
     ps = _posters(depop=Stub("depop", Outcome("dryrun")), vinted=Stub("vinted", Outcome("dryrun")))
     run(s, db, ps)
     assert ps["depop"].calls == [(iid, True)] and ps["vinted"].calls == [(iid, True)]   # dry: never published
-    assert said.group == [f"Posted ✓ {TITLE} — $85 · Poshmark https://poshmark.com/listing/{iid}\n"
-                          "✓ All done — safe to close the Mac."]
+    assert said.group == [card(NAME, 85, [("poshmark", f"https://poshmark.com/listing/{iid}")], ALL_DONE)]
     dry = [m for m in said.ops if m.startswith("🧪 dry-run")]
     assert len(dry) == 2 and "condition: Used - Good" in dry[0] and "category: Women > Footwear" in dry[0]
     assert [r["status"] for r in db.listings_for(iid)] == ["posted", "dryrun", "dryrun"]
@@ -254,7 +255,7 @@ def test_two_items_settled_together_all_done_on_the_last_line_only(tmp_path, loo
         db.set_item(iid, status="posted")
     assert crosslist.announce(s, db, a) and crosslist.announce(s, db, b)
     assert len(said.group) == 2 and "All done" not in said.group[0]
-    assert said.group[1].endswith("✓ All done — safe to close the Mac.") and f"/listing/{b}" in said.group[1]
+    assert said.group[1].endswith(ALL_DONE) and f"/listing/{b}" in said.group[1]
 
 
 def test_all_done_only_when_no_marketplace_has_anything_left(tmp_path, loop):
@@ -264,8 +265,8 @@ def test_all_done_only_when_no_marketplace_has_anything_left(tmp_path, loop):
     a, b = _item(db, 1), _item(db, 2)
     run(s, db, _posters())
     assert len(said.group) == 2
-    assert "All done" not in said.group[0] and said.group[0].startswith(f"Posted ✓ {TITLE} — $85 · Poshmark ")
-    assert said.group[1].endswith("✓ All done — safe to close the Mac.") and f"/listing/{b}" in said.group[1]
+    assert "All done" not in said.group[0] and said.group[0].startswith(f"✅ {NAME} · $85\n\n🟣 <a href=")
+    assert said.group[1].endswith(ALL_DONE) and f"/listing/{b}" in said.group[1]
     assert f"/listing/{a}" in said.group[0]
 
 
@@ -283,7 +284,8 @@ def test_a_value_that_cant_be_mapped_skips_only_that_marketplace(tmp_path, loop,
     ps = _posters()
     run(s, db, ps)
     assert ps["depop"].calls == [] and db.listing(iid, "depop")["status"] == "skipped"
-    assert said.group[0].startswith(f"Posted ✓ {TITLE} — $85 · Poshmark https://poshmark.com/listing/{iid} · Vinted ")
+    assert said.group[0].startswith(card(NAME, 85, [("poshmark", f"https://poshmark.com/listing/{iid}")]) +
+                                    '\n\n🟢 <a href="https://www.vinted.com/items/')   # Depop skipped: left out
     assert any(m.startswith(f"⏭ Depop skipped ({iid})") and "can't map" in m for m in said.ops)
 
 
@@ -297,7 +299,9 @@ def test_a_logged_out_marketplace_stops_for_the_window_with_one_plain_line(tmp_p
     assert said.group.count("Depop needs you to log in on the Mac.") == 1
     assert len(ps["depop"].calls) == 1                                     # not tried again this window
     assert [db.listing(i, "depop")["status"] for i in (a, b)] == ["queued", "queued"]
-    assert all(" · Vinted " in line for line in said.group if line.startswith("Posted ✓"))
+    cards = [m for m in said.group if m.startswith("✅")]                     # WO34: Depop waits, said plainly
+    assert cards and all("Vinted</a>" in c and "⏳ Depop — later" in c for c in cards)
+    assert cards[-1].endswith(done_for_now("depop"))                     # not "All done": Depop catches up
     assert crosslist.blocked(db, "depop")
     db.kv_set(daily.SESSION_KEY, "next-window")                           # the Mac opened again
     ps["depop"] = Stub("depop", Outcome("posted", url="https://www.depop.com/products/shop-{slug}/"))
@@ -321,7 +325,7 @@ def test_a_failure_before_publishing_is_retried_next_window_three_times(tmp_path
     row = db.listing(iid, "vinted")
     assert len(ps["vinted"].calls) == 3 and row["status"] == "skipped" and "3 attempts" in row["error"]
     assert any(m.startswith(f"⏭ Vinted skipped for {iid} after 3 attempts") for m in said.ops)
-    told = [m for m in said.group if "Vinted" in m and not m.startswith("Posted ✓")]   # WO33: one line, a reply
+    told = [m for m in said.group if "Vinted" in m and not m.startswith("✅")]   # WO33: one line, a reply
     assert len(told) == 1 and told[0].startswith("⏭ ") and "Reply 'retry'" in told[0]  # settles it, never a command
     assert not any("thrift " in m for m in [*said.group, *said.ops])
 
@@ -351,7 +355,7 @@ def test_the_daily_cap_is_per_marketplace(tmp_path, loop):
     ps = _posters()
     run(s, db, ps)
     assert [len(p.calls) for p in ps.values()] == [2, 1, 1]               # Poshmark has its own cap
-    assert db.listing(b, "depop")["status"] == "queued" and said.group[-1].endswith("safe to close the Mac.")
+    assert db.listing(b, "depop")["status"] == "queued" and said.group[-1].endswith(done_for_now("depop", "vinted"))
 
 
 def test_the_unconfirmed_reply_names_its_marketplace(tmp_path, monkeypatch):
@@ -611,10 +615,97 @@ def test_a_new_item_s_line_waits_for_every_site_to_settle_then_goes_once(tmp_pat
     assert crosslist.announce(s, db, iid) is None and quiet.group == []           # Vinted still in progress
     db.upsert_listing(iid, "vinted", status="posted", url="https://www.vinted.com/items/77")
     text = crosslist.announce(s, db, iid)
-    assert quiet.group == [text] and text.startswith(f"Posted ✓ {TITLE} — $85 · Poshmark https://poshmark.com/")
-    assert "Vinted https://www.vinted.com/items/77" in text and "Depop" not in text
+    assert quiet.group == [text] and text.startswith(f"✅ {NAME} · $85\n\n🟣 <a href=\"https://poshmark.com/")
+    assert '🟢 <a href="https://www.vinted.com/items/77">Vinted</a>' in text and "Depop" not in text
     db.upsert_listing(iid, "depop", status="posted", url=DEPOP_URL, error=None)       # the owner's link, checked
-    assert crosslist.announce(s, db, iid) == f"Added: {TITLE} · Depop {DEPOP_URL}" and len(quiet.group) == 1
+    edited = crosslist.announce(s, db, iid)                                        # WO34: the same card, edited
+    assert f'🔴 <a href="{DEPOP_URL}">Depop</a>' in edited and quiet.group[-1] == edited
+    assert db.conn.execute("SELECT COUNT(*) FROM outbox WHERE kind='posted' AND ref=?", (iid,)).fetchone()[0] == 1
+
+
+class CardBot:
+    """The group bot as far as the card goes (WO34): sends and edits, by message id."""
+
+    def __init__(self):
+        self.chat_id, self.next_id, self.calls = "100", 40, []
+
+    def send_message(self, text, buttons=None, reply_to=None, parse_mode=None):
+        self.next_id += 1
+        self.calls.append(("send", self.next_id, text, parse_mode))
+        return self.next_id
+
+    def edit_message(self, message_id, text, parse_mode=None):
+        self.calls.append(("edit", message_id, text, parse_mode))
+
+    def texts(self):
+        """Each message's text now, by id."""
+        now = {}
+        for kind, mid, text, _ in self.calls:
+            now[mid] = text
+        return now
+
+
+def test_the_card_is_edited_in_place_and_the_sleep_line_rides_on_the_newest(tmp_path, quiet, monkeypatch):
+    """WO34, the owner: one message per item, edited — never a second one — when a site posts later; "💤 Done for now —
+    … Vinted catches up next time." while a stopped site still has listings, "💤 All done" once it caught up; the 💤
+    line is the newest card's only; the posters' notes go to the ops chat, once each."""
+    from thrift_agent import approve
+    bot = CardBot()
+    monkeypatch.setattr(approve, "bot_for", lambda _s: bot)
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    note = {"guesses": ["brand left empty (no 'MNG (Mango)' in its brand list)"],
+            "checks": []}
+
+    def listed(n):
+        iid = _item(db, n)
+        db.set_item(iid, status="posted")
+        db.upsert_listing(iid, "poshmark", status="posted", url=f"https://poshmark.com/listing/{iid}")
+        db.upsert_listing(iid, "depop", status="posted", url=f"https://www.depop.com/products/shop-{iid}/",
+                          fields_json=note)
+        db.upsert_listing(iid, "vinted", status="queued")
+        return iid
+    crosslist.block(db, "vinted", "failures: 3 in a row")                  # Vinted stopped for the window
+    a = listed(1)
+    first = crosslist.announce(s, db, a)
+    assert first.endswith(done_for_now("vinted")) and "⏳ Vinted — later" in first
+    b = listed(2)                                                          # the next item, a while later
+    crosslist.announce(s, db, b)
+    sends = [c for c in bot.calls if c[0] == "send"]
+    assert len(sends) == 2 and all(c[3] == "HTML" for c in bot.calls)
+    now = bot.texts()
+    assert "💤" not in now[sends[0][1]] and now[sends[1][1]].endswith(done_for_now("vinted"))   # the newest only
+    db.upsert_listing(a, "vinted", status="posted", url="https://www.vinted.com/items/1")    # next window: Vinted
+    db.upsert_listing(b, "vinted", status="posted", url="https://www.vinted.com/items/2")
+    crosslist.announce(s, db, a)
+    crosslist.announce(s, db, b)
+    assert len([c for c in bot.calls if c[0] == "send"]) == 2                # edited, never a new message
+    now = bot.texts()
+    assert '🟢 <a href="https://www.vinted.com/items/1">Vinted</a>' in now[sends[0][1]]
+    assert "💤" not in now[sends[0][1]] and now[sends[1][1]].endswith(ALL_DONE)   # caught up: All done
+    checks = [m for m in quiet.ops if m.startswith("Check —")]
+    assert len(checks) == 2 and all(m.count("brand left empty") == 1 for m in checks)   # once per item, no repeat
+    assert not any("check" in t.lower() for t in now.values())             # nothing technical in the group
+
+
+def test_the_short_name_is_the_copy_steps_else_the_title_cut(facts):
+    from thrift_agent.brain import copy as copywriter
+    f = facts(colors=["Tan"], color_name="tan and brown")
+    assert copywriter.short_name("MNG Knit Cardigan & Pants Set", "x", f) == "MNG Knit Cardigan & Pants Set"
+    assert copywriter.short_name("", "MNG (Mango) Knit Cardigan & Wide Leg Pants Tan Geometric 2-Piece Set size S",
+                                 f) == "MNG (Mango) Knit Cardigan & Wide Leg"      # cut at a word near 40
+    assert copywriter.short_name("a much too long name with seven words", "Vince Silk Tank size M", f) == \
+        "Vince Silk Tank"                                                  # over 6 words: the title's
+    assert copywriter.short_name("Tory Burch Ballet Flats size 7.5", "x", f) == "Tory Burch Ballet Flats"
+
+
+def test_brand_candidates_and_the_first_one_a_site_lists():
+    from thrift_agent import brands
+    assert brands.candidates("MNG (Mango)") == ["MNG (Mango)", "MNG", "Mango"]
+    assert brands.candidates("H&M") == ["H&M"] and brands.candidates(None) == []
+    assert brands.pick_any(["MNG (Mango)", "MNG", "Mango"], ["Mango Kids", "MANGO"]) == (
+        "MANGO", "brand set to 'MANGO' (from 'MNG (Mango)')")               # case aside, the part it lists
+    assert brands.pick_any(["Zara"], ["ZARA"]) == ("ZARA", None)            # only the case differs: no note
 
 
 def test_items_live_before_wo32b_count_as_announced(tmp_path, quiet):
