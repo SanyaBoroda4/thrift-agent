@@ -391,31 +391,44 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML
 def poshmark_live(url: str) -> bool | None:
     """Is this Poshmark listing still for sale? Its public page: listingDetails.inventory.status "available" → True;
     any other status, or a page that's gone (404 / 410) → False; a page that can't be read → None (unknown)."""
+    return poshmark_page(url)[0]
+
+
+def poshmark_page(url: str) -> tuple[bool | None, int | None]:
+    """(still for sale — as poshmark_live —, its price today: listingDetails.price_amount, whole dollars, or None)."""
     import httpx
 
     from thrift_agent.harvest import parse_state
     try:
         r = httpx.get(url, headers={"User-Agent": UA, "Accept": "text/html"}, timeout=20, follow_redirects=True)
     except httpx.HTTPError:
-        return None
+        return None, None
     if r.status_code in (404, 410):
-        return False
+        return False, None
     if r.status_code != 200:
-        return None
+        return None, None
     try:
         details = parse_state(r.text).get("$_listing_details", {}).get("listingDetails", {})
     except ValueError:
-        return None
+        return None, None
     status = ((details.get("inventory") or {}).get("status") or "").lower()
-    return None if not status else status == "available"
+    try:
+        price = round(float((details.get("price_amount") or {}).get("val")))
+    except (TypeError, ValueError):
+        price = None
+    return (None if not status else status == "available"), (price or None)
 
 
 def backfill(s: Settings, db: DB, mps: list[str], check: bool = True, dry: bool = False,
-             live=poshmark_live) -> list[tuple[str, str]]:
+             live=None, page=None) -> list[tuple[str, str]]:
     """`thrift crosslist --backfill`: every item live on Poshmark that isn't on these marketplaces yet, oldest first,
     queued — after its Poshmark page says it is still for sale (sold, removed or unreadable: left out). The poster
-    then takes them within each marketplace's daily cap. `dry`: only says what it would queue."""
-    out = []
+    then takes them within each marketplace's daily cap. `dry`: only says what it would queue.
+    At each item's price on Poshmark TODAY (WO33, the owner: some were changed there by hand): a price that differs
+    from ours becomes the item's price — the one Depop and Vinted get — and the differences go to the ops chat in one
+    message. (`live`: a for-sale check without a price, the tests'.)"""
+    read = page or ((lambda url: (live(url), None)) if live is not None else poshmark_page)
+    out, changed = [], []
     rows = db.conn.execute("SELECT item_id, url FROM listings WHERE marketplace='poshmark' AND status='posted' "
                            "AND url IS NOT NULL ORDER BY posted_at, item_id").fetchall()
     for row in rows:
@@ -423,17 +436,37 @@ def backfill(s: Settings, db: DB, mps: list[str], check: bool = True, dry: bool 
         missing = [mp for mp in mps if db.listing(iid, mp) is None]
         if not missing:
             continue
+        note = ""
         if check:
-            state = live(row["url"])
+            state, price = read(row["url"])
             if state is None:
                 out.append((iid, "couldn't read its Poshmark page: left out"))
                 continue
             if not state:
                 out.append((iid, "no longer for sale on Poshmark: left out"))
                 continue
+            ours = int((db.item(iid) or {})["owner_price"] or 0)
+            if price and price != ours:
+                note = f" — Poshmark price ${price} (ours ${ours})" if ours else f" — Poshmark price ${price}"
+                changed.append((iid, ours, price))
+                if not dry:
+                    db.set_item(iid, owner_price=price)
+                    db.upsert_listing(iid, "poshmark", price=price)
+                    db.log(iid, "price_from_poshmark", {"was": ours or None, "now": price})
         if dry:
-            out.append((iid, f"would queue {', '.join(missing)}"))
+            out.append((iid, f"would queue {', '.join(missing)}{note}"))
         else:
             queue(s, db, iid, missing, why="backfill")
-            out.append((iid, f"queued {', '.join(missing)}"))
+            out.append((iid, f"queued {', '.join(missing)}{note}"))
+    if changed and not dry:
+        lines = [f"• {_title_of(db, iid)}: ${ours} → ${price}" if ours else f"• {_title_of(db, iid)}: ${price}"
+                 for iid, ours, price in changed]
+        text = (f"💲 Backfill at today's Poshmark prices — {len(changed)} differ from our records (now the price on "
+                f"Depop and Vinted too):\n" + "\n".join(lines))
+        notify.say(text[:3900])
     return out
+
+
+def _title_of(db: DB, iid: str) -> str:
+    it = db.item(iid)
+    return ((loads(it["renders"]) or {}).get("poshmark") or {}).get("title") or iid if it else iid

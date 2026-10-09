@@ -163,8 +163,37 @@ class Taker:
             raise self.raises
         return self.result
 
-    async def set_availability(self, ctx, url, available):
+    async def set_availability(self, ctx, url, available, probe=False, shots=None):
         return await self.delist(url)
+
+
+def test_the_owners_take_down_of_one_poshmark_listing(tmp_path, monkeypatch):
+    """`thrift delist --item <item>` (WO33: the Lacoste tee sold on the owner's own Vinted before going live — no sale
+    email could make the task): Not For Sale on Poshmark, the row delisted; an item not live there is left alone."""
+    from thrift_agent.post import takedown
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid, other = _item(db), _item(db, 2)
+    db.upsert_listing(iid, "poshmark", status="posted", url="https://poshmark.com/listing/Lacoste-Tee-6ac2f8dc64865578bc9aed94")
+    taker = Taker()
+
+    async def fake_open(s, sites):
+        assert sites == ["poshmark"]
+        return {"poshmark": taker}, None, None, None
+
+    async def fake_close(bridge, pw, ctx):
+        return None
+    monkeypatch.setattr(takedown, "_open", fake_open)
+    monkeypatch.setattr(takedown, "_close", fake_close)
+    monkeypatch.setattr(takedown.parallel, "delist_ready", lambda mp, poster: None)
+    lines = asyncio.run(takedown.take_down(s, db, iid))
+    assert taker.urls == ["https://poshmark.com/listing/Lacoste-Tee-6ac2f8dc64865578bc9aed94"]
+    assert lines == ["Poshmark: Not For Sale — https://poshmark.com/listing/Lacoste-Tee-6ac2f8dc64865578bc9aed94"]
+    assert db.listing(iid, "poshmark")["status"] == "delisted"
+    assert asyncio.run(takedown.take_down(s, db, iid))[0].endswith("nothing to take down")     # once only
+    assert "nothing to take down" in asyncio.run(takedown.take_down(s, db, other))[0]
+    assert taker.urls == ["https://poshmark.com/listing/Lacoste-Tee-6ac2f8dc64865578bc9aed94"]
+    assert "by hand" in asyncio.run(takedown.take_down(s, db, iid, "vinted"))[0]
 
 
 def test_a_take_down_skips_the_sold_items_queued_rows_and_reports_done(tmp_path, api, said):

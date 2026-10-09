@@ -394,6 +394,32 @@ def test_backfill_queues_what_is_still_live_oldest_first(tmp_path):
     assert crosslist.next_job(s, db) == (old, "depop")
 
 
+def test_backfill_takes_todays_poshmark_price_and_tells_the_ops_chat(tmp_path, monkeypatch):
+    """WO33, the owner: some prices were changed on Poshmark by hand — the backfill lists at each item's price there
+    TODAY: a price that differs becomes the item's (Depop and Vinted get it), one ops message lists the differences;
+    the dry run changes nothing and only says so."""
+    said = []
+    monkeypatch.setattr(notify, "say", lambda text: said.append(text))
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    changed, same = _item(db, 1), _item(db, 2)                               # both approved at $85
+    for n, iid in enumerate((changed, same)):
+        db.upsert_listing(iid, "poshmark", status="posted", url=f"https://poshmark.com/listing/x-{iid}", price=85,
+                          posted_at=f"2026-10-0{n + 1}T10:00:00+00:00")
+    prices = {changed: 65, same: 85}
+    page = lambda url: (True, prices[url.rsplit("-", 1)[-1]])               # noqa: E731
+    dry = crosslist.backfill(s, db, ["depop", "vinted"], dry=True, page=page)
+    assert dry == [(changed, "would queue depop, vinted — Poshmark price $65 (ours $85)"),
+                   (same, "would queue depop, vinted")]
+    assert db.item(changed)["owner_price"] == 85 and not said                # the dry run changes nothing
+    done = crosslist.backfill(s, db, ["depop", "vinted"], page=page)
+    assert done[0] == (changed, "queued depop, vinted — Poshmark price $65 (ours $85)")
+    assert db.item(changed)["owner_price"] == 65 and db.listing(changed, "poshmark")["price"] == 65
+    assert db.item(same)["owner_price"] == 85
+    assert len(said) == 1 and said[0].startswith("💲 Backfill at today's Poshmark prices — 1 differ")
+    assert f"{TITLE}: $85 → $65" in said[0]                                 # owner_price is what Depop and Vinted get
+
+
 def test_a_new_window_lifts_blocks_and_never_retries_an_unconfirmed_publish(tmp_path):
     s = _settings(tmp_path)
     db = DB(s.path("db"))

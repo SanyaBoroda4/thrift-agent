@@ -7,7 +7,11 @@ and the extension bridge's port; the running poster does the same between listin
   kept and sent to the ops chat; nothing clicked, nothing changed. The control is marked verified from that evidence.
 - `thrift relist <item> [--marketplace m]`: our reversible take-down undone where the site allows it — Poshmark's
   Availability back to For Sale; Depop and Vinted are relisted by hand until their controls are recorded. Owner-run
-  only, never automatic."""
+  only, never automatic.
+- `thrift delist --item <item> --marketplace poshmark`: the owner's take-down of one listing — an item sold where the
+  agent doesn't list it (WO33: the Lacoste tee, sold on the owner's own Vinted before going live, so no sale email
+  could make the task): Poshmark's Availability to Not For Sale, the public page read until it's no longer for
+  sale. Owner-run only."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -119,6 +123,31 @@ async def practice(s: Settings, db: DB, url: str) -> str:
     notify.ops_photo(Path(out["shot"]).with_name("practice-depop-delete-window.png"), line)
     db.log(None, "depop_delete_practice", {"url": url, **{k: v for k, v in out.items() if k != "shot"}})
     return line
+
+
+async def take_down(s: Settings, db: DB, iid: str, mp: str = "poshmark") -> list[str]:
+    """The owner's take-down of one listing (`thrift delist --item`): Poshmark's Availability to Not For Sale, then
+    the public page read until it's no longer for sale (`set_availability`); the row `delisted`. Depop and Vinted:
+    by hand here (their take-downs come with a sale's task)."""
+    if mp != "poshmark":
+        return [f"{crosslist.LABEL.get(mp, mp)}: take it down by hand (this command does Poshmark)"]
+    row = db.listing(iid, "poshmark")
+    if row is None or row["status"] != "posted" or not row["url"]:
+        return [f"{iid}: not live on Poshmark ({row['status'] if row else 'no listing'}) — nothing to take down"]
+    ps, bridge, pw, ctx = await _open(s, ["poshmark"])
+    try:
+        if why := parallel.delist_ready("poshmark", ps["poshmark"]):
+            lines = [f"Poshmark: by hand — {why}"]
+        else:
+            ok = await ps["poshmark"].set_availability(ctx, row["url"], False, shots=s.path("failed") / "shots")
+            if ok:
+                db.upsert_listing(iid, "poshmark", status="delisted")
+            lines = [f"Poshmark: {'Not For Sale' if ok else 'the listing is gone' if ok is None else 'not done'} — "
+                     f"{row['url']}"]
+    finally:
+        await _close(bridge, pw, ctx)
+    db.log(iid, "takedown_owner", {"mp": mp, "lines": lines})
+    return lines
 
 
 async def relist(s: Settings, db: DB, iid: str, mp: str | None = None) -> list[str]:

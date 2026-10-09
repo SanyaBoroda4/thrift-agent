@@ -1023,13 +1023,22 @@ def delist(run: bool = typer.Option(False, "--run", help="do the pending take-do
            marketplace: str = typer.Option(None, "--marketplace", help="poshmark | depop | vinted (--verify)"),
            url: str = typer.Option(None, "--url", help="the listing to look at (--verify)"),
            practice: bool = typer.Option(False, "--practice", help="Depop: the bin, the window recorded, Cancel — "
-                                                                   "never Delete listing (WO33)")) -> None:
+                                                                   "never Delete listing (WO33)"),
+           item: str = typer.Option(None, "--item", help="the owner's take-down of this item's listing "
+                                                         "(--marketplace poshmark: Not For Sale)")) -> None:
     """Take-downs (WO33): reversible only — Poshmark Not for Sale, Depop Mark as sold, Vinted Hide. On the Mac, with
     the poster service stopped (the running poster does them by itself between listings)."""
     from thrift_agent.post import takedown
     s = settings()
     if not s.is_prod:
         raise typer.BadParameter("take-downs run on the Mac only (machine_role: prod)")
+    if item:
+        db = _db()
+        if db.item(item) is None:
+            raise typer.BadParameter(f"unknown item {item}")
+        for line in asyncio.run(takedown.take_down(s, db, item, marketplace or "poshmark")):
+            print(escape(line))
+        return
     if practice:
         if marketplace != "depop" or not url:
             raise typer.BadParameter("--practice is for Depop: --marketplace depop --url <listing>")
@@ -1041,7 +1050,8 @@ def delist(run: bool = typer.Option(False, "--run", help="do the pending take-do
         print(asyncio.run(takedown.verify(s, _db(), marketplace, url)))
         return
     if not run:
-        raise typer.BadParameter("say --run (do the pending take-downs) or --verify (record a control)")
+        raise typer.BadParameter("say --run (do the pending take-downs), --verify (record a control) or --item <item> "
+                                 "(the owner's take-down of one listing)")
     for line in asyncio.run(takedown.run_pending(s, _db())):
         print(escape(line))
 

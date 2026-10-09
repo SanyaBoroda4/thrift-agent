@@ -750,7 +750,9 @@ Every item live on Poshmark goes on Depop, then Vinted — the same approved pri
   'retry' (outbox ref `<item>:<marketplace>`).
 - **`thrift crosslist`**: `<item>` queues one already live on Poshmark; `--dry-run <item>` asks the running poster to
   fill both forms (screenshots + fields to the ops chat, nothing saved); `--backfill` queues every item still for sale
-  on Poshmark (its public page checked first), oldest first (`--dry-run`: lists them only).
+  on Poshmark (its public page checked first), oldest first (`--dry-run`: lists them only), at each item's price on
+  Poshmark that day (WO33, the owner: some were changed there by hand — a price that differs becomes the item's
+  `owner_price`, the one Depop and Vinted get, and ONE ops message lists the differences).
 - **Catalog refresh** (`catalogs/refresh.py`): `thrift catalogs refresh` and once a week in the daily window, the poster
   re-reads the same read-only APIs from its logged-in Chrome (WO32: Playwright-driven marketplaces only); a catalog is rewritten only when the new one validates;
   the diff, and a ❗ line for a table row whose target has gone (that row then goes to the model), go to the ops chat.
@@ -987,7 +989,9 @@ Telegram token is read from the Mac's .env, never printed). The same code runs o
   `api_outbox`; the heartbeat (`mac`) every 15 min and on every wake. SQLite stays the posting's source of truth,
   Postgres the sales'.
 - **Commands:** `thrift sales [--open|--unmatched|--all]`, `thrift sales match <sale> <item>`, `thrift delist --run`,
-  `thrift delist --verify …`, `thrift relist <item> [--marketplace m]` (Poshmark For Sale again; Depop/Vinted by hand
+  `thrift delist --verify …`, `thrift delist --item <item> --marketplace poshmark` (the owner's take-down of one
+  listing, Not For Sale — for an item sold where no sale email could make the task; the poster stopped, as a one-off
+  job in the GUI session: `bash deploy/gui_once.sh delist --item <item> --marketplace poshmark`), `thrift relist <item> [--marketplace m]` (Poshmark For Sale again; Depop/Vinted by hand
   until recorded), `thrift sync --push`, `thrift api ping`; `thrift status` adds the API, its mode, open sales,
   pending take-downs and Gmail's last heartbeat.
 - **Dashboard** (`GET /dashboard?code=…`, `api/thrift_api/dashboard.py`): cards (active listings per site, sold this
