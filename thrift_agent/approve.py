@@ -20,6 +20,7 @@ pipeline.py, cli.py and post/runner.py call pump, announce, resend_pending and t
 asks anything (WO27): it guesses and reports its guesses in its "Posted ✓" message."""
 from __future__ import annotations
 
+import contextvars
 import json
 import math
 import os
@@ -35,6 +36,7 @@ from pydantic import ValidationError
 from thrift_agent import notify, pipeline
 from thrift_agent.brain import taxonomy
 from thrift_agent.brain.price import note_floor
+from thrift_agent.brain.gate import SIZE_NOTE
 from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
 from thrift_agent.ingest import segment as seg
@@ -143,6 +145,67 @@ def _ack(db: DB, bot: Bot, kind: str, ref: str, label: str) -> None:
             bot.set_buttons(int(r["message_id"]), [[{"text": label[:60], "callback_data": NOOP}]])
         except Exception as e:  # noqa: BLE001 - "not modified", or gone: the answer is taken either way
             db.log(ref, "card_mark_failed", f"{type(e).__name__}: {e}")
+
+
+def when_posting(s: Settings, now: datetime | None = None) -> str:
+    """When an approved listing goes up, in plain words (WO33): "in the next few minutes" inside the schedule's hours,
+    else "at 8:00" (the hours' start)."""
+    hours = s.get("schedule.hours") or ["08:00", "23:00"]
+    start, end = str(hours[0]), str(hours[1])
+    try:
+        from zoneinfo import ZoneInfo
+        local = (now or _now()).astimezone(ZoneInfo(s.get("schedule.timezone") or "America/New_York"))
+    except Exception:  # noqa: BLE001
+        local = now or _now()
+    if start <= local.strftime("%H:%M") < end:
+        return "in the next few minutes"
+    return f"at {start[1:] if start.startswith('0') else start}"
+
+
+def _sites(s: Settings) -> str:
+    from thrift_agent import crosslist
+    names = ["Poshmark", *(crosslist.LABEL.get(mp, mp) for mp in crosslist.enabled(s))]
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def next_step(s: Settings, db: DB, iid: str) -> str:
+    """What happens next for the item, in the owner's words (WO33): when it goes up and where, or what it still waits
+    for. Never a command: a reply in Telegram is always enough."""
+    from thrift_agent import crosslist
+    it = db.item(iid)
+    if it is None:
+        return "nothing else to do"
+    live = [crosslist.LABEL.get(r["marketplace"], r["marketplace"]) for r in db.listings_for(iid)
+            if r["status"] == "posted"]
+    if live:
+        return f"it's already live on {' and '.join(live)} — a change there is made in the app"
+    status = it["status"]
+    if status == "ready" and it["owner_price"]:
+        return f"it goes up {when_posting(s)} on {_sites(s)}"
+    if status == "new":
+        return "updating the listing now — its card comes back in about a minute"
+    if status == "awaiting_condition":
+        return "next: brand new or worn? (the buttons above)"
+    if status in WAITING_ITEM:
+        gate = loads(it["gate"]) or {}
+        if gate.get("hold"):
+            return "it waits for 'different item' or 'same item'"
+        if gate.get("ask_kids"):
+            return "next: Girls or Boys?"
+        return "its card stays open for the price" if not it["owner_price"] else "its card stays open for the answer"
+    if status == "dropped":
+        return "it's dropped — it won't be listed"
+    return f"it's {status}"
+
+
+_REPLYING: contextvars.ContextVar[bool] = contextvars.ContextVar("replying", default=False)
+
+
+def _confirm(s: Settings, db: DB, bot: Bot, reply_to: int | None, iid: str, understood: str) -> None:
+    """The answer every reply gets (WO33, the owner: replies never go nowhere): what was understood and what happens
+    next, as a reply to her message, at once. Nothing for a button tap (its "✓ …" label is the answer)."""
+    if reply_to is not None and _REPLYING.get():
+        bot.send_message(f"✓ {understood} — {next_step(s, db, iid)}", reply_to=reply_to)
 
 
 def _tell(bot: Bot, mid: int | None, text: str) -> None:
@@ -499,15 +562,19 @@ def item_caption(iid: str, it) -> tuple[str, int | None]:
     posh = renders.get("poshmark") or next(iter(renders.values()), None) or {}
     brand = _ev(facts, "brand")
     lines = [posh.get("title") or " ".join(x for x in (brand, facts.get("item_type")) if x) or iid]
+    notes = list(gate.get("notes") or [])
+    guessed = [n for n in [*(gate.get("info") or []), *notes] if n.startswith(SIZE_NOTE)]   # WO33: shown, never asked
     if size := size_words(posh, facts):
-        lines.append(f"Size {size}")
+        lines.append(f"Size {size}" + (" — my best reading; reply 'size …' to change it" if guessed else ""))
+    elif guessed:
+        lines.append("Size: not read from the photos — reply 'size …'")
     cond = facts.get("condition")
     label = POSH_CONDITION.get(cond, cond or "unknown")
     if (facts.get("condition_evidence") or {}).get("source") == "owner":
         label += " (your answer)"                                   # "Brand new or worn?" was answered
     lines.append(f"Condition: {label}")
     if "questions" in gate:                                         # processed since WO20
-        lines += [f"⚠️ {n}" for n in gate.get("notes") or []]
+        lines += [f"⚠️ {n}" for n in notes if not n.startswith(SIZE_NOTE)]
         if questions := gate.get("questions") or []:
             lines += [f"❓ {q}" for q in questions]
             lines.append("Reply to this card with the answer (a price too if you like), e.g. 'size 8, 45'")
@@ -667,11 +734,71 @@ def handle_update(s: Settings, db: DB, bot: Bot, update: dict) -> str:
     next question (pump). Returns a short description of what happened (for the log); unauthorised or unrelated
     updates are ignored."""
     if not bot.authorized(update):
+        if _from_ops_chat(s, bot, update):
+            return _route_ops(s, db, update)               # WO33: a reply there is enough too
         return "ignored: unauthorized"
     result = _route(s, db, bot, update)
     if not result.startswith("ignored"):
         pump(s, db)
     return result
+
+
+UNMATCHED_LINE = re.compile(r"Unmatched sale on (\w+) \((s_[0-9a-f]+)\)")
+
+
+def _from_ops_chat(s: Settings, bot: Bot, update: dict) -> bool:
+    """A message in the ops chat (the owner's private chat with the bot) from an allowed user."""
+    msg = update.get("message") if isinstance(update, dict) else None
+    chat = notify.ops_chat(s)
+    if not isinstance(msg, dict) or chat is None:
+        return False
+    uid = (msg.get("from") or {}).get("id")
+    return str((msg.get("chat") or {}).get("id")) == str(chat) and isinstance(uid, int) and uid in bot.allowed_users
+
+
+def _route_ops(s: Settings, db: DB, update: dict) -> str:
+    """The owner's reply in the ops chat (WO33: no message may need a terminal command). A reply to "Unmatched sale on
+    <Site> (s_…)" with words from an item's title matches the sale to that item (thrift-api: its take-downs, as for a
+    matched sale email); anything else gets a short hint. Always an answer."""
+    from thrift_agent import sales
+    msg = update["message"]
+    bot, mid = ops_bot_for(s), msg.get("message_id")
+    text = (msg.get("text") or "").strip()
+    quoted = ((msg.get("reply_to_message") or {}).get("text") or "")
+    if bot is None:
+        return "ignored: no ops chat"
+    m = UNMATCHED_LINE.search(quoted)
+    if m is None or not text:
+        bot.send_message("Replies here act on an 'Unmatched sale' message: reply to it with words from the item's "
+                         "title", reply_to=mid)
+        return "ops: hint"
+    sale_id, words = m[2], [w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 1]
+    hits = []
+    for it in db.conn.execute("SELECT id, renders FROM items WHERE renders IS NOT NULL"):
+        title = ((loads(it["renders"]) or {}).get("poshmark") or {}).get("title") or ""
+        if words and all(w in title.lower() for w in words):
+            hits.append((it["id"], title))
+    if len(hits) != 1:
+        bot.send_message("No item's title has all of those words — try others" if not hits else
+                         f"{len(hits)} items match: " + "; ".join(t for _, t in hits[:5]) + " — add a word",
+                         reply_to=mid)
+        return f"ops: {len(hits)} items for {words}"
+    iid, title = hits[0]
+    client = sales.api()
+    if client is None:
+        bot.send_message("Sales tracking isn't set up on the Mac", reply_to=mid)
+        return "ops: no API"
+    try:
+        out = client.post(f"/sales/{sale_id}/match", {"item_id": iid})
+    except sales.ApiError as e:
+        bot.send_message("The sales tracker didn't answer — reply again in a minute", reply_to=mid)
+        return f"ops: match {sale_id} failed: {e}"
+    downs = len(out.get("tasks") or [])
+    bot.send_message(f"✓ Matched to {title}" + (f" — {downs} take-down{'s' if downs != 1 else ''} queued; they run "
+                                                f"before the next listing on each site" if downs else
+                                                " — nothing to take down (history, or not listed elsewhere)"),
+                     reply_to=mid)
+    return f"ops: matched {sale_id} to {iid}"
 
 
 def _route(s: Settings, db: DB, bot: Bot, update: dict) -> str:
@@ -680,6 +807,47 @@ def _route(s: Settings, db: DB, bot: Bot, update: dict) -> str:
     msg = update.get("message")
     if not isinstance(msg, dict):
         return "ignored: unsupported update"
+    token = _REPLYING.set(True)                        # a message from the owner: it gets its answer (WO33)
+    watch = _Answered(bot, msg.get("message_id"))
+    try:
+        result = _route_message(s, db, watch, msg)
+    finally:
+        _REPLYING.reset(token)
+    if not result.startswith("ignored") and not watch.answered and msg.get("message_id") is not None:
+        _fallback_answer(s, db, bot, msg)                # a handler said nothing: never silence (WO33)
+    return result
+
+
+class _Answered:
+    """The bot, noting whether the owner's message got a reply — an answer, a hint or an error (WO33)."""
+
+    def __init__(self, bot: Bot, mid: int | None):
+        self._bot, self._mid, self.answered = bot, mid, False
+
+    def __getattr__(self, name):
+        return getattr(self._bot, name)
+
+    def send_message(self, text: str, buttons: list[list[dict]] | None = None, reply_to: int | None = None) -> int:
+        if reply_to is not None and reply_to == self._mid:
+            self.answered = True
+        return self._bot.send_message(text, buttons, reply_to=reply_to)
+
+
+def _fallback_answer(s: Settings, db: DB, bot: Bot, msg: dict) -> None:
+    """"✓ Got it — <what happens next>" for a reply no handler answered: the item's next step, a batch's cards."""
+    from thrift_agent import crosslist
+    reply = msg.get("reply_to_message")
+    row = db.outbox_lookup(msg["chat"]["id"], reply["message_id"]) if isinstance(reply, dict) else open_message(db)
+    if row is None:
+        return
+    if row["kind"] in ("batch", "regroup"):
+        nxt = "its cards follow"
+    else:
+        nxt = next_step(s, db, crosslist.split_ref(row["ref"])[0])
+    bot.send_message(f"✓ Got it — {nxt}", reply_to=msg["message_id"])
+
+
+def _route_message(s: Settings, db: DB, bot: Bot, msg: dict) -> str:
     text = (msg.get("text") or msg.get("caption") or "").strip()
     mid = msg.get("message_id")
     reply = msg.get("reply_to_message")
@@ -711,7 +879,28 @@ def _route(s: Settings, db: DB, bot: Bot, update: dict) -> str:
         return _reply_category(s, db, bot, ref, text, mid)
     if kind == "unconfirmed":
         return _reply_unconfirmed(s, db, bot, ref, text, mid)
+    if kind == "skipped":
+        return _reply_skipped(s, db, bot, ref, text, mid)
     return f"ignored: unknown outbox kind {kind}"
+
+
+def _reply_skipped(s: Settings, db: DB, bot: Bot, ref: str, text: str, mid: int | None) -> str:
+    """A listing the poster skipped (WO33: a reply settles it, never a command): 'retry' puts it back in line."""
+    from thrift_agent import crosslist
+    iid, mp = crosslist.split_ref(ref)
+    site = crosslist.LABEL.get(mp, mp)
+    if not RETRY_CMD.match(text or ""):
+        bot.send_message(f"Reply 'retry' to try it on {site} again", reply_to=mid)
+        return f"skipped {iid}: unreadable reply {text!r}"
+    try:
+        pipeline.requeue(s, db, iid, mp)
+    except ValueError as e:
+        _tell(bot, mid, str(e))
+        return f"skipped {iid}: retry rejected: {e}"
+    _ack(db, bot, "skipped", ref, "✓ retry — back in line")
+    db.outbox_resolve("skipped", ref)
+    bot.send_message(f"✓ Retry — it goes back in line on {site}, {when_posting(s)}", reply_to=mid)
+    return f"skipped {iid}: retry on {mp}"
 
 
 def _reply_unconfirmed(s: Settings, db: DB, bot: Bot, ref: str, text: str, mid: int | None) -> str:
@@ -732,6 +921,8 @@ def _reply_unconfirmed(s: Settings, db: DB, bot: Bot, ref: str, text: str, mid: 
         _ack(db, bot, "unconfirmed", ref, "✓ link received — checking it")
         if not daily.poster_now(db).running:
             notify.say(f"{iid}: 'posted {address}' queued — the poster isn't running, it checks when it starts")
+        bot.send_message(f"✓ Link received — I check it on {site} between listings and say when it's confirmed",
+                         reply_to=mid)
         return f"unconfirmed {iid}: posted {address} (queued for the poster)"
     if RETRY_CMD.match(text or ""):
         try:
@@ -740,6 +931,7 @@ def _reply_unconfirmed(s: Settings, db: DB, bot: Bot, ref: str, text: str, mid: 
             _tell(bot, mid, str(e))
             return f"unconfirmed {iid}: retry rejected: {e}"
         _ack(db, bot, "unconfirmed", ref, "✓ retry — it goes back in line")
+        bot.send_message(f"✓ Retry — it goes back in line on {site}, {when_posting(s)}", reply_to=mid)
         return f"unconfirmed {iid}: retry"
     bot.send_message(UNCONFIRMED_HINT, reply_to=mid)
     return f"unconfirmed {iid}: unreadable reply {text!r}"
@@ -816,6 +1008,8 @@ def _set_price(s: Settings, db: DB, bot: Bot, iid: str, amount: int, reply_to: i
     else:
         db.outbox_resolve("item", iid)
         _ack(db, bot, "item", iid, f"✓ ${amount} — queued")     # WO29: no "✓ $X — N left" message
+    if not (status in OWNER_WAITING and (loads(db.item(iid)["gate"]) or {}).get("hold")):
+        _confirm(s, db, bot, reply_to, iid, f"${amount}")          # WO33: a reply always gets its answer
     return f"price {iid}: ${amount} ({status})"
 
 
@@ -827,6 +1021,7 @@ def _set_condition(s: Settings, db: DB, bot: Bot, iid: str, choice: str, reply_t
         return f"condition {iid}: rejected {choice!r}: {e}"
     _ack(db, bot, "condition", iid, f"✓ {CONDITION_TAPPED[choice]}")
     db.outbox_resolve("condition", iid)
+    _confirm(s, db, bot, reply_to, iid, CONDITION_TAPPED[choice])
     return f"condition {iid}: {choice}"
 
 
@@ -838,6 +1033,7 @@ def _set_kids(s: Settings, db: DB, bot: Bot, iid: str, choice: str, reply_to: in
         return f"kids {iid}: rejected {choice!r}: {e}"
     _ack(db, bot, "kids", iid, f"✓ {choice.title()}")
     db.outbox_resolve("kids", iid)
+    _confirm(s, db, bot, reply_to, iid, choice.title())
     return f"kids {iid}: {choice} ({status})"
 
 
@@ -939,6 +1135,7 @@ def _set_cover(s: Settings, db: DB, bot: Bot, iid: str, n: int, reply_to: int | 
         _tell(bot, reply_to, str(e))
         return f"cover {iid}: rejected {n}: {e}"
     _ack(db, bot, "item", iid, f"✓ cover: photo {n}")
+    _confirm(s, db, bot, reply_to, iid, f"Cover: photo {n}")
     if status in WAITING_ITEM:
         db.outbox_resolve("item", iid)                 # the card comes again with its new cover
     return f"cover {iid}: photo {n} ({status})"
@@ -955,6 +1152,7 @@ def _set_no_brand(s: Settings, db: DB, bot: Bot, iid: str, reply_to: int | None)
         return f"nobrand {iid}: rejected: {e}"
     if status not in OWNER_WAITING:                    # a card still open for its price stays as it is
         _ack(db, bot, "item", iid, "✓ No brand" + (" — its card follows" if status == "new" else ""))
+        _confirm(s, db, bot, reply_to, iid, "No brand")
         db.outbox_resolve("item", iid)
     return f"nobrand {iid}: ({status})"
 
@@ -977,6 +1175,7 @@ def _set_category(s: Settings, db: DB, bot: Bot, iid: str, path: dict, reply_to:
         return f"category {iid}: rejected {path}: {e}"
     label = taxonomy.path_label(path)
     _ack(db, bot, "category", iid, f"✓ {label}")
+    _confirm(s, db, bot, reply_to, iid, f"Category: {label}")
     db.outbox_resolve("category", iid)
     return f"category {iid}: {label} ({status})"
 
@@ -1032,6 +1231,7 @@ def _set_brand(s: Settings, db: DB, bot: Bot, iid: str, brand: str, reply_to: in
     if not db.conn.execute("SELECT 1 FROM outbox WHERE kind=? AND ref=? AND resolved_at IS NULL", (kind, iid)
                            ).fetchone():                # done, or closed to come again with the brand: the old copy
         _ack(db, bot, kind, iid, f"✓ brand: {brand}")
+    _confirm(s, db, bot, reply_to, iid, f"Brand: {brand}")
     return f"brand {iid}: {brand!r} ({status})"
 
 
@@ -1057,6 +1257,8 @@ def _reply_item(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int | N
         return f"item {iid}: empty reply"
     if note is None:
         return _set_price(s, db, bot, iid, price, mid)
+    if (size := size_reply(note)) is not None:          # WO33: "Size S", "size s", "S" — with or without a price
+        return _set_size(s, db, bot, iid, size, price, mid)
     it = db.item(iid)
     if (brand := brand_reply(note, (loads(it["gate"]) or {}) if it else {})) is not None:
         if price is not None:
@@ -1079,9 +1281,49 @@ def _reply_item(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int | N
     if recorded:
         _ack(db, bot, "item", iid, "✓ " + " · ".join(labels))
         db.outbox_resolve("item", iid)
+        said = [f"${price}"] if price is not None and f"${price}" in labels else []
+        said += ["same item: dropped"] if "same item — dropped" in labels else \
+            [f"Noted: \u201c{note}\u201d"] if any(lb.startswith("noted") for lb in labels) else []
+        _confirm(s, db, bot, mid, iid, " · ".join(said) or "Got it")
     if errors:
         _tell(bot, mid, "\n".join(errors))
     return f"item {iid}: " + "; ".join(recorded + [f"error: {e}" for e in errors])
+
+
+SIZE_SAID = re.compile(r"^\s*(?:size|sz)\s*[:=#]?\s*([A-Za-z0-9][A-Za-z0-9./ -]{0,11}?)\s*[.!]?\s*$", re.I)
+LETTER_SIZE = re.compile(r"^\s*(XXXS|XXS|XS|S|M|L|XL|XXL|XXXL|[2-5]XL|[23]XS)\s*[.!]?\s*$", re.I)
+
+
+def size_reply(note: str | None) -> str | None:
+    """The size a reply gives (WO33): "Size S", "size s", "size 8.5", or a bare letter size "S" / "XL" — letters in
+    capitals. None for anything else (a number alone is a price)."""
+    m = SIZE_SAID.match(note or "") or LETTER_SIZE.match(note or "")
+    if m is None:
+        return None
+    size = m[1].strip()
+    return size.upper() if re.fullmatch(r"[A-Za-z0-9]{1,4}", size) and not size.isdigit() else size
+
+
+def _set_size(s: Settings, db: DB, bot: Bot, iid: str, size: str, price: int | None, mid: int | None) -> str:
+    """A size the owner replied (and a price with it): set at once, no model call; one answer for both."""
+    said = []
+    if price is not None:
+        try:
+            pipeline.set_price(s, db, iid, price)
+            said.append(f"${price}")
+        except ValueError as e:
+            _tell(bot, mid, str(e))
+            return f"item {iid}: rejected ${price}: {e}"
+    try:
+        status = pipeline.set_size(s, db, iid, size)
+    except ValueError as e:
+        _tell(bot, mid, str(e))
+        return f"item {iid}: size {size!r} rejected: {e}"
+    if status not in OWNER_WAITING:
+        db.outbox_resolve("item", iid)
+    _ack(db, bot, "item", iid, "✓ " + " · ".join([f"size {size}", *said]))
+    _confirm(s, db, bot, mid, iid, " · ".join([f"Size {size}", *said]))
+    return f"item {iid}: size {size!r}" + (f", ${price}" if price is not None else "") + f" ({status})"
 
 
 def _reply_owner_q(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int | None) -> str:

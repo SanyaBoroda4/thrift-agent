@@ -218,7 +218,6 @@ def next_job(s: Settings, db: DB, enabled: list[str], dry: bool,
         batch = db.batch(it["batch_id"])
         if batch is not None and batch["status"] == "regroup":
             continue            # the owner is fixing this batch's photos ([Wrong photos]): not until the fix
-        gate = loads(it["gate"]) or {}
         renders = loads(it["renders"]) or {}
         for mp in [m for m in enabled if m == "poshmark"]:   # Depop and Vinted follow Poshmark (crosslist, WO30)
             if mp not in renders:
@@ -231,7 +230,7 @@ def next_job(s: Settings, db: DB, enabled: list[str], dry: bool,
             if post and post["status"] == "dryrun" and dry:
                 continue
             autop = s.get(f"marketplaces.{mp}.autopublish", False) and s.is_prod
-            mode = "publish" if gate.get("decision") == "publish" and autop else "draft"
+            mode = "publish" if autop else "draft"     # WO33: ready + the owner's price = it publishes, never held
             if mode == "publish" and not allow_publish and not dry:
                 continue        # ship first; the item stays 'ready' and is picked up once the hold is lifted
             if mode == "draft" and not dry and not can_draft(mp):
@@ -275,10 +274,10 @@ def publishable(s: Settings, db: DB, enabled: list[str]) -> list[tuple[str, str]
         batch = db.batch(it["batch_id"])
         if batch is not None and batch["status"] == "regroup":
             continue
-        gate, renders = loads(it["gate"]) or {}, loads(it["renders"]) or {}
+        renders = loads(it["renders"]) or {}
         for mp in [m for m in enabled if m == "poshmark"]:
             post = db.listing(it["id"], mp)
-            if mp in renders and approved(it, renders[mp]) and gate.get("decision") == "publish" \
+            if mp in renders and approved(it, renders[mp]) \
                     and s.get(f"marketplaces.{mp}.autopublish", False) and s.is_prod \
                     and (post is None or post["status"] in ("queued", "dryrun")):
                 out.append((it["id"], mp))
@@ -309,7 +308,7 @@ def held(s: Settings, db: DB, enabled: list[str]) -> list[tuple[str, str, list[s
                                                                                                     "dryrun")):
                 continue
             autop = s.get(f"marketplaces.{mp}.autopublish", False) and s.is_prod
-            if not (gate.get("decision") == "publish" and autop) and not can_draft(mp):
+            if not autop and not can_draft(mp):      # WO33: the gate never holds; only autopublish off does
                 out.append((it["id"], mp, list(gate.get("reasons") or [])))
     return out
 
@@ -322,9 +321,9 @@ def _tell_held(s: Settings, db: DB, enabled: list[str]) -> None:
         title = ((loads(db.item(iid)["renders"]) or {}).get(mp) or {}).get("title") or iid
         why = ("the copy needs a look: " + "; ".join(reasons)) if reasons else f"marketplaces.{mp}.autopublish is off"
         db.log(iid, "held_draft", {"mp": mp, "reasons": reasons})
-        notify.group(f"⏸ Not published automatically: {title} — its text needs a look first.")   # WO29: plain
-        notify.say(f"⏸ {iid} held: {title}\n{why}\nAfter a look: thrift poster --publish-first {iid} (with the "
-                   "poster service stopped)")
+        notify.group(f"⏸ Not published automatically: {title} — {crosslist.LABEL.get(mp, mp)} publishes by itself "
+                     "only once its autopublish is on.")   # WO33: the gate holds nothing; only autopublish off does
+        notify.say(f"⏸ {iid} held: {title}\n{why}")
 
 
 def condition_rule_breaks(r: Render) -> list[str]:
@@ -389,6 +388,28 @@ def ask_unconfirmed(db: DB, iid: str, mp: str, text: str) -> None:
     db.add_outbox(bot.chat_id, mid, "unconfirmed", crosslist.unconfirmed_ref(iid, mp), text=text)
 
 
+SKIPPED_REPLY = "Reply 'retry' to try it again."
+
+
+def ask_skipped(db: DB, iid: str, mp: str, title: str, why: str) -> None:
+    """A listing the poster skipped (WO27: a required field nothing came close to; WO30: three failures on a site), as
+    a group message the owner answers with a reply (WO33, the owner: no message may need a terminal command): 'retry'
+    puts the listing back in line. Outbox kind "skipped", ref "<item>:<marketplace>"."""
+    from thrift_agent.config import settings
+    site = crosslist.LABEL.get(mp, mp)
+    text = f"⏭ {title} wasn't listed on {site}: {why}. {SKIPPED_REPLY}"
+    bot = approve.bot_for(settings())
+    if bot is None:
+        notify.group(text)
+        return
+    try:
+        mid = bot.send_message(text)
+    except Exception as e:  # noqa: BLE001
+        db.log(iid, "error", f"skipped message: {type(e).__name__}: {e}")
+        return
+    db.add_outbox(bot.chat_id, mid, "skipped", crosslist.unconfirmed_ref(iid, mp), text=text)
+
+
 def record_outcome(db: DB, iid: str, mp: str, render: Render, out: Outcome, marketplaces: list[str],
                    stage: str = "form", say_dry_run: bool = True, checks: list[str] = (),
                    seconds: float | None = None, slept: bool = False, s: Settings | None = None,
@@ -428,9 +449,9 @@ def record_outcome(db: DB, iid: str, mp: str, render: Render, out: Outcome, mark
     elif out.status == "failed":
         notify.photo(Path(out.screenshot or ""), f"❌ {mp} failed ({iid}): {render.title}\n{error}{note}")
     elif out.status == "skipped":
-        notify.group(f"⏭ {render.title} was skipped: Poshmark's form doesn't take one of its details.")   # plain
-        notify.photo(Path(out.screenshot or ""), f"⏭ skipped on {mp} ({iid}): {render.title}\n{out.error}\nFix the "
-                                                 f"listing, then: thrift requeue {iid}{note}")
+        ask_skipped(db, iid, mp, render.title, "Poshmark's form doesn't take one of its details")   # a reply settles it
+        notify.photo(Path(out.screenshot or ""), f"⏭ skipped on {mp} ({iid}): {render.title}\n{out.error}\n"
+                                                 f"(a reply 'retry' to the ⏭ message in the group tries again){note}")
     elif out.status == "dryrun" and say_dry_run:          # poster.notify_dry_runs: off, the owner's chat stays quiet
         notify.photo(Path(out.screenshot or ""),
                      f"🧪 dry-run {mp} ({stage}): {render.title} — ${render.price}{guesses}{note}")

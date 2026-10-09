@@ -323,19 +323,29 @@ def test_reply_number_sets_price(env, tmp_path, facts):
     it = db.item(iid)
     assert it["status"] == "ready" and it["owner_price"] == 45 and loads(it["price"])["list_price"] == 45
     assert _outbox(db, iid)[0]["resolved_at"]
-    assert _marks(bot) == [(11, "✓ $45 — queued")] and bot.sent("sendMessage") == []
+    assert _marks(bot) == [(11, "✓ $45 — queued")]
+    answer = bot.sent("sendMessage")                       # WO33: a reply always gets its answer
+    assert len(answer) == 1 and answer[0]["text"].startswith("✓ $45 — it goes up") and \
+        answer[0]["reply_to_message_id"] == 50                  # her message
 
 
-def test_reply_answer_and_price_sets_price_then_reprocesses(env, tmp_path, facts):
+def test_reply_size_and_price_sets_both_at_once_and_answers(env, tmp_path, facts):
+    """WO33: "size 8, 45" sets the size (no model call, no reprocessing) and the price; one answer to the reply."""
     s, db, bot = env
-    iid = _item(db, tmp_path, facts, status="needs_info", gate={"decision": "needs_info", "reasons": ["size unclear"]})
+    renders = {"poshmark": {**RENDERS["poshmark"], "description": "Suede flats.\nGently pre-loved, please see "
+                                                                     "photos for condition."}}
+    iid = _item(db, tmp_path, facts, status="needs_info", gate={"decision": "needs_info", "reasons": ["size unclear"]},
+                renders=renders)
     send_item(s, db, iid)
     out = handle_update(s, db, bot, _reply("size 8, 45", reply_to=11))
-    assert out == f"item {iid}: $45; noted 'size 8', reprocessing"
+    assert out == f"item {iid}: size '8', $45 (ready)"
     it = db.item(iid)
-    assert it["status"] == "new" and it["owner_price"] == 45 and it["note"] == "size 8"
+    assert (it["status"], it["owner_price"], it["owner_size"]) == ("ready", 45, "8")
+    assert loads(it["renders"])["poshmark"]["size"] == "8"
     assert _outbox(db, iid)[0]["resolved_at"]
-    assert _marks(bot) == [(11, "✓ $45 · noted — rechecking")] and bot.sent("sendMessage") == []
+    assert _marks(bot) == [(11, "✓ size 8 · $45")]
+    answer = bot.sent("sendMessage")
+    assert len(answer) == 1 and answer[0]["text"].startswith("✓ Size 8 · $45 — it goes up")
 
 
 def test_reply_without_price_or_note_gets_the_hint(env, tmp_path, facts):
@@ -420,7 +430,8 @@ def test_a_plain_reply_to_an_old_brand_question_is_the_brand(env, tmp_path, fact
     assert it["owner_brand"] == "J. Crew" and loads(it["facts"])["brand"]["value"] == "J. Crew"
     assert it["status"] == "ready" and it["note"] is None                     # back in line as it was, no reprocessing
     assert loads(it["renders"])["poshmark"]["brand"] == "J. Crew" and _outbox(db, iid)[0]["resolved_at"]
-    assert _marks(bot) == [(11, "✓ brand: J. Crew")] and bot.sent("sendMessage") == []
+    assert _marks(bot) == [(11, "✓ brand: J. Crew")]
+    assert [m["text"] for m in bot.sent("sendMessage")][-1].startswith("✓ Brand: J. Crew — ")   # WO33: answered
 
 
 @pytest.mark.parametrize("text,brand", [("J. Crew", "J. Crew"), ("brand J. Crew", "J. Crew"), ("brand: Vince", "Vince"),
@@ -684,7 +695,8 @@ def test_replies_to_the_unconfirmed_message_posted_url_and_retry(env, tmp_path, 
     assert out == f"unconfirmed {iid}: posted {url} (queued for the poster)"
     reqs = pipeline.take_requests(db)                                      # what the poster will check
     assert [(r["item"], r["mp"], r["url"]) for r in reqs] == [(iid, "poshmark", url)]
-    assert _marks(bot) == [(77, "✓ link received — checking it")] and bot.sent("sendMessage") == []
+    assert _marks(bot) == [(77, "✓ link received — checking it")]
+    assert bot.sent("sendMessage")[-1]["text"].startswith("✓ Link received — I check it on Poshmark")   # WO33
     assert handle_update(s, db, bot, _reply("posted https://poshmark.com/closet/x", reply_to=77)).startswith(
         f"unconfirmed {iid}: rejected")
     assert bot.texts()[-1].startswith("That isn't a Poshmark listing link for this item")    # plain

@@ -78,7 +78,8 @@ def maybe_announce(s: Settings, db: DB, iid: str) -> str | None:
 
 def feed(s: Settings, db: DB) -> list[str]:
     """WO33: an approved item goes to every site at once — its Depop and Vinted rows are queued as soon as Poshmark's
-    would publish (ready, the owner's price, the gate's 'publish'), not after Poshmark is live. Returns the items fed."""
+    would publish (ready, the owner's price — WO33: never held by the gate), not after Poshmark is live. Returns the
+    items fed."""
     cross = crosslist.enabled(s)
     if not cross:
         return []
@@ -88,7 +89,7 @@ def feed(s: Settings, db: DB) -> list[str]:
         if batch is not None and batch["status"] == "regroup":
             continue
         render = (loads(it["renders"]) or {}).get("poshmark")
-        if not render or not runner.approved(it, render) or (loads(it["gate"]) or {}).get("decision") != "publish":
+        if not render or not runner.approved(it, render):
             continue
         missing = [mp for mp in cross if db.listing(it["id"], mp) is None]
         if missing and crosslist.queue(s, db, it["id"], missing, why="approved"):

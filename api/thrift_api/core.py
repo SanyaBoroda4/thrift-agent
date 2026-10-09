@@ -303,6 +303,9 @@ def _handling(db: Database, mode: str, received: datetime, now: datetime) -> str
 
 # --- a sale --------------------------------------------------------------------------------------------------------
 
+# WO33, the owner: no message may need a terminal command — the Mac's bot takes a reply to this line in the ops chat
+UNMATCHED_HOW = "If it's one of ours, reply to this message with words from its title; if not, nothing to do."
+
 def _sale(db: Database, mp: str, parsed: dict, message_id: str, subject: str | None, handling: str, now: datetime,
           out: Outbox) -> dict:
     """A SALE: one sales row (a second email about the same order or the same item's sale on this site only fills in
@@ -336,7 +339,7 @@ def _sale(db: Database, mp: str, parsed: dict, message_id: str, subject: str | N
         else:
             out.group(_sold_line(site, title, parsed.get("price"), ship_day))
         if status == "unmatched":
-            out.ops(f"Unmatched sale on {site} ({sale_id}): {subject or title}")
+            out.ops(f"Unmatched sale on {site} ({sale_id}): {subject or title}\n{UNMATCHED_HOW}")
     return {"status": "unmatched" if status == "unmatched" else "matched", "sale_id": sale_id, "sale_status": status,
             "item_id": item_id, "matched_by": how, "ship_by": ship_day.isoformat(), "tasks": [t["id"] for t in tasks]}
 

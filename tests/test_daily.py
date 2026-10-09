@@ -313,12 +313,12 @@ def test_the_window_counts_what_waits_and_what_the_poster_will_publish(tmp_path)
     s = _settings(tmp_path)
     db = DB(s.path("db"))
     _ready(db, 1)
-    _ready(db, 2, decision="draft")                                     # needs a look: held, never "working"
+    _ready(db, 2, decision="draft")                                     # WO33: never held — it publishes too
     _ready(db, 3, price=None)                                          # not approved: nothing
     _waiting(db, 4)
     _processing(db, 5)
     db.add_batch("share_new", 2)
-    assert daily.work(s, db) == daily.Work(new_shares=1, processing=1, cards=1, to_publish=1, held=1)
+    assert daily.work(s, db) == daily.Work(new_shares=1, processing=1, cards=1, to_publish=2, held=0)
     dry = _settings(tmp_path / "dry", live=False)
     assert daily.work(dry, db).to_publish == 0 and daily.work(dry, db).held == 2   # dry-run: both wait for you
 

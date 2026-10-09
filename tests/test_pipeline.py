@@ -10,6 +10,7 @@ import pytest
 from PIL import Image
 
 from thrift_agent import pipeline
+from thrift_agent.brain.gate import SIZE_NOTE
 from thrift_agent.config import Settings, settings
 from thrift_agent.db import DB, loads
 from thrift_agent.ingest.segment import Group, SegOut
@@ -276,7 +277,8 @@ def test_split_reports_a_batch_note_it_could_not_apply(tmp_path, monkeypatch):
     bid, _ = _waiting_batch(s, db, [[0, 1], [2]], note="size 8, NWT")
     pipeline.confirm(s, db, bid, "ok")
     assert [it["note"] for it in db.items("new")] == [None, None]
-    assert len(said) == 1 and "size 8, NWT" in said[0] and "thrift answer" in said[0]
+    assert len(said) == 1 and "size 8, NWT" in said[0] and "Reply to the right item's card" in said[0]
+    assert "thrift " not in said[0]                                   # WO33: a reply is always enough
 
     said.clear()
     bid2, _ = _waiting_batch(s, db, [[0, 1, 2]], note="size 8, NWT", name="share2")   # one item: unambiguous
@@ -323,8 +325,8 @@ def test_unreported_verifier_rewrite_goes_to_draft(tmp_path, monkeypatch, facts)
     iid = _new_item(s, db)
     pipeline.process_item(s, db, iid)
     gate = loads(db.item(iid)["gate"])
-    assert gate["decision"] == "draft"
-    assert any("verifier rewrote poshmark_description" in r for r in gate["reasons"]), gate
+    assert gate["decision"] == "publish"                             # WO33: the copy check never holds
+    assert any("verifier rewrote poshmark_description" in r for r in gate["reasons"]), gate   # kept for the record
 
 
 def test_answer_rejects_unknown_and_listed_items(tmp_path):
@@ -470,7 +472,9 @@ def test_retail_screenshots_are_detected_assigned_by_content_and_rendered_last(t
     assert r["original_price"] == 128
     assert r["description"].rstrip().endswith("\nOriginal retail $128.")              # WO26 wording
     assert loads(it["facts"])["size_us"]["value"] is None            # a screenshot is not size evidence
-    assert it["status"] == "awaiting_price" and any("size unclear" in x for x in loads(it["gate"])["reasons"])
+    gate = loads(it["gate"])                                          # WO33: no size question — a note, shown
+    assert it["status"] == "awaiting_price" and not any("size" in x for x in gate["reasons"])
+    assert any(n.startswith(SIZE_NOTE) for n in gate["info"])
 
 
 def _old_flow(s):
@@ -1178,7 +1182,7 @@ def test_set_condition_refuses_nonsense_and_a_listed_item(tmp_path):
     db.set_item(iid, status="awaiting_condition")
     with pytest.raises(ValueError, match="must be one of nwt, like_new, good"):
         pipeline.set_condition(s, db, iid, "fair")                       # never Fair (WO17)
-    with pytest.raises(ValueError, match="first needs its condition"):
+    with pytest.raises(ValueError, match="first its condition"):
         pipeline.set_price(s, db, iid, 50)                               # the price comes after the answer
     db.set_item(iid, status="posted")
     with pytest.raises(ValueError, match="can't be changed now"):

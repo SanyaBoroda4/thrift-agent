@@ -73,7 +73,9 @@ iCloud Posh/inbox/<ts>/ (+ _done) ─► register batch ─► prep (HEIC→JPEG
       only the items whose photos changed are rebuilt; never for an item on the marketplace)
   ─► items ─► extract Facts (evidence per field) ─► labels read closely (premium details, WO26)
   ─► price (brand_tiers.yaml, × one premium factor) ─► copy (both marketplaces)
-  ─► verify (LLM strip unsupported claims) + lint (deterministic) ─► gate: publish | draft | needs_info
+  ─► verify (LLM strip unsupported claims) + lint (deterministic; what it flags is fixed in code where it can be —
+     the title's size, "New" on a used item, an EU size — and never holds the item, owner rule 2026-10-09)
+  ─► gate: publish | needs_info (the allowed questions only)
   ─► (shoes in doubt, brand new vs worn: awaiting_condition ─► "Brand new or worn?" [NWT] [Like New] [Good] ─►
       reprocessed with the answer)
   ─► (a kids item, under 0.70 sure of Girls/Boys: "Girls or Boys?" [Girls] [Boys])
@@ -126,7 +128,8 @@ rows were copied in once (kv `listings_migrated`); `posts` is left as it was.
      The answer is `items.owner_condition`, the condition with source `owner` (NWT then needs no hang-tag photo): NWT;
      Like New = brand new without tags = NWOT ("New without tags."); Good = worn. The item is reprocessed (new price,
      copy, listing) and the price card follows; it is never asked again. Never Fair.
-   - **Owner rule (first run).** `gate.min_confidence` is 0.70 for brand, size and condition; the price is the
+   - **Owner rule (first run).** `gate.min_confidence` is 0.70 for brand (below: a question), size and condition
+     (below: a note, never a question — 2026-10-09); the price is the
      owner's only routine input (Telegram approval or `thrift price`). NWT stays strict — `hang_tag_photo` or a
      seller note, never confidence. **Always a price (WO20):** brand tier → the department's category default (the
      category, then Poshmark's other names for it — Kids "Shirts & Tops" finds `Tops` — then `other`) → the flat
@@ -146,8 +149,17 @@ rows were copied in once (kv `listings_migrated`); `posts` is left as it was.
      writer never sees the flaws or the condition evidence; `copy.condition_rule` runs after the verifier (drops a
      sentence with wear words, puts the line in) and `verify.lint` checks the result (wear words, used-item claims,
      the line and the flaw photos).
-   - **The only questions.** Brand or size below 0.70 (the brand question carries a [No brand] button, WO25), a size
-     none of Poshmark's size menus for the category has (WO25), NWT without a hang-tag photo, "Which category?" — the
+   - **Never a size question, never a hold (owner rule, 2026-10-09 — replaces WO25's size questions and the draft
+     hold).** An unsure size (below 0.70) or one off Poshmark's menus is listed as best read; the card says so ("Size S —
+     my best reading; reply 'size …' to change it"; a gate note under `SIZE_NOTE`, kept in `gate.info`) and the poster
+     takes the nearest menu value. A set whose pieces have different sizes is listed under the BIGGER one — the size
+     field and the title — and the description says which piece is which ("Cardigan: size S. Pants: size XS.";
+     `facts.piece_sizes`, `pipeline.settle_set_size`, `copy.ensure_piece_sizes`; the owner's `thrift edit --sizes
+     'Cardigan=S,Pants=XS'`, kept as `items.owner_sizes`). The copy check fixes what it can (the title's size,
+     `copy.ensure_title_size`; "New" on a used item and an EU size, `copy.fix_title`) and never holds: a `ready` item with
+     the owner's approved price always publishes, whatever its gate said (`runner.publishable`, `parallel.feed`).
+   - **The only questions.** Brand below 0.70 (the brand question carries a [No brand] button, WO25), NWT without a
+     hang-tag photo, "Which category?" — the
      model under 0.70 sure of its category, or one Poshmark doesn't have / "Other": its own message with 1-3 real paths
      as buttons (WO25; with no real path to offer, the old typed question on the card) — a possible re-share, a pair of
      shoes in doubt between brand new and worn (its own message, before the price), Girls or Boys for a kids item the
@@ -402,10 +414,10 @@ clicked again, `failed` with the evidence, a Telegram ping. Never retried automa
 The poster loop (`thrift poster`) publishes only with `poster.dry_run: false` AND `poster.autopublish_confirmed:
 true` (both off by default) AND `marketplaces.<mp>.autopublish: true`. It takes `ready` items whose listing carries the
 owner-approved price (`runner.approved`; WO27), the oldest first, one at a time, inside `schedule.hours`,
-`per_hour_max` / `daily_cap`, with a human `gap_seconds` pause after each (now and then a 2–4× longer break). A
-gate-"draft" item (the copy needs one look) never publishes on its own, and Save Draft is UNVERIFIED, so the live loop
-leaves it alone — never filled, never failed — and says once "⏸ Not published automatically (<item>) … thrift poster
---publish-first <item>" (`runner.held`). A skipped item never trips the circuit breaker. `mark-posted <item> <marketplace> <url>` records a listing found by hand for
+`per_hour_max` / `daily_cap`, with a human `gap_seconds` pause after each (now and then a 2–4× longer break). The
+gate never holds an item (owner rule, 2026-10-09): an approved `ready` item publishes whatever the gate said; only a
+marketplace whose autopublish is off is held (`runner.held`: "⏸ Not published automatically", no command). A skipped
+item never trips the circuit breaker; its group message takes a reply ('retry', `runner.ask_skipped`). `mark-posted <item> <marketplace> <url>` records a listing found by hand for
 an "unconfirmed publish" row (Mac only, poster service stopped).
 `--allow-dev-browser` lets the poster open a browser on the dev machine for selector work; it stays dry-run and
 never logs into or touches the shop. `--stage` overrides `poster.dry_run_stage` for one run: `form` (fill, read back,
@@ -524,10 +536,18 @@ The owner shares retailer screenshots (product page with price, style name, colo
   `kv` keeps the worker's threads, the poster and a CLI command from both sending). The worker processes in the
   same order and runs ahead, so the next card is usually ready at once; the queue never skips an item still being
   processed (an item sent back by an answer is processed first; an answer that lands while its item is being
-  processed wins: that result is dropped and the item processed again). After an answer: no message (WO29) — the
-  answered card's buttons become ONE inert button with the answer (`approve._ack`, `editMessageReplyMarkup`: "✓ $35 —
-  queued", "✓ Girls", "✓ Like New (brand new, no tags)", "✓ cover: photo 2", "✓ brand: J. Crew"; callback `noop`), then
-  the next message. [Later] puts the item behind everything queued so far (`items.deferred_at`). The queue is the DB: a
+  processed wins: that result is dropped and the item processed again). After an answer the answered card's
+  buttons become ONE inert button with the answer (`approve._ack`, `editMessageReplyMarkup`: "✓ $35 — queued",
+  "✓ Girls", "✓ Like New (brand new, no tags)", "✓ cover: photo 2", "✓ brand: J. Crew"; callback `noop`), then the next
+  message. **Every REPLY gets an answer at once (owner rule, 2026-10-09 — live: "Size S" replied to a card already
+  closed by its price went nowhere she could see):** a reply to her message saying what was understood and what happens
+  next — "✓ Size S · $100 — it goes up at 8:00 on Poshmark, Depop and Vinted" (`approve._confirm`, `next_step`,
+  `when_posting`); a handler that said nothing gets "✓ Got it — …" (`_fallback_answer`, the bot wrapped in
+  `_Answered`); a button tap keeps its "✓ …" label only. "Size S", "size s", "S", "size 8.5" (with or without a price)
+  set the size at once, no model call (`approve.size_reply` → `pipeline.set_size`, kept as `items.owner_size`). **No
+  message may need a terminal command (owner rule):** a reply in Telegram is always enough — the ⏭ skip line takes
+  'retry', the API's "Unmatched sale" line in the ops chat takes words from the item's title (`approve._route_ops`:
+  the bot also hears the owner's private chat; it matches the sale through thrift-api). [Later] puts the item behind everything queued so far (`items.deferred_at`). The queue is the DB: a
   restart re-sends only the open message; older unanswered copies are closed (their buttons still work). Info-only
   messages are not queued; a successful dry-run says nothing unless `poster.notify_dry_runs`.
 - **A quiet group (owner rule, WO29).** The GROUP (`TELEGRAM_CHAT_ID`) gets only: (a) the cards and the allowed
@@ -542,8 +562,8 @@ The owner shares retailer screenshots (product page with price, style name, colo
   alerts, one plain sentence each, once per episode: "Depop needs you to log in on the Mac." / "Vinted asks for a
   check — open it on the Mac." (WO30); 🔋 battery low; the
   Mac slept while publishing / "I pressed List but can't see it" (reply `posted <url>` / `retry`); "Can't read the
-  iCloud inbox" (past 10 min); "⏸ Not published automatically: <title> — its text needs a look first."; "⏭ <title> was
-  skipped: Poshmark's form doesn't take one of its details." — plus plain replies to the owner's own messages ("No
+  iCloud inbox" (past 10 min); "⏸ Not published automatically: <title> — <site> publishes by itself only once its autopublish
+  is on."; "⏭ <title> wasn't listed on <Site>: <why>. Reply 'retry' to try it again." — plus plain replies to the owner's own messages ("No
   price card is open", the hints, "Sorry, that didn't go through — please try again."). No item or batch ids, no
   errno, no traceback. Everything else goes to the **ops chat** (`notify.ops`/`notify.say`): the status message
   (WO28; also in `thrift status`), "Back online", "Poster started (LIVE)", dry-run notes, CLI echoes, "batch …
@@ -1060,7 +1080,9 @@ unread: Girls), else the Baby tab ("3 Months", "Newborn"); a size only one gende
 Adults: the tab the label asks for first — Maternity (the item type or label says so), Petite ("8P", "M Petite"),
 Juniors ("Jrs") — then Standard, Plus, Petite, Juniors, Big & Tall in that order, the value spelled as the menu spells it
 ("3XL" → "XXXL" for Women, a men's "32x30" → "Waist 32", "15.5" → "Neck 15.5", "34DD" → "34E (DD)", "8 1/2" and "8.5M" →
-"8.5"). A size read well (≥ 0.70) that no menu of the category has is a question on the card ("Size: “38” isn't on
+"8.5"). A size that no menu of the category has is NOT a question (owner rule, 2026-10-09): the card shows it as a
+note ("… not on Poshmark's … size list: the nearest is used", `pipeline.size_menu_note`). Before that rule it was a
+question on the card ("Size: “38” isn't on
 Poshmark's Women Shoes size list (Standard) — reply 'size …'"). The card shows the menu's words ("Waist 32", "4T (Boys)",
 "14 (Plus)"). Renders made before WO25 keep the old mapping (the Baby tab's and kids clothing labels now marked verified:
 they are the catalog's) until `recover` / `reprocess` rebuilds them.

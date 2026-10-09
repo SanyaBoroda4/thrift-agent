@@ -120,10 +120,10 @@ def test_next_job_skips_marketplaces_without_a_render(tmp_path):
 @pytest.mark.parametrize("role,autopublish,decision,dry,mode", [
     ("dev", True, "publish", True, "draft"),        # the dev machine never publishes, whatever the config says
     ("prod", False, "publish", True, "draft"),
-    ("prod", True, "draft", True, "draft"),         # a dry-run fills the form whatever the gate said
+    ("prod", True, "draft", True, "publish"),       # WO33: the gate holds nothing — a dry run of the publish
     ("prod", True, "publish", True, "publish"),
     ("prod", True, "publish", False, "publish"),
-    ("prod", True, "draft", False, None),           # live: a draft the poster can't save yet is left alone (held)
+    ("prod", True, "draft", False, "publish"),      # WO33: live, a 'draft' gate publishes too (never held)
     ("prod", False, "publish", False, None),
 ])
 def test_next_job_mode(tmp_path, role, autopublish, decision, dry, mode):
@@ -144,20 +144,19 @@ def test_next_job_takes_only_the_owners_approved_price(tmp_path, price):
     assert runner.held(s, db, ["poshmark"]) == []                   # not held either: simply not approved
 
 
-def test_next_job_hold_skips_publish_but_still_returns_drafts(tmp_path, monkeypatch):
-    """HOLD_UNSHIPPED (allow_publish=False) holds only what would go live; the held item stays 'ready' behind it.
-    (A draft once the poster can save one: Save Draft's landing is still UNVERIFIED.)"""
+def test_next_job_hold_skips_publish_and_a_draft_gate_is_a_publish(tmp_path, monkeypatch):
+    """HOLD_UNSHIPPED (allow_publish=False) holds what would go live; the items stay 'ready' behind it. WO33: a
+    'draft' gate is a publish like any other (the copy check never holds), so the hold keeps it too."""
     monkeypatch.setattr(runner, "can_draft", lambda mp: True)
     s = _settings(tmp_path, role="prod", autopublish=True)
     db = DB(s.path("db"))
     live = _ready_item(db, seq=1, decision="publish")
-    draft = _ready_item(db, seq=2, decision="draft")
-    assert runner.next_job(s, db, ["poshmark"], False)[0] == live               # no hold: the publish goes first
-    job = runner.next_job(s, db, ["poshmark"], False, allow_publish=False)
-    assert job is not None and (job[0], job[3]) == (draft, "draft")
-    db.upsert_listing(draft, "poshmark", status="drafted")
+    gated = _ready_item(db, seq=2, decision="draft")
+    assert runner.next_job(s, db, ["poshmark"], False)[0] == live               # no hold: the oldest first
+    db.upsert_listing(live, "poshmark", status="posted", url="https://poshmark.com/listing/x")
+    assert runner.next_job(s, db, ["poshmark"], False)[0:4:3] == (gated, "publish")
     assert runner.next_job(s, db, ["poshmark"], False, allow_publish=False) is None
-    assert db.item(live)["status"] == "ready"
+    assert db.item(gated)["status"] == "ready"
 
 
 def test_next_job_hold_does_not_stop_a_dry_run(tmp_path):
@@ -451,8 +450,11 @@ def test_a_skipped_item_saves_nothing_is_reported_and_the_loop_goes_on(tmp_path,
     assert (row["status"], row["error"], row["url"], row["posted_at"]) == ("skipped", runner.SKIPPED + SKIP,
                                                                                  None, None)
     assert db.item(a)["status"] == "ready" and db.listing(b, "poshmark")["status"] == "posted"
-    assert any(m.startswith(f"⏭ skipped on poshmark ({a}): {RENDER.title}\n{SKIP}\nFix the listing, then: thrift "
-                            f"requeue {a}") for m in said)
+    assert any(m.startswith(f"⏭ skipped on poshmark ({a}): {RENDER.title}\n{SKIP}\n(a reply 'retry' to the ⏭ "
+                            "message in the group tries again)") for m in said)
+    assert f"⏭ {RENDER.title} wasn't listed on Poshmark: Poshmark's form doesn't take one of its details. Reply " \
+           "'retry' to try it again." in said.group                  # WO33: a reply settles it, never a command
+    assert not any("thrift " in m for m in [*said, *said.group])
     assert not s.flag("PAUSE").exists() and not any("paused" in m.lower() for m in said)   # max_fail=1: not a failure
     assert runner.next_job(s, db, ["poshmark"], False) is None          # never retried on its own
 
@@ -470,39 +472,37 @@ def test_a_skip_leaves_the_failure_counter_alone(tmp_path, monkeypatch, harness)
     assert "2 consecutive failures: b" in s.flag("PAUSE").read_text(encoding="utf-8")
 
 
-def test_a_draft_gated_item_is_held_and_told_once_never_filled(tmp_path, monkeypatch, harness):
-    """The gate's "draft" (the copy needs one look) still never publishes on its own; Save Draft is UNVERIFIED, so the
-    live loop leaves the item alone — no form, no failure — and says so once, with the command that publishes it."""
+def test_a_draft_gated_item_publishes_never_held(tmp_path, monkeypatch, harness):
+    """WO33, the owner's rule: the copy check never holds an item — an approved, ready item whose gate said "draft"
+    (from before the rule) publishes like any other; no "⏸ Not published automatically", no command to run."""
     said, _ = harness
     s = _settings(tmp_path, role="prod", autopublish=True, dry_run=False)
     db = DB(s.path("db"))
     iid = _ready_item(db, decision="draft", reasons=["material word without a label: wool"])
     poster = StubPoster(Outcome("posted", url="https://poshmark.com/listing/x"))
     _run(monkeypatch, s, db, poster, once=True)
-    _run(monkeypatch, s, db, poster, once=True)
-    assert poster.calls == [] and db.listing(iid, "poshmark") is None and db.item(iid)["status"] == "ready"
-    assert said.group == [f"⏸ Not published automatically: {RENDER.title} — its text needs a look first."]   # plain
-    told = [m for m in said if m.startswith(f"⏸ {iid} held")]                     # the detail: the ops chat, once
-    assert told == [f"⏸ {iid} held: {RENDER.title}\nthe copy needs a look: material word without a label: wool\n"
-                    f"After a look: thrift poster --publish-first {iid} (with the poster service stopped)"]
+    assert [c[1:] for c in poster.calls] == [("publish", False)] and db.listing(iid, "poshmark")["status"] == "posted"
+    assert not any(m.startswith("⏸") for m in [*said, *said.group])
 
 
 def test_the_live_loop_end_to_end(tmp_path, monkeypatch, harness):
     """WO27 §4, the loop as the owner will switch it on (dry_run off, autopublish_confirmed on, poshmark autopublish
     on), with a stand-in browser: the oldest approved item first, one at a time, a human gap (gap_seconds) after each,
-    "Posted ✓" with the guesses; an unapproved item untouched, a draft-gated one held; outside the hours nothing."""
+    "Posted ✓" with the guesses; an unapproved item untouched, a draft-gated one published too (WO33: never held);
+    outside the hours nothing."""
     said, pauses = harness
     s = _settings(tmp_path, role="prod", autopublish=True, dry_run=False)
     db = DB(s.path("db"))
     first, second = _ready_item(db, seq=1), _ready_item(db, seq=2)
     unpriced, gated = _ready_item(db, seq=3, price=None), _ready_item(db, seq=4, decision="draft", reasons=["x"])
     poster = StubPoster(Outcome("posted", url="https://poshmark.com/listing/1", guesses=["colour 'Teal' left out"]),
-                        Outcome("posted", url="https://poshmark.com/listing/2"))
+                        Outcome("posted", url="https://poshmark.com/listing/2"),
+                        Outcome("posted", url="https://poshmark.com/listing/4"))
     gaps = []
 
     async def human_gap(stop, seconds):
         gaps.append(seconds)
-        if len(gaps) >= 3:                                   # after both items and one idle minute
+        if len(gaps) >= 4:                                   # after the three items and one idle minute
             stop.set()
 
     monkeypatch.setattr(runner, "_pause", human_gap)
@@ -512,19 +512,21 @@ def test_the_live_loop_end_to_end(tmp_path, monkeypatch, harness):
     monkeypatch.setattr(runner, "can_post", lambda s_, hour, day: (True, "ok"))
     _run(monkeypatch, s, db, poster, once=False)
 
-    assert [c[1:] for c in poster.calls] == [("publish", False)] * 2
-    assert [db.listing(i, "poshmark")["url"] for i in (first, second)] == ["https://poshmark.com/listing/1",
-                                                                          "https://poshmark.com/listing/2"]
-    assert all(150 <= g <= 4 * 420 for g in gaps[:2]) and gaps[2] == 60   # human gaps (now and then a longer
+    assert [c[1:] for c in poster.calls] == [("publish", False)] * 3
+    assert [db.listing(i, "poshmark")["url"] for i in (first, second, gated)] == ["https://poshmark.com/listing/1",
+                                                                                 "https://poshmark.com/listing/2",
+                                                                                 "https://poshmark.com/listing/4"]
+    assert all(150 <= g <= 4 * 420 for g in gaps[:3]) and gaps[3] == 60   # human gaps (now and then a longer
     #                                                                        break, next_gap), then the idle minute
-    assert db.listing(unpriced, "poshmark") is None and db.listing(gated, "poshmark") is None
+    assert db.listing(unpriced, "poshmark") is None
     started = [m for m in said if m.startswith("Poster started")]
     assert started and all("LIVE" in m for m in started)
     posted = [m for m in said.group if m.startswith("Posted ✓")]
     assert posted == [f"Posted ✓ {RENDER.title} — $85 · Poshmark https://poshmark.com/listing/1 — check: colour 'Teal' left out",
-                      f"Posted ✓ {RENDER.title} — $85 · Poshmark https://poshmark.com/listing/2"]   # a held one is left: no
-    #                                                                                         "All done" line
-    assert sum(m.startswith("⏸ Not published automatically") for m in said) == 1
+                      f"Posted ✓ {RENDER.title} — $85 · Poshmark https://poshmark.com/listing/2",
+                      f"Posted ✓ {RENDER.title} — $85 · Poshmark https://poshmark.com/listing/4\n"
+                      "✓ All done — safe to close the Mac."]          # WO33: nothing held, so the last says All done
+    assert not any(m.startswith("⏸") for m in [*said, *said.group])
 
 
 def test_run_skips_a_job_another_poster_claimed(tmp_path, monkeypatch, harness):

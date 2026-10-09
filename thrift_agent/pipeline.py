@@ -16,7 +16,7 @@ import imagehash
 from thrift_agent import approve, brands, notify
 from thrift_agent.brain import copy as copywriter, cover as cover_brain, labels, premium, sizes, taxonomy
 from thrift_agent.brain.extract import extract, strip_screenshot_evidence
-from thrift_agent.brain.gate import OTHER_CATEGORY_QUESTION, GateResult, evaluate
+from thrift_agent.brain.gate import OTHER_CATEGORY_QUESTION, SIZE_NOTE, GateResult, evaluate
 from thrift_agent.brain.price import price
 from thrift_agent.brain.verify import fit_style_tags, lint, verify
 from thrift_agent.config import Settings, load_yaml
@@ -264,7 +264,7 @@ def split(s: Settings, db: DB, bid: str, groups: list[list[int]], dropped: list[
 
     if note and len(groups) > 1:
         notify.say(f"⚠️ Batch {bid}: the note \"{note}\" was not applied — it can't be matched to one of the "
-                   f"{len(groups)} items ({', '.join(iids)}). Re-apply it with: thrift answer <item> \"{note}\"")
+                   f"{len(groups)} items ({', '.join(iids)}). Reply to the right item's card with it")
     archive_share(s, db, bid, Path(b["src_dir"]))
 
 
@@ -592,14 +592,20 @@ def category_unsure(facts: Facts) -> list[str]:
 
 
 def size_question(s: Settings, facts: Facts, choice: tuple[str, str] | None) -> str | None:
-    """A size read well enough (the gate's 0.70) that is on none of the category's size menus (WO25): the owner is
-    asked, as for an unreadable one; None otherwise."""
+    """WO33, the owner's rule: never a question about size — always None now (a size off Poshmark's menus is a note,
+    size_menu_note; the poster takes the nearest value, WO27). Kept for the callers' sake."""
+    return None
+
+
+def size_menu_note(facts: Facts, choice: tuple[str, str] | None) -> str | None:
+    """A size read that is on none of the category's size menus (WO25): no question (WO33) — the card shows it and the
+    poster takes the nearest value of the menu; a reply 'size …' changes it."""
     menus = taxonomy.size_menus(facts.department, facts.category, facts.subcategory)
     value = facts.size_us.value
-    if choice or not menus or not value or facts.size_us.confidence < s["gate"]["min_confidence"]["size"]:
+    if choice or not menus or not value:
         return None
-    return (f"Size: “{value}” isn't on Poshmark's {facts.department} {facts.category} size list "
-            f"({', '.join(menus)}) — reply 'size …'")
+    return (f"{SIZE_NOTE} {value} — not on Poshmark's {facts.department} {facts.category} size list "
+            f"({', '.join(menus)}): the nearest is used")
 
 
 def owner_answers(it) -> list[str]:
@@ -615,7 +621,14 @@ def owner_answers(it) -> list[str]:
     if pieces := owner_sizes(it):
         lines.append("Sizes of the set's pieces (the owner's answer): "
                      + ", ".join(f"{p.piece} {p.size}" for p in pieces))
+    if size := owner_size(it):
+        lines.append(f"Size (the owner's answer): {size}")
     return lines
+
+
+def owner_size(it) -> str | None:
+    """The size the owner gave for the item (items.owner_size, WO33: a reply 'size S'), else None."""
+    return (it["owner_size"] if "owner_size" in it.keys() else None) or None
 
 
 def owner_sizes(it) -> list[PieceSize]:
@@ -638,6 +651,8 @@ def apply_owner_answers(it, facts: Facts) -> Facts:
         update["piece_sizes"] = pieces
         update["size_us"] = Ev(value=sizes.bigger_size([p.size for p in pieces]), photos=facts.size_us.photos,
                                source="owner", confidence=1.0)
+    if size := owner_size(it):                           # her size for the item (WO33: a reply 'size S'): it wins
+        update["size_us"] = Ev(value=size, photos=facts.size_us.photos, source="owner", confidence=1.0)
     return facts.model_copy(update=update) if update else facts
 
 
@@ -777,8 +792,9 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
     final = copywriter.condition_rule(final, facts)      # wear is shown in the photos, never put in words
     final.poshmark_title = copywriter.ensure_set_title(final.poshmark_title, facts)   # "… 2-Piece Set size M"
     final.poshmark_title = (it["owner_title"] or                 # the owner's own title stays as it is (WO27)
-                            premium.title_with_feature(copywriter.ensure_title_size(final.poshmark_title, facts),
-                                                       facts, pcfg))   # the listing's size; brand first, the feature
+                            premium.title_with_feature(copywriter.ensure_title_size(
+                                copywriter.fix_title(final.poshmark_title, facts), facts),
+                                facts, pcfg))   # fixed (WO33), the listing's size; brand first, the feature
     final.poshmark_description = premium.ensure_feature_lines(final.poshmark_description, facts, pcfg)
     final.depop_description = premium.ensure_feature_lines(final.depop_description, facts, pcfg)
     final.poshmark_description = copywriter.ensure_retail_line(final.poshmark_description, facts)
@@ -797,9 +813,8 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
 
     questions = fit_questions + gate.questions + nwt_questions
     asked = list(fit_questions)                          # a department/category Poshmark doesn't have: like "Other"
-    if size_q := size_question(s, facts, sizes.poshmark_size(facts)):
-        questions.append(size_q)                         # a size none of Poshmark's menus for it has (WO25)
-        asked.append(size_q)
+    if menu_note := size_menu_note(facts, sizes.poshmark_size(facts)):
+        info.append(menu_note)                           # off Poshmark's menus: shown, never asked (WO33)
     if options:                                          # asked with buttons, its own message: not on the card too
         questions = [q for q in questions if q not in fit_questions and q != OTHER_CATEGORY_QUESTION]
         asked += category_unsure(facts)
@@ -1138,9 +1153,9 @@ def _regate(s: Settings, it, facts: Facts, renders: dict, photos: list[Path], ki
     doc = loads(it["gate"]) or {}
     twin = next((q for q in doc.get("questions") or [] if q.startswith("looks like item")), None) \
         if doc.get("hold") else None
-    size_q = size_question(s, facts, sizes.poshmark_size(facts))
     options = category_question(facts, fit_questions, it["owner_category"])
-    asked = fit_questions + ([size_q] if size_q else [])
+    asked = list(fit_questions)
+    menu_note = size_menu_note(facts, sizes.poshmark_size(facts))
     questions = ([twin] if twin else []) + asked + gate.questions + \
         [q for q in doc.get("questions") or [] if q == NWT_QUESTION]
     if options:                                          # "Which category?" asks it, with buttons
@@ -1148,7 +1163,8 @@ def _regate(s: Settings, it, facts: Facts, renders: dict, photos: list[Path], ki
     decision = "needs_info" if twin or asked or options or gate.decision == "needs_info" else gate.decision
     unsure = category_unsure(facts) if options else []
     doc.update(decision=decision, reasons=([twin] if twin else []) + asked + unsure + gate.reasons, questions=questions,
-               notes=notes, info=list(fit_notes) + gate.notes, ask_kids=kids_question(facts), ask_category=options)
+               notes=notes, info=list(fit_notes) + gate.notes + ([menu_note] if menu_note else []),
+               ask_kids=kids_question(facts), ask_category=options)
     status = it["status"]
     if status in ("awaiting_price", "needs_info") and it["owner_price"] and decision != "needs_info" \
             and not doc.get("ask_kids") and not doc.get("hold"):
@@ -1245,6 +1261,40 @@ def set_brand(s: Settings, db: DB, iid: str, brand: str) -> str:
     return status
 
 
+def _resized(it, facts: Facts, renders: dict) -> dict:
+    """The renders after a size change, no model call and no photo work (WO33): the size field with Poshmark's menu
+    value, the title's size (the owner's own title kept), the pieces' line in the description."""
+    tab, value = sizes.poshmark_size(facts) or (None, None)
+    pcfg = premium.config()
+    return {mp: {**r, "size": sizes.size_label(facts), "size_tab": tab, "size_value": value,
+                 "title": it["owner_title"] or premium.title_with_feature(
+                     copywriter.ensure_title_size(copywriter.fix_title(r.get("title") or "", facts), facts), facts,
+                     pcfg),
+                 "description": copywriter.ensure_piece_sizes(r.get("description") or "", facts)}
+            for mp, r in renders.items()}
+
+
+def set_size(s: Settings, db: DB, iid: str, size: str) -> str:
+    """The owner's size for the item (WO33: a reply 'Size S', 'size s' or 'S' to its card): kept as items.owner_size
+    through any reprocessing, source owner; the listing's size field and title follow; no model call, the price kept.
+    A set's pieces keep their line. Returns the item's status."""
+    size = re.sub(r"\s+", " ", size or "").strip()
+    if not size:
+        raise ValueError("which size? Reply 'size S'")
+    it = _answerable(db, iid, "size")
+    it2 = {**dict(it), "owner_size": size}
+    facts = apply_owner_answers(it2, Facts.model_validate(loads(it["facts"])))
+    renders = _resized(it2, facts, loads(it["renders"]) or {})
+    photos, kinds = _photos_of(it)
+    doc, status = _regate(s, it2, facts, renders, photos, kinds, (loads(it["gate"]) or {}).get("notes") or [])
+    was = approve.card(iid, it)
+    with db.tx():
+        db.set_item(iid, owner_size=size, facts=facts.model_dump(), renders=renders, gate=doc, status=status)
+        db.log(iid, "size_set", {"size": size, "status": status})
+        _close_changed_card(db, iid, was)
+    return status
+
+
 def set_piece_sizes(s: Settings, db: DB, iid: str, pieces: list[tuple[str, str]]) -> str:
     """The owner's sizes for a set's pieces (WO33: `thrift edit --sizes "Cardigan=S,Pants=XS"`): kept as
     items.owner_sizes through any reprocessing; the listing under the bigger size — its size field and title — and the
@@ -1256,7 +1306,7 @@ def set_piece_sizes(s: Settings, db: DB, iid: str, pieces: list[tuple[str, str]]
     stored = [{"piece": p, "size": z} for p, z in pieces]
     it2 = {**dict(it), "owner_sizes": json.dumps(stored)}
     facts = apply_owner_answers(it2, Facts.model_validate(loads(it["facts"])))
-    renders = relist(s, it2, facts, loads(it["renders"]) or {})
+    renders = _resized(it2, facts, loads(it["renders"]) or {})
     photos, kinds = _photos_of(it)
     doc, status = _regate(s, it2, facts, renders, photos, kinds, (loads(it["gate"]) or {}).get("notes") or [])
     was = approve.card(iid, it)
@@ -1377,7 +1427,7 @@ def requeue(s: Settings, db: DB, iid: str, marketplace: str | None = None) -> li
     if cross_only and (db.listing(iid, "poshmark") or {"status": ""})["status"] != "posted":
         raise ValueError(f"item {iid} isn't live on Poshmark: Depop and Vinted follow Poshmark")
     if not cross_only and it["status"] not in ("ready", "drafted", "needs_owner"):
-        raise ValueError(f"item {iid} is {it['status']}, not ready — fix the item first (thrift answer)")
+        raise ValueError(f"item {iid} is {it['status']}, not ready — reply to its card with the fix first")
     with db.tx():
         for r in rows:
             db.upsert_listing(iid, r["marketplace"], status="queued", error=None,
@@ -1398,8 +1448,7 @@ def set_price(s: Settings, db: DB, iid: str, amount: int) -> str:
     if it is None:
         raise ValueError(f"unknown item {iid}")
     if it["status"] == "awaiting_condition":
-        raise ValueError(f"item {iid} first needs its condition: brand new or worn? (the buttons, or `thrift condition "
-                         f"{iid} nwt|like_new|good`)")
+        raise ValueError("first its condition: brand new or worn? — tap NWT, Like New or Good on its message")
     if it["status"] not in PRICEABLE:
         raise ValueError(f"item {iid} is {it['status']} — the price can't be changed now")
     amount = int(amount)

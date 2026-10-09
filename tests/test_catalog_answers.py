@@ -5,7 +5,7 @@ from PIL import Image
 
 from thrift_agent import approve, brands, pipeline
 from thrift_agent.brain import copy as copywriter, sizes, taxonomy
-from thrift_agent.brain.gate import evaluate
+from thrift_agent.brain.gate import SIZE_NOTE, evaluate
 from thrift_agent.brain.verify import lint
 from thrift_agent.config import Settings, settings
 from thrift_agent.db import DB, loads
@@ -179,8 +179,9 @@ def test_the_listing_carries_the_menus_value_and_a_size_it_lacks_is_asked(env, f
     db.set_item(iid, status="new")
     pipeline.process_item(s, db, iid)
     gate = loads(db.item(iid)["gate"])
-    assert gate["decision"] == "needs_info" and gate["questions"] == [
-        "Size: “38” isn't on Poshmark's Women Shoes size list (Standard) — reply 'size …'"]
+    assert gate["questions"] == []                                   # WO33: shown, never asked
+    assert f"{SIZE_NOTE} 38 — not on Poshmark's Women Shoes size list (Standard): the nearest is used" in gate["info"]
+    assert "Size 38 — my best reading; reply 'size …' to change it" in bot.sent()[-1]["caption"]
     state["facts"] = lambda: facts(category="Bags", subcategory=None, size_us=Ev())   # a bag: no size to ask
     db.set_item(iid, status="new")
     pipeline.process_item(s, db, iid)
@@ -435,7 +436,8 @@ def test_a_plain_reply_to_the_cards_brand_question_is_the_brand(env, facts, monk
     assert (posh["brand"], posh["title"]) == ("Vince", "Vince Red Ballet Flats size 7.5")
     assert loads(it["gate"])["questions"] == []
     assert bot.sent()[-1]["caption"].startswith("Vince Red Ballet Flats")          # the card again, with the brand
-    assert bot.next_id == card + 1 and bot.marks() == [(card, "✓ brand: Vince")]   # no message; the old copy marked
+    assert bot.next_id == card + 2 and bot.marks() == [(card, "✓ brand: Vince")]   # the old copy marked, and
+    assert _answers(bot)[-1].startswith("✓ Brand: Vince — ")                      # WO33: her reply answered
 
 
 def test_edit_sets_the_owners_title_and_brand_and_both_stay(env, facts, monkeypatch, tmp_path):
@@ -531,6 +533,182 @@ def test_the_bigger_size_and_the_pieces_line():
     assert [sizes.bigger_size(v) for v in (["S", "XS"], ["XS", "S"], ["M", "L"], ["4", "2"], ["XS", "4"], ["S", "38"])] \
         == ["S", "S", "L", "4", "4", "38"]
     assert sizes.bigger_size(["one", "two"]) == "one"                       # not comparable: the first piece's
+
+
+def _answers(bot, owner_mid=90):
+    """The bot's replies to the owner's message (WO33: every reply gets one)."""
+    return [p["text"] for m, p in bot.calls if m == "sendMessage" and p.get("reply_to_message_id") == owner_mid]
+
+
+def _unsure_size(facts):
+    return lambda: facts(item_type="knit cardigan", category="Sweaters", subcategory="Cardigans", condition="like_new",
+                         colors=["Tan"], brand=Ev(value="MNG", photos=[1], source="photo", confidence=0.95),
+                         size_printed=Ev(value="XS", photos=[2], source="photo", confidence=0.5),
+                         size_us=Ev(value="XS", photos=[2], source="photo", confidence=0.5))
+
+
+def test_an_unsure_size_is_shown_never_asked_and_the_item_never_held(env, facts, monkeypatch):
+    """WO33, the owner's rule: never a question about size — the best reading is listed and the card says so — and
+    a problem the copy check finds never holds the item: priced, it is ready and it publishes."""
+    from thrift_agent.post import parallel, runner
+    s, db, bot = env
+    state = {"facts": _unsure_size(facts), "title": "MNG Knit Cardigan Tan"}          # no size in the title
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", _model(state))
+    iid = _item(s.path("db").parent, db)
+    pipeline.process_item(s, db, iid)
+    it = db.item(iid)
+    gate, posh = loads(it["gate"]), loads(it["renders"])["poshmark"]
+    assert not any("size" in q.lower() for q in gate["questions"]) and gate["decision"] == "publish"
+    assert posh["title"] == "MNG Knit Cardigan Tan size XS"                         # the copy check's fix, no hold
+    caption = bot.sent()[-1]["caption"]
+    assert "Size XS — my best reading; reply 'size …' to change it" in caption and "❓" not in caption
+    assert pipeline.set_price(s, db, iid, 40) == "ready"
+    s.data["marketplaces"]["poshmark"]["autopublish"] = True
+    monkeypatch.setattr(type(s), "is_prod", property(lambda self: True))
+    assert runner.publishable(s, db, ["poshmark"]) == [(iid, "poshmark")]
+    assert runner.held(s, db, ["poshmark"]) == []
+    db.set_item(iid, gate={**gate, "decision": "draft", "reasons": ["verifier rewrote x"]})   # an old 'draft' too
+    assert runner.publishable(s, db, ["poshmark"]) == [(iid, "poshmark")]
+    s.data["marketplaces"]["depop"] = {"enabled": True}
+    monkeypatch.setattr("thrift_agent.crosslist.enabled", lambda _s: ["depop"])
+    assert parallel.feed(s, db) == [iid] and db.listing(iid, "depop")["status"] == "queued"
+
+
+@pytest.mark.parametrize("reply,size,price", [("Size S", "S", None), ("size s", "S", None), ("S", "S", None),
+                                              ("Size S, 100", "S", 100), ("S $100", "S", 100),
+                                              ("size 8.5", "8.5", None)])
+def test_a_size_reply_sets_the_size_and_gets_an_answer(env, facts, monkeypatch, reply, size, price):
+    """WO33, live: "Size S" replied to the card at 5:54 went nowhere the owner could see. Now "Size S", "size s", "S",
+    with or without a price, sets the size at once (no model call) — the size field and the title — and the bot
+    answers her message with what it understood and what happens next."""
+    s, db, bot = env
+    state = {"facts": _unsure_size(facts), "title": "MNG Knit Cardigan Tan size XS"}
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", _model(state))
+    iid = _item(s.path("db").parent, db)
+    pipeline.process_item(s, db, iid)
+    card = bot.next_id
+    out = approve.handle_update(s, db, bot, _reply(reply, card))
+    it = db.item(iid)
+    posh = loads(it["renders"])["poshmark"]
+    assert (it["owner_size"], posh["size"]) == (size, size), out
+    assert posh["title"].endswith(f"size {size}")
+    answer = _answers(bot)
+    assert len(answer) == 1 and answer[0].startswith(f"✓ Size {size}"), answer
+    if price is None:
+        assert it["status"] == "awaiting_price" and "its card stays open for the price" in answer[0]
+    else:
+        assert it["status"] == "ready" and f"${price}" in answer[0] and "it goes up" in answer[0]
+        assert "Poshmark" in answer[0]
+
+
+def test_a_reply_after_the_price_is_still_answered(env, facts, monkeypatch):
+    """The live case: the card already answered by its price ($100, the card closed), then "Size S" replied to it:
+    the size is set, the price kept, and the answer says when it goes up."""
+    s, db, bot = env
+    state = {"facts": _unsure_size(facts), "title": "MNG Knit Cardigan Tan size XS"}
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", _model(state))
+    iid = _item(s.path("db").parent, db)
+    pipeline.process_item(s, db, iid)
+    card = bot.next_id
+    approve.handle_update(s, db, bot, _cb(f"approve:{iid}:100", card))
+    approve.handle_update(s, db, bot, _reply("Size S", card))
+    it = db.item(iid)
+    assert (it["status"], it["owner_price"], loads(it["renders"])["poshmark"]["size"]) == ("ready", 100, "S")
+    assert _answers(bot) and _answers(bot)[-1].startswith("✓ Size S — it goes up")
+
+
+@pytest.mark.parametrize("reply", ["the cardigan is cropped", "45"])
+def test_every_reply_to_a_card_gets_an_answer(env, facts, monkeypatch, reply):
+    """A note (reprocessed) or a price: either way an answer — never silence."""
+    s, db, bot = env
+    state = {"facts": _unsure_size(facts), "title": "MNG Knit Cardigan Tan size XS"}
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", _model(state))
+    iid = _item(s.path("db").parent, db)
+    pipeline.process_item(s, db, iid)
+    approve.handle_update(s, db, bot, _reply(reply, bot.next_id))
+    answer = _answers(bot)
+    assert len(answer) == 1 and answer[0].startswith("✓ "), answer
+    assert ("Noted" in answer[0]) if reply[0].isalpha() else ("$45" in answer[0] and "it goes up" in answer[0])
+    assert "thrift " not in answer[0]                                          # never a terminal command
+
+
+def test_a_skipped_listing_is_settled_by_a_reply_never_a_command(env, facts, monkeypatch):
+    """WO33, the owner: no message may need a terminal command. A skipped listing's group message takes a reply:
+    'retry' puts it back in line, and the bot says so."""
+    from thrift_agent.post import runner
+    from thrift_agent.post.base import Outcome
+    from thrift_agent.schema import Render
+    s, db, bot = env
+    state = {"facts": _unsure_size(facts), "title": "MNG Knit Cardigan Tan size XS"}
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", _model(state))
+    iid = _item(s.path("db").parent, db)
+    pipeline.process_item(s, db, iid)
+    pipeline.set_price(s, db, iid, 40)
+    render = Render.model_validate(loads(db.item(iid)["renders"])["poshmark"])
+    said = []
+    monkeypatch.setattr("thrift_agent.notify.photo", lambda path, caption: said.append(caption))
+    monkeypatch.setattr("thrift_agent.notify.say", lambda text: said.append(text))
+    runner.record_outcome(db, iid, "poshmark", render, Outcome("skipped", error="skipped: no size menu"), ["poshmark"])
+    message = bot.sent()[-1]["text"]
+    assert message.startswith("⏭ MNG Knit Cardigan Tan size XS wasn't listed on Poshmark") and "'retry'" in message
+    assert not any("thrift " in t for t in [message, *said])
+    approve.handle_update(s, db, bot, _reply("retry", bot.next_id))
+    assert db.listing(iid, "poshmark")["status"] == "queued"
+    assert _answers(bot)[-1].startswith("✓ Retry — it goes back in line on Poshmark")
+
+
+def test_a_reply_no_handler_answered_still_gets_an_answer(env, facts, monkeypatch):
+    """The safety net (WO33): whatever a reply's handler did, a reply never goes without an answer."""
+    s, db, bot = env
+    state = {"facts": _unsure_size(facts), "title": "MNG Knit Cardigan Tan size XS"}
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", _model(state))
+    iid = _item(s.path("db").parent, db)
+    pipeline.process_item(s, db, iid)
+    monkeypatch.setattr(approve, "_reply_item", lambda *a: f"item {iid}: handled quietly")
+    approve.handle_update(s, db, bot, _reply("anything at all", bot.next_id))
+    assert _answers(bot) == ["✓ Got it — its card stays open for the price"]
+
+
+def test_the_copy_check_fixes_a_titles_new_and_eu_size(facts):
+    used = facts(brand=Ev(value="New Balance", photos=[1], source="photo", confidence=0.9), condition="good",
+                 size_us=Ev(value="8", photos=[1], source="photo", confidence=0.9))
+    assert copywriter.fix_title("New Balance New 574 Sneakers Red EU 38 size 8", used) == \
+        "New Balance 574 Sneakers Red size 8"
+    assert copywriter.fix_title("New Balance 574 Sneakers (EU 38) Red size 8", used) == "New Balance 574 Sneakers Red size 8"
+    nwt = facts(condition="NWT", brand=Ev(value="Zara", photos=[1], source="photo", confidence=0.9))
+    assert copywriter.fix_title("Zara New Floral Skirt size 8", nwt) == "Zara New Floral Skirt size 8"
+
+
+def test_an_unmatched_sale_is_matched_by_a_reply_in_the_ops_chat(env, facts, monkeypatch):
+    """WO33, the owner: no message may need a terminal command — the API's "Unmatched sale" line in the ops chat is
+    answered with words from the item's title: the Mac matches it (thrift-api makes the take-downs) and says so."""
+    s, db, bot = env
+    state = {"facts": _unsure_size(facts), "title": "MNG Knit Cardigan Tan size XS"}
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", _model(state))
+    iid = _item(s.path("db").parent, db)
+    pipeline.process_item(s, db, iid)
+    ops = FakeBot()
+    ops.chat_id = "555"
+    monkeypatch.setattr(approve, "ops_bot_for", lambda _s: ops)
+    monkeypatch.setattr("thrift_agent.notify.ops_chat", lambda _s=None: "555")
+    calls = []
+
+    class Api:
+        def post(self, path, body):
+            calls.append((path, body))
+            return {"sale_id": "s_abc123", "status": "delisting", "tasks": ["t_1"]}
+    monkeypatch.setattr("thrift_agent.sales.api", lambda: Api())
+
+    def ops_reply(text):
+        return {"update_id": 9, "message": {"message_id": 91, "chat": {"id": 555}, "from": {"id": OWNER},
+                                            "text": text, "reply_to_message": {"message_id": 7, "text":
+                                            "Unmatched sale on Vinted (s_abc123): MNG Cardigan\nIf it's one of ours, "
+                                            "reply to this message with words from its title; if not, nothing to do."}}}
+    assert approve.handle_update(s, db, bot, ops_reply("mng cardigan")) == f"ops: matched s_abc123 to {iid}"
+    assert calls == [("/sales/s_abc123/match", {"item_id": iid})]
+    assert ops.sent()[-1]["text"].startswith("✓ Matched to MNG Knit Cardigan Tan size XS — 1 take-down queued")
+    assert approve.handle_update(s, db, bot, ops_reply("velvet boots")) == "ops: 0 items for ['velvet', 'boots']"
+    assert ops.sent()[-1]["text"] == "No item's title has all of those words — try others"
 
 
 def test_the_learned_spelling_is_used_from_the_start(env, facts, monkeypatch):

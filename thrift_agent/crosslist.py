@@ -146,8 +146,9 @@ def new_window(s: Settings, db: DB) -> bool:
             db.log(iid, "crosslist_retry", {"mp": mp, "attempts": row["attempts"]})
         else:
             db.upsert_listing(iid, mp, status="skipped", error=SKIPPED + f"{MAX_ATTEMPTS} attempts: {row['error']}")
-            notify.say(f"⏭ {LABEL[mp]} skipped for {iid} after {MAX_ATTEMPTS} attempts: {row['error']}\n"
-                       f"Fix it, then: thrift requeue {iid} --marketplace {mp}")
+            notify.say(f"⏭ {LABEL[mp]} skipped for {iid} after {MAX_ATTEMPTS} attempts: {row['error']}")
+            from thrift_agent.post import runner
+            runner.ask_skipped(db, iid, mp, _title_of(db, iid), f"{MAX_ATTEMPTS} tries didn't go through")
     return True
 
 
@@ -259,8 +260,9 @@ def record(s: Settings, db: DB, iid: str, mp: str, title: str, out, fields: dict
         again = "retried next window" if row and row["attempts"] < MAX_ATTEMPTS else "no more attempts: skipped next window"
         notify.ops_photo(shot, f"❌ {LABEL[mp]} failed ({iid}): {title}\n{error}{note}\n({again})")
     elif out.status == "skipped":
-        notify.ops_photo(shot, f"⏭ {LABEL[mp]} skipped ({iid}): {title}\n{out.error}\nFix it, then: thrift requeue "
-                               f"{iid} --marketplace {mp}{note}")
+        notify.ops_photo(shot, f"⏭ {LABEL[mp]} skipped ({iid}): {title}\n{out.error}{note}")
+        from thrift_agent.post import runner
+        runner.ask_skipped(db, iid, mp, title, f"{LABEL[mp]}'s form doesn't take one of its details")
     elif out.status == "dryrun":
         notify.ops_photo(shot, f"🧪 dry-run {LABEL[mp]} ({iid}): {title} — ${fields.get('price')}\n"
                                f"{fields_summary(fields)}{progress}{note}")

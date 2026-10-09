@@ -321,7 +321,9 @@ def test_a_failure_before_publishing_is_retried_next_window_three_times(tmp_path
     row = db.listing(iid, "vinted")
     assert len(ps["vinted"].calls) == 3 and row["status"] == "skipped" and "3 attempts" in row["error"]
     assert any(m.startswith(f"⏭ Vinted skipped for {iid} after 3 attempts") for m in said.ops)
-    assert not any("Vinted" in m for m in said.group if not m.startswith("Posted ✓"))   # the group never hears it
+    told = [m for m in said.group if "Vinted" in m and not m.startswith("Posted ✓")]   # WO33: one line, a reply
+    assert len(told) == 1 and told[0].startswith("⏭ ") and "Reply 'retry'" in told[0]  # settles it, never a command
+    assert not any("thrift " in m for m in [*said.group, *said.ops])
 
 
 def test_an_unconfirmed_publish_is_asked_and_never_published_again(tmp_path, loop, monkeypatch):

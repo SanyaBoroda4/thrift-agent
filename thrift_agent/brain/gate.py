@@ -21,6 +21,9 @@ class GateResult:
 OTHER_CATEGORY_QUESTION = "Category? — reply e.g. 'category Tops'"
 
 
+SIZE_NOTE = "size: the best reading,"   # WO33: an unsure size is a note (the card's Size line), never a question
+
+
 def evaluate(facts: Facts, price: PriceResult, lint: list[str], unsupported: int, cfg: dict,
              pricing_cfg: dict, sized: bool = True) -> GateResult:
     """needs_info only for what the owner alone can settle: brand or size below the threshold, NWT without a hang-tag
@@ -43,9 +46,10 @@ def evaluate(facts: Facts, price: PriceResult, lint: list[str], unsupported: int
         questions.append(f"Brand: read as “{facts.brand.value}”, not sure — reply 'brand …' if it's wrong"
                          if facts.brand.value else "Brand? Couldn't read it — reply 'brand …'")
     if sized and (not facts.size_us.value or facts.size_us.confidence < mc["size"]):
-        need.append(f"size unclear ({facts.size_us.value}, {facts.size_us.confidence:.2f})")
-        questions.append(f"Size: read as “{facts.size_us.value}”, not sure — reply 'size …' if it's wrong"
-                         if facts.size_us.value else "Size? Couldn't read it — reply 'size …'")
+        # WO33, the owner's rule: never a question about size, never a hold — the best reading is listed, the card
+        # shows it (approve.item_caption: "Size S — my best reading; reply 'size …' to change it")
+        notes.append(f"{SIZE_NOTE} {facts.size_us.value} ({facts.size_us.confidence:.2f})" if facts.size_us.value
+                     else f"{SIZE_NOTE} none read")
     if facts.condition_evidence.confidence < mc.get("condition", 0.70):
         weighed = (f", weighed against {facts.condition_alternative}"
                    if facts.condition_alternative and facts.condition_alternative != facts.condition else "")
@@ -67,6 +71,6 @@ def evaluate(facts: Facts, price: PriceResult, lint: list[str], unsupported: int
 
     if need:
         return GateResult("needs_info", need + soft, notes, questions)
-    if soft:
-        return GateResult("draft", soft, notes)
-    return GateResult("publish", [], notes)
+    # WO33, the owner's rule: the copy check never holds an item — what code can fix it fixed before this (the size in
+    # the title, …); the rest is kept here for the record, and the item publishes
+    return GateResult("publish", soft, notes)

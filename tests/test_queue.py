@@ -250,7 +250,7 @@ def test_a_number_typed_without_a_reply_prices_the_open_card(env, tmp_path, fact
     assert handle_update(s, db, bot, _typed("5")) == "typed $5: under the floor, not taken"
     assert "under the $20 floor" in bot.texts()[-1] and db.item(a2)["owner_price"] is None
     assert handle_update(s, db, bot, _typed("$35.00")) == f"price {a2}: $35 (ready)"
-    assert bot.marks()[-1] == "✓ $35 — queued" and not bot.texts()[-1].startswith("✓")
+    assert bot.marks()[-1] == "✓ $35 — queued" and bot.texts()[-1].startswith("✓ $35 — it goes up")   # WO33
 
 
 def test_a_typed_number_is_not_a_price_while_another_question_is_open(env, tmp_path, facts):

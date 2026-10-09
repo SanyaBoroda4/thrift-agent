@@ -163,7 +163,8 @@ def test_an_unmatched_sale(db, live, sent):
     out = core.process_email(db, posh_sale("posh-x", title="Nike Air Max 90 size 9", url=None, order=None), NOW)
     assert (out["status"], out["sale_status"], out["item_id"]) == ("unmatched", "unmatched", None)
     assert texts(sent, "group") == ["💰 Sold on Poshmark: Nike Air Max 90 size 9 — $35. Ship by Thu Oct 15."]
-    assert texts(sent, "ops") == [f"Unmatched sale on Poshmark ({out['sale_id']}): Congratulations! Your item has sold"]
+    assert texts(sent, "ops") == [f"Unmatched sale on Poshmark ({out['sale_id']}): Congratulations! Your item has sold"
+                                  f"\n{core.UNMATCHED_HOW}"]       # WO33: a reply settles it, never a command
     assert tasks(db) == []
 
 

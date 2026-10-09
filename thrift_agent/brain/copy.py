@@ -336,6 +336,19 @@ def ensure_title_size(title: str, facts: Facts) -> str:
     return f"{title.rstrip()} {phrase}"
 
 
+def fix_title(title: str, facts: Facts) -> str:
+    """What the copy check flags in a title, fixed in place (WO33, the owner: the copy check fixes, never holds):
+    "New" in a used item's title (the brand's own word aside — New Balance) and an EU size ("EU 38", "(EU 38)"): the
+    title is US-only. Run it twice, same title."""
+    if facts.condition not in ("NWT", "NWOT"):
+        brand = (facts.brand.value or "").strip()
+        parts = re.split(f"({re.escape(brand)})", title, flags=re.I) if brand else [title]
+        title = "".join(p if brand and p.lower() == brand.lower() else
+                        re.sub(r"(?<!like )\bnew\b\s*", "", p, flags=re.I) for p in parts)
+    title = re.sub(r"\s*\(?\bEU\s*\d{2}(?:[.,]\d)?\)?", "", title, flags=re.I)
+    return re.sub(r"\s{2,}", " ", title).strip()
+
+
 def ensure_label_size(description: str, facts: Facts) -> str:
     """A kids size settled from the label's height or age (WO23): the label as printed goes in the description too,
     "Label size: 4 ans / 104 cm." — the buyer sees the US size on the listing and what the garment itself says.
