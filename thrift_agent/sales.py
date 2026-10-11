@@ -104,6 +104,22 @@ def _stamp(db: DB, key: str) -> None:
     db.kv_set(key, datetime.now(timezone.utc).isoformat(timespec="seconds"))
 
 
+def _claim(db: DB, key: str, every: float, force: bool = False) -> bool:
+    """Due → the stamp taken now, in ONE transaction: two callers at the same moment (the Poshmark worker's thread and
+    the Depop / Vinted workers, each on its own connection) never both go ahead — a CI runner saw two GET /tasks at the
+    poster's start (WO35)."""
+    if db.conn.in_transaction:                      # inside the caller's own transaction: as before
+        if not _due(db, key, every, force):
+            return False
+        _stamp(db, key)
+        return True
+    with db.tx():
+        if not _due(db, key, every, force):
+            return False
+        _stamp(db, key)
+    return True
+
+
 # ---------------------------------------------------------------- what /sync gets
 
 def item_doc(db: DB, iid: str) -> dict | None:
@@ -252,14 +268,13 @@ def fetch_tasks(db: DB, sites: list[str], force: bool = False) -> int:
     most every TASKS_EVERY seconds — one stamp for every caller, so the poster asks for all its sites at once —
     unless `force` (the CLI's `thrift delist --run`). Returns how many came."""
     client = api()
-    if client is None or not sites or not _due(db, LAST_TASKS, TASKS_EVERY, force):
-        return 0
+    if client is None or not sites or not _claim(db, LAST_TASKS, TASKS_EVERY, force):
+        return 0                                    # (the API down: asked again after TASKS_EVERY, never a storm)
     try:
         answer = client.get("/tasks", {"sites": ",".join(sites)})
     except ApiError as e:
         db.log(None, "api_down", {"path": "/tasks", "error": str(e)})
         return 0
-    _stamp(db, LAST_TASKS)
     got = answer.get("tasks") or []
     for iid in answer.get("sold") or []:            # sold anywhere: never listed after the sale (A1)
         skip_sold(db, iid)
