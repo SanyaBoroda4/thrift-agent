@@ -155,8 +155,11 @@ def test_one_site_turned_away_never_stops_the_others(tmp_path, quick):
     assert all(db.listing(i, "vinted")["status"] == "posted" for i in items)
     assert crosslist.blocked(db, "depop") and len(ps["depop"].calls) == 1
     assert quick.group.count("Depop needs you to log in on the Mac.") == 1
-    lines = [g for g in quick.group if g.startswith("✅")]
-    assert len(lines) == 3 and all("Depop</a>" not in c and "⏳ Depop — later" in c and "Vinted</a>" in c for c in lines)
+    # each item's card, as it ends: on the dev machine an edit prints again (WO34: the card that carried the 💤 line is
+    # edited without it when a later card takes it — whether that happens depends on the workers' timing)
+    cards = {i: [g for g in quick.group if g.startswith("✅") and f"/listing/{i}" in g] for i in items}
+    assert all(cards[i] for i in items)
+    assert all("Depop</a>" not in c[-1] and "⏳ Depop — later" in c[-1] and "Vinted</a>" in c[-1] for c in cards.values())
 
 
 def test_a_poshmark_failure_stops_poshmark_alone(tmp_path, quick):
