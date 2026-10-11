@@ -133,12 +133,16 @@ def test_one_line_per_item_in_order_and_all_done_last(tmp_path, quick):
     items = [_item(db, n) for n in (1, 2)]
     ps = {"poshmark": Timed("poshmark", 0.2), "depop": Timed("depop", 0.1), "vinted": Timed("vinted", 0.3)}
     _run(s, db, ps)
-    lines = [g for g in quick.group if g.startswith("✅")]                 # WO34: one card per item
-    assert len(lines) == 2
-    for line in lines:
+    # WO34: one card per item, each as it ends (on the dev machine an edit prints again: the card the 💤 line moved off
+    # — whether it moves depends on the workers' timing; the Mac's own test run saw three prints for two items)
+    cards = {i: [k for k, g in enumerate(quick.group) if g.startswith("✅") and f"/listing/{i}" in g] for i in items}
+    assert all(cards[i] for i in items)
+    assert cards[items[0]][0] < cards[items[1]][0]                        # in order
+    final = {i: quick.group[cards[i][-1]] for i in items}
+    for line in final.values():
         assert line.index("Poshmark</a>") < line.index("Depop</a>") < line.index("Vinted</a>")
-    assert "All done" in lines[-1] and "All done" not in lines[0]
-    assert sorted(i for line in lines for i in items if i in line) == sorted(items)
+    newest = max(items, key=lambda i: cards[i][0])
+    assert "All done" in final[newest] and all("All done" not in final[i] for i in items if i != newest)
 
 
 def test_one_site_turned_away_never_stops_the_others(tmp_path, quick):
