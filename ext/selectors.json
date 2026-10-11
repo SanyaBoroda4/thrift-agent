@@ -103,6 +103,16 @@
         "verified": true,
         "seen": "2026-10-06, the third extension dry run on the Mac: [data-testid=brand-select-dropdown-input] (input#brand), its search, 'J.Crew' picked for J. Crew"
       },
+      "empty_brand": {
+        "selectors": [
+          "#empty-brand",
+          "[id='empty-brand'][role='radio']"
+        ],
+        "text": "^list without brand$",
+        "how": "Vinted requires a brand: none of ours in its list → its own \"No brand indicated\" › \"List without brand\"",
+        "verified": true,
+        "seen": "2026-10-09, the Solid & Striped set (WO35, i_261004_0226aa's evidence): Upload refused with the brand empty — \"Fill in brand to continue\"; the brand menu ends with \"No brand indicated\" › \"List without brand\" (div#empty-brand[role=radio]); the MNG set had gone through because Vinted filled \"Mango\" itself"
+      },
       "size": {
         "selectors": [
           "[data-testid='category-size-single-grid-input']",
@@ -206,7 +216,7 @@
         "seen": "2026-10-06, the first extension dry run on the Mac: exactly one [data-testid=upload-form-save-button] reading Upload (never clicked); next to it [data-testid=upload-form-save-draft-button], never clicked either; 2026-10-06, the fourth extension dry run on the Mac: the whole form read back as planned, 6 of 6 photos displayed: still exactly one, never clicked — verified for the supervised publish only"
       },
       "after_publish": {
-        "how": "Upload lands on the seller's member page (/member/<id>?promo_shown=true, `landing_url`) with an \"Item listed\" dialog: Later is pressed (never List another, never Bump), then the shop check finds the new listing among the member page's items (/items/<id>-<slug>)",
+        "how": "Upload lands on the seller's member page (/member/<id>?promo_shown=true, `landing_url`) with an \"Item listed\" dialog: Later is pressed (never List another, never Bump), then the new listing is read from Vinted's own JSON of the seller's newest items (`wardrobe`, the exact title — WO35); the member page's tiles only when the JSON can't be read",
         "verified": true,
         "seen": "2026-10-08, the first supervised Vinted publish on the Mac (WO33, from its evidence): after the one Upload click the tab went to /member/<id>?promo_shown=true with an \"Item listed\" dialog (h1 \"Item listed\", the item card, \"List another\" [data-testid=list-promotion-submit-cta], \"Later\" [data-testid=list-promotion-cancel-cta]); the member page also shows Bump buttons [data-testid=bump-button]. The shop check found the new listing among the member page's 20 (/items/<id>-<slug>)."
       },
@@ -217,6 +227,12 @@
         "text": "^later$",
         "verified": true,
         "seen": "2026-10-08, the first supervised Vinted publish on the Mac (WO33, from its evidence): after the one Upload click the tab went to /member/<id>?promo_shown=true with an \"Item listed\" dialog (h1 \"Item listed\", the item card, \"List another\" [data-testid=list-promotion-submit-cta], \"Later\" [data-testid=list-promotion-cancel-cta]); the member page also shows Bump buttons [data-testid=bump-button]. The shop check found the new listing among the member page's 20 (/items/<id>-<slug>)."
+      },
+      "wardrobe": {
+        "url": "/api/v2/wardrobe/{member}/items?order=newest_first&per_page=40&page=1",
+        "how": "the seller's newest items as JSON (same origin, from the member page): items[].id, .title, .url — a new listing is confirmed by its exact title",
+        "verified": true,
+        "seen": "2026-10-09 09:03–09:09, the architect in the owner's logged-in Chrome (WO35, read only): all five of the morning's new items were there"
       },
       "never_click": {
         "selectors": [
@@ -283,6 +299,7 @@
   "depop": {
     "sell_url": "https://www.depop.com/products/create/",
     "listing_url": "^https://www\\.depop\\.com/products/(?!create/|edit/)([a-z0-9]+(?:-[a-z0-9]+)+)(?:/manage)?/?(?:[?#].*)?$",
+    "landing_url": "^https://www\\.depop\\.com/products/create/success/",
     "shop_url": "https://www.depop.com/{shop}/",
     "pages": {
       "block": {
@@ -397,9 +414,18 @@
         "seen": "2026-10-06, the first extension dry run on the Mac: exactly one submit button reading Post (never clicked); 'Save as a draft' and 'Post and add another' next to it, never touched; 2026-10-06, the fourth extension dry run on the Mac: the whole form read back as planned, 6 of 6 photos displayed: still exactly one, never clicked — verified for the supervised publish only"
       },
       "after_publish": {
-        "how": "the tab lands on listing_url within 60 s: Depop opens /products/<slug>/manage/ (Edit listing, Boost listing, Copy listing under it); the listing's address is /products/<slug>/",
+        "how": "Post lands on Depop's success page /products/create/success/?productId=<n> (`landing_url`: \"Nice! It's listed\", \"View listing\", \"List another item\"); the View listing link (`view_listing`) is the new listing's /products/<slug>/manage/ page, where the SKU (our item id) is read; the listing's address is /products/<slug>/. Before 2026-10-09 Post went to /products/<slug>/manage/ itself (still taken: listing_url).",
         "verified": true,
-        "seen": "2026-10-07, the first supervised Depop publish on the Mac (WO32b, from its evidence): after the one Post click the tab went to /products/<slug>/manage/ — the seller's own view of the new listing, 'Listed 0 minutes ago'"
+        "seen": "2026-10-07, the first supervised Depop publish on the Mac (WO32b, from its evidence): after the one Post click the tab went to /products/<slug>/manage/ — the seller's own view of the new listing, 'Listed 0 minutes ago'; 2026-10-09, the backfill's eight Depop publishes (WO35, from their evidence): every one landed on /products/create/success/?productId=<n> (title \"Done - Depop\", \"Nice! It's listed\", \"View listing\" → /products/<slug>/manage/, \"List another item\") — the old check took it for an unknown page and looked in the shop, where three Levi's listings didn't match (\"Levi's\" vs the slug's \"levis\")"
+      },
+      "view_listing": {
+        "selectors": [
+          "a[href*='/products/'][href$='/manage/']"
+        ],
+        "text": "^view listing$",
+        "how": "the success page's \"View listing\" link: the new listing's /products/<slug>/manage/",
+        "verified": true,
+        "seen": "2026-10-09, the success page after Post (WO35, i_261004_69a123's evidence): <a href=\"/products/tetiana9orokina-levis-501-distressed-denim-cutoff-e832/manage/\">View listing</a>"
       },
       "listing_title": {
         "selectors": [
@@ -469,6 +495,12 @@
         ],
         "verified": true,
         "seen": "2026-10-06, the first extension dry run on the Mac: the brand field's clear button"
+      },
+      "brand_other": {
+        "text": "^other$",
+        "how": "Depop requires a brand: an item with none, or one Depop doesn't list, gets its own \"Other\" (typed, the option reading exactly Other)",
+        "verified": false,
+        "seen": "2026-10-09, the silk pants (WO35, i_261004_2b84a5's evidence): Post refused with the brand empty — \"This field is required\" under Brand, the form stayed; the brand menu answers \"Other\" when nothing matches (recorded 2026-10-06: \"J. Crew\" → only \"Other\")"
       },
       "shipping": {
         "selectors": [

@@ -229,6 +229,11 @@ def done_state(s: Settings, db: DB) -> list[str] | None:
         if db.conn.execute(f"SELECT 1 FROM listings WHERE marketplace=? AND status IN ({marks}) LIMIT 1",
                            (mp, *states)).fetchone():
             waiting.append(mp)
+        elif any((crosslist.unconf_state(db, r["item_id"], mp) or {}).get("stage") != "given_up"
+                 for r in db.conn.execute("SELECT item_id, error FROM listings WHERE marketplace=? AND status='failed' "
+                                          "AND url IS NULL", (mp,)).fetchall()
+                 if (r["error"] or "").startswith(crosslist.UNCONFIRMED)):
+            waiting.append(mp)                        # WO35: an unconfirmed publish still to settle by the site's data
     return waiting
 
 

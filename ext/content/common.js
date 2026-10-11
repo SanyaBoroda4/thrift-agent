@@ -314,16 +314,20 @@
       return fail(job.mode === "after_publish" ? "after_publish" : "open", page, `${page} page`);
     }
     if (job.mode === "find") return site.find(job, st);
-    if (job.mode === "after_publish" && page === "landing") {   // WO33: Vinted's member page after Upload
+    if (job.mode === "after_publish" && page === "landing") {   // WO33: Vinted's member page; WO35: Depop's success page
       const did = site.landed ? await site.landed(job, st) : "nothing to answer";
       await T.screenshot("landing");
+      if (did && did.url) {                           // WO35: the new listing's address, from the page it landed on
+        return T.emit({ event: "result", job_id: job.job_id, url: did.url, live: null, landing: location.href,
+                        how: did.how || null });
+      }
       return fail("after_publish", "landing", `landed on ${location.href} (${did}): the shop check finds the listing`);
     }
     if (job.mode === "verify" || job.mode === "after_publish") {
       if (page !== "listing") {
         await T.screenshot(page);
-        const shown = T.$$(["[role='alert']", "[class*='error' i]"]).filter(T.visible).map((e) => e.textContent.trim());
-        return fail(job.mode, page, `not a listing page: ${location.href}${shown.length ? ` (${shown.slice(0, 3).join(" | ")})` : ""}`);
+        const shown = T.errorsShown();
+        return fail(job.mode, page, `not a listing page: ${location.href}${shown.length ? ` (${shown.join(" | ")})` : ""}`);
       }
       await T.dismiss(T.selectors[job.site].steps.promo_close?.selectors);   // a bump / boost offer: closed, never taken
       const live = await site.verify(job);
@@ -373,6 +377,32 @@
     go = null;
     if (!ok) return fail("cancelled", "form", "cancelled");
     await site.submit(job, st);                                       // exactly one click; the page then navigates
+    // WO35: a form the site refused stays, with its error (live 2026-10-09: Depop "This field is required" under
+    // Brand; Vinted "Fill in brand to continue"): said at once, with the error — nothing was published.
+    const refused = await T.until(() => (T.classify(job.site) === "form" && T.errorsShown().length ? true : null), 8000);
+    if (refused) {
+      await T.settle(1500);
+      const shown = T.classify(job.site) === "form" ? T.errorsShown() : [];
+      if (shown.length) {
+        await T.screenshot("refused");
+        return fail("after_publish", "form", `refused: ${shown.join(" | ")}`);
+      }
+    }
+  };
+  // The errors a form shows: alerts and error texts that say something (an empty error wrapper — Depop's red icon —
+  // is no message), with the field each belongs to when its label is known.
+  // WO35: a listing's title as the site keeps it, the same as ours (spaces aside — the exact words, the exact case).
+  T.sameTitle = (a, b) => String(a ?? "").replace(/\s+/g, " ").trim() === String(b ?? "").replace(/\s+/g, " ").trim();
+  T.errorsShown = () => {
+    const out = [];
+    for (const e of T.$$(["[role='alert']", "[class*='error' i]", "[class*='validation' i]"]).filter(T.visible)) {
+      const text = (e.textContent || "").replace(/\s+/g, " ").trim();
+      if (!text || text.length > 120 || out.some((o) => o.includes(text))) continue;
+      const field = e.closest("[class*='field' i], [class*='input' i], label, li")
+        ?.querySelector("label, [class*='title' i]")?.textContent?.replace(/\s+/g, " ").trim();
+      out.push(field && field !== text && field.length < 40 ? `${field}: ${text}` : text);
+    }
+    return out.slice(0, 3);
   };
   const kindOf = (page) => (STOP.includes(page) ? page : "unknown");
 

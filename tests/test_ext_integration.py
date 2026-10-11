@@ -246,7 +246,7 @@ def test_a_vinted_publish_landing_on_the_member_page_presses_later_and_finds_it_
     assert out.status == "posted", (out.error, out.note)
     assert out.url == "https://www.vinted.com/items/9876543210"
     assert site.clicks == ["/api/upload-click", "/api/later-click"], site.clicks     # never List another, never Bump
-    assert "Item listed: Later" in (out.note or "") and "found in the shop" in (out.note or "")
+    assert "Item listed: Later" in (out.note or "") and "the exact title" in (out.note or "")   # WO35: by its title
     assert took < 50, took                                          # answered at once, not after the 60 s timeout
 
 

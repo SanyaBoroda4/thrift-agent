@@ -10,7 +10,8 @@ the photos are up Depop fills fields by itself (recorded: the colour chips Cream
 Medium; window.__FIXTURE.ai = false turns that off). The price input[data-testid=priceAmount__input][type=number],
 Depop Shipping's USPS radio (on by default), the PACKAGE SIZE menu shippingMethods-input, Boost's switch
 (label[data-testid=switch-label], "Pay an extra 12% fee"), Post / Save as a draft. Post sends /api/post-click and goes
-to /products/<shop>-<words>/ (window.__FIXTURE.land overrides the landing path). -->
+to /products/<shop>-<words>/ (window.__FIXTURE.land overrides the landing path). WO35: Post with the brand empty
+is refused as Depop does (2026-10-09): "This field is required" under Brand, the form stays. -->
 <html><head><meta charset="utf-8"><title>Sell an item | Depop</title>
 <style>ul{list-style:none;margin:0;padding:0;min-height:2px} [role=option]{padding:2px 4px;cursor:pointer}
 .field{margin:6px 0} img{width:40px;height:40px} .later{display:none}</style></head>
@@ -166,6 +167,13 @@ window.__chosen = chosen;
 document.getElementById("form").addEventListener("submit", (e) => {
   e.preventDefault();
   fetch("/api/post-click").catch(() => {});
+  if (!document.getElementById("brand-input").value) {        // WO35: Depop requires a brand
+    const err = document.createElement("p");
+    err.className = "styles_errorText__x";
+    err.textContent = "This field is required";
+    document.getElementById("brand-input").closest(".field").appendChild(err);
+    return;
+  }
   const words = document.getElementById("description").value.split("\n")[0].toLowerCase()
     .replace(/[^a-z0-9 ]/g, "").trim().split(/\s+/).join("-");
   setTimeout(() => { location.href = F.land || ("/products/shopname-" + words + "/"); }, 100);

@@ -13,7 +13,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from thrift_agent import approve, brands, catalogs, crosslist, daily, notify, pipeline, power
@@ -374,9 +374,10 @@ def unconfirmed_text(title: str, slept: bool, mp: str = "poshmark") -> str:
 
 def ask_unconfirmed(db: DB, iid: str, mp: str, text: str) -> None:
     """Send `text` as a message the owner can reply to ('posted <url>' / 'retry'; outbox kind "unconfirmed", not one
-    of the queue's questions). Without a bot (dev) it prints, with the CLI twins."""
+    of the queue's questions) — in the OPS chat (WO35: the group never gets a "can't see it" question again; a reply
+    there works the same). Without a bot (dev) it prints, with the CLI twins."""
     from thrift_agent.config import settings
-    bot = approve.bot_for(settings())
+    bot = approve.ops_bot_for(settings())
     if bot is None:
         notify.say(f"{text}\n(thrift mark-posted {iid} {mp} <url> | thrift retry {iid})")
         return
@@ -386,6 +387,106 @@ def ask_unconfirmed(db: DB, iid: str, mp: str, text: str) -> None:
         db.log(iid, "error", f"unconfirmed message: {type(e).__name__}: {e}")
         return
     db.add_outbox(bot.chat_id, mid, "unconfirmed", crosslist.unconfirmed_ref(iid, mp), text=text)
+
+
+def second_miss_text(title: str, mp: str) -> str:
+    """WO35 §4: posted twice, neither confirmed by the site's own data — the ops chat only, a reply settles it."""
+    site = crosslist.LABEL.get(mp, mp)
+    return (f"⚠️ {title}: I posted it on {site} twice and can't confirm either — {site}'s own data doesn't show it. "
+            f"Check {site}: if it's there, reply 'posted <link>'; if not, reply 'retry'.")
+
+
+def held_by_others(db: DB, iid: str, mp: str) -> set[str]:
+    """The addresses other items hold on `mp`: never taken for this one (WO35)."""
+    return {r["url"] for r in db.conn.execute("SELECT url FROM listings WHERE marketplace=? AND item_id<>? AND url IS "
+                                              "NOT NULL", (mp, iid))}
+
+
+def close_question(db: DB, iid: str, mp: str, label: str) -> None:
+    """An unconfirmed publish's old ⚠️ question (the group's, before WO35; the ops chat's since) closed: resolved, and
+    its message marked with one inert "✓ …" button (no new message) — a late reply then gets "already settled"."""
+    ref = crosslist.unconfirmed_ref(iid, mp)
+    try:
+        from thrift_agent.config import settings
+        s = settings()
+        for bot in (approve.bot_for(s), approve.ops_bot_for(s)):
+            if bot is not None:
+                approve._ack(db, bot, "unconfirmed", ref, label)
+    except Exception as e:  # noqa: BLE001 — the mark is a courtesy; the outbox below is what counts
+        db.log(iid, "card_mark_failed", f"{type(e).__name__}: {e}")
+    db.outbox_resolve("unconfirmed", ref)
+
+
+def confirm_found(s: Settings | None, db: DB, ps: dict, iid: str, mp: str, url: str, how: str) -> None:
+    """An unconfirmed publish found live by the site's own data (WO35 §4): posted with its address, its question
+    closed, its state forgotten, the item's card brought up to date."""
+    row = db.listing(iid, mp)
+    db.upsert_listing(iid, mp, status="posted", url=url, error=None, listing_id=listing_id_from(mp, url),
+                      posted_at=row["updated_at"] if row is not None else None)
+    db.log(iid, "post_confirmed", {"mp": mp, "url": url, "how": how, "was": row["error"] if row is not None else None})
+    close_question(db, iid, mp, "✓ it's live")
+    crosslist.set_unconf(db, iid, mp, stage=None)
+    _settle_item(db, iid, list(ps))
+    crosslist.announce(s, db, iid)
+
+
+async def recheck_unconfirmed(s: Settings, db: DB, ps: dict, mp: str, ctx=None) -> bool:
+    """WO35 §4, one due re-check on `mp`: an unconfirmed publish looked for by the site's own data (find_live —
+    Vinted's newest items, Depop's shop and SKU). Live → posted (the card follows). Absent → it wasn't posted: it
+    counts as a failure now, goes back in line, and is looked for once more right before it is posted again (run_cross)
+    — after the automatic second post the ops chat is asked instead (never the group). Unreadable → looked at again
+    later. True when one was handled."""
+    poster = ps.get(mp)
+    if poster is None or not hasattr(poster, "find_live") or not getattr(poster, "available", lambda: True)():
+        return False
+    due = crosslist.rechecks_due(db, mp)
+    if not due:
+        return False
+    iid = due[0]
+    state = crosslist.unconf_state(db, iid, mp) or {}
+    site = crosslist.LABEL[mp]
+    try:
+        render = cross_render_of(db, iid, mp)
+    except Exception as e:  # noqa: BLE001 — an item that can't be rendered: given up, said once
+        crosslist.set_unconf(db, iid, mp, stage="given_up")
+        notify.say(f"⚠️ {site} ({iid}): can't re-check an unconfirmed publish: {type(e).__name__}: {e}")
+        return True
+    poster.held = held_by_others(db, iid, mp)
+    try:
+        url, looked = await poster.find_live(ctx, render, since=0)
+    except AccountBlocked as e:
+        crosslist.block(db, mp, str(e), e.page)
+        return True
+    except Exception as e:  # noqa: BLE001 — not readable now: looked at again later
+        url, looked = None, {"error": f"{type(e).__name__}: {e}"}
+    db.log(iid, "unconfirmed_recheck", {"mp": mp, "found": url, "seen": looked, "round": state.get("round", 1)})
+    if url:
+        confirm_found(s, db, ps, iid, mp, url, "re-check")
+        notify.say(f"✅ {site}: {render.title} is live after all — found by its address on a re-check: {url}")
+        return True
+    if "error" in looked:
+        tries = int(state.get("tries") or 0) + 1
+        due_at = (datetime.now(timezone.utc) + timedelta(seconds=crosslist.RECHECK_AFTER)).isoformat(timespec="seconds")
+        crosslist.set_unconf(db, iid, mp, stage="wait" if tries < crosslist.RECHECK_TRIES else "given_up",
+                             due=due_at, tries=tries, round=state.get("round", 1))
+        if tries >= crosslist.RECHECK_TRIES:
+            ask_unconfirmed(db, iid, mp, unconfirmed_text(render.title, False, mp))
+        return True
+    crosslist.failure(db, mp, True, int(s.get("poster.max_consecutive_failures", 3)) if s is not None else 3)
+    close_question(db, iid, mp, f"✓ not on {site}" + (" — it goes up again" if int(state.get("round") or 1) < 2 else ""))
+    if int(state.get("round") or 1) >= 2:            # the automatic second post wasn't confirmed either
+        crosslist.set_unconf(db, iid, mp, stage="given_up")
+        if state.get("shot"):
+            notify.ops_photo(Path(state["shot"]), f"{site}: {render.title} — the second post, after the click")
+        ask_unconfirmed(db, iid, mp, second_miss_text(render.title, mp))
+        return True
+    how = looked.get("how") or f"{site}'s own data"
+    db.upsert_listing(iid, mp, status="queued", error=f"not posted: {how} doesn't show it — posted again after a last "
+                                                      f"check")
+    crosslist.set_unconf(db, iid, mp, stage="retry")
+    notify.say(f"↻ {site}: {render.title} wasn't posted ({how} doesn't show it) — it goes up again after one last "
+               f"check")
+    return True
 
 
 SKIPPED_REPLY = "Reply 'retry' to try it again."
@@ -622,6 +723,7 @@ async def confirm_live(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, ur
                       listing_id=listing_id_from(mp, address))
     db.log(iid, "post_confirmed", {"mp": mp, "url": address, "was": row["error"]})
     db.outbox_resolve("unconfirmed", crosslist.unconfirmed_ref(iid, mp))
+    crosslist.set_unconf(db, iid, mp, stage=None)
     _settle_item(db, iid, list(ps))
     if mp == "poshmark":
         crosslist.queue(s, db, iid)
@@ -709,6 +811,7 @@ async def run_cross(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, *, dr
     render = cross_render_of(db, iid, mp, fields)
     poster = ps[mp]
     poster.fields, poster.confirm, poster.strict = fields, None, not dry
+    poster.held = held_by_others(db, iid, mp)        # WO35: another item's listing is never taken for this one
     extension = getattr(poster, "driver", "playwright") == "extension"
     if extension:
         poster.on_go_ahead, poster.progress = None, progress
@@ -733,6 +836,27 @@ async def run_cross(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, *, dr
                          + (f"\n{' · '.join(lines)}" if lines else "")
                          + (f"\n{out.error}" if out.error else "") + (f"\n{out.note}" if out.note else ""))
         return out
+    if (crosslist.unconf_state(db, iid, mp) or {}).get("stage") == "retry" and not (dry or hold):
+        # WO35 §4: one last look by the site's own data right before it is posted again — never twice on one site
+        site = crosslist.LABEL[mp]
+        try:
+            url, looked = await poster.find_live(ctx, render, since=0)
+        except AccountBlocked as e:
+            crosslist.block(db, mp, str(e), e.page)
+            return None
+        except Exception as e:  # noqa: BLE001 — can't look: not posted now (retried next window)
+            url, looked = None, {"error": f"{type(e).__name__}: {e}"}
+        db.log(iid, "unconfirmed_last_check", {"mp": mp, "found": url, "seen": looked})
+        if url:
+            confirm_found(s, db, ps, iid, mp, url, "the last check before posting again")
+            notify.say(f"✅ {site}: {title} turned out live — found right before posting it again (not posted twice): "
+                       f"{url}")
+            return None
+        if "error" in looked:
+            db.upsert_listing(iid, mp, status="failed",
+                              error=f"couldn't check {site} before posting it again: {looked['error']}")
+            return None
+        crosslist.set_unconf(db, iid, mp, stage="reposted")
     db.upsert_listing(iid, mp, fields_json=fields.model_dump(), price=fields.price)
     if extension:
         # WO32b: the attempt is counted now; the row becomes 'posting' only at the go-ahead (on_go_ahead) — before it
@@ -762,7 +886,10 @@ async def run_cross(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, *, dr
             return out
     crosslist.record(s, db, iid, mp, title, out, fields.model_dump(), seconds=seconds, slept=slept,
                      lines=getattr(poster, "lines", None))
-    crosslist.failure(db, mp, out.status == "failed", int(s.get("poster.max_consecutive_failures", 3)))
+    if not (out.status == "failed" and out.clicked and not out.url):   # WO35: unconfirmed counts once it is absent
+        crosslist.failure(db, mp, out.status == "failed", int(s.get("poster.max_consecutive_failures", 3)))
+    if out.status == "posted":
+        crosslist.set_unconf(db, iid, mp, stage=None)
     return out
 
 
@@ -992,6 +1119,9 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, 
                     await serve_cross_requests(s, db, ps, ctx)
                     if asked := refresh.take_requests(db):             # `thrift catalogs refresh`
                         await _refresh(s, db, ctx, asked)
+                    for site in ready_cross(ps, cross):  # WO35 §4: an unconfirmed publish, settled by the site's data
+                        if not crosslist.blocked(db, site):
+                            await recheck_unconfirmed(s, db, ps, site, ctx)
             ready = ready_cross(ps, cross)                 # WO32: an extension marketplace while the extension is there
             hour_ago, midnight = windows(tz=s["schedule"]["timezone"])
             ok, why = can_post(s, db.listed_since(hour_ago, "poshmark"), db.listed_since(midnight, "poshmark"))

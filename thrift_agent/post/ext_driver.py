@@ -14,9 +14,13 @@ publish(), delist().
   the terminal when supervised — then ONE go-ahead: the extension clicks once, the tab lands on the listing page, the
   live page is read and compared with the fields (a difference is a note; the listing stays up).
 - A login / block / CAPTCHA / verification page stops the site for the window (AccountBlocked with what it showed).
-- A job's form is filled within 3 minutes (WO32b) or given up. After the go-ahead, no listing page (a timeout, an
-  unknown page) → the seller's shop is looked at (a "find" job): the one listing with this title is recorded, else
-  "unconfirmed" — never published again.
+- A job's form is filled within 3 minutes (WO32b) or given up. After the go-ahead the new listing is confirmed by its
+  address (WO35): Depop's success page names it (View listing → /products/<slug>/manage/, where the SKU must be our
+  item id); Vinted's own JSON of the seller's newest items has it under its exact title. Not there yet → looked for
+  again, every 30 s for 5 minutes (Depop: its shop, by the title's words after the username part of each address —
+  Depop scrambles the username — then the SKU on /manage/); still not → "unconfirmed", settled later by the poster
+  from the site's own data (runner.recheck_unconfirmed), never published again blind. A form the site refused (its
+  error shown) is looked up once: absent → a plain failure.
 - WO32b: the progress as it happens ("tab opened", "photos 6/6", "category ✓" …) goes to `progress` (the CLI prints
   it) and to `lines` (a dry run's ops message). The row is taken for posting by `on_go_ahead` — the moment before the
   one go-ahead is sent, never earlier: before it nothing can be published, so a Ctrl+C, a failure or a form that went
@@ -44,8 +48,42 @@ DELIST_NEEDS = {"vinted": frozenset({"hide"}), "depop": frozenset({"delete_butto
 STOP_PAGES = ("login", "block", "captcha", "verify")
 WHAT = {"login": "not logged in in the Thrift Chrome", "block": "the site turned the Thrift Chrome away (block page)",
         "captcha": "a CAPTCHA is shown in the Thrift Chrome", "verify": "the site asks for a check (verification)"}
-AFTER_CLICK_MIN = 120.0     # after the go-ahead the job gets at least this long to land on the listing page
+AFTER_CLICK_MIN = 200.0     # after the go-ahead the job gets at least this long to land (the extension waits 3 min)
 CONNECT_WAIT = 90.0         # the shop check waits this long for the extension to (re)connect
+CONFIRM_FOR = 300.0         # WO35: a new listing is looked for by its address this long after the click …
+CONFIRM_EVERY = 30.0        # … this often, before the publish counts as unconfirmed
+SKU = re.compile(r"\bi_\d{6}_[0-9a-f]{6}\b")
+
+
+def title_words(text: str) -> list[str]:
+    """A title's words as an address spells them: lower case, apostrophes dropped ("Levi's" → levis), every other mark a
+    break ("Cut-Off" → cut off, "&" gone)."""
+    return re.findall(r"[a-z0-9]+", re.sub(r"['’`]", "", str(text or "").lower()))
+
+
+def slug_words(address: str) -> list[str]:
+    """The title's words in a Depop address /products/<username>-<words>-<4 hex>/: the username part (Depop scrambles
+    one character of it every time — tetiana9orokina, tetian3sorokina…) and the id dropped (WO35)."""
+    m = re.search(r"/products/([a-z0-9]+(?:-[a-z0-9]+)+)/?", address or "")
+    if not m:
+        return []
+    words = m.group(1).split("-")[1:]
+    if words and re.fullmatch(r"[0-9a-f]{4}", words[-1]):
+        words = words[:-1]
+    return words
+
+
+def slug_matches(address: str, title: str) -> bool:
+    """The address's words begin our title's (the last may be cut short): never the username."""
+    sw, tw = slug_words(address), title_words(title)
+    if len(sw) < 2 or len(sw) > len(tw):
+        return False
+    return sw[:-1] == tw[:len(sw) - 1] and tw[len(sw) - 1].startswith(sw[-1])
+
+
+def same_title(a: str | None, b: str | None) -> bool:
+    """The exact title (spaces aside): Vinted keeps ours as typed."""
+    return bool(a) and " ".join(str(a).split()) == " ".join(str(b or "").split())
 
 
 class OneOf:
@@ -97,6 +135,8 @@ class ExtensionPoster(Poster):
         self.notes, self.guesses = [], []
         self.created_id = None
         self.selectors_path = SELECTORS
+        self.held: set[str] = set()     # addresses other items hold on this site: never taken for this one (WO35)
+        self.confirmed_in = None        # seconds from the click to the confirmed address (WO35 §5)
 
     # ------------------------------------------------------------ the Playwright posters' page steps: not here
 
@@ -250,7 +290,6 @@ class ExtensionPoster(Poster):
 
     async def _post(self, bridge: bridge_mod.Bridge, job: bridge_mod.Job, r: Render, dry_run: bool) -> Outcome:
         deadline = job.created + bridge_mod.JOB_TIMEOUT
-        started = time.time()
         try:
             ev = await self._await(job, ("ready", "result", "error"), deadline)
         except TimeoutError:
@@ -309,29 +348,77 @@ class ExtensionPoster(Poster):
                                  "has it?) — nothing was published")
         self.clicked = True
         self._say("go-ahead sent: one click")
+        clicked_at = time.monotonic()
         bridge.command(job, "submit")
         try:
             ev = await job.wait(("result", "error"), max(deadline - time.monotonic(), AFTER_CLICK_MIN))
         except (TimeoutError, asyncio.TimeoutError):
             ev = {"event": "error", "stage": "after_publish", "page": "unknown",
-                  "message": f"no answer in {bridge_mod.JOB_TIMEOUT / 60:.0f} min after the click"}
+                  "message": f"no answer in {AFTER_CLICK_MIN / 60:.0f} min after the click"}
         self._record(job, {"item": r.sku, "seen": seen, "expected": want, "after": ev})
-        after = self._kept(job, "after-publish", "form")
-        if ev.get("event") == "result" and (url := self.listing_address(ev.get("url") or "")):
-            self._live_check(ev.get("live"), r)
-            return Outcome("posted", url=url, screenshot=after, clicked=True, note=_joined(self.notes),
-                           guesses=list(self.guesses))
+        after = self._kept(job, "after-publish", "landing", "refused", "form")
+        address = self.listing_address(ev.get("url") or "") if ev.get("event") == "result" else None
+        if address and address in self.held:          # another item's listing: never this one's
+            self.notes.append(f"the page after the click was {address}, which another item holds")
+            address = None
+        if address and self.name == "depop" and r.sku:
+            # WO35: the address Depop's success page named — its /manage/ page must show our SKU
+            try:
+                ok, skus = await self._sku_on(address, r.sku)
+            except Exception as e:  # noqa: BLE001 — the address stands (Depop named it after our click); said
+                ok, skus = None, [f"{type(e).__name__}: {e}"]
+            if ok is not True:
+                self.notes.append(f"the SKU on {address}manage/ is {', '.join(skus) or 'not shown'}, not {r.sku}")
+        if address:
+            if ev.get("live"):
+                self._live_check(ev.get("live"), r)
+            return self._confirmed(address, clicked_at, after, ev.get("how") or "the page after the click")
         why = f"{ev.get('page') or 'unknown'} page: {ev.get('message') or ev.get('url') or ''}"
-        try:
-            url, looked = await self.find_live(None, r, since=started)
-        except Exception as e:  # noqa: BLE001 — it stays unconfirmed: the owner looks
-            url, looked = None, {"error": f"{type(e).__name__}: {e}"}
-        self.notes.append(f"after the click: {why}; shop check: {json.dumps(looked, default=str)[:300]}")
+        refused = ev.get("page") == "form" and str(ev.get("message") or "").startswith("refused:")
+        self._say("looking for the new listing by its address")
+        url, looked = await self.confirm_by_address(r, until=clicked_at + (0.0 if refused else CONFIRM_FOR))
+        self.notes.append(f"after the click: {why}; looked up: {json.dumps(looked, default=str)[:300]}")
         if url:
-            return Outcome("posted", url=url, screenshot=after, clicked=True, guesses=list(self.guesses),
-                           note=_joined(self.notes + ["found in the shop after the click"]))
+            return self._confirmed(url, clicked_at, after, looked.get("how") or "the site's own data")
+        if refused and "error" not in looked:          # the site said no, and its own data agrees: nothing published
+            return Outcome("failed", screenshot=after, note=_joined(self.notes), guesses=list(self.guesses),
+                           error=f"{self.site} refused the form: {str(ev.get('message'))[len('refused: '):]}")
         return Outcome("failed", screenshot=after, clicked=True, note=_joined(self.notes), guesses=list(self.guesses),
-                       error=f"after the click no listing page ({why}). It may be live: check the {self.site} shop")
+                       error=f"after the click no listing page ({why}); not found by its address in "
+                             f"{CONFIRM_FOR / 60:.0f} min — checked again later")
+
+    def _confirmed(self, url: str, clicked_at: float, shot: str | None, how: str) -> Outcome:
+        self.confirmed_in = round(time.monotonic() - clicked_at, 1)
+        self._say(f"confirmed in {self.confirmed_in:.0f} s ({how})")
+        return Outcome("posted", url=url, screenshot=shot, clicked=True, guesses=list(self.guesses),
+                       note=_joined(self.notes))
+
+    async def confirm_by_address(self, r: Render | None, until: float) -> tuple[str | None, dict]:
+        """WO35 §3: the new listing by the site's own data (find_live), looked for until `until` (monotonic), every
+        CONFIRM_EVERY seconds. Returns (address, what was seen); `seen["error"]` when the data couldn't be read."""
+        while True:
+            try:
+                url, looked = await self.find_live(None, r, since=0)
+            except Exception as e:  # noqa: BLE001 — not readable now: looked at again, else unconfirmed
+                url, looked = None, {"error": f"{type(e).__name__}: {e}"}
+            left = until - time.monotonic()
+            if url or left <= 0:
+                return url, looked
+            await asyncio.sleep(min(CONFIRM_EVERY, left))
+
+    async def _sku_on(self, address: str, sku: str | None) -> tuple[bool | None, list[str]]:
+        """Depop's /manage/ page of a listing: does it show our SKU (WO35)? (True / False / None when unread, the SKUs
+        it shows)."""
+        ev = await self._job("verify", {"listing_url": address.rstrip("/") + "/manage/"}, 120)
+        if ev.get("event") == "error":
+            if ev.get("page") in STOP_PAGES:
+                raise self._stop(ev)
+            return None, []
+        live = ev.get("live") or {}
+        skus = [str(x) for x in live.get("skus") or []]
+        if not skus:
+            skus = SKU.findall(f"{live.get('body') or ''}")
+        return ((sku in skus) if sku else None), skus
 
     @staticmethod
     def shows_title(live: dict, title: str) -> bool:
@@ -407,7 +494,9 @@ class ExtensionPoster(Poster):
         address = self.listing_address(url)
         if address is None:
             raise PosterError(f"not a {self.name} listing address: {url!r}")
-        ev = await self._job("verify", {"listing_url": address}, 180, shot=self.shot)
+        # WO35: on Depop the seller's /manage/ page — the title and price as on the listing, and the SKU: our item id
+        target = address.rstrip("/") + "/manage/" if self.name == "depop" else address
+        ev = await self._job("verify", {"listing_url": target}, 180, shot=self.shot)
         if ev.get("event") == "error":
             if ev.get("page") in STOP_PAGES:
                 raise self._stop(ev)
@@ -419,29 +508,63 @@ class ExtensionPoster(Poster):
             raise PosterError(f"the listing page at {address} doesn't show the title")
         if not self.shows_price(live, r.price):
             raise PosterError(f"the listing page at {address} doesn't show the price ${r.price}")
+        if self.name == "depop" and r.sku:
+            skus = [str(x) for x in live.get("skus") or []] or SKU.findall(f"{live.get('body') or ''}")
+            if r.sku not in skus:
+                raise PosterError(f"the SKU on {target} is {', '.join(skus) or 'not shown'}, not {r.sku}")
 
     async def find_live(self, ctx, r: Render | None, since: float, created: str | None = None
                         ) -> tuple[str | None, dict]:
-        """This listing in the seller's shop after an interrupted publish: the one listing whose text or address
-        carries the title's first words. Several, or none: never a guess. No shop configured: it can't look."""
+        """This listing by the site's own data (WO35 §3): Vinted — its JSON of the seller's newest items, the exact
+        title (the newest such one no other item holds); Depop — the shop's listings whose address carries the title's
+        words after the username part, confirmed by the SKU on their /manage/ page. Returns (address, what was seen);
+        `seen["error"]` when the data couldn't be read (never taken for "absent"). No shop configured: it can't look."""
         shop = self.shop or self.learned_shop or ""
         if not shop:
             return None, {"error": f"no {self.name} shop page to look at (set marketplaces.{self.name}.shop)"}
         if not await self.wait_connected():
             raise PosterError(f"{self.site}: the Thrift Chrome extension isn't connected — the shop check waits")
-        ev = await self._job("find", {"shop": shop}, 180)
-        if ev.get("event") == "error":
-            return None, {"error": ev.get("message"), "page": ev.get("page")}
-        listings: dict[str, str] = {}
-        for x in ev.get("listings") or []:
-            if address := self.listing_address(str(x.get("url") or "")):
-                listings[address] = f"{listings.get(address, '')} {x.get('text') or ''}".strip()
         title = r.title if r is not None else self._title()
-        want = re.findall(r"[a-z0-9]+", title.lower())[:4]
-        ours = sorted(u for u, t in listings.items()
-                      if all(w in re.findall(r"[a-z0-9]+", f"{t} {u}".lower()) for w in want))
-        seen = {"listings": len(listings), "with_this_title": ours[:10]}
-        return (ours[0], seen) if len(ours) == 1 else (None, seen)
+        sku = r.sku if r is not None else None
+        ev = await self._job("find", {"shop": shop, "wardrobe": self.name == "vinted"}, 180)
+        if ev.get("event") == "error":
+            if ev.get("page") in STOP_PAGES:
+                raise self._stop(ev)
+            return None, {"error": ev.get("message"), "page": ev.get("page")}
+        rows = [x for x in ev.get("listings") or [] if self.listing_address(str(x.get("url") or ""))]
+        if self.name == "vinted":
+            ours = []
+            for x in rows:                                  # newest first, as Vinted lists them
+                address = self.listing_address(str(x["url"]))
+                text = str(x.get("title") or str(x.get("text") or "").split(", brand:")[0])
+                if same_title(text, title) and address not in self.held and address not in ours:
+                    ours.append(address)
+            seen = {"listings": len(rows), "source": ev.get("source") or "tiles", "with_this_title": ours[:5],
+                    "how": "Vinted's newest items, the exact title"}
+            if len(ours) > 1:                               # never a guess: not absent either — the owner looks
+                self.notes.append(f"several Vinted listings carry this exact title: {', '.join(ours[:3])}")
+                return None, {**seen, "error": f"{len(ours)} listings carry this exact title"}
+            return (ours[0], seen) if ours else (None, seen)
+        candidates = []
+        for x in rows:
+            address = self.listing_address(str(x["url"]))
+            if address not in candidates and address not in self.held and slug_matches(address, title):
+                candidates.append(address)
+        confirmed, checked, unread = [], {}, []
+        for address in candidates[:4]:
+            ok, skus = await self._sku_on(address, sku)
+            checked[address] = skus
+            if ok:
+                confirmed.append(address)
+            elif ok is None:
+                unread.append(address)
+        seen = {"listings": len(rows), "by_words": candidates[:5], "skus": checked,
+                "how": "the Depop shop, the title's words, the SKU on /manage/"}
+        if len(confirmed) > 1:                              # never a guess (one SKU, two listings: the owner looks)
+            return None, {**seen, "error": f"{len(confirmed)} listings show this SKU"}
+        if not confirmed and unread:                        # a /manage/ page that couldn't be read: not "absent"
+            return None, {**seen, "error": f"couldn't read the SKU on {', '.join(unread[:2])}"}
+        return (confirmed[0], seen) if confirmed else (None, seen)
 
     async def shop_listings(self) -> list[dict]:
         """Every listing the seller's shop page shows (WO33: the items she listed by hand), as {url, text} — the

@@ -409,15 +409,112 @@ test("Depop: a department the menu doesn't list fails the category, the menu on 
   assert.ok(p.sent.some((m) => m.type === "screenshot" && m.label === "menu-group-input" && m.html.includes("Women > Bottoms")));
 });
 
-test("Depop: a brand the menu doesn't offer is left empty and cleared", async () => {
+test("Depop: a brand the menu doesn't offer gets Depop's own Other — Depop requires one (WO35)", async () => {
   const p = page("depop", undefined, undefined, DEPOP_FIX);
   await run(p, { ...DEPOP_JOB, fields: { ...DEPOP_JOB.fields, brand: "Zara", brand_typed: "Zara" } });
   const r = p.last();
   assert.equal(r.event, "result");
-  assert.deepEqual(plain(r.guesses), ["brand left empty (Depop has no 'Zara')"]);
-  assert.equal(p.d.querySelector("#brand-input").value, "");          // its own J.Crew cleared too
-  assert.equal(p.w.__picked["brand-input"], undefined);
+  assert.deepEqual(plain(r.guesses), ["brand set to 'Other' (Depop has no 'Zara')"]);
+  assert.equal(p.d.querySelector("#brand-input").value, "Other");     // its own J.Crew replaced too
+  assert.equal(p.w.__picked["brand-input"], "Other");
   assert.ok(p.sent.some((m) => m.type === "screenshot" && m.label === "menu-brand-input"));
+});
+
+test("Depop: an item with no brand gets Other, never Depop's own guess (WO35: the silk pants)", async () => {
+  const p = page("depop", undefined, undefined, DEPOP_FIX);
+  await run(p, { ...DEPOP_JOB, fields: { ...DEPOP_JOB.fields, brand: null, brand_typed: null, brand_candidates: [] } });
+  const r = p.last();
+  assert.equal(r.event, "result", JSON.stringify(plain(r)));
+  assert.deepEqual(plain(r.guesses), ["brand set to 'Other' (no brand)"]);
+  assert.equal(p.d.querySelector("#brand-input").value, "Other");     // Depop's own J.Crew suggestion replaced
+  assert.equal(plain(r.seen)["brand-input"], "Other");
+});
+
+test("Depop: a form Depop refuses (Brand: This field is required) is said at once — nothing published (WO35)", async () => {
+  const p = page("depop", undefined, undefined, { ...DEPOP_FIX, sizeLag: 0 });
+  p.w.Thrift.sites.depop.fill = async () => {};                       // the form as the silk pants had it: no brand
+  const done = run(p, { ...DEPOP_JOB, job_id: "depop-refused", mode: "publish" });
+  await until(() => p.events().some((e) => e.event === "ready"));
+  p.tell({ type: "submit", job_id: "depop-refused" });
+  await done;
+  const end = plain(p.last());
+  assert.equal(end.event, "error");
+  assert.equal(end.page, "form");
+  assert.equal(end.stage, "after_publish");
+  assert.match(end.message, /^refused: .*This field is required/);
+  assert.ok(p.sent.some((m) => m.type === "screenshot" && m.label === "refused"));
+});
+
+test("Depop: Post's success page names the new listing — its View listing link (WO35)", async () => {
+  const url = "https://www.depop.com/products/create/success/?productId=946436605";
+  const html = `<html><head><title>Done - Depop</title></head><body><main>
+    <h1>Nice! It's listed</h1><p>Turn more of your clothes into cash by listing another item.</p>
+    <a href="/products/tetiana9orokina-levis-501-distressed-denim-cutoff-e832/manage/">View listing</a>
+    <a href="/products/create/">List another item</a></main></body></html>`;
+  const p = page("depop", html, url);
+  await run(p, { ...DEPOP_JOB, job_id: "depop-landed", mode: "after_publish" });
+  await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
+  const r = plain(p.events().find((e) => e.event === "result"));
+  assert.equal(r.url, "https://www.depop.com/products/tetiana9orokina-levis-501-distressed-denim-cutoff-e832/manage/");
+  assert.equal(r.landing, url);
+});
+
+test("Depop: the seller's /manage/ page gives its SKU — our item id (WO35)", async () => {
+  const url = "https://www.depop.com/products/tetianasorokin0-levis-501-cutoff-denim-shorts-ed56/manage/";
+  const ld = { "@type": "Product", name: "Levi's 501", description: "Levi's 501 Cutoff Denim Shorts size 26\n\nShorts.",
+               offers: { price: "30.00", availability: "https://schema.org/InStock" }, image: ["a.jpg"] };
+  const html = `<html><head><title>Depop</title><script type="application/ld+json" data-testid="meta__jsonLd">
+    ${JSON.stringify(ld)}</script></head><body><main><h1>Levi's Bottoms</h1><p aria-description="Price">$30.00</p>
+    <dl><dt>SKU:</dt> <dd>i_261004_dd0c98</dd></dl>
+    <button>Edit listing</button></main></body></html>`;
+  const p = page("depop", html, url);
+  await run(p, { job_id: "depop-sku", site: "depop", mode: "verify", listing_url: url });
+  await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
+  const r = plain(p.events().find((e) => e.event === "result"));
+  assert.deepEqual(r.live.skus, ["i_261004_dd0c98"]);
+  assert.equal(r.live.title, "Levi's 501 Cutoff Denim Shorts size 26");
+});
+
+test("Vinted: a brand Vinted doesn't list is 'List without brand' — Vinted requires one (WO35)", async () => {
+  const p = page("vinted");
+  await run(p, { ...VINTED_JOB, fields: { ...VINTED_JOB.fields, brand: "Seven Wonders",
+                                          brand_candidates: ["Seven Wonders"] } });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.deepEqual(r.failed, []);
+  assert.ok(r.guesses.includes("listed without a brand (Vinted has no 'Seven Wonders')"), JSON.stringify(r.guesses));
+  assert.equal(p.w.__noBrand, true);
+  assert.ok(p.sent.some((m) => m.type === "screenshot" && m.label === "menu-brand"));
+});
+
+test("Vinted: an item with no brand is 'List without brand' too (WO35)", async () => {
+  const p = page("vinted");
+  await run(p, { ...VINTED_JOB, fields: { ...VINTED_JOB.fields, brand: null, brand_candidates: [] } });
+  const r = plain(p.last());
+  assert.equal(r.event, "result");
+  assert.ok(r.guesses.includes("listed without a brand"), JSON.stringify(r.guesses));
+  assert.equal(p.w.__noBrand, true);
+});
+
+test("Vinted: a brand found by its first word when the full name finds nothing (WO35: 'Solid & Striped')", async () => {
+  const p = page("vinted");
+  await run(p, { ...VINTED_JOB, fields: { ...VINTED_JOB.fields, brand: "Solid & Striped",
+                                          brand_candidates: ["Solid & Striped"] } });
+  const r = plain(p.last());
+  assert.equal(r.event, "result");
+  assert.equal(r.seen.brand_shown, "Solid & Striped");
+  assert.deepEqual(r.guesses, []);
+  assert.notEqual(p.w.__noBrand, true);
+});
+
+test("Vinted: package sizes drawn late are waited for (WO35: live, none there yet when the price was typed)", async () => {
+  const p = page("vinted", undefined, undefined, { packageLag: 400 });
+  p.w.Thrift.timeoutScale = 1;                               // the real 10 s wait; the sizes come after 0.4 s
+  await run(p, VINTED_JOB);
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.deepEqual(r.failed, []);
+  assert.equal(r.seen.package, "MEDIUM");
 });
 
 test("Depop: a publish posts exactly once", async () => {
@@ -605,6 +702,36 @@ test("vinted: after Upload the member page's Item listed dialog gets Later — n
   assert.match(end.message, /Item listed: Later/);
   assert.deepEqual(plain(p.w.clicks), ["later"]);
   assert.ok(!p.d.querySelector("[role=dialog]"));
+});
+
+test("vinted: after Upload the new listing is read from Vinted's own JSON — the exact title (WO35)", async () => {
+  const p = page("vinted", memberPage(), MEMBER_URL);
+  const items = [{ id: 10303459596, title: "Levi's 501 Cutoff Denim Shorts Washed Black Raw Hem size 26",
+                   url: "https://www.vinted.com/items/10303459596-levis-501-cutoff" },
+                 { id: 10303333852, title: "Levi's 501 Distressed Denim Cut-Off Jean Shorts Light Wash size 4",
+                   url: "https://www.vinted.com/items/10303333852-levis-501-distressed" },
+                 { id: 10303187091, title: "Levi's 501 Distressed Denim Cutoff Shorts Light Wash size 26",
+                   url: "https://www.vinted.com/items/10303187091-levis-501-distressed" }];
+  p.w.fetch = (u) => { p.fetches.push(String(u)); return Promise.resolve({ ok: true, json: async () => ({ items }) }); };
+  await run(p, { job_id: "vinted-landed-json", site: "vinted", mode: "after_publish", shop: "1234",
+                 copy: { title: "Levi's 501 Distressed Denim Cut-Off Jean Shorts Light Wash size 4" } });
+  await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
+  const r = plain(p.events().find((e) => e.event === "result"));
+  assert.equal(r.url, "https://www.vinted.com/items/10303333852-levis-501-distressed");
+  assert.match(p.fetches[0], /\/api\/v2\/wardrobe\/1234\/items\?order=newest_first/);
+  assert.deepEqual(plain(p.w.clicks), ["later"]);
+});
+
+test("vinted: the shop read takes Vinted's JSON of the newest items when it answers (WO35)", async () => {
+  const p = page("vinted", "<html><body><main></main></body></html>", "https://www.vinted.com/member/1234");
+  const items = [{ id: 7, title: "Zara Blue Floral Print Mini Skirt Side Zip Lined size M" }];
+  p.w.fetch = (u) => Promise.resolve({ ok: true, json: async () => ({ items }) });
+  await run(p, { job_id: "vinted-find-json", site: "vinted", mode: "find", shop: "1234", wardrobe: true });
+  await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
+  const r = plain(p.events().find((e) => e.event === "result"));
+  assert.equal(r.source, "wardrobe");
+  assert.deepEqual(r.listings, [{ id: "7", title: items[0].title, text: items[0].title,
+                                  url: "https://www.vinted.com/items/7" }]);
 });
 
 test("vinted: a member page without the dialog presses nothing", async () => {

@@ -54,6 +54,25 @@
     return Object.keys(PACKAGE).find((k) => PACKAGE[k] === cellName(cell)) || cellName(cell);
   };
 
+  // WO35: the seller's newest items from Vinted's own JSON (/api/v2/wardrobe/<member>/items?order=newest_first) —
+  // [{url, title, id}], [] when it can't be read.
+  async function wardrobe(member) {
+    const path = String(S().wardrobe?.url || "/api/v2/wardrobe/{member}/items?order=newest_first&per_page=40&page=1")
+      .replace("{member}", encodeURIComponent(member));
+    try {
+      const r = await fetch(new URL(path, location.origin).href, { credentials: "include",
+                                                                   headers: { Accept: "application/json" } });
+      if (!r.ok) return [];
+      const data = await r.json();
+      return (data.items || []).filter((x) => x && x.id).map((x) => ({
+        id: String(x.id), title: String(x.title || ""), text: String(x.title || ""),
+        url: x.url ? new URL(x.url, location.origin).href : `${location.origin}/items/${x.id}`,
+      }));
+    } catch (e) {
+      return [];
+    }
+  }
+
   async function pick(st, name, value) {
     const input = await open(name);
     const shown = await clickRow(value);
@@ -127,13 +146,18 @@
         T.picked(st, "category", f.category_path, T.$(S().category.selectors)?.value || "");
         escape();
       });
-      if (f.brand) {
-        await T.step("brand", st, async () => {
-          await open("brand");
-          const search = await T.waitFor(S().brand.search, { timeout: 3000 });
-          const box = search || (await T.need(S().brand.selectors, "brand"));
-          for (const name of T.brandNames(f)) {            // WO34: the full name, then each part ("MNG", "Mango")
-            await T.type(box, name);
+      // Vinted requires a brand (live 2026-10-09, WO35: the Solid & Striped set — Upload refused, "Fill in brand to
+      // continue"; the MNG set went through only because Vinted had filled "Mango" by itself). Ours, by each of its
+      // names — searched as written, then by its first word (Vinted's search may not take "&") — else Vinted's own
+      // "List without brand" (No brand indicated), never a brand that isn't ours.
+      await T.step("brand", st, async () => {
+        await open("brand");
+        const search = await T.waitFor(S().brand.search, { timeout: 3000 });
+        const box = search || (await T.need(S().brand.selectors, "brand"));
+        for (const name of f.brand ? T.brandNames(f) : []) {   // WO34: the full name, then each part ("MNG", "Mango")
+          const first = (String(name).match(/[A-Za-z0-9]{3,}/) || [""])[0];
+          for (const query of [...new Set([name, first].filter(Boolean))]) {
+            await T.type(box, query);
             let rows = [], texts = [];
             const { choice, guess } = (await T.until(() => {   // Vinted's list answers: until the name shows, 5 s
               rows = T.$$(S().rows.selectors).filter(T.visible);
@@ -150,11 +174,19 @@
               return;
             }
           }
-          await T.screenshot("menu-brand");
-          st.guesses.push(`brand left empty (Vinted has no '${f.brand}')`);
-          escape();
-        });
-      }
+        }
+        if (f.brand) await T.screenshot("menu-brand");
+        await T.type(box, "");
+        const step = S().empty_brand;
+        const re = new RegExp(step.text, "i");
+        const none = await T.until(() => T.$$(step.selectors).find(T.visible) ||
+          T.$$(S().rows.selectors).find((r) => T.visible(r) && re.test(T.norm(rowText(r)))), 5000);
+        if (!none) throw new Error("no 'List without brand' in Vinted's brand menu");
+        if (none.getAttribute("aria-checked") !== "true") await T.click(none);
+        T.picked(st, "brand", f.brand || "", "List without brand");
+        st.guesses.push(f.brand ? `listed without a brand (Vinted has no '${f.brand}')` : "listed without a brand");
+        escape();
+      });
       if (f.size) await T.step("size", st, async () => pick(st, "size", f.size));
       await T.step("condition", st, async () => pick(st, "condition", f.condition));
       for (const c of (f.colors || []).slice(0, 2)) await T.step("color", st, async () => pick(st, "color", c));
@@ -162,6 +194,9 @@
       if (f.skirt_length) await T.step("skirt_length", st, async () => pick(st, "skirt_length", f.skirt_length));
       await T.step("price", st, async () => T.type(await T.need(S().price.selectors, "price"), String(job.price)));
       await T.step("package", st, async () => {         // the first size of ours this item's category offers
+        // The sizes come from Vinted's server after the details (live 2026-10-10, WO35: none drawn yet 4 ms after the
+        // price, twice — "package MEDIUM not offered ()"): waited for, 10 s at most.
+        await T.until(() => packageCells().length > 0, 10000);
         const cells = packageCells();
         for (const code of f.package_sizes || []) {
           const cell = cells.find((c) => cellName(c) === PACKAGE[code]);
@@ -236,11 +271,25 @@
       const re = new RegExp(step.text, "i");
       const later = await T.until(() => T.$$(step.selectors).find((b) => T.visible(b) && re.test(T.norm(b.textContent))),
                                   6000);
-      if (!later) return "no Item listed dialog";
-      await T.click(later);
-      const gone = await T.until(() => !later.isConnected || !T.visible(later), 4000);
-      T.emit({ event: "step", job_id: job.job_id, name: "listed_later", ok: !!gone, clicked: true });
-      return gone ? "Item listed: Later" : "Item listed: Later pressed, the dialog still showing";
+      let did = "no Item listed dialog";
+      if (later) {
+        await T.click(later);
+        const gone = await T.until(() => !later.isConnected || !T.visible(later), 4000);
+        T.emit({ event: "step", job_id: job.job_id, name: "listed_later", ok: !!gone, clicked: true });
+        did = gone ? "Item listed: Later" : "Item listed: Later pressed, the dialog still showing";
+      }
+      // WO35: the new listing by its address — Vinted's own JSON of the seller's newest items, the exact title.
+      const member = (location.pathname.match(/\/member\/(\d+)/) || [])[1] || job.shop;
+      const want = job.copy?.title;
+      const end = Date.now() + 20000 * T.timeoutScale;
+      while (member && want) {
+        const items = await wardrobe(member);
+        const mine = items.filter((x) => T.sameTitle(x.title, want));
+        if (mine.length) return { url: mine[0].url, how: `${did}; the wardrobe's newest items`, listings: mine };
+        if (Date.now() > end) break;
+        await T.sleep(4000);
+      }
+      return did;
     },
 
     async delist(job, st) {
@@ -283,6 +332,12 @@
     },
 
     async find(job, st) {
+      // WO35: Vinted's own JSON of the seller's newest items (same origin, from the member page): each listing's exact
+      // title and address — the confirmation after an upload. The tiles below only when the JSON can't be read.
+      const member = (location.pathname.match(/\/member\/(\d+)/) || [])[1] || job.shop;
+      const items = member ? await wardrobe(member) : [];
+      if (items.length) return T.emit({ event: "result", job_id: job.job_id, listings: items, source: "wardrobe",
+                                        url: location.href });
       // The seller's own member page: its listings' addresses and titles, for the check after an interrupted upload.
       // The member page draws its tiles after it loads (a React app): wait for them, then for the grid to settle.
       await T.until(() => T.$$(S().shop_links.selectors).length > 0, 20000);

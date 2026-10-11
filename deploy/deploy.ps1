@@ -1,9 +1,10 @@
 # From the Windows PC: push, then deploy on the Mac over SSH (key, no password).
-#   .\deploy\deploy.ps1                                   # the Mac at tatiana_sorokina@192.168.68.57
-#   .\deploy\deploy.ps1 -MacHost tatiana_sorokina@MacBook-Pro-5.local
+#   .\deploy\deploy.ps1                                   # the Mac over Tailscale (100.109.116.57)
+#   .\deploy\deploy.ps1 -MacHost tatiana_sorokina@MacBook-Pro-5.local   # the home LAN, the fallback
 #   .\deploy\deploy.ps1 -MacHost tatiana_sorokina@192.168.68.60 -HostKeyAlias 192.168.68.57
-# The Mac travels and DHCP moves addresses (WO28): find it first (MacBook-Pro-5.local, then 192.168.68.57, else ask the
-# owner), and reach a new address with -HostKeyAlias 192.168.68.57 so its known host key still has to match.
+# The Mac is found over Tailscale first (2026-10-10: `tailscale status`, the Mac is macbook-pro-4), from any network;
+# the home LAN is the fallback (WO28: MacBook-Pro-5.local, then 192.168.68.57, else ask the owner). Every address is
+# reached with HostKeyAlias 192.168.68.57 (the default here) so the Mac's known host key still has to match.
 # On the Mac (deploy/mac_deploy.sh, after `git pull`): private/ pull, deploy/mac_setup.sh (venv, folders, tests,
 # launchd files), the WORKER restarted as the launchd service, then services status, `thrift status` and the last 30
 # lines of the worker log. A failed setup or test run rolls the Mac back to the commit before the pull. The poster
@@ -13,7 +14,7 @@
 # the private GitHub repo lives in its login keychain, which an SSH session can't open); the Mac fast-forwards to it.
 # PowerShell 5.1: no && / || at the PowerShell level, and no double quotes inside the remote command (5.1 does not
 # escape them for native commands); the single-quoted string reaches the Mac's bash as it is.
-param([string]$MacHost = "tatiana_sorokina@192.168.68.57", [switch]$NoPush, [string]$HostKeyAlias = "")
+param([string]$MacHost = "tatiana_sorokina@100.109.116.57", [switch]$NoPush, [string]$HostKeyAlias = "192.168.68.57")
 $ErrorActionPreference = "Stop"
 $alias = @()
 if ($HostKeyAlias) { $alias = @("-o", "HostKeyAlias=$HostKeyAlias") }

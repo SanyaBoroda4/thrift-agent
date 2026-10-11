@@ -509,24 +509,145 @@ def test_a_stop_page_stops_the_site_with_its_own_line(tmp_path, selectors, page,
     assert group == [line] and ops[0].startswith("⛔ Vinted stopped for this window")
 
 
-def test_after_the_click_without_a_listing_page_the_shop_is_looked_at(tmp_path, selectors):
-    """A publish that ended anywhere but a listing page: the seller's shop, the one listing with this title —
-    never a second click; not found, it stays unconfirmed."""
-    found = SimpleNamespace(status="posted", listings=[
-        {"url": "https://www.vinted.com/items/77-tory-burch-red-ballet-flats", "text": TITLE},
-        {"url": "https://www.vinted.com/items/78-blue-jeans", "text": "Levi's Blue Jeans"}])
-    out, fake, _ = run(_with_fake([Outcome("failed", clicked=True, error="no listing page"), found],
-                                  selectors_path=selectors(), shop="seller", tmp=tmp_path))
+@pytest.fixture
+def quick(monkeypatch):
+    """WO35's waits after the click, scaled down (5 min → 3 s, every 30 s → 0.05 s)."""
+    monkeypatch.setattr(ext_driver, "CONFIRM_FOR", 3.0)
+    monkeypatch.setattr(ext_driver, "CONFIRM_EVERY", 0.05)
+
+
+def wardrobe(*items):
+    """Vinted's own JSON of the seller's newest items, as the find job hands it (WO35)."""
+    return SimpleNamespace(status="posted", source="wardrobe",
+                           listings=[{"url": u, "title": t, "text": t, "id": u.rsplit("/", 1)[-1]} for u, t in items])
+
+
+def test_after_the_click_vinted_s_own_json_confirms_the_exact_title(tmp_path, selectors, quick):
+    """A publish that ended on the member page (or anywhere but a listing page): Vinted's JSON of the newest items,
+    the EXACT title — never a near one, never two (no guess); never a second click; not found, unconfirmed."""
+    found = wardrobe(("https://www.vinted.com/items/78-tory-burch-red-ballet-flats-size-8", f"{TITLE[:-3]}size 8"),
+                     ("https://www.vinted.com/items/77-tory-burch-red-ballet-flats", TITLE))
+    out, fake, p = run(_with_fake([Outcome("failed", clicked=True, error="landed on the member page"), found],
+                                  selectors_path=selectors(), shop="1234", tmp=tmp_path))
     assert out.status == "posted" and out.url == "https://www.vinted.com/items/77" and fake.clicks == 1
-    assert [j["mode"] for j in fake.jobs] == ["publish", "find"] and fake.jobs[1]["shop"] == "seller"
-    two = SimpleNamespace(status="posted", listings=[{"url": "https://www.vinted.com/items/77-a", "text": TITLE},
-                                                     {"url": "https://www.vinted.com/items/79-b", "text": TITLE}])
-    out, fake, _ = run(_with_fake([Outcome("failed", clicked=True, error="no listing page"), two],
-                                  selectors_path=selectors(), shop="seller", tmp=tmp_path))
-    assert out.status == "failed" and out.clicked and out.url is None and "It may be live" in out.error
+    assert [j["mode"] for j in fake.jobs] == ["publish", "find"] and fake.jobs[1]["shop"] == "1234"
+    assert fake.jobs[1]["wardrobe"] is True and p.confirmed_in is not None
+    two = wardrobe(("https://www.vinted.com/items/77-a", TITLE), ("https://www.vinted.com/items/79-b", TITLE))
+    out, fake, p = run(_with_fake([Outcome("failed", clicked=True, error="landed on the member page"), two],
+                                  selectors_path=selectors(), shop="1234", tmp=tmp_path))
+    assert out.status == "failed" and out.clicked and out.url is None and "checked again later" in out.error
+    assert fake.clicks == 1 and "several" in (out.note or "")
     out, fake, _ = run(_with_fake([Outcome("failed", clicked=True, error="no listing page")],
                                   selectors_path=selectors(), tmp=tmp_path))     # no shop configured
     assert out.status == "failed" and out.clicked and [j["mode"] for j in fake.jobs] == ["publish"]
+
+
+def test_vinted_an_item_that_shows_up_only_after_2_minutes_is_found_no_question(tmp_path, selectors, quick):
+    """WO35: Vinted's JSON doesn't list the new item at once — looked at again every 30 s for 5 minutes (scaled)."""
+    empty = wardrobe()
+    found = wardrobe(("https://www.vinted.com/items/77-tory", TITLE))
+    out, fake, _ = run(_with_fake([Outcome("failed", clicked=True, error="landed"), empty, empty, empty, found],
+                                  selectors_path=selectors(), shop="1234", tmp=tmp_path))
+    assert out.status == "posted" and out.url == "https://www.vinted.com/items/77" and fake.clicks == 1
+    assert [j["mode"] for j in fake.jobs] == ["publish", "find", "find", "find", "find"]
+
+
+def test_vinted_another_item_s_listing_is_never_taken_for_this_one(tmp_path, selectors, quick):
+    async def go():
+        b = await _bridge()
+        fake = FakeExtension(b.port, TOKEN, [Outcome("failed", clicked=True, error="landed"), wardrobe(
+            ("https://www.vinted.com/items/91-x", TITLE), ("https://www.vinted.com/items/77-y", TITLE))])
+        fake.start()
+        await asyncio.wait_for(fake.connected.wait(), 5)
+        p = _poster("vinted", b, selectors(), shop="1234")
+        p.held = {"https://www.vinted.com/items/91"}            # recorded for another item
+        try:
+            return await p.post(None, RENDER, "publish", False, tmp_path)
+        finally:
+            fake.stop()
+            await b.close()
+    out = run(go())
+    assert out.status == "posted" and out.url == "https://www.vinted.com/items/77"
+
+
+def test_a_form_the_site_refused_is_looked_up_once_and_is_a_plain_failure(tmp_path, selectors, quick):
+    """WO35, live 2026-10-09: Upload refused ("Fill in brand to continue") — one look at Vinted's own data: absent →
+    a plain failure (retried next window), no question, no 5-minute wait; there after all → posted."""
+    refused = SimpleNamespace(status="failed", clicked=True, url=None, page="form", guesses=[],
+                              error="refused: Fill in brand to continue")
+    out, fake, _ = run(_with_fake([refused, wardrobe()], selectors_path=selectors(), shop="1234", tmp=tmp_path))
+    assert out.status == "failed" and not out.clicked and out.error == ("Vinted refused the form: Fill in brand to "
+                                                                          "continue")
+    assert [j["mode"] for j in fake.jobs] == ["publish", "find"] and fake.clicks == 1
+    found = wardrobe(("https://www.vinted.com/items/77-tory", TITLE))
+    out, fake, _ = run(_with_fake([refused, found], selectors_path=selectors(), shop="1234", tmp=tmp_path))
+    assert out.status == "posted" and out.url == "https://www.vinted.com/items/77"
+
+
+DEPOP_SLUG = "https://www.depop.com/products/tetian3sorokina-tory-burch-red-ballet-2191/"
+
+
+def test_depop_the_success_page_names_the_listing_and_its_manage_page_shows_our_sku(tmp_path, selectors, quick):
+    """WO35: Post lands on /products/create/success/?productId=… whose View listing is the new /manage/ page — the
+    address is taken from it and the SKU there must be our item id."""
+    landed = Outcome("posted", url=DEPOP_SLUG + "manage/", clicked=True)
+    out, fake, p = run(_with_fake([landed, SimpleNamespace(status="posted", skus=["i_1"], body="")], mp="depop",
+                                  selectors_path=selectors(), shop="tetianasorokina", tmp=tmp_path))
+    assert out.status == "posted" and out.url == DEPOP_SLUG and fake.clicks == 1
+    assert [j["mode"] for j in fake.jobs] == ["publish", "verify"]
+    assert fake.jobs[1]["listing_url"] == DEPOP_SLUG + "manage/" and "SKU" not in (out.note or "")
+    out, fake, p = run(_with_fake([landed, SimpleNamespace(status="posted", skus=["i_999"], body="")], mp="depop",
+                                  selectors_path=selectors(), shop="tetianasorokina", tmp=tmp_path))
+    assert out.status == "posted" and "is i_999, not i_1" in out.note      # Depop named it: live — said, not re-posted
+
+
+def test_depop_the_landing_after_70_seconds_is_still_taken_no_question(tmp_path, selectors, quick, monkeypatch):
+    """WO35: the driver waits for the landing well past the old minute (scaled: the landing after 0.7 s; the
+    extension's own wait is 3 minutes, background.js AFTER_CLICK_MS)."""
+    late = SimpleNamespace(status="posted", url=DEPOP_SLUG + "manage/", clicked=True, delay=0.7, error=None,
+                           guesses=[])
+    out, fake, _ = run(_with_fake([late, SimpleNamespace(status="posted", skus=["i_1"], body="")], mp="depop",
+                                  selectors_path=selectors(), shop="tetianasorokina", tmp=tmp_path))
+    assert out.status == "posted" and out.url == DEPOP_SLUG and "find" not in [j["mode"] for j in fake.jobs]
+    js = (bm.EXT_DIR / "background.js").read_text(encoding="utf-8")
+    assert int(re.search(r"const AFTER_CLICK_MS = (\d+);", js).group(1)) >= 180000
+    assert ext_driver.AFTER_CLICK_MIN > 180
+
+
+def test_depop_a_scrambled_username_in_the_address_is_still_found_by_the_title_and_the_sku(tmp_path, selectors, quick):
+    """WO35: Depop changes one character of the username in every product address (tetian3sorokina…): the shop's
+    listings are matched by the title's words after it, then the SKU on /manage/ decides."""
+    shop = SimpleNamespace(status="posted", listings=[
+        {"url": "https://www.depop.com/products/tetianasorokcna-levis-501-cutoff-denim-ed56/", "text": ""},
+        {"url": DEPOP_SLUG, "text": ""}])
+    out, fake, _ = run(_with_fake([Outcome("failed", clicked=True, error="no listing page"), shop,
+                                   SimpleNamespace(status="posted", skus=["i_1"], body="")], mp="depop",
+                                  selectors_path=selectors(), shop="tetianasorokina", tmp=tmp_path))
+    assert out.status == "posted" and out.url == DEPOP_SLUG and fake.clicks == 1
+    assert [j["mode"] for j in fake.jobs] == ["publish", "find", "verify"]
+    assert fake.jobs[2]["listing_url"] == DEPOP_SLUG + "manage/"
+
+
+def test_depop_a_listing_whose_sku_isn_t_ours_is_never_taken(tmp_path, selectors, quick):
+    shop = SimpleNamespace(status="posted", listings=[{"url": DEPOP_SLUG, "text": ""}])
+    out, fake, _ = run(_with_fake([Outcome("failed", clicked=True, error="no listing page"), shop,
+                                   SimpleNamespace(status="posted", skus=["i_261004_dd0c98"], body="")], mp="depop",
+                                  selectors_path=selectors(), shop="tetianasorokina", tmp=tmp_path))
+    assert out.status == "failed" and out.clicked and out.url is None and fake.clicks == 1
+
+
+def test_the_title_words_of_an_address_never_include_the_username():
+    assert ext_driver.slug_words("https://www.depop.com/products/tetiana9orokina-levis-501-distressed-denim-cutoff-e832/")\
+        == ["levis", "501", "distressed", "denim", "cutoff"]
+    assert ext_driver.slug_matches("https://www.depop.com/products/tetiana9orokina-levis-501-distressed-denim-cutoff-e832/",
+                                   "Levi's 501 Distressed Denim Cutoff Shorts Light Wash size 26")
+    assert not ext_driver.slug_matches(
+        "https://www.depop.com/products/tetian3sorokina-levis-501-distressed-denim-cut-off-2191/",
+        "Levi's 501 Distressed Denim Cutoff Shorts Light Wash size 26")
+    assert ext_driver.slug_matches("https://www.depop.com/products/tetianasofokina-solid-striped-white-knit-ec29/",
+                                   "Solid & Striped White Knit Crop Top & Flare Pants 2-Piece Set size M")
+    assert ext_driver.slug_matches("https://www.depop.com/products/tetianasortkina-mng-mango-knit-cardigan-5e9a/",
+                                   "MNG (Mango) Knit Cardigan & Wide Leg Pants Tan Geometric 2-Piece Set size S")
 
 
 def test_a_job_no_extension_takes_is_given_up_before_anything_opens(tmp_path, selectors, monkeypatch):

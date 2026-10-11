@@ -296,6 +296,10 @@ async def _cross_turn(s, db, ps, mp, dry, state, awake, takedowns) -> bool:
     reachable = getattr(poster, "available", lambda: True)()
     if takedowns is not None and reachable and may_take_down(s, db, mp) and await takedowns(mp, poster, db, None):
         return True
+    # WO35 §4: an unconfirmed publish looked for again by the site's own data (quiet; any hour, never with the lid
+    # closed or the site stopped)
+    if reachable and may_take_down(s, db, mp) and await runner.recheck_unconfirmed(s, db, ps, mp):
+        return True
     hours_ok, _ = can_post(s, 0, 0)
     if dry or not reachable or not hours_ok or crosslist.blocked(db, mp) or runner._paused(db):
         state.idle(mp)

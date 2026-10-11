@@ -14,7 +14,10 @@ title / description by data-testid, and the item details, each a readonly input 
 - price [data-testid=price-input--input];
 - package size: div#package-size-<n>[data-testid=<n>-package-size--cell] with its title span and
   input#package_type_selector_<n>; the chosen cell turns role=presentation; Vinted picks a Recommended one by itself.
-Clicking Upload sends /api/upload-click and goes to /items/9876543210-<words> (window.__FIXTURE.land overrides it). -->
+Clicking Upload sends /api/upload-click and goes to /items/9876543210-<words> (window.__FIXTURE.land overrides it).
+WO35: the brand list ends with "No brand indicated" › "List without brand" (div#empty-brand[role=radio], recorded
+2026-10-09); window.__FIXTURE.packageLag draws the package sizes that many ms after the category (live 2026-10-10: they
+weren't there yet when the price was typed). -->
 <html><head><meta charset="utf-8"><title>Sell an item | Vinted</title>
 <style>.u-hidden{display:none} [role=button],[role=radio],[role=checkbox]{padding:2px 4px;cursor:pointer}
 img{width:40px;height:40px} .hidden-until-category{display:none}</style></head>
@@ -59,7 +62,7 @@ const SIZES = [["XS / US 2", 2], ["S / US 4-6", 3], ["M / US 8-10", 4]];
 const CONDITIONS = [["New with tags", 6], ["New without tags", 1], ["Very good", 2], ["Good", 3], ["Satisfactory", 4]];
 const COLORS = [["Black", 1], ["Gray", 3], ["Cream", 20], ["Red", 7]];
 const MATERIALS = [["Cotton", 44], ["Wool", 46], ["Leather", 43]];
-const BRANDS = ["J.Crew", "J.Crew Factory", "Tory Burch", "Mango"];
+const BRANDS = ["J.Crew", "J.Crew Factory", "Tory Burch", "Mango", "Solid & Striped"];
 let seq = 100;
 function cell(title, id, role, body) {
   const li = document.createElement("li");
@@ -87,7 +90,8 @@ function level(node) {
         document.getElementById("category").value = name;
         box.innerHTML = "";
         document.getElementById("details").classList.remove("hidden-until-category");
-        packages();
+        if (F.packageLag) { document.getElementById("package_size").innerHTML = ""; setTimeout(packages, F.packageLag); }
+        else packages();
       } else {
         level(sub);
       }
@@ -182,11 +186,16 @@ document.getElementById("brand").addEventListener("click", () => {
     const q = search.value.toLowerCase().replace(/[^a-z]/g, "");
     const ul = content.querySelector("ul");
     ul.innerHTML = "";
-    BRANDS.filter((b) => b.toLowerCase().replace(/[^a-z]/g, "").includes(q)).forEach((b) => {
+    if (!search.value.includes("&")) BRANDS.filter((b) => b.toLowerCase().replace(/[^a-z]/g, "").includes(q)).forEach((b) => {
       const [li, d] = cell(b, undefined, "button");
       d.addEventListener("click", () => { document.getElementById("brand").value = b; content.innerHTML = ""; });
       ul.appendChild(li);
     });
+    const [li, d] = cell("List without brand", "empty-brand", "radio");      // "No brand indicated" (WO35)
+    d.addEventListener("click", () => {
+      document.getElementById("brand").value = ""; window.__noBrand = true; d.setAttribute("aria-checked", "true");
+    });
+    ul.appendChild(li);
   });
 });
 document.addEventListener("keydown", (e) => {        // Escape closes a panel — not a multi-select's (recorded)

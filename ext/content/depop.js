@@ -13,6 +13,19 @@
 (function () {
   const T = globalThis.Thrift;
   const S = () => T.selectors.depop.steps;
+  // WO35: the SKUs a page shows (the seller's /manage/ page: "SKU: <our item id>") — our item ids anywhere in its text or
+  // its inputs, so the driver can tell our listing by its SKU.
+  const skusShown = () => {
+    const ids = new Set();
+    const body = document.body;
+    const text = body ? `${body.innerText || ""}
+${body.textContent || ""}` : "";   // jsdom: no innerText
+    for (const m of text.matchAll(/\bi_\d{6}_[0-9a-f]{6}\b/g)) ids.add(m[0]);
+    for (const el of document.querySelectorAll("input")) {
+      for (const m of String(el.value || "").matchAll(/\bi_\d{6}_[0-9a-f]{6}\b/g)) ids.add(m[0]);
+    }
+    return [...ids];
+  };
   // WO33: the listing's own state, from its JSON-LD (schema.org Product): sold out?
   const productLd = () => {
     try { return JSON.parse(T.$(S().listing_title.selectors)?.textContent || "null"); } catch (e) { return null; }
@@ -229,8 +242,32 @@
       }
     }
     await T.screenshot(`menu-${cid}`);
-    await clearBrand(box);
-    st.guesses.push(`brand left empty (Depop has no '${value}')`);
+    await brandOther(st, value);
+  }
+
+  // Depop requires a brand (live 2026-10-09, WO35: the silk pants have none — Post was refused, "This field is
+  // required" under Brand, and the form stayed). An item with no brand, or one Depop doesn't list, gets Depop's own
+  // "Other": typed, and the option that reads exactly "Other" clicked.
+  async function brandOther(st, value) {
+    const cid = S().combo.ids.brand;
+    const box = await open(cid);
+    await T.type(box, "Other");
+    let opts = [], texts = [];
+    const other = await T.until(() => {
+      opts = optionsOf(menuOf(cid));
+      texts = opts.map(textOf);
+      const i = texts.findIndex((t) => T.norm(t) === "other");
+      return i >= 0 ? opts[i] : null;
+    }, 5000);
+    if (!other) {
+      await T.screenshot(`menu-${cid}-other`);
+      await clearBrand(box);
+      throw new Error(`no 'Other' in Depop's brand menu (offered: ${texts.slice(0, 6).join(", ")})`);
+    }
+    await T.click(other);
+    st.brandOther = true;
+    T.picked(st, cid, value || "Other", "Other");
+    st.guesses.push(value ? `brand set to 'Other' (Depop has no '${value}')` : "brand set to 'Other' (no brand)");
   }
 
   async function clearBrand(box) {
@@ -291,7 +328,8 @@
       await T.step("category", st, async () =>
         choose(st, ids.category, f.category, { typed: f.category.split(" > ").pop(), category: true }));
       if (f.size) await T.step("size", st, async () => size(st, f.size));
-      if (f.brand) await T.step("brand", st, async () => brand(st, f.brand, f.brand_typed, T.brandNames(f)));
+      await T.step("brand", st, async () => (f.brand ? brand(st, f.brand, f.brand_typed, T.brandNames(f))
+        : brandOther(st, null)));                         // WO35: Depop requires one — no brand is "Other"
       await T.step("condition", st, async () => choose(st, ids.condition, f.condition));
       for (const c of (f.colors || []).slice(0, 2)) await T.step(ids.colour, st, async () => choose(st, ids.colour, c));
       for (const v of f.source || []) await T.step(ids.source, st, async () => choose(st, ids.source, v, { optional: true }));
@@ -338,9 +376,9 @@
           }
         }
         const brandBox = document.getElementById(ids.brand);
-        if (!f.brand && brandBox && brandBox.value) {
-          st.notes.push(`cleared the brand '${brandBox.value}' (Depop's own suggestion)`);
-          await clearBrand(brandBox);
+        if ((!f.brand || st.brandOther) && brandBox && T.norm(brandBox.value) !== "other") {
+          st.notes.push(`Depop changed the brand to '${brandBox.value}': set back to Other`);
+          await brandOther(st, f.brand || null);
         }
         // A single choice Depop replaced after ours (its suggestions came late): ours again.
         const pkg = document.getElementById(ids.package);
@@ -348,7 +386,8 @@
           st.notes.push(`Depop changed the package size to '${pkg.value}': set back to ${f.package_size}`);
           await choose(st, ids.package, f.package_size, { prefix: true });
         }
-        if (f.brand && brandBox && brandBox.value && !T.brandNames(f).some((n) => T.strictPick(n, [brandBox.value]).choice)) {
+        if (f.brand && !st.brandOther && brandBox && brandBox.value &&
+            !T.brandNames(f).some((n) => T.strictPick(n, [brandBox.value]).choice)) {
           st.notes.push(`Depop changed the brand to '${brandBox.value}': set back`);
           await brand(st, f.brand, f.brand_typed, T.brandNames(f));
         }
@@ -423,10 +462,23 @@
       const attributes = text(S().listing_attributes.selectors);
       const href = T.$(S().shop_link.selectors)?.getAttribute("href") || "";
       const shop = (href.match(/^\/([^/?#]+)\/?/) || [])[1] || null;
-      return { url: location.href, title, price, photos, attributes, shop,
+      return { url: location.href, title, price, photos, attributes, shop, skus: skusShown(),
                product: String(ld["@type"] || "") === "Product" || !!ld.offers,
                availability: String(ld.offers?.availability || "") || null,
                body: [title, price, attributes, description].join("\n").slice(0, 3000) };
+    },
+
+    // WO35: Post lands on Depop's success page ("Nice! It's listed", /products/create/success/?productId=<n>, live
+    // 2026-10-09) — its "View listing" link is the new listing's /products/<slug>/manage/ page: that address is the
+    // listing's (the driver then reads the SKU there). The seller's /manage/ landing (2026-10-07) is a listing page.
+    async landed(job, st) {
+      const step = S().view_listing;
+      const re = new RegExp(step.text, "i");
+      const link = await T.until(() => T.$$(step.selectors).find((a) => /\/products\/[^/]+\/manage\/?$/.test(
+        new URL(a.getAttribute("href") || "", location.href).pathname) || re.test(T.norm(a.textContent))), 10000);
+      if (!link) return "no View listing link";
+      const url = new URL(link.getAttribute("href"), location.href).href;
+      return { url, how: "the success page's View listing" };
     },
 
     // WO33, the owner's decision (2026-10-08): Depop's take-down DELETES the listing — its page offers no Mark as
@@ -485,6 +537,7 @@
 
     async find(job, st) {
       await T.waitFor(S().shop_links.selectors, { timeout: 8000, visible: false });   // the shop's tiles
+      await T.quiet(600, 3000);
       await T.sleep(150);
       const listings = T.$$(S().shop_links.selectors).map((a) => ({
         url: a.href, text: (a.getAttribute("title") || a.textContent || "").replace(/\s+/g, " ").trim(),

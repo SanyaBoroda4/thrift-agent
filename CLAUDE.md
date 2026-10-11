@@ -18,10 +18,14 @@ taps Share → "New item", and gets a Telegram ping when it's listed or when som
 ## Mac over SSH (WO21)
 - The PC reaches the Mac with an SSH key, no password: `ssh tatiana_sorokina@192.168.68.57` (MacBook-Pro-5.local;
   its host key is known under the IP). Repo `~/thrift-agent`, venv `.venv`, logs `~/thrift/logs`, DB `~/thrift/var`.
-- **Find the Mac first (WO28):** it travels (the owner's work) and DHCP moves addresses — on 2026-10-05 the PC itself
-  had 192.168.68.57. Try `MacBook-Pro-5.local`, then 192.168.68.57; if neither answers, ask the user for the IP and
-  wait — never assume. Reach a new address with `-o HostKeyAlias=192.168.68.57` so the known host key must match.
-- `deploy\deploy.ps1` (`-MacHost` to override, `-HostKeyAlias 192.168.68.57` for a new address, `-NoPush`): `git push`,
+- **Find the Mac over Tailscale first (owner rule, 2026-10-10):** the PC and the Mac are on Tailscale (same account);
+  `tailscale status` shows the Mac (`macbook-pro-4`, 100.109.116.57) — SSH to that address with
+  `-o HostKeyAlias=192.168.68.57` (the known host key must match). It works from any network: a hotel's guest Wi-Fi
+  keeps devices from reaching each other (2026-10-10). Fallback, the home LAN (WO28): it travels and DHCP moves
+  addresses — on 2026-10-05 the PC itself had 192.168.68.57. Try `MacBook-Pro-5.local`, then 192.168.68.57; if neither
+  answers, ask the user for the IP and wait — never assume.
+- `deploy\deploy.ps1` (default: the Mac's Tailscale address with `HostKeyAlias=192.168.68.57`; `-MacHost` /
+  `-HostKeyAlias` to override, `-NoPush`): `git push`,
   then on the Mac `deploy/mac_deploy.sh`: `git pull`, `git -C private pull`, `bash deploy/mac_setup.sh` (venv,
   folders, the tests, the launchd files), the WORKER
   (re)started as the launchd service, then `services.sh status`, `thrift status` and the worker log's last 30 lines. A
@@ -184,10 +188,21 @@ rows were copied in once (kv `listings_migrated`); `posts` is left as it was.
      then `thrift mark-posted <item> <marketplace> <url>` (only for such a row: the URL must be a listing page no
      other item holds, showing the item's title and price; then `posted` + URL, "✅ confirmed live" in Telegram).
    - WO28: the owner gets ONE reply-able message for such a row ("⚠️ <title>: … I can't see it in the closet. Check
-     Poshmark: if it's there, reply 'posted <url>'; if not, reply 'retry'.", outbox kind `unconfirmed`). "posted <url>"
-     is queued for the running poster, which opens the page (title, price) between listings (`thrift mark-posted`
-     queues it too while the poster runs); "retry" (`thrift retry <item>`) is the owner saying it is not there: the
-     row goes back to `queued`. The code never decides either by itself.
+     Poshmark: if it's there, reply 'posted <url>'; if not, reply 'retry'.", outbox kind `unconfirmed`) — in the OPS
+     chat since WO35 (the group never gets a "can't see it" question; a reply there works the same, `_route_ops`).
+     "posted <url>" is queued for the running poster, which opens the page (title, price; Depop also the SKU on
+     /manage/) between listings (`thrift mark-posted` queues it too while the poster runs); "retry" (`thrift retry
+     <item>`) is the owner saying it is not there: the row goes back to `queued`. A reply to a row settled meanwhile
+     gets "✓ Already settled — it's live". For Poshmark the code never decides either by itself.
+   - **Depop and Vinted settle it by the site's own data (WO35 §4, `runner.recheck_unconfirmed`):** nothing is said
+     when the publish is unconfirmed; 10 minutes later (`crosslist.RECHECK_AFTER`, kv `unconfirmed_state`) the poster
+     looks again — Vinted's JSON of the newest items (the exact title), Depop's shop (the title's words after the
+     username part of each address) confirmed by the SKU on /manage/. Live → posted (the card follows). Absent → it
+     wasn't posted: it counts toward "three in a row" only now, goes back to `queued`, and is looked for once more
+     right before the second post (`run_cross`: found then → posted, never twice). A second post that can't be
+     confirmed either → the ops chat only (`second_miss_text`, the screenshot; a reply 'posted <link>' / 'retry'
+     settles it), never a third post. Unreadable data is never "absent": looked at again later (6 times, then the ops
+     chat). "Never retry blind" stands: a repost needs the site's own data saying the listing is absent.
 5. **Stop, don't guess.** Logged out / CAPTCHA / restricted account → write `PAUSE`, ping, exit. Unknown modal
    → fail the item with a screenshot. Never solve CAPTCHAs, never type credentials.
 6. **Human pacing, human hours.** `schedule` limits; no sharing/following/offers/relisting from this code.
@@ -342,6 +357,26 @@ rows were copied in once (kv `listings_migrated`); `posts` is left as it was.
   `item-delete-button` — never); a take-down counts only when Hide has gone afterwards. Depop's listing page has NO
   Mark as sold — Edit (to the edit page), Boost listing, Copy listing, Delete listing (never): `mark_sold` stays
   UNVERIFIED (the edit page to probe next), so a Depop take-down asks the owner.
+- **Recorded from the 2026-10-09 backfill (WO35, from its evidence and the architect's read-only look):**
+  - Depop's Post now lands on `/products/create/success/?productId=<n>` ("Nice! It's listed", title "Done - Depop") —
+    its **View listing** link `a[href*='/products/'][href$='/manage/']` is the new listing (`landing_url`,
+    `view_listing`); the old code took that page for an unknown one and looked in the shop, where its first-four-words
+    match missed all three Levi's ("Levi's" → "levi", "s"; the address says "levis"). The seller's /manage/ page shows
+    "SKU: <our item id>".
+  - Depop scrambles one character of the username in every product address (`tetiana9orokina`, `tetian3sorokina`,
+    `tetianasorokin0`, …): a listing is matched on the title's words after the username part, never on it
+    (`ext_driver.slug_words`), and confirmed by the SKU.
+  - Depop requires a brand: Post with it empty is refused — "This field is required" under Brand, the form stays (the
+    silk pants, no brand). No brand, or one Depop doesn't list → Depop's own **Other**.
+  - Vinted requires a brand too: Upload refused "Fill in brand to continue" (the Solid & Striped set; the MNG set had
+    gone through only because Vinted filled "Mango" itself). Its brand menu ends with "No brand indicated" › **List
+    without brand** (`div#empty-brand[role=radio]`, `empty_brand`); ours is searched as written, then by its first
+    word (the search may not take "&").
+  - Vinted's package sizes come from its server after the details: none drawn yet when the price is typed (Seven
+    Wonders, twice: "package MEDIUM not offered ()") — waited for, 10 s.
+  - Vinted's own JSON of the seller's newest items, same origin from the member page:
+    `/api/v2/wardrobe/<member id>/items?order=newest_first` (`wardrobe`: items[].id, .title, .url) — the confirmation
+    after Upload, by the exact title.
 - Seen in Chromium (WO32 tests): `chrome.tabs.captureVisibleTab` needs `<all_urls>` or `activeTab`; an unpacked
   extension's `chrome.alarms` may tick every 3 s (`poll_minutes` 0.05); a tab opened by the extension can escape a
   Playwright route on its first request — the tests make every host but 127.0.0.1 unresolvable.
@@ -567,7 +602,7 @@ The owner shares retailer screenshots (product page with price, style name, colo
   `posted_done_carrier`: the card that had it is edited without it, and its wording follows the state); (c) action-needed
   alerts, one plain sentence each, once per episode: "Depop needs you to log in on the Mac." / "Vinted asks for a
   check — open it on the Mac." (WO30); 🔋 battery low; the
-  Mac slept while publishing / "I pressed List but can't see it" (reply `posted <url>` / `retry`); "Can't read the
+  Mac slept while publishing (the ⚠️ "can't see it" question itself is the ops chat's since WO35); "Can't read the
   iCloud inbox" (past 10 min); "⏸ Not published automatically: <title> — <site> publishes by itself only once its autopublish
   is on."; "⏭ <title> wasn't listed on <Site>: <why>. Reply 'retry' to try it again." — plus plain replies to the owner's own messages ("No
   price card is open", the hints, "Sorry, that didn't go through — please try again."). No item or batch ids, no
@@ -830,7 +865,9 @@ the pacing, the Telegram lines, the dry-run gate. Poshmark is untouched (its Pla
   the fill gets the job again (twice at most; "the page reloaded … — filling it again"), except a form already waiting
   for POST (ended: nothing published) and a take-down; the photos fetched from the bridge by the worker (the extension's origin: no page CORS,
   no local network prompt) and handed to the page as bytes, `captureVisibleTab` (10 s at most) + the page's HTML on
-  request, the landing page watched after the one click (`tabs.onUpdated`, ≤ 60 s), a job ended when its bridge goes
+  request, the landing page watched after the one click (`tabs.onUpdated`, ≤ 3 min since WO35: Depop's success page
+  gives the new listing's address, Vinted's member page its JSON of the newest items; a form the site refuses — its
+  error shown — is said at once, "refused: …"), a job ended when its bridge goes
   away before the go-ahead (a Ctrl+C, the poster stopped: the tab closed — nothing can be published from it), or called
   off while its tab was opening (ended before the page has it; a cancel reaching the page first is kept per job id —
   the job's start no longer clears it), when not filled in 4 min, a filled form left 15 min without a go-ahead, 5 min after the click, or its tab closed; the reload check — the bridge's `files_hash` of `EXT_FILES` vs the hash taken when it loaded: a deploy that
@@ -882,9 +919,13 @@ the pacing, the Telegram lines, the dry-run gate. Poshmark is untouched (its Pla
   "size ✗ <why>", "filled in 21.3 s" — the CLI prints it, a dry run's ops message carries it. A job given up on (a
   timeout, a Ctrl+C) is cancelled once and its end awaited (`Bridge.settle`, ≤ 5 s: the tab closed). Not taken in 150 s
   (`PICKUP_TIMEOUT`) → PosterError before anything opened; past 3 min (`JOB_TIMEOUT`, WO32b) before the go-ahead →
-  failed, nothing submitted; after the click without a listing page → the shop (`find` job on
-  `marketplaces.<m>.shop`, else the shop a listing page showed; the one listing with the title's first words;
-  several → never a guess) → else unconfirmed. The attempt is counted when the job starts (`db.begin_attempt`).
+  failed, nothing submitted; after the click (WO35 §3) the listing is confirmed by its ADDRESS: the page it landed on
+  names it (Depop's success page → /manage/, whose SKU must be our item id; a listing page), else the site's own data
+  every 30 s for 5 minutes (`confirm_by_address` → `find_live`: Vinted's JSON of the newest items, the exact title;
+  Depop's shop by the title's words after the username, then the SKU; an address another item holds is never taken;
+  several → never a guess) → else unconfirmed, settled later by `recheck_unconfirmed` (invariant 4). A form the site
+  refused is looked up once: absent → a plain failure ("Vinted refused the form: …"). `confirmed_in`: seconds from the
+  click to the address (WO35 §5). The attempt is counted when the job starts (`db.begin_attempt`).
   The loop takes an extension marketplace's jobs only while the extension is connected (`runner.ready_cross`).
   `delist`: Vinted's Hide / Depop's Mark as sold (never delete), refused until `hide` / `mark_sold` is verified — for
   WO31. `post/depop_api.py:DepopApiPoster` (driver `api`): `product_request` builds the PUT
@@ -966,6 +1007,14 @@ capped at 0.1 GB a day, a $5/month budget alert on `thrift-rg`), its data in the
 mode|cleanup|keys` makes and deploys it idempotently from the PC (only `thrift-*` resources, tag
 `project=thrift-agent`; the function keys and `thrift_app`'s password stay in the PC's git-ignored `var/azure/`; the
 Telegram token is read from the Mac's .env, never printed). The same code runs on SQLite in the tests.
+- **Its log (WO35 §6):** `api/host.json` — the host from Warning, `Host.Results` Information (one request row per call),
+  `Host.Aggregator` None, `Function` Warning, our own lines `Function.<name>.User` Information (one entry per function:
+  the host's App Insights filter has no `*` in a category; a test reads the names from `function_app.py`); sampling on
+  (≤ 1 item/s, exceptions never sampled); no live metrics, dependency tracking, performance counters or extended HTTP
+  details. A failure is logged as its type and place (`util.where`), never its message, a body, a key or a token. Before
+  (2026-10-09, the 0.1 GB cap hit): the Mac's GET /tasks loop, the host's per-call and start-up Information lines,
+  per-function aggregates and performance counters. The host's `azure.functions.health_check.reports` metric (~9 MB a
+  day) can't be turned off from host.json — only by a workspace ingestion filter (not set up).
 - **Gmail:** a Google Apps Script in the seller's Gmail (`gmail/Code.gs`, read-only Advanced Gmail service, scopes
   gmail.readonly + external_request + scriptapp) posts each new email from poshmark.com / depop.com / vinted.com
   (`from:(…) newer_than:2d`, every 5 min, the seen ids in Script Properties, sender domains checked) to `POST /email`,
@@ -991,7 +1040,8 @@ Telegram token is read from the Mac's .env, never printed). The same code runs o
   due, then one ops line if overdue — never twice, none once shipped. `shipped <title words>` in the group marks it.
 - **Take-downs on the Mac** (`thrift_agent/sales.py`, `post/takedown.py`): in any hour (a sold item must not sell
   twice) but never with PAUSE, the lid closed, or the site stopped for the window (`parallel.may_take_down`); fetched
-  before each worker's next listing
+  for all the poster's sites in ONE GET /tasks at most every 2 minutes (WO35, `sales.TASKS_EVERY`: each worker had
+  asked on every idle turn — ~5,600 calls on 2026-10-09 — and the API's log hit its 0.1 GB daily cap)
   (GET /tasks also names the items sold since going live: their rows still queued anywhere become `skipped: sold`,
   never listed after the sale); Poshmark Availability Not for Sale (`set_availability`: the edit page's
   Availability, Update, then the public listing read until it's no longer for sale — the WO30 checker), Vinted Hide

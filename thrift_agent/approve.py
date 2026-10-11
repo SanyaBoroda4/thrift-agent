@@ -767,10 +767,15 @@ def _route_ops(s: Settings, db: DB, update: dict) -> str:
     quoted = ((msg.get("reply_to_message") or {}).get("text") or "")
     if bot is None:
         return "ignored: no ops chat"
+    reply = msg.get("reply_to_message")
+    if isinstance(reply, dict) and reply.get("message_id") is not None:   # WO35: "⚠️ … can't confirm" lives here now
+        row = db.outbox_lookup(msg["chat"]["id"], reply["message_id"])
+        if row is not None and row["kind"] == "unconfirmed":
+            return _reply_unconfirmed(s, db, bot, row["ref"], text, mid)
     m = UNMATCHED_LINE.search(quoted)
     if m is None or not text:
-        bot.send_message("Replies here act on an 'Unmatched sale' message: reply to it with words from the item's "
-                         "title", reply_to=mid)
+        bot.send_message("Replies here act on an 'Unmatched sale' message (reply with words from the item's title) or "
+                         "a '⚠️ … can't confirm' one ('posted <link>' or 'retry')", reply_to=mid)
         return "ops: hint"
     sale_id, words = m[2], [w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 1]
     hits = []
@@ -911,6 +916,12 @@ def _reply_unconfirmed(s: Settings, db: DB, bot: Bot, ref: str, text: str, mid: 
     from thrift_agent import crosslist, daily
     iid, mp = crosslist.split_ref(ref)
     site = crosslist.LABEL.get(mp, mp)
+    row = db.listing(iid, mp)
+    if row is not None and row["status"] == "posted":   # settled already (WO35: a late 'retry' does nothing)
+        db.outbox_resolve("unconfirmed", ref)
+        bot.send_message(f"✓ Already settled — it's live on {site}" + (f": {row['url']}" if row["url"] else ""),
+                         reply_to=mid)
+        return f"unconfirmed {iid}: already posted"
     if m := POSTED_CMD.match(text or ""):
         try:
             address = pipeline.request_posted(s, db, iid, m[1], mp)

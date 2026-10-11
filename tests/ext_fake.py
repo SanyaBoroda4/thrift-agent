@@ -160,7 +160,8 @@ class FakeExtension:
         if mode in ("find", "verify", "check_login", "delist"):
             res = self.next_result(site) if (self.results or site in self.sites) else Outcome("posted")
             if mode == "find":
-                self.event(writer, event="result", job_id=jid, listings=getattr(res, "listings", []))
+                self.event(writer, event="result", job_id=jid, listings=getattr(res, "listings", []),
+                           source=getattr(res, "source", None))       # WO35: "wardrobe" = Vinted's own JSON
             elif mode == "check_login":
                 if isinstance(res, Exception):
                     self.event(writer, event="error", job_id=jid, stage="check_login", page="login", message=str(res))
@@ -168,7 +169,7 @@ class FakeExtension:
                     self.event(writer, event="result", job_id=jid, page="form")
             else:
                 live = {"body": getattr(res, "body", ""), "photos": 0}
-                for key in ("title", "price", "shop"):          # what Depop's JSON-LD gives (WO32b)
+                for key in ("title", "price", "shop", "skus"):  # what Depop's JSON-LD gives (WO32b); its SKUs (WO35)
                     if getattr(res, key, None):
                         live[key] = getattr(res, key)
                 self.event(writer, event="result", job_id=jid, url=job.get("listing_url"), delisted=True, live=live)
@@ -214,6 +215,8 @@ class FakeExtension:
         self.event(writer, event="step", job_id=jid, name="submit", ok=True, clicked=True)
         iid = item_of(job)
         url = (res.url or "").replace("{iid}", iid).replace("{slug}", iid.replace("_", "-"))
+        if getattr(res, "delay", 0):                    # WO35: a landing that comes late
+            await asyncio.sleep(res.delay)
         if res.status == "posted" and url:
             title = job["copy"]["title"]
             self.event(writer, event="screenshot", job_id=jid, label="after-publish",
@@ -221,7 +224,7 @@ class FakeExtension:
             self.event(writer, event="result", job_id=jid, url=url,
                        live={"body": f"{title}\n${job['price']}.00\n{job['fields'].get('size') or ''}",
                              "photos": len(job.get("photos") or [])})
-        else:
-            self.event(writer, event="error", job_id=jid, stage="after_publish", page="unknown",
+        else:                                           # WO35: "form" + "refused: …" = the site refused the form
+            self.event(writer, event="error", job_id=jid, stage="after_publish", page=getattr(res, "page", "unknown"),
                        message=res.error or "no listing page")
         await writer.drain()

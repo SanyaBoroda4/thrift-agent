@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import random
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from thrift_agent import catalogs, daily, notify
@@ -43,6 +43,10 @@ ALL_DONE_LINE = "💤 All done — you can close the Mac."          # WO34: the 
 DOT = {"poshmark": "🟣", "depop": "🔴", "vinted": "🟢"}
 CARRIER = "posted_done_carrier"         # kv: the item whose group card carries the 💤 line now (WO34)
 LATER = ("queued", "posting", "dryrun", "failed")   # a site still to come: "⏳ Vinted — later"
+UNCONF = "unconfirmed_state"   # kv (WO35 §4): "<item>:<mp>" → {"stage": wait|retry|reposted|given_up, "due", "round",
+                               # "tries"}: an unconfirmed publish on Depop / Vinted, settled by the site's own data
+RECHECK_AFTER = 600            # ... looked for again, quietly, this long after it counted as unconfirmed
+RECHECK_TRIES = 6              # ... the site's data unreadable this many times in a row: the ops chat is told
 
 
 def enabled(s: Settings) -> list[str]:
@@ -142,7 +146,7 @@ def new_window(s: Settings, db: DB) -> bool:
     for row in db.conn.execute(f"SELECT * FROM listings WHERE status='failed' AND url IS NULL AND marketplace IN "
                                f"({','.join('?' * len(CROSS))})", CROSS).fetchall():
         if (row["error"] or "").startswith(UNCONFIRMED):
-            continue                                    # it may be live: the owner settles it (invariant 4)
+            continue                                    # it may be live: settled by the site's data (WO35 §4)
         iid, mp = row["item_id"], row["marketplace"]
         if row["attempts"] < MAX_ATTEMPTS:
             db.upsert_listing(iid, mp, status="queued")
@@ -176,7 +180,9 @@ def block(db: DB, mp: str, reason: str, page: str | None = None) -> None:
 
 
 def failure(db: DB, mp: str, failed: bool, limit: int = 3) -> None:
-    """The per-marketplace circuit breaker: `limit` failures in a row stop that marketplace for the window."""
+    """The per-marketplace circuit breaker: `limit` failures in a row stop that marketplace for the window. WO35: an
+    unconfirmed publish is no failure until the site's own data shows it absent (live 2026-10-09: two of Vinted's
+    three "failures in a row" at 08:30 were listings that had gone up)."""
     streak = loads(db.kv_get(STREAK)) or {}
     streak[mp] = streak.get(mp, 0) + 1 if failed else 0
     db.kv_set(STREAK, json.dumps(streak))
@@ -257,7 +263,7 @@ def record(s: Settings, db: DB, iid: str, mp: str, title: str, out, fields: dict
     note = f"\n{out.note}" if out.note else ""
     progress = f"\n{' · '.join(lines)}" if lines else ""
     if out.status == "failed" and out.clicked and not out.url:
-        runner.ask_unconfirmed(db, iid, mp, runner.unconfirmed_text(title, slept, mp))
+        unconfirmed_wait(db, iid, mp, out.screenshot)     # WO35 §4: no question — the site's own data settles it
     elif out.status == "failed":
         row = db.listing(iid, mp)
         again = "retried next window" if row and row["attempts"] < MAX_ATTEMPTS else "no more attempts: skipped next window"
@@ -271,6 +277,61 @@ def record(s: Settings, db: DB, iid: str, mp: str, title: str, out, fields: dict
                                f"{fields_summary(fields)}{progress}{note}")
     elif out.status == "posted" and out.note:
         notify.ops_photo(shot, f"{LABEL[mp]} posted ({iid}) {out.url}: {out.note}")
+
+
+# ---------------------------------------------------------------- an unconfirmed publish (WO35 §4)
+
+def _unconf(db: DB) -> dict:
+    return loads(db.kv_get(UNCONF)) or {}
+
+
+def unconf_state(db: DB, iid: str, mp: str) -> dict | None:
+    return _unconf(db).get(f"{iid}:{mp}")
+
+
+def set_unconf(db: DB, iid: str, mp: str, **state) -> None:
+    """Change an unconfirmed publish's state (stage=None: forget it — it is settled)."""
+    states = _unconf(db)
+    key = f"{iid}:{mp}"
+    if "stage" in state and state["stage"] is None:
+        states.pop(key, None)
+    else:
+        states[key] = {**states.get(key, {}), **state}
+    db.kv_set(UNCONF, json.dumps(states))
+
+
+def unconfirmed_wait(db: DB, iid: str, mp: str, shot: str | None = None) -> int:
+    """A publish on Depop / Vinted whose listing wasn't found by its address in 5 minutes (WO35 §4): nothing is said;
+    the poster looks for it again by the site's own data RECHECK_AFTER later (runner.recheck_unconfirmed). Returns the
+    round: 2 when it was the automatic second post."""
+    was = unconf_state(db, iid, mp) or {}
+    rnd = 2 if was.get("stage") == "reposted" else 1
+    due = (datetime.now(timezone.utc) + timedelta(seconds=RECHECK_AFTER)).isoformat(timespec="seconds")
+    set_unconf(db, iid, mp, stage="wait", due=due, round=rnd, tries=0, shot=shot)
+    db.log(iid, "unconfirmed_wait", {"mp": mp, "round": rnd, "due": due})
+    return rnd
+
+
+def rechecks_due(db: DB, mp: str, now: datetime | None = None) -> list[str]:
+    """The items whose unconfirmed publish on `mp` is due for its quiet re-check (WO35 §4), oldest first; one from
+    before WO35 (no state yet) is due at once."""
+    now = now or datetime.now(timezone.utc)
+    states = _unconf(db)
+    out = []
+    for row in db.conn.execute("SELECT item_id, error FROM listings WHERE marketplace=? AND status='failed' AND "
+                               "url IS NULL ORDER BY updated_at, rowid", (mp,)).fetchall():
+        if not (row["error"] or "").startswith(UNCONFIRMED):
+            continue
+        st = states.get(f"{row['item_id']}:{mp}")
+        if st is None:
+            out.append(row["item_id"])
+        elif st.get("stage") == "wait":
+            try:
+                if datetime.fromisoformat(st["due"]) <= now:
+                    out.append(row["item_id"])
+            except (KeyError, TypeError, ValueError):
+                out.append(row["item_id"])
+    return out
 
 
 def skip_unmappable(db: DB, iid: str, mp: str, title: str, why: str) -> None:
@@ -331,7 +392,8 @@ def card_text(s: Settings, db: DB, iid: str, last: str | None = None) -> str:
         if row["status"] == "posted" and row["url"]:
             lines.append(f'{DOT.get(mp, "•")} <a href="{html.escape(row["url"], quote=True)}">{LABEL.get(mp, mp)}</a>')
         elif row["status"] in LATER and not (row["status"] == "failed" and row["error"]
-                                             and row["error"].startswith(UNCONFIRMED)) \
+                                             and row["error"].startswith(UNCONFIRMED)
+                                             and (unconf_state(db, iid, mp) or {}).get("stage") == "given_up") \
                 and not (row["status"] == "dryrun" and not (s is not None and live(s, mp))):
             lines.append(f"⏳ {LABEL.get(mp, mp)} — later")     # a dry run on a site that won't publish: left out
     if last:
