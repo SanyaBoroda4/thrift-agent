@@ -9,7 +9,9 @@ marketplace emails), never the source of truth for posting — SQLite stays that
 - `tick` (the worker's loop): the push and the outbox every minute, the heartbeat (source `mac`) every 15 minutes and
   on every wake.
 - Take-downs (Part D): `fetch_tasks` takes the pending ones for the poster's sites (GET /tasks leases them for 10
-  minutes); each site's worker runs its own before any new listing (`run_takedown`): the item's other queued rows
+  minutes) — one call for all of them, at most every 2 minutes (WO35: each worker had asked on each idle turn, ~5,600
+  calls on 2026-10-09, and the API's log hit its 0.1 GB daily cap); each site's worker runs its own before any new
+  listing (`run_takedown`): the item's other queued rows
   are skipped (sold), the reversible action is done (Poshmark Not for Sale, Depop Mark as sold, Vinted Hide — never a
   delete), and the result goes back to POST /tasks/{id}. A site whose control isn't recorded yet (UNVERIFIED) is
   never tried: the API is told at once, and the group asks the owner to mark it sold there."""
@@ -30,7 +32,8 @@ OFF_SAID = "api_off_said"            # kv: the day "sales tracking is off" was s
 LAST_PUSH = "api_last_push"          # kv: when the changes and the outbox were last sent
 LAST_BEAT = "api_last_beat"          # kv: the last heartbeat
 LAST_TASKS = "api_last_tasks"        # kv: the last GET /tasks
-PUSH_EVERY, BEAT_EVERY, TASKS_EVERY = 60, 900, 300
+PUSH_EVERY, BEAT_EVERY = 60, 900
+TASKS_EVERY = 120                    # GET /tasks at most this often, all the poster's sites at once (WO35)
 GOLIVE = "api_golive_checked"         # kv: the go_live_at the go-live check (D4) ran for
 BATCH = 200
 SOLD_SKIP = "skipped: sold"          # a queued row of an item that sold elsewhere (WO33 A1)
@@ -245,8 +248,9 @@ def golive_check(db: DB, client: Api, go_live_at: str, live=None, pause: float =
 # ---------------------------------------------------------------- take-downs
 
 def fetch_tasks(db: DB, sites: list[str], force: bool = False) -> int:
-    """The pending take-downs for these sites (GET /tasks leases them for 10 minutes), kept in `takedowns`. Returns
-    how many came."""
+    """The pending take-downs for these sites (GET /tasks leases them for 10 minutes), kept in `takedowns`. Asked at
+    most every TASKS_EVERY seconds — one stamp for every caller, so the poster asks for all its sites at once —
+    unless `force` (the CLI's `thrift delist --run`). Returns how many came."""
     client = api()
     if client is None or not sites or not _due(db, LAST_TASKS, TASKS_EVERY, force):
         return 0

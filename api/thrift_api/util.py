@@ -7,7 +7,9 @@ import math
 import os
 import re
 import secrets
+import traceback
 from datetime import datetime, timezone
+from pathlib import Path
 
 UTC = timezone.utc
 SITES = ("poshmark", "depop", "vinted")
@@ -108,3 +110,14 @@ def and_list(words: list[str]) -> str:
     """"A", "A and B", "A, B and C"."""
     words = [w for w in words if w]
     return words[0] if len(words) == 1 else ", ".join(words[:-1]) + " and " + words[-1] if words else ""
+
+
+def where(error: BaseException) -> str:
+    """Where an exception happened, for a log line that carries no data (WO35): its type and the innermost frames of
+    this package as "file.py:line", innermost first — "ZeroDivisionError at core.py:880 < http.py:178". Never the
+    message or the traceback text: a parser's or a database's message can hold an email's text, a buyer's name or
+    address, or a row's values."""
+    frames = traceback.extract_tb(error.__traceback__)
+    ours = [f for f in frames if "thrift_api" in f.filename.replace("\\", "/") or f.filename.endswith("function_app.py")]
+    places = [f"{Path(f.filename).name}:{f.lineno}" for f in reversed((ours or frames)[-3:])]
+    return f"{type(error).__name__} at {' < '.join(places) or '?'}"

@@ -8,10 +8,19 @@ from datetime import datetime, timezone
 
 import azure.functions as func
 
-from thrift_api import http, timers
+from thrift_api import http, timers, util
 
 FUNCTION = func.AuthLevel.FUNCTION
 app = func.FunctionApp(http_auth_level=FUNCTION)
+
+
+def _timer(job) -> None:
+    """A timer's run; a failure reaches the host's log as its type and place only (WO35: a database error's message
+    can carry a row's values — an email's text, a buyer's name), and the run still counts as failed."""
+    try:
+        job()
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(util.where(e)) from None
 
 
 def _respond(req: func.HttpRequest, path: str) -> func.HttpResponse:
@@ -87,10 +96,10 @@ def get_health(req: func.HttpRequest) -> func.HttpResponse:
 @app.timer_trigger(schedule="0 */15 * * * *", arg_name="timer", run_on_startup=False, use_monitor=True)
 def every_15_min(timer: func.TimerRequest) -> None:
     """Reminders, the Gmail reader's heartbeat, failed emails again."""
-    timers.every_15_min(http.get_db(), datetime.now(timezone.utc))
+    _timer(lambda: timers.every_15_min(http.get_db(), datetime.now(timezone.utc)))
 
 
 @app.timer_trigger(schedule="0 0 * * * *", arg_name="timer", run_on_startup=False, use_monitor=True)
 def hourly(timer: func.TimerRequest) -> None:
     """The daily cleanup, done in the 3 AM hour New York time (the schedule itself is UTC)."""
-    timers.daily(http.get_db(), datetime.now(timezone.utc))
+    _timer(lambda: timers.daily(http.get_db(), datetime.now(timezone.utc)))

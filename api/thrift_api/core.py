@@ -270,8 +270,8 @@ def _process(db: Database, event: dict, now: datetime, mode: str, fresh: bool) -
                        "WHERE message_id = ?", (result["status"], _dumps(parsed), message_id))
     except Exception as e:  # noqa: BLE001 — stored as failed and retried by the timer, never lost
         reason = str(e) if isinstance(e, emails.ParseError) else f"{type(e).__name__}: {e}"[:300]
-        if not isinstance(e, emails.ParseError):
-            log.exception("email %s could not be processed", message_id)
+        if not isinstance(e, emails.ParseError):          # the type and place only: never the email's text (WO35)
+            log.error("email %s could not be processed: %s", message_id, util.where(e))
         kept = (_loads(event.get("parsed_json")) or {}) if message_id.startswith(MAC_PREFIX) else {}
         failed = _dumps({**kept, "error": reason})
         if fresh:

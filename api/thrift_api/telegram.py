@@ -73,8 +73,8 @@ def send(text: str, chat: str = "group", now: datetime | None = None, mode: str 
     silent = deadlines.quiet(now or util.utcnow())
     try:
         return bool(SENDER(chat, text, silent))
-    except Exception:  # noqa: BLE001 — a message never takes a request or a timer down with it
-        log.exception("telegram: the sender failed")
+    except Exception as e:  # noqa: BLE001 — a message never takes a request or a timer down with it
+        log.error("telegram: the sender failed: %s", util.where(e))   # never its text: it can carry the token (WO35)
         return False
 
 

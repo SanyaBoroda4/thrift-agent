@@ -16,6 +16,7 @@ Depop and Vinted at the same time — about the slowest site's minute, not the s
 from __future__ import annotations
 
 import asyncio
+import functools
 import os
 import threading
 import time
@@ -63,9 +64,11 @@ def may_take_down(s: Settings, db: DB, site: str) -> bool:
     return not s.flag_set("PAUSE") and power.lid_closed() is not True and not crosslist.blocked(db, site)
 
 
-async def takedowns(site: str, poster, db: DB, ctx) -> bool:
-    """The site's take-downs before its next listing (WO33 Part D): fresh from the API, then one done."""
-    sales.fetch_tasks(db, [site], force=not sales.pending(db, site))
+async def takedowns(site: str, poster, db: DB, ctx, sites: list[str] | None = None) -> bool:
+    """The site's take-downs before its next listing (WO33 Part D): the API asked for every poster site at once, at
+    most every `sales.TASKS_EVERY` (WO35: each worker had asked on each idle turn — three workers every 20 s, ~5,600
+    calls on 2026-10-09 — and the API's log hit its 0.1 GB daily cap), then one done."""
+    sales.fetch_tasks(db, sites or [site])
     return await sales.run_takedown(site, poster, db, ctx, ready=delist_ready)
 
 
@@ -138,19 +141,19 @@ async def run_parallel(s: Settings, db: DB, ps: dict, *, dry: bool, stage: str, 
     stop = asyncio.Event()
     runner._install_stop(stop)
     halt = threading.Event()
-    if takedowns is None and sales.api() is not None:
-        takedowns = globals()["takedowns"]                 # the API is set up (.env): the sales' take-downs too
+    cross = [mp for mp in ps if mp in crosslist.CROSS]
+    sites = [*(["poshmark"] if "poshmark" in ps else []), *cross]
+    if takedowns is None and sales.api() is not None:     # the API is set up (.env): the sales' take-downs too
+        takedowns = functools.partial(globals()["takedowns"], sites=sites)
     bridge, watch = await runner.open_bridge(s, db, ps)
     started = f"Poster started ({f'DRY-RUN, {stage} stage' if dry else 'LIVE'}) — {', '.join(ps)} · parallel"
     notify.say(f"{started} · {datetime.now():%H:%M}" + (f"\n{runner.why_dry(s, force_dry)}" if dry and s.is_prod else ""))
     print(started)
     db.log(None, "poster_started", {"live": not dry, "stage": None if not dry else stage, "pid": os.getpid(),
                                     "parallel": True})
-    cross = [mp for mp in ps if mp in crosslist.CROSS]
     if bad := {mp: why for mp, why in catalogs.check().items() if why}:
         notify.say("❗ cross-listing off: " + "; ".join(f"{mp}: {why}" for mp, why in bad.items()))
     state = State()
-    sites = [*(["poshmark"] if "poshmark" in ps else []), *cross]
     thread = None
     if "poshmark" in ps:
         thread = threading.Thread(target=_poshmark_thread, name="poshmark-worker", daemon=True,

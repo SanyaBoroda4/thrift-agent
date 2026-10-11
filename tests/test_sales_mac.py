@@ -5,6 +5,7 @@ asked instead); the group's "shipped …" reply; and nothing at all without the 
 (httpx.MockTransport): no network."""
 import asyncio
 import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import httpx
@@ -454,3 +455,46 @@ def test_depop_still_there_after_delete_is_an_error_and_gone_before_is_not_found
         asyncio.run(p.delist("https://www.depop.com/products/shop-j-crew-pants-11b1/"))
     p2, _ = _depop(monkeypatch, [("verify", GONE)])
     assert asyncio.run(p2.delist("https://www.depop.com/products/shop-j-crew-pants-11b1/")) is None
+
+
+def test_the_workers_ask_for_take_downs_once_for_all_sites(tmp_path, api):
+    """WO35: the three site workers ask GET /tasks once for all the poster's sites, at most every TASKS_EVERY seconds
+    — they had asked on every idle turn (three workers every 20 s: ~5,600 calls on 2026-10-09, and the API's log hit
+    its 0.1 GB daily cap)."""
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    sites = ["poshmark", "depop", "vinted"]
+    for _ in range(10):
+        for site in sites:
+            assert asyncio.run(parallel.takedowns(site, None, db, None, sites=sites)) is False
+    assert [q for _, p, _, q in api.calls if p == "/tasks"] == [{"sites": "poshmark,depop,vinted"}]
+    stale = datetime.now(timezone.utc) - timedelta(seconds=sales.TASKS_EVERY + 1)
+    db.kv_set(sales.LAST_TASKS, stale.isoformat(timespec="seconds"))
+    for site in sites:
+        asyncio.run(parallel.takedowns(site, None, db, None, sites=sites))
+    assert api.paths().count("/tasks") == 2
+    sales.fetch_tasks(db, sites, force=True)                         # the CLI's `thrift delist --run` still asks now
+    assert api.paths().count("/tasks") == 3
+
+
+def test_the_running_poster_asks_for_take_downs_for_its_sites_at_once(tmp_path, api, said, monkeypatch):
+    """The poster's own take-downs (the API set up, none passed in): its idle workers turn many times, the API is asked
+    once, for all three sites."""
+    from test_parallel import Timed, fake_open
+    s = _settings(tmp_path, parallel=True)
+    db = DB(s.path("db"))
+    monkeypatch.setattr(parallel, "IDLE", 0.02)
+    monkeypatch.setattr(parallel, "HOUSEKEEPING", 0.02)
+    monkeypatch.setattr(parallel.runner, "_paused", lambda db: None)
+    monkeypatch.setattr(parallel.runner, "start_thrift_chrome", lambda s: "not in a test")
+    turns = []
+    real = sales.run_takedown
+
+    async def counted(site, poster, db, ctx, ready=None):
+        turns.append(site)
+        return await real(site, poster, db, ctx, ready=ready)
+    monkeypatch.setattr(sales, "run_takedown", counted)
+    ps = {"poshmark": Timed("poshmark", 0.0), "depop": Timed("depop", 0.0), "vinted": Timed("vinted", 0.0)}
+    asyncio.run(parallel.run_parallel(s, db, ps, dry=False, stage="form", opener=fake_open, until_idle=True))
+    assert len(turns) >= 6 and set(turns) == {"poshmark", "depop", "vinted"}
+    assert [q for _, p, _, q in api.calls if p == "/tasks"] == [{"sites": "poshmark,depop,vinted"}]

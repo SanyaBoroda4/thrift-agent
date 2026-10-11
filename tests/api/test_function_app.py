@@ -69,6 +69,7 @@ def test_the_deployment_files():
     host = json.loads((api / "host.json").read_text(encoding="utf-8"))
     assert (host["version"], host["extensions"]["http"]["routePrefix"]) == ("2.0", "")
     assert host["logging"]["applicationInsights"]["samplingSettings"]["isEnabled"] is True
+    assert host["logging"]["logLevel"]["default"] == "Warning"            # WO35: the log levels (test_api_logs.py)
     assert (api / "requirements.txt").read_text(encoding="utf-8").split() == ["azure-functions", "psycopg[binary]>=3.2",
                                                                               "tzdata"]
     assert {"tests", "__pycache__", ".venv", "local.settings.json"} <= set((api / ".funcignore").read_text(

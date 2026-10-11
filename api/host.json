@@ -1,9 +1,42 @@
 {
   "version": "2.0",
   "logging": {
+    "logLevel": {
+      "default": "Warning",
+      "Host.Results": "Information",
+      "Host.Aggregator": "None",
+      "Function": "Warning",
+      "Function.post_email.User": "Information",
+      "Function.post_samples.User": "Information",
+      "Function.post_heartbeat.User": "Information",
+      "Function.post_sync.User": "Information",
+      "Function.get_tasks.User": "Information",
+      "Function.post_task_result.User": "Information",
+      "Function.post_mac_event.User": "Information",
+      "Function.get_sales.User": "Information",
+      "Function.post_sale_match.User": "Information",
+      "Function.post_replay.User": "Information",
+      "Function.post_test_message.User": "Information",
+      "Function.get_dashboard.User": "Information",
+      "Function.get_health.User": "Information",
+      "Function.every_15_min.User": "Information",
+      "Function.hourly.User": "Information",
+      "Microsoft.Azure.WebJobs.Script.Diagnostics.HealthChecks": "Error"
+    },
     "applicationInsights": {
       "samplingSettings": {
-        "isEnabled": true
+        "isEnabled": true,
+        "maxTelemetryItemsPerSecond": 1,
+        "evaluationInterval": "00:05:00",
+        "excludedTypes": "Exception"
+      },
+      "enableLiveMetrics": false,
+      "enableDependencyTracking": false,
+      "enablePerformanceCountersCollection": false,
+      "httpAutoCollectionOptions": {
+        "enableHttpTriggerExtendedInfoCollection": false,
+        "enableW3CDistributedTracing": false,
+        "enableResponseHeaderInjection": false
       }
     }
   },

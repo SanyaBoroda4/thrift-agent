@@ -1,7 +1,8 @@
 """The HTTP side (WO33): `handle(method, path, query, body)` → (status, headers, body bytes), the whole API without
 Azure in the way (function_app.py only adapts it; the tests call it directly). JSON in and out; a body that isn't a
 JSON object is 400, an unknown path 404, a known path with another method 405; a refused request says why
-({"error": …}); anything unexpected is a 500 that is logged and says nothing more.
+({"error": …}); anything unexpected is a 500 that is logged — its type and where, never its message or a body
+(WO35: no email text, buyer details, keys or tokens in the logs) — and says nothing more.
 
 The routes (every one needs the function key; Azure checks it before this code runs):
   POST /email               {message_id, thread_id, from, subject, date, text}   one email from the Gmail reader
@@ -175,8 +176,8 @@ def handle(method: str, path: str, query: dict | None = None, body: bytes | None
         status, result = handler(database, payload, query or {}, match.groupdict(), now)
     except ApiError as e:
         return _json(e.status, {"error": str(e)})
-    except Exception:  # noqa: BLE001 — logged with its traceback; the caller only learns that it failed
-        log.exception("%s %s failed", method, path)
+    except Exception as e:  # noqa: BLE001 — logged as its type and place only (WO35); the caller learns it failed
+        log.error("%s %s failed: %s", method, path, util.where(e))
         if path == "/health":
             return _json(503, {"ok": False, "db": "error", "mode": util.mode()})
         return _json(500, {"error": "internal error"})
