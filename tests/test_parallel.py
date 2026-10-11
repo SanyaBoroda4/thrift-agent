@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 from ext_fake import FakeExtension
 
+from thrift_agent import crosslist as crosslist_module
 from thrift_agent import crosslist, notify
 from thrift_agent.db import DB
 from thrift_agent.post import parallel, runner
@@ -82,6 +83,7 @@ def quick(monkeypatch):
     monkeypatch.setattr(parallel, "IDLE", 0.05)
     monkeypatch.setattr(parallel, "HOUSEKEEPING", 0.05)
     monkeypatch.setattr(parallel, "next_gap", lambda schedule: 0.0)
+    monkeypatch.setattr(parallel.crosslist, "listing_gap", lambda s, mp: 0.0)   # Depop / Vinted: 30–90 s live
     monkeypatch.setattr(runner, "start_thrift_chrome", lambda s: "not in a test")
     monkeypatch.setattr(runner, "map_fields", lambda mp, view: fields_for(mp))
     monkeypatch.setattr(runner.ItemView, "from_row", classmethod(lambda cls, it: SimpleNamespace(
@@ -93,6 +95,9 @@ def quick(monkeypatch):
     monkeypatch.setattr(notify, "ops_photo", lambda path, caption: said.ops.append(caption))
     monkeypatch.setattr(runner, "_paused", lambda db: None)
     return said
+
+
+LISTING_GAP = crosslist_module.listing_gap       # the real one (the quick fixture zeroes it)
 
 
 def _run(s, db, ps):
@@ -125,6 +130,26 @@ def test_an_item_takes_its_slowest_site_not_the_sum(tmp_path, quick):
         dict(r) for r in db.conn.execute("SELECT item_id, marketplace, status, error FROM listings")]
     assert meet.met == {"poshmark": True, "depop": True, "vinted": True}   # one item, three sites at once
     assert took - base < 6.0, (took, base)                         # about Poshmark's 3.6 s, not the 7.2 s sum
+
+
+def test_depop_and_vinted_pause_30_to_90_s_between_listings_poshmark_keeps_its_human_gap(tmp_path, quick, monkeypatch):
+    """The owner, 2026-10-11: after each listing Poshmark waits the schedule's gap (150–420 s), Depop and Vinted their
+    own marketplaces.<m>.gap_seconds (30–90 s)."""
+    s = _settings(tmp_path, parallel=True)
+    assert {LISTING_GAP(s, mp) // 1 for mp in ("depop", "vinted") for _ in range(50)} <= set(range(30, 91))
+    import yaml
+    from thrift_agent.config import ROOT
+    base = yaml.safe_load((ROOT / "config" / "settings.yaml").read_text(encoding="utf-8"))["marketplaces"]
+    assert base["depop"]["gap_seconds"] == [30, 90] == base["vinted"]["gap_seconds"]   # the repo's defaults
+    asked = []
+    monkeypatch.setattr(parallel, "next_gap", lambda schedule: asked.append(("poshmark", schedule["gap_seconds"])) or 0.0)
+    monkeypatch.setattr(parallel.crosslist, "listing_gap", lambda s_, mp: asked.append((mp, None)) or 0.0)
+    db = DB(s.path("db"))
+    _item(db, 1)
+    ps = {"poshmark": Timed("poshmark", 0.05), "depop": Timed("depop", 0.05), "vinted": Timed("vinted", 0.05)}
+    _run(s, db, ps)
+    assert ("poshmark", [150, 420]) in asked and ("depop", None) in asked and ("vinted", None) in asked
+    assert not any(mp in ("depop", "vinted") and gap is not None for mp, gap in asked)   # never the schedule's for them
 
 
 def test_one_line_per_item_in_order_and_all_done_last(tmp_path, quick):

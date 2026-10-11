@@ -24,12 +24,12 @@ LINE = "Gently pre-loved, please see photos for condition."
     ("levi's", ["Levi's", "Levi's Kids"], "Levi's", "brand set to 'Levi's' (from 'levi's')"),
     ("Levis", ["Levi's"], "Levi's", "brand set to 'Levi's' (from 'Levis')"),
     ("Solid & Striped", ["Solid and Striped"], "Solid and Striped",
-     "brand set to 'Solid and Striped' (from 'Solid & Striped')"),
-    ("Zara Basic", ["Zara", "Zara Kids"], "Zara", "brand set to 'Zara' (from 'Zara Basic')"),
-    ("Gap Kids", ["Gap", "Gap Kids"], "Gap Kids", None),                              # ours has the qualifier
-    ("Mistguided", ["Missguided", "Misguided Angels"], "Missguided", "brand set to 'Missguided' (from 'Mistguided')"),
+     "brand set to 'Solid and Striped' (from 'Solid & Striped')"),                  # "&" is "and": the same name
+    ("Gap Kids", ["Gap", "Gap Kids"], "Gap Kids", None),
 ])
-def test_a_brand_is_picked_by_its_normalised_name_never_another_line(ours, options, choice, guess):
+def test_a_brand_is_picked_by_its_exact_name_only(ours, options, choice, guess):
+    """The owner's rule (2026-10-11): the exact name — case, spaces, dots, hyphens, apostrophes aside, "&" = "and" —
+    and nothing looser."""
     assert brands.pick(ours, options) == (choice, guess)
 
 
@@ -39,9 +39,33 @@ def test_a_brand_is_picked_by_its_normalised_name_never_another_line(ours, optio
     ("Zzyzx", [], "brand left empty: Poshmark's list has no 'Zzyzx'"),
     ("Tory", ["Tory Burch", "Tory Sport"], "brand left empty: Poshmark's list has no 'Tory' (it offers: Tory Burch, "
                                            "Tory Sport)"),
+    # the owner, 2026-10-11: never a shorter name, a word of ours, another line's clean form or a similar name
+    ("Solid & Striped", ["Solid", "Striped Sun"], "brand left empty: Poshmark's list has no 'Solid & Striped' (it "
+                                                  "offers: Solid, Striped Sun)"),
+    ("Seven Wonders", ["Seven", "Seven For All Mankind"], "brand left empty: Poshmark's list has no 'Seven Wonders' "
+                                                          "(it offers: Seven, Seven For All Mankind)"),
+    ("Zara Basic", ["Zara", "Zara Kids"], "brand left empty: Poshmark's list has no 'Zara Basic' (it offers: Zara, "
+                                          "Zara Kids)"),
+    ("J.Crew Factory", ["J. Crew"], "brand left empty: Poshmark's list has no 'J.Crew Factory' (it offers: J. Crew)"),
+    ("Mistguided", ["Missguided", "Misguided Angels"], "brand left empty: Poshmark's list has no 'Mistguided' (it "
+                                                       "offers: Missguided, Misguided Angels)"),
 ])
 def test_nothing_close_leaves_the_brand_empty(ours, options, why):
     assert brands.pick(ours, options) == (None, why)
+
+
+def test_a_brand_search_types_only_spellings_of_the_same_name():
+    """The owner, 2026-10-11: no first-word search — "Solid & Striped" is typed as written and as "Solid and Striped",
+    never as "Solid"; a learned spelling counts only when it is the name or one of its two parts."""
+    assert brands.spellings("Solid & Striped") == ["Solid & Striped", "Solid and Striped"]
+    assert brands.spellings("J.Crew") == ["J.Crew", "J. Crew"] and brands.spellings("J. Crew") == ["J. Crew", "J.Crew"]
+    assert brands.spellings("Seven Wonders") == ["Seven Wonders"]
+    assert all(brands.key(v) == brands.key(n) for n in ("Solid & Striped", "J.Crew", "MNG (Mango)")
+               for v in brands.spellings(n))
+    assert brands.candidates("MNG (Mango)") == ["MNG (Mango)", "MNG", "Mango"]
+    assert brands.candidates("Solid & Striped") == ["Solid & Striped"] and brands.parts("H&M") == []
+    assert brands.spelling_of("MNG (Mango)", "MANGO") and brands.spelling_of("J.Crew", "J. Crew")
+    assert not brands.spelling_of("Solid & Striped", "Solid") and not brands.spelling_of("Zara Basic", "Zara")
 
 
 def test_brand_keys_ignore_case_spaces_dots_hyphens_apostrophes_and_and():
@@ -55,11 +79,14 @@ def test_resolved_spellings_are_learned_and_used(tmp_path, monkeypatch):
     aliases = brands.Aliases(tmp_path / "data" / "brand_aliases.yaml")
     assert aliases.spell("J.Crew") == "J. Crew" and aliases.spell("j crew") == "J. Crew"   # the seed: live, 2026-10-04
     assert aliases.spell("Vince") == "Vince" and aliases.spell(None) is None
-    assert aliases.learn("Mistguided", "Missguided") and not aliases.learn("Mistguided", "Missguided")
+    assert aliases.learn("Levis", "Levi's") and not aliases.learn("Levis", "Levi's")
+    assert aliases.learn("MNG (Mango)", "Mango")                       # one of the two parts of the name
+    assert not aliases.learn("Mistguided", "Missguided")               # another name: never learned (2026-10-11)
     assert not aliases.learn("J.Crew", "J. Crew")                      # already known: the file isn't touched for it
     text = (tmp_path / "data" / "brand_aliases.yaml").read_text(encoding="utf-8")
-    assert text.startswith("# Brand names as Poshmark's brand list spells them") and "Mistguided: Missguided" in text
-    assert brands.Aliases(aliases.path).spell("mistguided") == "Missguided"   # a fresh reader sees it
+    assert text.startswith("# Brand names as Poshmark's brand list spells them") and "Levis: Levi's" in text
+    assert "Missguided" not in text
+    assert brands.Aliases(aliases.path).spell("levis") == "Levi's"     # a fresh reader sees it
     assert brands.Aliases(None).spell("J.Crew") == "J. Crew"               # no file: the seed alone
 
 

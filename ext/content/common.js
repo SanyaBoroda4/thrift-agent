@@ -186,11 +186,9 @@
     }
   };
 
-  // ---- the brand: our name, or the shorter clean form ("J. Crew" for "J.Crew") — nothing looser (WO30)
-  const QUALIFIERS = new Set(["factory", "outlet", "kids", "kid", "baby", "babies", "home", "collection", "sport",
-    "sports", "junior", "juniors", "girls", "boys", "men", "mens", "women", "womens", "petite", "plus", "maternity",
-    "studio", "essentials", "basics", "active", "golf", "beauty", "swim", "intimates", "lingerie", "accessories",
-    "shoes", "vintage"]);
+  // ---- the brand: the EXACT name only — case, spaces, dots, hyphens, apostrophes aside, "&" = "and" — or one of the
+  // two parts of a name like "MNG (Mango)" (the job's candidates). Nothing looser (the owner, 2026-10-11: never a first
+  // word, a shorter "clean" name or a similar one — "Solid & Striped" must never land on a brand called "Solid").
   const words = (s) => (String(s).normalize("NFKD").toLowerCase().replace(/&/g, " and ").replace(/'/g, "")
     .match(/[a-z0-9]+/g) || []);
   const key = (s) => words(s).join("");
@@ -198,15 +196,14 @@
   // (Mango)" -> MNG, Mango), else the name alone
   T.brandNames = (f) => [...new Set([...(f.brand_candidates || []), f.brand].filter(Boolean))];
   T.strictPick = (ours, options) => {
-    const mine = new Set(words(ours));
-    const usable = options.filter((o) => o && !words(o).some((w) => !mine.has(w) && QUALIFIERS.has(w)));
-    const same = usable.find((o) => key(o) === key(ours));
+    const same = options.find((o) => o && key(o) && key(o) === key(ours));
     if (same) return { choice: same, guess: same === ours ? null : `brand set to '${same}' (from '${ours}')` };
-    const base = words(ours).filter((w) => !QUALIFIERS.has(w)).join("");
-    const plain = base && usable.find((o) => key(o) === base);
-    if (plain) return { choice: plain, guess: `brand set to '${plain}' (from '${ours}')` };
     return { choice: null, guess: null };
   };
+  // What may be typed into a brand search: the name as written, then other spellings of the SAME name ("J.Crew" /
+  // "J. Crew", "&" / "and") — never a word of it.
+  T.spellings = (name) => [...new Set([name, String(name).replace(/\.\s+/g, "."), String(name).replace(/\.(?=[A-Za-z])/g, ". "),
+                                       String(name).replace(/\s*&\s*/g, " and ")].map((v) => v.trim()).filter(Boolean))];
 
   // ---- what kind of page this is: block, captcha, login, verify (a check the site asks for), the form, or a listing
   T.textOf = () => {

@@ -342,7 +342,7 @@ def test_j_crew_is_poshmarks_j_crew_never_the_factory_line_and_is_learned(chrome
     monkeypatch.setattr(brands, "SEED", {})                               # as live, before anything was learned
     posh.aliases = brands.Aliases(tmp_path / "brand_aliases.yaml")
     r = render(photos, brand="J.Crew", title="J.Crew Red Flats size 7.5")
-    seen, events = fill_and_read(chrome, posh, r, steps=["_brand"])      # "J.Crew" finds nothing, "Crew" both lines
+    seen, events = fill_and_read(chrome, posh, r, steps=["_brand"])      # "J.Crew" finds nothing, "J. Crew" both lines
     assert events == ["brand:J. Crew"] and seen["brand"] == "J. Crew" and diff_on(seen, r, posh, "brand") == {}
     assert posh.guesses == ["brand set to 'J. Crew' (from 'J.Crew')"]
     assert posh.aliases.table() == {"jcrew": "J. Crew"}                   # learned: exact from now on
@@ -362,6 +362,18 @@ def test_a_two_part_brand_finds_the_part_poshmark_lists(chrome, posh, photos, tm
     assert events == ["brand:Mango"] and seen["brand"] == "Mango"
     assert posh.guesses == ["brand set to 'Mango' (from 'MNG (Mango)')"]
     assert posh.aliases.spell("MNG (Mango)") == "Mango"                   # learned: straight to it next time
+
+
+def test_a_brand_poshmark_lists_only_by_one_word_of_ours_is_never_taken(chrome, posh, photos, monkeypatch):
+    """The owner, 2026-10-11: "Tory Burch Sport" isn't on the list — Poshmark's "Tory Burch" (fewer words) and "Tory
+    Sport" (a word of ours) are never taken, nor its first or longest word typed: Brand left empty (it is optional);
+    the real brand stays in the title and description."""
+    monkeypatch.setattr(poshmark, "SUGGEST_TIMEOUT_MS", 400)
+    monkeypatch.setattr(brands, "SEED", {})
+    r = render(photos, brand="Tory Burch Sport")
+    seen, events = fill_and_read(chrome, posh, r, steps=["_brand"])
+    assert not [e for e in events if e.startswith("brand:")] and seen["brand"] == ""
+    assert posh.guesses == ["brand left empty: Poshmark's list has no 'Tory Burch Sport'"]
 
 
 def test_the_factory_line_is_picked_only_for_the_factory_line(chrome, posh, photos, monkeypatch):

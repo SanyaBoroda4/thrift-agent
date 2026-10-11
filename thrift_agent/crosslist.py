@@ -102,6 +102,17 @@ def gap(s: Settings) -> float:
     return random.uniform(float(lo), float(hi))
 
 
+def listing_gap(s: Settings, mp: str) -> float:
+    """The pause after a listing on `mp` before its next one (the owner, 2026-10-11): Depop and Vinted their own
+    `marketplaces.<m>.gap_seconds` (30–90 s); Poshmark the schedule's human gap (150–420 s, now and then longer)."""
+    from thrift_agent.scheduler import next_gap
+    own = s.get(f"marketplaces.{mp}.gap_seconds") if mp != "poshmark" else None
+    if not own:
+        return next_gap(s["schedule"]) if mp == "poshmark" else random.uniform(30.0, 90.0)
+    lo, hi = own[:2]
+    return random.uniform(float(lo), float(hi))
+
+
 def unconfirmed_ref(iid: str, mp: str) -> str:
     """The outbox ref of an "unconfirmed publish" message: the item, plus the marketplace when it isn't Poshmark."""
     return iid if mp == "poshmark" else f"{iid}:{mp}"

@@ -5,7 +5,8 @@ Depop and Vinted at the same time — about the slowest site's minute, not the s
   connection. Depop and Vinted: asyncio workers in the main loop, beside the extension's bridge (one job per site).
 - Each worker, between its own listings: that site's pending take-downs first (`takedowns`, WO33 Part D), then the
   next approved item with a 'queued' row for it, in approval order — one at a time, inside the hours, under its own
-  daily cap, the human gap after each listing (invariant 6).
+  daily cap, a pause after each listing (invariant 6): Poshmark the schedule's human gap (150–420 s), Depop and Vinted
+  their own `marketplaces.<m>.gap_seconds` (30–90 s — the owner, 2026-10-11; `crosslist.listing_gap`).
 - A failure, a timeout, a login wall or a CAPTCHA on one site never stops the others: that site alone is stopped for
   the window (crosslist.block — Poshmark too, in parallel mode; the owner's PAUSE stays the brake for all).
 - The cross rows are queued when the owner approves the price (`feed`), not after Poshmark is live.
@@ -287,7 +288,7 @@ async def _cross_worker(s, db, ps, mp, dry, stop, state, awake, takedowns) -> No
             notify.say(f"❌ {crosslist.LABEL[mp]} worker: {type(e).__name__}: {e}")
             state.set(mp, None)
             worked = False
-        await _rest(stop, next_gap(s["schedule"]) if worked else IDLE)
+        await _rest(stop, crosslist.listing_gap(s, mp) if worked else IDLE)   # Depop / Vinted: 30–90 s (the owner)
 
 
 async def _cross_turn(s, db, ps, mp, dry, state, awake, takedowns) -> bool:

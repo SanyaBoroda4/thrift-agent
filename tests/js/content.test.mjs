@@ -430,6 +430,22 @@ test("Depop: an item with no brand gets Other, never Depop's own guess (WO35: th
   assert.equal(plain(r.seen)["brand-input"], "Other");
 });
 
+test("Depop: a package size Depop chose already is kept as it is; a menu that offers nothing typed gives its whole list", async () => {
+  // live 2026-10-11: Depop had put "Small" in by itself, and its menu answered "No option" to "Small" typed again
+  const p = page("depop", undefined, undefined, { ...DEPOP_FIX, pkgNoFilter: true });
+  await run(p, { ...DEPOP_JOB, fields: { ...DEPOP_JOB.fields, package_size: "Medium" } });   // Depop's own pick: Medium
+  let r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.deepEqual(r.failed, []);
+  assert.equal(r.seen.package, "Medium");
+  const q = page("depop", undefined, undefined, { ...DEPOP_FIX, pkgNoFilter: true });
+  await run(q, DEPOP_JOB);                                                                    // ours: Large
+  r = plain(q.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.deepEqual(r.failed, []);
+  assert.equal(r.seen.package, "Large");
+});
+
 test("Depop: a form Depop refuses (Brand: This field is required) is said at once — nothing published (WO35)", async () => {
   const p = page("depop", undefined, undefined, { ...DEPOP_FIX, sizeLag: 0 });
   p.w.Thrift.sites.depop.fill = async () => {};                       // the form as the silk pants had it: no brand
@@ -496,15 +512,20 @@ test("Vinted: an item with no brand is 'List without brand' too (WO35)", async (
   assert.equal(p.w.__noBrand, true);
 });
 
-test("Vinted: a brand found by its first word when the full name finds nothing (WO35: 'Solid & Striped')", async () => {
+test("Vinted: never a brand by one word of ours — the exact name or 'List without brand' (the owner, 2026-10-11)", async () => {
+  // the stand-in's search answers nothing for "&": "Solid & Striped" is not found as written (or as "Solid and
+  // Striped"), and its first word is never typed — "Solid" is never searched for, never picked
   const p = page("vinted");
+  const typed = [];
+  p.d.addEventListener("input", (e) => { if (e.target?.getAttribute?.("data-testid") === "brand-select-dropdown-search-input") typed.push(e.target.value); }, true);
   await run(p, { ...VINTED_JOB, fields: { ...VINTED_JOB.fields, brand: "Solid & Striped",
                                           brand_candidates: ["Solid & Striped"] } });
   const r = plain(p.last());
   assert.equal(r.event, "result");
-  assert.equal(r.seen.brand_shown, "Solid & Striped");
-  assert.deepEqual(r.guesses, []);
-  assert.notEqual(p.w.__noBrand, true);
+  assert.ok(!typed.some((t) => t.trim().toLowerCase() === "solid"), JSON.stringify(typed));
+  assert.ok(typed.includes("Solid & Striped") && typed.includes("Solid and Striped"), JSON.stringify(typed));
+  assert.equal(p.w.__noBrand, true);
+  assert.ok(r.guesses.includes("listed without a brand (Vinted has no 'Solid & Striped')"), JSON.stringify(r.guesses));
 });
 
 test("Vinted: package sizes drawn late are waited for (WO35: live, none there yet when the price was typed)", async () => {
@@ -574,14 +595,34 @@ test("check_login: the sell form is a yes, a login page a no", async () => {
   assert.equal(q.last().page, "login");
 });
 
-test("the brand is ours or its clean form — never a qualified other brand", () => {
+test("the brand is the exact name only — never another line, a shorter or a similar name (the owner, 2026-10-11)", () => {
   const { w } = page("vinted");
   const pick = w.Thrift.strictPick;
   assert.deepEqual(plain(pick("J.Crew", ["J. Crew Factory", "J. Crew"])),
                    { choice: "J. Crew", guess: "brand set to 'J. Crew' (from 'J.Crew')" });
   assert.equal(pick("J. Crew", ["J. Crew Factory"]).choice, null);
-  assert.equal(pick("Zara Basic", ["Zara"]).choice, null);             // looser picks belong to Poshmark only
+  assert.equal(pick("J.Crew Factory", ["J. Crew"]).choice, null);       // no "clean form" any more
+  assert.equal(pick("Zara Basic", ["Zara"]).choice, null);
+  assert.equal(pick("Solid & Striped", ["Solid", "Striped Sun"]).choice, null);
+  assert.equal(pick("Seven Wonders", ["Seven", "Seven For All Mankind"]).choice, null);
+  assert.equal(pick("Solid & Striped", ["Solid and Striped"]).choice, "Solid and Striped");   // "&" is "and"
   assert.equal(pick("Tory Burch", ["Tory Burch", "Tory Sport"]).guess, null);
+  assert.deepEqual(plain(w.Thrift.spellings("J.Crew")), ["J.Crew", "J. Crew"]);
+  assert.deepEqual(plain(w.Thrift.spellings("Solid & Striped")), ["Solid & Striped", "Solid and Striped"]);
+});
+
+test("Vinted: the page check waits for the title's text, not just its element (2026-10-11: read empty once)", async () => {
+  const url = "https://www.vinted.com/items/10303333852-levis-501";
+  const html = `<html><head><title>Vinted</title></head><body><main><h1 data-testid="item-page-title"></h1>
+    <p data-testid="item-price">$30.00</p></main><script>
+    setTimeout(() => { document.querySelector("h1").textContent = "Levi's 501 Distressed Denim Cut-Off Jean Shorts"; }, 400);
+  </script></body></html>`;
+  const p = page("vinted", html, url);
+  p.w.Thrift.timeoutScale = 1;
+  await run(p, { job_id: "vinted-verify-late", site: "vinted", mode: "verify", listing_url: url });
+  await until(() => p.events().some((e) => e.event === "result" || e.event === "error"), 15000);
+  const r = plain(p.events().find((e) => e.event === "result"));
+  assert.equal(r.live.title, "Levi's 501 Distressed Denim Cut-Off Jean Shorts");
 });
 
 test("Depop's option match: the text IS the value; a category path shows its parts in order", () => {

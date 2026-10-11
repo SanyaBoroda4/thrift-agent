@@ -119,6 +119,7 @@ function wire(id) {
     const show = () => {
       menu.innerHTML = "";
       let hits = pool.filter((o) => !q || o.toLowerCase().includes(q));
+      if (id === "shippingMethods-input" && F.pkgNoFilter && q) hits = [];   // live 2026-10-11: "No option" to typed text
       if (id === "brand-input") {                          // Depop's server search: the text as written
         hits = pool.filter((o) => o.toLowerCase().startsWith(q));
         if (!hits.length) hits = ["Other"];

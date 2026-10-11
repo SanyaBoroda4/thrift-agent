@@ -113,6 +113,7 @@ marketplaces:
     driver: extension
     autopublish: false     # the owner turns it on after the supervised --publish-first (owner steps, WO30)
     daily_cap: 25          # new listings a day on Depop (dry runs count: they fill the real form)
+    gap_seconds: [30, 90]  # the pause after each Depop listing (the owner, 2026-10-11; Poshmark keeps schedule's)
     max_photos: 8
     shop: ""               # depop.com/<shop>/
   vinted:
@@ -120,6 +121,7 @@ marketplaces:
     driver: extension
     autopublish: false
     daily_cap: 25
+    gap_seconds: [30, 90]  # the pause after each Vinted listing (the owner, 2026-10-11)
     max_photos: 20
     shop: ""               # vinted.com/member/<shop> (the member page's path)
 
@@ -139,7 +141,7 @@ schedule:
   hours: ["09:00", "21:00"]
   per_hour_max: 10
   daily_cap: 25
-  gap_seconds: [150, 420]
+  gap_seconds: [150, 420]  # Poshmark's pause after each listing (Depop and Vinted: marketplaces.<m>.gap_seconds)
 
 telegram:
   enabled: false

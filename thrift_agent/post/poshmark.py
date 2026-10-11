@@ -355,10 +355,10 @@ def _is(want: str, el_id: str, text: str, attrs: str, loose: bool = False) -> bo
 
 
 def _brand_queries(name: str) -> list[str]:
-    """What to type for a brand: the name, then — when the list offers nothing for it — its longest word ("J.Crew" ->
-    "Crew", "Levi's" -> "Levi"), so a spelling Poshmark's search doesn't take still brings its suggestions (WO27)."""
-    words = sorted(re.findall(r"[^\W_]{3,}", _straight(name)), key=len, reverse=True)
-    return list(dict.fromkeys([name, *words[:1]]))
+    """What to type for a brand: the name, then other spellings of the SAME name ("J.Crew" -> "J. Crew": Poshmark's
+    search takes the text as written) — never a word of it (the owner, 2026-10-11: "Solid & Striped" must never find
+    a brand called "Solid"; WO27 typed the longest word)."""
+    return brands.spellings(name)
 
 
 def _offer(options: list[str], limit: int = 12) -> str:
@@ -635,12 +635,14 @@ class PoshmarkPoster(Poster):
         await settle(page, 0.3, 0.8)
 
     async def _brand(self, page: Page, r: Render) -> None:
-        """Ours as Poshmark spells it (data/brand_aliases.yaml), typed; then the suggestion brands.pick() chooses — the
-        same name normalised ("J.Crew" is "J. Crew"), never a line we don't have ("J. Crew Factory"), else the closest
-        — or none: Brand is optional on the form, so it is left empty (WO27). A name it had to resolve is learned."""
+        """Ours as Poshmark spells it (data/brand_aliases.yaml), typed; then the suggestion that IS our brand — the exact
+        name ("J.Crew" is "J. Crew"), or one of the two parts of a name like "MNG (Mango)" — and nothing else (the
+        owner's rule, 2026-10-11: never a line we don't have, a shorter or a similar name); else none: Brand is optional
+        on the form, so it is left empty (WO27). A name it had to resolve is learned."""
         if not r.brand:
             return
-        ours = self.aliases.spell(r.brand) or r.brand
+        spelled = self.aliases.spell(r.brand)
+        ours = spelled if brands.spelling_of(r.brand, spelled) else r.brand
         names = list(dict.fromkeys([ours, *brands.candidates(r.brand, self.aliases)]))   # WO34: then each part
         box = SEL["brand"](page)
         options: list[str] = []

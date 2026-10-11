@@ -890,6 +890,8 @@ async def run_cross(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, *, dr
         crosslist.failure(db, mp, out.status == "failed", int(s.get("poster.max_consecutive_failures", 3)))
     if out.status == "posted":
         crosslist.set_unconf(db, iid, mp, stage=None)
+    elif not out.clicked and (crosslist.unconf_state(db, iid, mp) or {}).get("stage") == "reposted":
+        crosslist.set_unconf(db, iid, mp, stage="retry")   # nothing was clicked: the next try still looks first
     return out
 
 

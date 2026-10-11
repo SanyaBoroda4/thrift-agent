@@ -147,16 +147,16 @@
         escape();
       });
       // Vinted requires a brand (live 2026-10-09, WO35: the Solid & Striped set — Upload refused, "Fill in brand to
-      // continue"; the MNG set went through only because Vinted had filled "Mango" by itself). Ours, by each of its
-      // names — searched as written, then by its first word (Vinted's search may not take "&") — else Vinted's own
-      // "List without brand" (No brand indicated), never a brand that isn't ours.
+      // continue"; the MNG set had gone through only because Vinted filled "Mango" by itself). Ours, by each of its
+      // names (the full name, then the two parts of one like "MNG (Mango)"), each searched as written and in the
+      // other spellings of the same name — never by a word of it (the owner, 2026-10-11) — the exact name picked;
+      // else Vinted's own "List without brand" (No brand indicated), never a brand that isn't ours.
       await T.step("brand", st, async () => {
         await open("brand");
         const search = await T.waitFor(S().brand.search, { timeout: 3000 });
         const box = search || (await T.need(S().brand.selectors, "brand"));
         for (const name of f.brand ? T.brandNames(f) : []) {   // WO34: the full name, then each part ("MNG", "Mango")
-          const first = (String(name).match(/[A-Za-z0-9]{3,}/) || [""])[0];
-          for (const query of [...new Set([name, first].filter(Boolean))]) {
+          for (const query of T.spellings(name)) {
             await T.type(box, query);
             let rows = [], texts = [];
             const { choice, guess } = (await T.until(() => {   // Vinted's list answers: until the name shows, 5 s
@@ -186,7 +186,7 @@
         T.picked(st, "brand", f.brand || "", "List without brand");
         st.guesses.push(f.brand ? `listed without a brand (Vinted has no '${f.brand}')` : "listed without a brand");
         escape();
-      });
+      }, { limit: 60000 });                               // several names, each answered by Vinted's server in turn
       if (f.size) await T.step("size", st, async () => pick(st, "size", f.size));
       await T.step("condition", st, async () => pick(st, "condition", f.condition));
       for (const c of (f.colors || []).slice(0, 2)) await T.step("color", st, async () => pick(st, "color", c));
@@ -256,8 +256,10 @@
     },
 
     async verify(job) {
-      await T.waitFor(S().listing_title.selectors, { timeout: 10000 });
       const text = (sel) => (T.$(sel)?.textContent || "").replace(/\s+/g, " ").trim();
+      // the title's TEXT, not just its element: right after the page opens it can be there and still empty (live,
+      // 2026-10-11: the first check of two live listings read "no title")
+      await T.until(() => text(S().listing_title.selectors) || null, 10000);
       return { url: location.href, title: text(S().listing_title.selectors), price: text(S().listing_price.selectors),
                photos: T.$$(S().listing_photos.selectors).length, body: T.textOf().slice(0, 3000) };
     },

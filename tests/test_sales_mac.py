@@ -325,6 +325,7 @@ def test_the_worker_does_its_take_downs_before_new_listings(tmp_path, api, said,
     monkeypatch.setattr(parallel, "IDLE", 0.05)
     monkeypatch.setattr(parallel, "HOUSEKEEPING", 0.05)
     monkeypatch.setattr(parallel, "next_gap", lambda schedule: 0.0)
+    monkeypatch.setattr(parallel.crosslist, "listing_gap", lambda s, mp: 0.0)
     monkeypatch.setattr(parallel.runner, "_paused", lambda db: None)
     monkeypatch.setattr(parallel.runner, "start_thrift_chrome", lambda s: "not in a test")
 

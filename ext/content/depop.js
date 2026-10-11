@@ -141,6 +141,12 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
       T.picked(st, cid, value, value);                   // chosen already (Depop's own suggestion): never clicked again
       return;
     }
+    const current = document.getElementById(cid)?.value || "";
+    if (single(cid) && !category && current &&            // a single choice already ours (live 2026-10-11: Depop had
+        (prefix ? T.norm(current).startsWith(T.norm(value)) : T.norm(current) === T.norm(value))) {   // put "Small" in,
+      T.picked(st, cid, value, current);                  // and its menu answered "No option" to "Small" typed again)
+      return;
+    }
     const box = await open(cid);
     await T.type(box, typed ?? value);                    // T.type clears the field first
     // The menu filters by the typed text: wait until it offers what we want (an older list may still be showing),
@@ -152,6 +158,18 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
     const opts = await options(cid);
     const texts = opts.map(textOf);
     let i = prefix ? texts.findIndex((t) => T.norm(t).startsWith(T.norm(value))) : T.matchOption(texts, value, category);
+    if (i < 0 && !category && !texts.length) {           // a menu that offers nothing for the typed text: its whole
+      await T.type(box, "");                             // list, our value picked from it
+      const all = await options(cid, 3000);
+      const allTexts = all.map(textOf);
+      const k = prefix ? allTexts.findIndex((t) => T.norm(t).startsWith(T.norm(value))) : T.matchOption(allTexts, value, false);
+      if (k >= 0) {
+        await T.click(all[k]);
+        T.picked(st, cid, value, allTexts[k]);
+        if (single(cid)) await T.until(() => !optionsOf(menuOf(cid)).length, 1500);
+        return;
+      }
+    }
     let shown = texts[i];
     if (i < 0 && category) {                             // the leaf's name, under the item's department heading
       const [dept, , name] = String(value).split(" > ");
@@ -329,7 +347,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
         choose(st, ids.category, f.category, { typed: f.category.split(" > ").pop(), category: true }));
       if (f.size) await T.step("size", st, async () => size(st, f.size));
       await T.step("brand", st, async () => (f.brand ? brand(st, f.brand, f.brand_typed, T.brandNames(f))
-        : brandOther(st, null)));                         // WO35: Depop requires one — no brand is "Other"
+        : brandOther(st, null)), { limit: 60000 });       // WO35: Depop requires one — no brand is "Other"
       await T.step("condition", st, async () => choose(st, ids.condition, f.condition));
       for (const c of (f.colors || []).slice(0, 2)) await T.step(ids.colour, st, async () => choose(st, ids.colour, c));
       for (const v of f.source || []) await T.step(ids.source, st, async () => choose(st, ids.source, v, { optional: true }));

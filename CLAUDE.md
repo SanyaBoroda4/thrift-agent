@@ -370,8 +370,11 @@ rows were copied in once (kv `listings_migrated`); `posts` is left as it was.
     silk pants, no brand). No brand, or one Depop doesn't list → Depop's own **Other**.
   - Vinted requires a brand too: Upload refused "Fill in brand to continue" (the Solid & Striped set; the MNG set had
     gone through only because Vinted filled "Mango" itself). Its brand menu ends with "No brand indicated" › **List
-    without brand** (`div#empty-brand[role=radio]`, `empty_brand`); ours is searched as written, then by its first
-    word (the search may not take "&").
+    without brand** (`div#empty-brand[role=radio]`, `empty_brand`); ours is searched by the exact name and its own
+    spellings only (the owner, 2026-10-11: never a word of it — see "Brands").
+  - Depop's package size (live 2026-10-11, the silk pants' second try): Depop had put "Small" in by itself and its
+    menu answered "No option" to "Small" typed again — a single choice already ours is now kept as it is, and a menu
+    that offers nothing for the typed text is read whole.
   - Vinted's package sizes come from its server after the details: none drawn yet when the price is typed (Seven
     Wonders, twice: "package MEDIUM not offered ()") — waited for, 10 s.
   - Vinted's own JSON of the seller's newest items, same origin from the member page:
@@ -644,12 +647,16 @@ The owner shares retailer screenshots (product page with price, style name, colo
   45` stores the price and reprocesses with the note; it comes back only if still unresolved (price kept). Two
   questions are never settled by a price alone: NWT without a hang-tag photo is listed as Like New (the card asks)
   unless the reply says `NWT`; a re-share hold needs `different item` (list it) or `same item` (drop it).
-- **The poster never asks (WO27).** Brand: ours as Poshmark spells it (`brands.Aliases`: `data/brand_aliases.yaml`,
-  written by the poster on the Mac, git-ignored; seed "J.Crew" → "J. Crew"), typed (then its longest word if the list
-  offers nothing), then `brands.pick`: the same name normalised (case, spaces, dots, hyphens, apostrophes, & = and),
-  else the name without a qualifier ours lacks (Factory, Outlet, Kids, Baby, Home, Collection, Sport… — never "J. Crew
-  Factory" for J.Crew), else the longest name all of whose words are ours ("Zara" for "Zara Basic"), else the most
-  similar (≥ 0.85), else Brand left empty (it is optional) — each resolved name learned. Size: the menu's value, else
+- **The poster never asks (WO27).** Brand — **the exact name only (the owner's rule, 2026-10-11, on all three
+  sites):** ours as Poshmark spells it (`brands.Aliases`: `data/brand_aliases.yaml`, written by the poster on the Mac,
+  git-ignored; seed "J.Crew" → "J. Crew"; a learned spelling counts only when it is the name or one of its parts,
+  `brands.spelling_of`), then each part of a two-part name ("MNG (Mango)" → "MNG", "Mango"; `brands.candidates`), each
+  typed as written and in the other spellings of the same name (`brands.spellings`: "J.Crew" / "J. Crew", "&" / "and")
+  — never a word of it; picked only when Poshmark lists that exact name (`brands.exact`: case, spaces, dots, hyphens,
+  apostrophes aside, & = and). Nothing looser: never another line ("J. Crew Factory" for J.Crew), a shorter name ("Zara"
+  for "Zara Basic"), a word of ours ("Solid" for "Solid & Striped", "Seven" for "Seven Wonders") or a similar one —
+  WO27 had taken those. None → Brand left empty (it is optional); the real brand stays in the title and description.
+  Size: the menu's value, else
   the nearest of the same system, one size away at most (`post/fallback.nearest_size`: 8.5 → 9, XL → L, never a
   Petite or a kids label for a plain size). Category: the closest (≥ 0.75), else the item is skipped; subcategory: the
   closest (≥ 0.6), else None; colours and style tags not offered are left out. Every guess goes in the "Posted ✓
@@ -786,11 +793,13 @@ Every item live on Poshmark goes on Depop, then Vinted — the same approved pri
     model with the enum). Depop: Source Preloved (Vintage only with the label's vintage cue), Age Modern unless a
     decade, optional attributes only the facts support (material, dress-length, bottom-style, body-fit). Package size
     from a weight class (X_SMALL only where the Vinted leaf offers it).
-  - Brand at fill time (WO34, on all three sites): the full name, its known spelling, then each part of a two-part name
-    ("MNG (Mango)" → "MNG", "Mango"; `brands.candidates`), case aside — the first a site lists is picked
-    (`brands.pick_any`; the extension's `T.brandNames` with the job's `brand_candidates`); otherwise as before:
-    Vinted's brands API / Depop's brand menu, exact or normalised only (`brands.strict_pick`);
-    none → empty, said in "Posted ✓ … — check:"; a Vinted brand flagged for authenticity / luxury: listed, ops note.
+  - Brand at fill time (WO34, on all three sites; the exact-name rule of 2026-10-11): the full name, its known
+    spelling, then each part of a two-part name ("MNG (Mango)" → "MNG", "Mango"; `brands.candidates`), each typed as
+    written and in its own spellings (`T.spellings`, Depop's `T.brandSpellings`) — never a word of it — and picked only
+    when the site lists that exact name (`brands.pick_any` / `strict_pick`, the extension's `T.strictPick`: case and
+    punctuation aside, nothing looser). None → Depop's "Other", Vinted's "List without brand" (both require a brand,
+    WO35), Poshmark's Brand left empty; the real brand stays in the title and description, and the ops chat's check
+    says so; a Vinted brand flagged for authenticity / luxury: listed, ops note.
   - Copy: Depop — the Poshmark title as the first line, a blank line, the Poshmark description, ≤ 5 hashtags (brand,
     item, style, colour, era), ≤ 1000 characters (only the body is trimmed). Vinted — Poshmark's title and
     description. Photos: Depop ≤ 8 (the front cover first, every flaw photo kept), Vinted ≤ 20 (Poshmark's order).
@@ -881,7 +890,7 @@ the pacing, the Telegram lines, the dry-run gate. Poshmark is untouched (its Pla
   40–140 ms pauses, 250–900 ms between steps, 2–5 s before the first. Real clicks (pointer / mouse events, then click)
   on the real options — Depop's Downshift menus `<id>-menu`
   cleared then typed, the size menu read until it shows the size, Vinted's category walker (the leaf by id, else the
-  path), brand search (ours or its clean form only, `strictPick`), size, condition, colours ≤ 2, materials ≤ 3, the
+  path), brand search (the exact name or its two parts only, `strictPick`), size, condition, colours ≤ 2, materials ≤ 3, the
   skirt length, the package radio; photos as Files on `input.files`, all in one DataTransfer (fallback: a drop);
   `scrollIntoView`; Depop's Boost unchecked if it is on, Vinted's bump / promote offers closed; Depop's menus waited on
   until they offer the value (an older list may still show), its size menu reopened every 0.8 s while it lags, its
@@ -978,7 +987,9 @@ sequential loop): an approved item goes to every site at once — about its slow
 - **Poshmark** in its own thread (own event loop, Playwright instance, SQLite connection); **Depop and Vinted** as
   asyncio workers beside the bridge. Each, between its own listings: its pending take-downs first (Part D), then the
   next approved item with a `queued` row for it, in approval order (ties: queue order), within the hours, under its
-  own daily cap, the human gap after each listing. Unchanged per site: one job at a time, one click per publish,
+  own daily cap, a pause after each listing — Poshmark the schedule's human gap (`schedule.gap_seconds`, 150–420 s,
+  now and then 2–4× longer), Depop and Vinted their own `marketplaces.<m>.gap_seconds` (30–90 s: the owner,
+  2026-10-11; `crosslist.listing_gap`). Unchanged per site: one job at a time, one click per publish,
   `posting` at the go-ahead (extension) / before the form (Poshmark), never retried blind, the shop check, 3 attempts.
 - **Isolation:** a failure, a timeout, a login wall or a CAPTCHA stops only that site for the window
   (`crosslist.block`, Poshmark too in parallel mode — never the owner's PAUSE, which stays the brake for all).
