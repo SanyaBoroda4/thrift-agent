@@ -880,8 +880,9 @@ def test_a_category_poshmark_does_not_have_is_asked_in_the_approval_message(tmp_
     assert loads(db.item(iid)["owner_category"])["category"] == "Shoes" and db.item(iid)["owner_price"] == 60
 
 
-def test_the_listing_keeps_only_poshmarks_curated_style_tags(tmp_path, monkeypatch, facts, owner_messages):
-    """WO12: the copy model's tags are put on Poshmark's list before lint; a material tag needs a label."""
+def test_the_listing_has_no_style_tags(tmp_path, monkeypatch, facts, owner_messages):
+    """WO36 (the owner, 2026-10-12: the Alo set's "Coord Sets" and "Athleisure" deleted by hand): no Poshmark style tags,
+    whatever the copy model offers (WO12 kept Poshmark's curated ones)."""
     s = _settings(tmp_path)
     db = DB(s.path("db"))
     base = fake_ask(facts)
@@ -897,7 +898,7 @@ def test_the_listing_keeps_only_poshmarks_curated_style_tags(tmp_path, monkeypat
     iid = _one_item(tmp_path, db)
     pipeline.process_item(s, db, iid)
     it = db.item(iid)
-    assert loads(it["renders"])["poshmark"]["tags"] == ["Casual"]            # boho: not Poshmark's; Leather: no label
+    assert loads(it["renders"])["poshmark"]["tags"] == []
     assert not any("material" in r for r in loads(it["gate"])["reasons"])   # dropped, so never a lint problem
 
 

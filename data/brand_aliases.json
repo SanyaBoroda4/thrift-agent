@@ -1,0 +1,20 @@
+{
+ "_about": "WO36: a brand's reading (a label's text, a short form, a spelling) -> the name the shops list it under. Tracked: edit freely. The owner's corrections ('brand Alo Yoga' replied to a card) are learned on the Mac in data/brand_aliases.learned.json (ignored by git), over these.",
+ "aliases": {
+  "A&F": "Abercrombie & Fitch",
+  "AE": "American Eagle Outfitters",
+  "AEO": "American Eagle Outfitters",
+  "alo": "Alo Yoga",
+  "American Eagle": "American Eagle Outfitters",
+  "BR": "Banana Republic",
+  "CK": "Calvin Klein",
+  "DVF": "Diane von Furstenberg",
+  "Hollister Co.": "Hollister",
+  "J.Crew": "J. Crew",
+  "MNG": "Mango",
+  "North Face": "The North Face",
+  "NY&Co": "New York & Company",
+  "TNF": "The North Face",
+  "WHBM": "White House Black Market"
+ }
+}

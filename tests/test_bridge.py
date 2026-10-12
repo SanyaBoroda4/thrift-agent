@@ -451,6 +451,50 @@ def test_a_dry_run_reads_back_and_never_clicks(tmp_path, selectors):
     assert job["photos"][0].endswith("/photos/vinted/i_1/1.jpg")
 
 
+@pytest.mark.parametrize("mp,key,shown,dry,ok", [
+    ("depop", "brand-input", "Halogen", True, False),          # another brand: never (the Alo set's menu offered it)
+    ("depop", "brand-input", "Halogen", False, False),         # a publish: cancelled, nothing clicked — it waits
+    ("depop", "brand-input", "Other", True, True),             # Depop's own fallback when none of ours is listed
+    ("depop", "brand-input", "Tory Burch Sport", True, True),  # ours followed by more words (the one the step took)
+    ("depop", "brand-input", "Tory", True, False),             # never a shorter name
+    ("depop", "style-input", ["Casual"], True, False),         # Depop's Style: never (the owner, 2026-10-12)
+    ("depop", "occasion-input", ["Party"], True, False),       # any other multi-select of Depop's own: empty
+    ("vinted", "brand_shown", "H&M", True, False),             # live 2026-10-09: the silk pants read Vinted's own H&M
+    ("vinted", "brand_shown", "List without brand", True, True),
+    ("vinted", "color", ["Red", "Black"], True, False),        # a colour we didn't ask for
+])
+def test_the_read_back_takes_only_our_values(tmp_path, selectors, monkeypatch, mp, key, shown, dry, ok):
+    """WO36 §4: the brand one of ours or the site's fallback, Depop's Style and every other multi-select only ours —
+    else the form fails the diff (the listing waits; a publish is cancelled before any click)."""
+    import ext_fake
+    real = ext_fake.seen_for
+    monkeypatch.setattr(ext_fake, "seen_for", lambda job: {**real(job), key: shown})
+    result = Outcome("dryrun") if dry else Outcome("posted")
+    out, fake, _ = run(_with_fake([result], mp=mp, selectors_path=selectors.path, dry=dry, tmp=tmp_path))
+    assert fake.clicks == 0                                    # the diff comes before any go-ahead
+    if ok:
+        assert out.status == "dryrun", (out.error, out.diff)
+    else:
+        assert out.status == "failed" and key in out.diff and out.error.startswith("Mismatch"), out.error
+
+
+def test_an_optional_value_the_form_did_not_offer_is_expected_absent(tmp_path, selectors, monkeypatch):
+    """WO36 §3: the page left out a colour Depop doesn't offer (seen["left"], said in the notes) — the read-back expects
+    it absent, never another colour in its place."""
+    import ext_fake
+    real = ext_fake.seen_for
+    monkeypatch.setattr(ext_fake, "seen_for", lambda job: {**real(job), "colour-input": [],
+                                                           "left": {"colour-input": ["Red"]}})
+    out, fake, _ = run(_with_fake([Outcome("dryrun")], mp="depop", selectors_path=selectors.path, dry=True,
+                                  tmp=tmp_path))
+    assert out.status == "dryrun", (out.error, out.diff)
+    monkeypatch.setattr(ext_fake, "seen_for", lambda job: {**real(job), "colour-input": ["Black"],
+                                                           "left": {"colour-input": ["Red"]}})
+    out, fake, _ = run(_with_fake([Outcome("dryrun")], mp="depop", selectors_path=selectors.path, dry=True,
+                                  tmp=tmp_path))
+    assert out.status == "failed" and "colour-input" in out.diff
+
+
 def test_a_read_back_that_differs_fails_the_dry_run(tmp_path, selectors, monkeypatch):
     import ext_fake
     real = ext_fake.seen_for

@@ -33,6 +33,7 @@ EXT_LINK = "ext_link"                  # kv: {"connected", "at"}: the poster's v
 MAX_ATTEMPTS = 3                       # a failure before the publish button: retried next window, up to this many
 UNCONFIRMED = "unconfirmed publish: "
 SKIPPED = "skipped: "
+MISMATCH = "Mismatch: "                 # WO36 §4: the form read back other than planned — the listing waits
 # The group's one plain line when a marketplace stops for the window, by what the site showed (WO32).
 ALERTS = {"login": "{site} needs you to log in on the Mac.",
           "captcha": "{site} shows a CAPTCHA — solve it in its Chrome window on the Mac.",
@@ -159,7 +160,9 @@ def new_window(s: Settings, db: DB) -> bool:
         if (row["error"] or "").startswith(UNCONFIRMED):
             continue                                    # it may be live: settled by the site's data (WO35 §4)
         iid, mp = row["item_id"], row["marketplace"]
-        if row["attempts"] < MAX_ATTEMPTS:
+        # WO36 §4: a form that read back other than planned waits (nothing was published) — the ops chat said why;
+        # it never turns into the group's "⏭ … wasn't listed"
+        if row["attempts"] < MAX_ATTEMPTS or (row["error"] or "").startswith(MISMATCH):
             db.upsert_listing(iid, mp, status="queued")
             db.log(iid, "crosslist_retry", {"mp": mp, "attempts": row["attempts"]})
         else:
@@ -277,7 +280,10 @@ def record(s: Settings, db: DB, iid: str, mp: str, title: str, out, fields: dict
         unconfirmed_wait(db, iid, mp, out.screenshot)     # WO35 §4: no question — the site's own data settles it
     elif out.status == "failed":
         row = db.listing(iid, mp)
-        again = "retried next window" if row and row["attempts"] < MAX_ATTEMPTS else "no more attempts: skipped next window"
+        if (error or "").startswith(MISMATCH):          # WO36 §4: nothing published; it waits, the group hears nothing
+            again = "nothing was published — it waits, tried again next window"
+        else:
+            again = "retried next window" if row and row["attempts"] < MAX_ATTEMPTS else "no more attempts: skipped next window"
         notify.ops_photo(shot, f"❌ {LABEL[mp]} failed ({iid}): {title}\n{error}{note}\n({again})")
     elif out.status == "skipped":
         notify.ops_photo(shot, f"⏭ {LABEL[mp]} skipped ({iid}): {title}\n{out.error}{note}")

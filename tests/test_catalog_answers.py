@@ -53,8 +53,8 @@ def _settings(tmp_path, telegram=False):
     return s
 
 
-def _item(tmp_path, db):
-    bid = db.add_batch("share", 3)
+def _item(tmp_path, db, share="share"):
+    bid = db.add_batch(share, 3)
     db.set_batch(bid, status="split")
     d = tmp_path / "item"
     for i, color in enumerate(["red", "green", "blue"]):
@@ -499,7 +499,7 @@ def test_a_set_whose_pieces_have_two_sizes_is_listed_under_the_bigger_one(env, f
     it = db.item(iid)
     f, posh, gate = loads(it["facts"]), loads(it["renders"])["poshmark"], loads(it["gate"])
     assert (f["size_us"]["value"], f["size_us"]["source"]) == ("S", "derived")
-    assert posh["size"] == "S" and posh["title"] == "MNG Knit Cardigan & Wide Leg Pants Tan 2-Piece Set size S"
+    assert posh["size"] == "S" and posh["title"] == "Mango Knit Cardigan & Wide Leg Pants Tan 2-Piece Set size S"
     assert f"Red flats.\nCardigan: size S. Pants: size XS.\n{LINE}" == posh["description"]
     assert not any("size" in q.lower() for q in gate["questions"]) and "❓" not in bot.sent()[-1]["caption"]
 
@@ -559,7 +559,7 @@ def test_an_unsure_size_is_shown_never_asked_and_the_item_never_held(env, facts,
     it = db.item(iid)
     gate, posh = loads(it["gate"]), loads(it["renders"])["poshmark"]
     assert not any("size" in q.lower() for q in gate["questions"]) and gate["decision"] == "publish"
-    assert posh["title"] == "MNG Knit Cardigan Tan size XS"                         # the copy check's fix, no hold
+    assert posh["title"] == "Mango Knit Cardigan Tan size XS"                       # the copy check's fix, no hold; WO36: Mango
     caption = bot.sent()[-1]["caption"]
     assert "Size XS — my best reading; reply 'size …' to change it" in caption and "❓" not in caption
     assert pipeline.set_price(s, db, iid, 40) == "ready"
@@ -650,7 +650,7 @@ def test_a_skipped_listing_is_settled_by_a_reply_never_a_command(env, facts, mon
     monkeypatch.setattr("thrift_agent.notify.say", lambda text: said.append(text))
     runner.record_outcome(db, iid, "poshmark", render, Outcome("skipped", error="skipped: no size menu"), ["poshmark"])
     message = bot.sent()[-1]["text"]
-    assert message.startswith("⏭ MNG Knit Cardigan Tan size XS wasn't listed on Poshmark") and "'retry'" in message
+    assert message.startswith("⏭ Mango Knit Cardigan Tan size XS wasn't listed on Poshmark") and "'retry'" in message
     assert not any("thrift " in t for t in [message, *said])
     approve.handle_update(s, db, bot, _reply("retry", bot.next_id))
     assert db.listing(iid, "poshmark")["status"] == "queued"
@@ -706,7 +706,7 @@ def test_an_unmatched_sale_is_matched_by_a_reply_in_the_ops_chat(env, facts, mon
                                             "reply to this message with words from its title; if not, nothing to do."}}}
     assert approve.handle_update(s, db, bot, ops_reply("mng cardigan")) == f"ops: matched s_abc123 to {iid}"
     assert calls == [("/sales/s_abc123/match", {"item_id": iid})]
-    assert ops.sent()[-1]["text"].startswith("✓ Matched to MNG Knit Cardigan Tan size XS — 1 take-down queued")
+    assert ops.sent()[-1]["text"].startswith("✓ Matched to Mango Knit Cardigan Tan size XS — 1 take-down queued")
     assert approve.handle_update(s, db, bot, ops_reply("velvet boots")) == "ops: 0 items for ['velvet', 'boots']"
     assert ops.sent()[-1]["text"] == "No item's title has all of those words — try others"
 
@@ -746,3 +746,83 @@ def test_the_edit_command(tmp_path, monkeypatch, facts):
     assert said == [f"{iid}: title 'J. Crew Pants size S', brand 'J. Crew' set from the CLI"]
     r = CliRunner().invoke(cli.app, ["edit", iid], terminal_width=200)
     assert r.exit_code == 1 and "give --title, --brand and/or --sizes" in " ".join(r.output.split())
+
+
+# ---------------------------------------------------------------- WO36: brands the sites list
+
+def test_the_brand_reply_names_it_on_all_three_sites_and_teaches_the_alias(env, facts, monkeypatch):
+    """WO36: "brand Seven Wonders" replied to a card whose label read "SW": the brand on Poshmark, Depop and Vinted,
+    the title renamed (never doubled), her reply answered at once — and "SW" learned, so the next "SW" label is listed
+    as Seven Wonders from the start."""
+    import json
+
+    from thrift_agent.catalogs.common import ItemView
+    from thrift_agent.catalogs.depop import map_depop
+    from thrift_agent.catalogs.vinted import map_vinted
+    s, db, bot = env
+    state = {"facts": lambda: facts(brand=Ev(value="SW", photos=[1], source="photo", confidence=0.95)),
+             "title": "SW Red Ballet Flats size 7.5"}
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", _model(state))
+    iid = _item(s.path("db").parent, db)
+    pipeline.process_item(s, db, iid)
+    card = bot.next_id
+    approve.handle_update(s, db, bot, _reply("brand Seven Wonders", card))
+    it = db.item(iid)
+    posh = loads(it["renders"])["poshmark"]
+    assert (posh["brand"], posh["title"]) == ("Seven Wonders", "Seven Wonders Red Ballet Flats size 7.5")
+    assert posh["brand_label"] == "SW" and it["owner_brand"] == "Seven Wonders"
+    assert _answers(bot)[-1].startswith("✓ Brand: Seven Wonders"), _answers(bot)
+    assert pipeline.set_price(s, db, iid, 40) == "ready"
+    view = ItemView.from_row(db.item(iid))
+    assert map_depop(view).brand == "Seven Wonders" and map_vinted(view).brand == "Seven Wonders"
+    assert json.loads(s.path("brand_aliases").read_text(encoding="utf-8")) == {"SW": "Seven Wonders"}
+    nxt = _item(s.path("db").parent / "next", db, share="share-2")    # another item, the same label
+    pipeline.process_item(s, db, nxt)
+    posh = loads(db.item(nxt)["renders"])["poshmark"]
+    assert (posh["brand"], posh["brand_label"], posh["title"]) == ("Seven Wonders", "SW",
+                                                                   "Seven Wonders Red Ballet Flats size 7.5")
+    assert brands.candidates(posh["brand"], posh["brand_label"], brands.for_settings(s)) == ["Seven Wonders", "SW"]
+
+
+def test_the_copy_names_the_brand_as_shops_list_it(env, facts, monkeypatch):
+    """WO36: the copy step's `brand` ("Alo Yoga" for an "alo" label) names it in the title and the listing's brand
+    field; the label's text is kept as brand_label, tried on every site after it. A name that is another brand is never
+    taken (the label's own name stays)."""
+    s, db, bot = env
+    for named, title, want in [("Alo Yoga", "Alo Yoga Cropped Hoodie size XS", "Alo Yoga"),
+                               ("", "Alo Cropped Hoodie size XS", "Alo Yoga"),            # the alias file's name
+                               ("Beyond Yoga", "Beyond Yoga Cropped Hoodie size XS", "Alo Yoga")]:   # never another
+        base = _model({"facts": lambda: facts(brand=Ev(value="Alo", photos=[1], source="photo", confidence=0.95)),
+                       "title": title})
+
+        def ask(model, system, content, out, tool, description, _base=base, _named=named, **kw):
+            result = _base(model, system, content, out, tool, description, **kw)
+            if out is CopyOut:
+                result.brand, result.brand_label = _named, "alo"
+            return result
+        monkeypatch.setattr("thrift_agent.brain.llm.ask", ask)
+        iid = _item(s.path("db").parent / (named.replace(" ", "_") or "none"), db, share=f"share-{named or 'none'}")
+        pipeline.process_item(s, db, iid)
+        posh = loads(db.item(iid)["renders"])["poshmark"]
+        assert (posh["brand"], posh["brand_label"]) == (want, "Alo"), named
+        assert posh["title"].startswith("Alo Yoga ") and "Yoga Yoga" not in posh["title"], posh["title"]
+
+
+def test_a_form_that_read_back_otherwise_waits_and_the_group_hears_nothing(env, facts, monkeypatch):
+    """WO36 §4: a Depop / Vinted form whose read-back differed is never published; it waits — tried again each window,
+    whatever its attempts — and only the ops chat hears why. Another failure still ends in the group's ⏭ after three."""
+    from thrift_agent import crosslist
+    s, db, bot = env
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", _model({"facts": lambda: facts()}))
+    iid = _item(s.path("db").parent, db)
+    pipeline.process_item(s, db, iid)
+    sent = len(bot.sent())
+    db.upsert_listing(iid, "depop", status="failed", error="Mismatch: form doesn't match plan: {'brand-input': "
+                                                          "('Tory Burch', 'Halogen')}")
+    db.upsert_listing(iid, "vinted", status="failed", error="PosterError: the page went away")
+    db.conn.execute("UPDATE listings SET attempts=3 WHERE item_id=?", (iid,))
+    assert crosslist.new_window(s, db)
+    assert db.listing(iid, "depop")["status"] == "queued"                 # waits: tried again, never skipped
+    assert db.listing(iid, "vinted")["status"] == "skipped"
+    told = [p.get("text") or p.get("caption") for p in bot.sent()[sent:]]
+    assert len(told) == 1 and "Vinted" in told[0] and "Depop" not in told[0], told

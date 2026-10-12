@@ -1,55 +1,107 @@
-"""Brand names as each site's brand list spells them (WO27, WO34; the owner's rule of 2026-10-11).
+"""Brand names as each site's brand list has them (WO27, WO34; WO36 — the owner's rules of 2026-10-11 and 2026-10-12).
 
-A brand is picked by its EXACT name only — case, spaces, dots, hyphens and apostrophes ignored, "&" = "and" ("J.Crew"
-is "J. Crew", "Solid & Striped" is "Solid and Striped") — or by one of the two parts of a name like "MNG (Mango)"
-(candidates()). Nothing looser: never a first or longest word, a shorter "clean" name, a similar one ("Solid & Striped"
-could land on a brand called "Solid", "Seven Wonders" on "Seven"). None → Brand left empty on Poshmark (optional),
-Depop's "Other", Vinted's "List without brand"; the real brand stays in the title and description. What is typed into
-a site's search may be another SPELLING of the same name (spellings(): "J.Crew" → "J. Crew"). Every name it had to
-resolve is learned (Aliases.learn) into data/brand_aliases.yaml, a file the Mac writes and git ignores (a tracked file
-written at runtime would block the deploy's pull), and the pipeline spells the brand that way from then on."""
+The names tried, in order (candidates()): the brand as shops list it (the copy step's `brand`: "Alo Yoga" for an "alo"
+label, "Mango" for "MNG"), the label's own text (`brand_label`), the alias file's name for either (alo → Alo Yoga,
+MNG → Mango, …), then the two parts of a name like "MNG (Mango)".
+
+On each site (choose()):
+1. a name of ours EXACTLY — case, spaces, punctuation, "&" vs "and" and accents aside (key());
+2. else the site's own suggestion that is a whole name of ours followed by more words ("alo" → "Alo Yoga"; whole
+   words: "Alo" is never "ALOHAS") — taken only when exactly one option fits;
+3. else none: Depop's "Other", no brand on Vinted and Poshmark — and the note lists what the site offered, so the alias
+   can be added.
+Never the other way round: a site's name that is only the START of ours ("Solid" for "Solid & Striped", "Seven" for
+"Seven Wonders") is never taken, nor a similar one. What is typed into a site's search is a name of ours or another
+spelling of it (spellings(): "J.Crew" → "J. Crew") — never a word of it.
+
+The alias file maps a reading — a label's text, a short form, a spelling — to the name shops list:
+data/brand_aliases.json (tracked: the curated start, alo → Alo Yoga, MNG → Mango, …) under the corrections learned on the
+Mac (paths.brand_aliases, data/brand_aliases.learned.json, ignored by git — a tracked file written at runtime would block
+the deploy's pull): the owner's card reply "brand Alo Yoga" (the label's text → her name), and a site's own spelling
+of the same name ("J.Crew" → "J. Crew")."""
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from pathlib import Path
 
 import yaml
 
+ROOT = Path(__file__).resolve().parents[1]
+CURATED = ROOT / "data" / "brand_aliases.json"     # tracked: the well-known short forms (WO36)
 # Resolved live (2026-10-04): Poshmark lists "J. Crew" and "J. Crew Factory", never "J.Crew".
 SEED = {"J.Crew": "J. Crew"}
-HEADER = ("# Brand names as Poshmark's brand list spells them: our reading -> Poshmark's (WO27). The poster adds every\n"
-          "# name it had to resolve; edit freely. Written at runtime on the Mac, ignored by git.\n")
 
 
 def key(name: str | None) -> str:
-    """Comparison form: case, spaces, dots, hyphens and apostrophes ignored, "&" = "and"."""
+    """Comparison form: case, spaces, punctuation and accents ignored, "&" = "and"."""
     s = unicodedata.normalize("NFKD", str(name or "")).encode("ascii", "ignore").decode().lower()
     return re.sub(r"[^a-z0-9]", "", s.replace("&", " and "))
 
 
+def words(name: str | None) -> list[str]:
+    """A name's words as key() reads them ("Levi's" → levis, "H&M" → h and m)."""
+    s = unicodedata.normalize("NFKD", str(name or "")).encode("ascii", "ignore").decode().lower()
+    return re.findall(r"[a-z0-9]+", re.sub(r"['’`]", "", s.replace("&", " and ")))
+
+
 def exact(ours: str, options: list[str]) -> str | None:
-    """The option that IS our brand — the same key (case, spaces, dots, hyphens, apostrophes aside, "&" = "and") —
-    else None. Never another line ("J. Crew Factory" is not J.Crew), never a shorter or similar name."""
+    """The option that IS our brand (the same key), else None."""
     return next((o for o in dict.fromkeys(options) if o and key(o) and key(o) == key(ours)), None)
 
 
+def extends(ours: str | None, option: str | None) -> bool:
+    """`option` is the whole of `ours` followed by more words ("Alo" → "Alo Yoga") — whole words only ("Alo" never
+    "ALOHAS"); never the other way round ("Solid & Striped" is not extended by "Solid")."""
+    o, x = words(ours), words(option)
+    return bool(o) and len(x) > len(o) and x[:len(o)] == o
+
+
+def choose(names: list[str], options: list[str]) -> tuple[str | None, str | None, str | None]:
+    """(the option to pick, how — "exact" | "extends", the name of ours it came from), or (None, None, None): a name
+    of ours exactly, in order; else the ONE option that is a name of ours followed by more words."""
+    opts = [o for o in dict.fromkeys(options) if o and key(o)]
+    for n in names:
+        if (o := exact(n, opts)) is not None:
+            return o, "exact", n
+    for n in names:
+        longer = {key(o): o for o in opts if extends(n, o)}
+        if len(longer) == 1:
+            return next(iter(longer.values())), "extends", n
+    return None, None, None
+
+
+def offered(options: list[str], limit: int = 6) -> str:
+    """" (it offers: A, B, …)" — the site's top suggestions, for the note that lets the alias be added."""
+    shown = list(dict.fromkeys(o for o in options if o and key(o) != "other"))[:limit]
+    return f" (it offers: {', '.join(shown)})" if shown else ""
+
+
+def pick_any(names: list[str], options: list[str], site: str = "Poshmark") -> tuple[str | None, str | None]:
+    """(the option to pick, the note to report) for our names (candidates()) among a site's options; (None, why — with
+    what it offered) when none fits: Brand is then left empty (optional on Poshmark). A different spelling, or a
+    longer name, is reported; the same name isn't."""
+    choice, how, came = choose(names, options)
+    if choice is None:
+        return None, f"brand left empty: {site}'s list has no '{names[0] if names else ''}'{offered(options)}"
+    first = names[0]
+    if how == "exact" and choice.lower() == first.lower():
+        return choice, None
+    return choice, f"brand set to '{choice}' (from '{came if how == 'extends' else first}')"
+
+
 def pick(ours: str, options: list[str]) -> tuple[str | None, str | None]:
-    """(the suggestion to pick, the guess to report) for our brand among Poshmark's suggestions — the exact name only
-    (the owner's rule, 2026-10-11); (None, why) otherwise: Brand is optional, so it is left empty. A different spelling
-    is reported, the same one isn't."""
-    if (choice := exact(ours, options)) is not None:
-        return choice, None if choice == ours else f"brand set to '{choice}' (from '{ours}')"
-    offered = f" (it offers: {', '.join(list(dict.fromkeys(o for o in options if o))[:6])})" if options else ""
-    return None, f"brand left empty: Poshmark's list has no '{ours}'{offered}"
+    """pick_any for one name, on Poshmark's form."""
+    return pick_any([ours], options)
 
 
 def strict_pick(ours: str, options: list[str]) -> tuple[str | None, str | None]:
-    """Depop, Vinted (WO30's Playwright posters): the exact name only, as pick(). (None, why) otherwise: the brand is
-    left empty and the ops chat's check says so."""
-    if (choice := exact(ours, options)) is not None:
-        return choice, None if choice == ours else f"brand set to '{choice}' (from '{ours}')"
-    return None, f"brand left empty (no '{ours}' in its brand list)"
+    """Depop, Vinted (WO30's Playwright posters): the same rules, their own note."""
+    choice, how, came = choose([ours], options)
+    if choice is None:
+        return None, f"brand left empty (no '{ours}' in its brand list){offered(options)}"
+    return choice, None if choice == ours else f"brand set to '{choice}' (from '{ours}')"
 
 
 def spellings(name: str) -> list[str]:
@@ -68,69 +120,82 @@ def parts(name: str | None) -> list[str]:
 
 
 def spelling_of(name: str | None, other: str | None) -> bool:
-    """`other` is the name itself or one of its parts, spelled another way (a learned alias may only be that)."""
+    """`other` is the name itself or one of its parts, spelled another way."""
     return bool(name and other) and key(other) in {key(n) for n in [name, *parts(name)]}
 
 
-def candidates(name: str | None, aliases: "Aliases | None" = None) -> list[str]:
-    """The names to try for a brand on every site, in order (WO34, the owner: "MNG (Mango)" left the brand empty on
-    Poshmark and Depop): the full name and its known spelling, then each part of a two-part name ("MNG", "Mango" —
-    split at brackets and slashes, never at "&": H&M), each part's known spelling. One entry per name (case ignored)."""
-    if not name or not name.strip():
-        return []
+def candidates(brand: str | None, label: str | None = None, aliases: "Aliases | None" = None) -> list[str]:
+    """The names to try on every site, in order (WO36): the brand as shops list it, the label's text, the alias file's
+    name for each, then the two parts of a two-part name ("MNG (Mango)" → MNG, Mango) and their aliases. One entry per
+    name (key())."""
     out: list[str] = []
-    for n in [name.strip(), *parts(name)]:
-        spelled = aliases.spell(n) if aliases is not None else None
-        for v in (n, spelled if spelling_of(name, spelled) else None):   # a learned spelling of these names only
-            if v and key(v) and key(v) not in {key(o) for o in out}:
-                out.append(v)
+
+    def add(n: str | None) -> None:
+        n = (n or "").strip()
+        if n and key(n) and key(n) not in {key(o) for o in out}:
+            out.append(n)
+    tops = [n for n in (brand, label) if n and n.strip()]
+    for n in tops:
+        add(n)
+    for n in tops:
+        add(aliases.alias(n) if aliases is not None else None)
+    for n in tops:
+        for p in parts(n):
+            add(p)
+            add(aliases.alias(p) if aliases is not None else None)
     return out
 
 
-def pick_any(names: list[str], options: list[str]) -> tuple[str | None, str | None]:
-    """The first of our names (candidates()) a site's list has, exactly (case and punctuation aside); else (None, why)
-    with what the list offered. (choice, guess) as pick(): a different spelling is reported."""
-    for n in names:
-        if same := [o for o in dict.fromkeys(options) if o and key(o) == key(n)]:
-            return same[0], None if same[0].lower() == names[0].lower() else f"brand set to '{same[0]}' (from '{names[0]}')"
-    return pick(names[0], options) if names else (None, None)
-
-
 def for_settings(s) -> "Aliases":
-    """The aliases of these settings' file (paths.brand_aliases), or the seed alone when none is set."""
+    """The aliases of these settings' learned file (paths.brand_aliases), over the curated one."""
     return Aliases(s.path("brand_aliases") if s.get("paths.brand_aliases") else None)
 
 
+def _load(path: Path | None) -> dict[str, str]:
+    if path is None or not path.is_file():
+        return {}
+    text = path.read_text(encoding="utf-8")
+    try:
+        data = json.loads(text) if path.suffix == ".json" else yaml.safe_load(text)
+    except (ValueError, yaml.YAMLError):
+        return {}
+    if isinstance(data, dict) and isinstance(data.get("aliases"), dict):
+        data = data["aliases"]
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): str(v) for k, v in data.items() if k and v and not str(k).startswith("_")}
+
+
 class Aliases:
-    """Our brand -> Poshmark's spelling: SEED plus the file the poster writes (the file wins)."""
+    """A reading → the name shops list: SEED, the curated file, a legacy data/brand_aliases.yaml, then the learned file
+    (the later wins)."""
 
-    def __init__(self, path: Path | None):
-        self.path = path
-
-    def _file(self) -> dict[str, str]:
-        if self.path is None or not self.path.is_file():
-            return {}
-        data = yaml.safe_load(self.path.read_text(encoding="utf-8")) or {}
-        return {str(k): str(v) for k, v in data.items() if k and v} if isinstance(data, dict) else {}
+    def __init__(self, path: Path | None, curated: Path | None = CURATED):
+        self.path, self.curated = path, curated
 
     def table(self) -> dict[str, str]:
-        return {key(k): v for k, v in {**SEED, **self._file()}.items()}
+        legacy = self.path.with_name("brand_aliases.yaml") if self.path is not None else None
+        merged = {**SEED, **_load(self.curated), **_load(legacy), **_load(self.path)}
+        return {key(k): v for k, v in merged.items() if key(k)}
+
+    def alias(self, name: str | None) -> str | None:
+        """The name shops list for this reading, or None when the files have none."""
+        return self.table().get(key(name)) if name else None
 
     def spell(self, brand: str | None) -> str | None:
-        """Poshmark's spelling of our brand, or the brand as it is."""
-        return self.table().get(key(brand), brand) if brand else brand
+        """The name shops list for our brand, or the brand as it is."""
+        return (self.alias(brand) or brand) if brand else brand
 
-    def learn(self, ours: str, theirs: str) -> bool:
-        """Remember that Poshmark spells `ours` as `theirs` (True when it was new) — only another spelling of the name
-        or of one of its parts (spelling_of): a different brand is never learned (the owner's rule, 2026-10-11)."""
+    def learn(self, ours: str, theirs: str, owner: bool = False) -> bool:
+        """Remember `ours` → `theirs` (True when it was new). The owner's correction ("brand Alo Yoga" on a card: the
+        label's text → her name) is always kept; anything else only when it is another spelling of the same name."""
         if not ours or not theirs or ours == theirs or self.path is None or self.table().get(key(ours)) == theirs:
             return False
-        if not spelling_of(ours, theirs):
+        if not owner and not spelling_of(ours, theirs):
             return False
-        data = self._file()
+        data = _load(self.path)
         data[ours] = theirs
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        body = yaml.safe_dump(dict(sorted(data.items(), key=lambda kv: kv[0].lower())), allow_unicode=True,
-                              sort_keys=False, default_flow_style=False)
-        self.path.write_text(HEADER + body, encoding="utf-8")
+        self.path.write_text(json.dumps(dict(sorted(data.items(), key=lambda kv: kv[0].lower())), indent=1,
+                                        ensure_ascii=False) + "\n", encoding="utf-8")
         return True

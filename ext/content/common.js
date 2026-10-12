@@ -186,20 +186,46 @@
     }
   };
 
-  // ---- the brand: the EXACT name only — case, spaces, dots, hyphens, apostrophes aside, "&" = "and" — or one of the
-  // two parts of a name like "MNG (Mango)" (the job's candidates). Nothing looser (the owner, 2026-10-11: never a first
-  // word, a shorter "clean" name or a similar one — "Solid & Striped" must never land on a brand called "Solid").
-  const words = (s) => (String(s).normalize("NFKD").toLowerCase().replace(/&/g, " and ").replace(/'/g, "")
-    .match(/[a-z0-9]+/g) || []);
+  // ---- the brand (WO36, the owner's rules of 2026-10-11 and 2026-10-12): our names in order — the brand as shops list
+  // it, the label's text, the alias file's names, the two parts of a name like "MNG (Mango)" (the job's candidates,
+  // brands.candidates) — each picked EXACTLY (case, spaces, punctuation and accents aside, "&" = "and"); else the ONE
+  // option that is a whole name of ours followed by more words ("alo" → "Alo Yoga"; whole words: never "ALOHAS"). Never
+  // the other way round ("Solid & Striped" never lands on "Solid"), never a similar name.
+  const words = (s) => (String(s ?? "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+    .replace(/&/g, " and ").replace(/['\u2019`]/g, "").match(/[a-z0-9]+/g) || []);
   const key = (s) => words(s).join("");
-  // WO34: the names to try for a brand, in order — the job's candidates (the full name, then each part: "MNG
-  // (Mango)" -> MNG, Mango), else the name alone
+  T.brandKey = key;
   T.brandNames = (f) => [...new Set([...(f.brand_candidates || []), f.brand].filter(Boolean))];
   T.strictPick = (ours, options) => {
     const same = options.find((o) => o && key(o) && key(o) === key(ours));
     if (same) return { choice: same, guess: same === ours ? null : `brand set to '${same}' (from '${ours}')` };
     return { choice: null, guess: null };
   };
+  // `option` is the whole of `ours` followed by more words ("Alo" → "Alo Yoga")
+  T.extendsName = (ours, option) => {
+    const o = words(ours), x = words(option);
+    return o.length > 0 && x.length > o.length && o.every((w, i) => x[i] === w);
+  };
+  // {choice, how: "exact" | "extends", from: the name of ours it came from}, or {choice: null}
+  T.brandChoose = (names, options) => {
+    const opts = [...new Set(options.filter((o) => o && key(o)))];
+    for (const n of names) {
+      const same = opts.find((o) => key(o) === key(n));
+      if (same) return { choice: same, how: "exact", from: n };
+    }
+    for (const n of names) {
+      const longer = [...new Map(opts.filter((o) => T.extendsName(n, o)).map((o) => [key(o), o])).values()];
+      if (longer.length === 1) return { choice: longer[0], how: "extends", from: n };
+    }
+    return { choice: null };
+  };
+  // " (it offers: A, B, …)": the site's top suggestions, for the note that lets the alias be added
+  T.offered = (options, limit = 6) => {
+    const shown = [...new Set(options.filter((o) => o && key(o) && key(o) !== "other"))].slice(0, limit);
+    return shown.length ? ` (it offers: ${shown.join(", ")})` : "";
+  };
+  // The note for a brand picked: nothing for our own name as written (case aside), else what it was set to
+  T.brandNote = (value, choice) => (T.norm(choice) === T.norm(value) ? null : `brand set to '${choice}' (from '${value}')`);
   // What may be typed into a brand search: the name as written, then other spellings of the SAME name ("J.Crew" /
   // "J. Crew", "&" / "and") — never a word of it.
   T.spellings = (name) => [...new Set([name, String(name).replace(/\.\s+/g, "."), String(name).replace(/\.(?=[A-Za-z])/g, ". "),
@@ -297,7 +323,7 @@
     const p = pace ?? job.pace;
     if (typeof p === "number") { T.mode = "human"; T.speed = p; } else if (p) { T.mode = p === "human" ? "human" : "fast"; }
     const site = T.sites[job.site];
-    const st = { job_id: job.job_id, failed: [], picked: {}, shown: {}, guesses: [], notes: [],
+    const st = { job_id: job.job_id, failed: [], picked: {}, shown: {}, guesses: [], notes: [], left: {},
                  strict: job.mode === "publish" };
     T.jobId = job.job_id;
     const fail = (stage, kind, message) => T.emit({ event: "error", job_id: job.job_id, stage, page: kind, message });

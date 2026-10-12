@@ -24,6 +24,7 @@ class DepopFields(BaseModel):
     description: str
     hashtags: list[str] = Field(default_factory=list)
     brand: str | None = None                       # typed into brand-input; Depop's own option picked at fill time
+    brand_label: str | None = None                 # WO36: the label's text, when it differs ("alo" for Alo Yoga)
     size: str | None = None                        # a value of size_sets_US[size_set], or None (no size field)
     size_set: str | None = None
     condition: str
@@ -159,7 +160,8 @@ def map_depop(view: ItemView, ask=None) -> DepopFields:
         raise MappingError(f"package size {package!r} isn't Depop's")
     tags = hashtags(view, colors, int(cat.form["description"]["max_hashtags"]))
     text = description(r.title, r.description, tags, int(cat.form["description"]["max_chars"]))
-    return DepopFields(category=path, description=text, hashtags=tags, brand=r.brand, size=size, size_set=sid,
+    return DepopFields(category=path, description=text, hashtags=tags, brand=r.brand, brand_label=r.brand_label,
+                       size=size, size_set=sid,
                        condition=condition, colors=colors, source=source, age=age, attributes=attrs,
                        package_size=package, price=view.price, photos=photos_for(view, int(cat.form["photos"]["max"])),
                        category_source=pick.source, guesses=guesses, notes=notes + attr_notes)

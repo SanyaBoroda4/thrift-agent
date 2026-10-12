@@ -73,10 +73,36 @@
     }
   }
 
-  async function pick(st, name, value) {
+  async function pick(st, name, value, { optional = false } = {}) {
     const input = await open(name);
-    const shown = await clickRow(value);
+    let shown;
+    try {
+      shown = await clickRow(value);
+    } catch (e) {
+      if (!optional) throw e;
+      (st.left[name] = st.left[name] || []).push(value);   // WO36 §3: left empty — never another row
+      st.notes.push(`${name}: ${e.message} — left empty`);
+      await close(input);
+      return;
+    }
     T.picked(st, name, value, shown);
+    await close(input);
+  }
+
+  // WO36 §4: a field's values as its input shows them (a multi-select lists its choices, comma-separated)
+  const valuesOf = (name) => (T.$(S()[name]?.selectors)?.value || "").split(",").map((x) => x.trim()).filter(Boolean);
+
+  // WO36 §4: a multi-select set to exactly our values, once — the rows checked that aren't ours unchecked, ours checked
+  async function setMulti(st, name, want) {
+    const input = await open(name);
+    for (const row of T.$$(S().rows.selectors).filter(T.visible)) {
+      const ours = want.some((w) => T.norm(rowText(row)) === T.norm(w));
+      const on = row.getAttribute("aria-checked") === "true";
+      if (on !== ours) {
+        await T.click(row);
+        await T.sleep(120);
+      }
+    }
     await close(input);
   }
 
@@ -109,6 +135,118 @@
       await T.click(up.closest("[role='button']") || up);
       await T.until(() => !up.isConnected || up.getAttribute("data-testid")?.endsWith("-chevron-down"), 1500);
     }
+  }
+
+  const noBrandRow = (t) => new RegExp(S().empty_brand.text, "i").test(T.norm(t));
+
+  async function brand(st, f) {
+    await open("brand");
+    const search = await T.waitFor(S().brand.search, { timeout: 3000 });
+    const box = search || (await T.need(S().brand.selectors, "brand"));
+    const names = f.brand ? T.brandNames(f) : [];
+    const seen = [];                                     // every brand Vinted offered for our names
+    const find = async (query, match) => {               // one search: until the row shows, 5 s at most
+      await T.type(box, query);
+      let rows = [], texts = [];
+      const hit = await T.until(() => {
+        rows = T.$$(S().rows.selectors).filter(T.visible);
+        texts = rows.map(rowText);
+        const i = match(texts);
+        return i >= 0 ? { row: rows[i], text: texts[i] } : null;
+      }, 5000);
+      for (const t of texts) if (!noBrandRow(t) && !seen.includes(t)) seen.push(t);
+      return hit;
+    };
+    const take = async (hit, note) => {
+      await T.click(hit.row);
+      T.picked(st, "brand", f.brand, hit.text);
+      st.brandChoice = hit.text;
+      if (note) st.guesses.push(note);
+      escape();
+    };
+    for (const name of names) {
+      for (const query of T.spellings(name)) {
+        const hit = await find(query, (texts) => texts.findIndex((t) => !noBrandRow(t) && T.brandKey(t) === T.brandKey(name)));
+        if (hit) return take(hit, T.brandNote(f.brand, hit.text));
+      }
+    }
+    const longer = T.brandChoose(names, seen);           // no exact name: the ONE longer one ("alo" → "Alo Yoga")
+    if (longer.choice) {
+      const hit = await find(longer.choice, (texts) => texts.indexOf(longer.choice));
+      if (hit) return take(hit, `brand set to '${hit.text}' (from '${longer.from}')`);
+    }
+    if (f.brand) await T.screenshot("menu-brand");
+    await T.type(box, "");
+    const step = S().empty_brand;
+    const none = await T.until(() => T.$$(step.selectors).find(T.visible) ||
+      T.$$(S().rows.selectors).find((r) => T.visible(r) && noBrandRow(rowText(r))), 5000);
+    if (!none) throw new Error("no 'List without brand' in Vinted's brand menu");
+    if (none.getAttribute("aria-checked") !== "true") await T.click(none);
+    T.picked(st, "brand", f.brand || "", "List without brand");
+    st.brandChoice = "";
+    const offered = T.offered(seen).replace(/^ \(/, "; ").replace(/\)$/, "");
+    st.guesses.push(f.brand ? `listed without a brand (Vinted has no '${f.brand}'${offered})` : "listed without a brand");
+    escape();
+  }
+
+  // The first package size of ours this item's category offers. The sizes come from Vinted's server after the details
+  // (live 2026-10-10, WO35: none drawn yet 4 ms after the price, twice — "package MEDIUM not offered ()"): waited for,
+  // 10 s at most.
+  async function packageSize(f) {
+    await T.until(() => packageCells().length > 0, 10000);
+    const cells = packageCells();
+    for (const code of f.package_sizes || []) {
+      const cell = cells.find((c) => cellName(c) === PACKAGE[code]);
+      if (!cell) continue;
+      const radio = T.$(S().package.radio, cell);
+      if (!(radio && radio.checked)) await T.click(cell);
+      if (radio && !(await T.until(() => radio.checked, 3000))) {
+        throw new Error(`the package size ${PACKAGE[code]} didn't take`);
+      }
+      return;
+    }
+    throw new Error(`package ${f.package_sizes} not offered (${cells.map(cellName).join(", ")})`);
+  }
+
+  // WO36 §4: before the form is reported, every field read back — a required one that isn't ours is chosen again
+  // (once), an optional multi-select set to exactly our values (once; one it doesn't take is left out), the brand set
+  // back when Vinted changed it. What still differs is the driver's diff: the listing waits, nothing is published.
+  async function check(st, f) {
+    const fixed = [];
+    for (const [name, want] of [["size", f.size], ["condition", f.condition], ["skirt_length", f.skirt_length]]) {
+      if (!want || !T.$(S()[name]?.selectors)) continue;
+      const got = valuesOf(name)[0] || "";
+      if (T.norm(got) !== T.norm(want)) {
+        st.notes.push(`${name} read '${got}': chosen again`);
+        await pick(st, name, want);
+        fixed.push(name);
+      }
+    }
+    for (const [name, list] of [["color", (f.colors || []).slice(0, 2)], ["material", (f.materials || []).slice(0, 3)]]) {
+      if (!T.$(S()[name]?.selectors)) continue;
+      const want = list.filter((v) => !(st.left[name] || []).includes(v));
+      const got = valuesOf(name);
+      const same = got.length === want.length && want.every((w) => got.some((g) => T.norm(g) === T.norm(w)));
+      if (!same) {
+        st.notes.push(`${name} read '${got.join(", ")}': set to '${want.join(", ")}'`);
+        await setMulti(st, name, want);
+        fixed.push(name);
+      }
+    }
+    const shown = T.$(S().brand.selectors)?.value || "";
+    const same = st.brandChoice ? T.brandKey(shown) === T.brandKey(st.brandChoice) : (!shown || noBrandRow(shown));
+    if (st.brandChoice !== undefined && !same) {          // "List without brand" is what its field shows then (live)
+      st.notes.push(`the brand read '${shown}': set again`);
+      await brand(st, f);
+      fixed.push("brand");
+    }
+    if (fixed.length && (f.package_sizes || []).length && !(f.package_sizes || []).includes(chosenPackage())) {
+      st.notes.push(`the package size read '${chosenPackage()}' after the fix: chosen again`);   // a size re-pick may
+      await packageSize(f);                                                                      // change it
+      fixed.push("package");
+    }
+    await closeAll(st);
+    return fixed.length ? `fixed: ${fixed.join(", ")}` : "as planned";
   }
 
   T.sites.vinted = {
@@ -147,71 +285,27 @@
         escape();
       });
       // Vinted requires a brand (live 2026-10-09, WO35: the Solid & Striped set — Upload refused, "Fill in brand to
-      // continue"; the MNG set had gone through only because Vinted filled "Mango" by itself). Ours, by each of its
-      // names (the full name, then the two parts of one like "MNG (Mango)"), each searched as written and in the
-      // other spellings of the same name — never by a word of it (the owner, 2026-10-11) — the exact name picked;
-      // else Vinted's own "List without brand" (No brand indicated), never a brand that isn't ours.
-      await T.step("brand", st, async () => {
-        await open("brand");
-        const search = await T.waitFor(S().brand.search, { timeout: 3000 });
-        const box = search || (await T.need(S().brand.selectors, "brand"));
-        for (const name of f.brand ? T.brandNames(f) : []) {   // WO34: the full name, then each part ("MNG", "Mango")
-          for (const query of T.spellings(name)) {
-            await T.type(box, query);
-            let rows = [], texts = [];
-            const { choice, guess } = (await T.until(() => {   // Vinted's list answers: until the name shows, 5 s
-              rows = T.$$(S().rows.selectors).filter(T.visible);
-              texts = rows.map(rowText);
-              const p = T.strictPick(name, texts);
-              return p.choice ? p : null;
-            }, 5000)) || { choice: null, guess: null };
-            if (choice) {
-              await T.click(rows[texts.indexOf(choice)]);
-              T.picked(st, "brand", f.brand, choice);
-              if (name !== f.brand) st.guesses.push(`brand set to '${choice}' (from '${f.brand}')`);
-              else if (guess) st.guesses.push(guess);
-              escape();
-              return;
-            }
-          }
-        }
-        if (f.brand) await T.screenshot("menu-brand");
-        await T.type(box, "");
-        const step = S().empty_brand;
-        const re = new RegExp(step.text, "i");
-        const none = await T.until(() => T.$$(step.selectors).find(T.visible) ||
-          T.$$(S().rows.selectors).find((r) => T.visible(r) && re.test(T.norm(rowText(r)))), 5000);
-        if (!none) throw new Error("no 'List without brand' in Vinted's brand menu");
-        if (none.getAttribute("aria-checked") !== "true") await T.click(none);
-        T.picked(st, "brand", f.brand || "", "List without brand");
-        st.guesses.push(f.brand ? `listed without a brand (Vinted has no '${f.brand}')` : "listed without a brand");
-        escape();
-      }, { limit: 60000 });                               // several names, each answered by Vinted's server in turn
+      // continue"). WO36 (the owner, 2026-10-12): our names in order (T.brandNames: the brand as shops list it, the
+      // label's text, the alias file's names, the two parts of "MNG (Mango)"), each searched as written and in the other
+      // spellings of the same name — never by a word of it; the name picked EXACTLY when Vinted lists it; else, once
+      // every name was searched, the ONE brand that is a name of ours followed by more words ("alo" → "Alo Yoga"); else
+      // Vinted's own "List without brand" (No brand indicated), the note listing what Vinted offered.
+      await T.step("brand", st, async () => brand(st, f), { limit: 60000 });   // several names, each answered in turn
       if (f.size) await T.step("size", st, async () => pick(st, "size", f.size));
       await T.step("condition", st, async () => pick(st, "condition", f.condition));
-      for (const c of (f.colors || []).slice(0, 2)) await T.step("color", st, async () => pick(st, "color", c));
-      for (const m of (f.materials || []).slice(0, 3)) await T.step("material", st, async () => pick(st, "material", m));
+      // colours and materials are optional on Vinted (its catalog): one it doesn't offer is left out (WO36 §3)
+      for (const c of (f.colors || []).slice(0, 2)) {
+        await T.step("color", st, async () => pick(st, "color", c, { optional: true }));
+      }
+      for (const m of (f.materials || []).slice(0, 3)) {
+        await T.step("material", st, async () => pick(st, "material", m, { optional: true }));
+      }
       if (f.skirt_length) await T.step("skirt_length", st, async () => pick(st, "skirt_length", f.skirt_length));
       await T.step("price", st, async () => T.type(await T.need(S().price.selectors, "price"), String(job.price)));
-      await T.step("package", st, async () => {         // the first size of ours this item's category offers
-        // The sizes come from Vinted's server after the details (live 2026-10-10, WO35: none drawn yet 4 ms after the
-        // price, twice — "package MEDIUM not offered ()"): waited for, 10 s at most.
-        await T.until(() => packageCells().length > 0, 10000);
-        const cells = packageCells();
-        for (const code of f.package_sizes || []) {
-          const cell = cells.find((c) => cellName(c) === PACKAGE[code]);
-          if (!cell) continue;
-          const radio = T.$(S().package.radio, cell);
-          if (!(radio && radio.checked)) await T.click(cell);
-          if (radio && !(await T.until(() => radio.checked, 3000))) {
-            throw new Error(`the package size ${PACKAGE[code]} didn't take`);
-          }
-          return;
-        }
-        throw new Error(`package ${f.package_sizes} not offered (${cells.map(cellName).join(", ")})`);
-      });
+      await T.step("package", st, async () => packageSize(f));
       await T.dismiss(S().promo_close.selectors);
       await closeAll(st);
+      await T.step("check", st, async () => check(st, f));   // WO36 §4: the form read back, fixed once
       st.photosLoadedEnd = await T.waitLoaded(S().photos.thumbs, Math.min(files.length, 20), 15000);
       await T.screenshot("photos-end");
       T.$(S().details_view?.selectors)?.scrollIntoView?.({ block: "start" });   // the form's screenshot: the details
@@ -233,6 +327,8 @@
       for (const name of ["size", "condition", "skirt_length"]) if (T.$(S()[name]?.selectors)) seen[name] = list(name).slice(0, 1);
       for (const name of ["color", "material"]) if (T.$(S()[name].selectors)) seen[name] = list(name);
       if (T.$(S().brand.selectors)) seen.brand_shown = value(S().brand.selectors);
+      seen.brand_choice = st.brandChoice ?? null;         // WO36: what the brand step picked ("" = without a brand)
+      seen.left = st.left;                                 // WO36 §3: optional values the form didn't offer
       // The category input shows the leaf's name: our path only when it is that name.
       const cat = value(S().category.selectors) || "";
       const leaf = String(job.fields.category_path || "").split(" > ").pop();

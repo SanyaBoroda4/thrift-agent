@@ -780,8 +780,10 @@ def _route_ops(s: Settings, db: DB, update: dict) -> str:
     sale_id, words = m[2], [w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 1]
     hits = []
     for it in db.conn.execute("SELECT id, renders FROM items WHERE renders IS NOT NULL"):
-        title = ((loads(it["renders"]) or {}).get("poshmark") or {}).get("title") or ""
-        if words and all(w in title.lower() for w in words):
+        posh = (loads(it["renders"]) or {}).get("poshmark") or {}
+        title = posh.get("title") or ""
+        known = f"{title} {posh.get('brand_label') or ''}".lower()    # WO36: "mng" finds the Mango cardigan too
+        if words and all(w in known for w in words):
             hits.append((it["id"], title))
     if len(hits) != 1:
         bot.send_message("No item's title has all of those words — try others" if not hits else

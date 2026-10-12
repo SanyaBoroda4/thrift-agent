@@ -250,8 +250,8 @@ def test_women_shoes_fill_reads_back_exactly_what_was_planned(chrome, posh, phot
     seen, events = fill_and_read(chrome, posh, r)
     assert compare(seen, posh.expected(r)) == {}, seen
     assert events == ["cover-apply", "category:Women/Shoes", "subcategory:Flats & Loafers", "size-tab:Standard",
-                      "size:7.5", "condition:Like New", "brand:Tory Burch", "color:Red", "tag:Casual", "price-done",
-                      "show-details"]                              # the SKU sits behind "show details"
+                      "size:7.5", "condition:Like New", "brand:Tory Burch", "color:Red", "price-done",
+                      "show-details"]          # the SKU sits behind "show details"; no style tag (WO36), "Casual" planned
     assert seen["cover_dialog"] == {"photos": 3, "crop": "Poshmark's default"}
     assert seen["photos"] == 3 and seen["price"] == "$85" and seen["original_price"] == "$228"
     assert seen["category"] == "Women Shoes" and seen["subcategory"] == "Flats & Loafers" and seen["size"] == "7.5"
@@ -309,7 +309,22 @@ def test_a_js_click_on_a_subcategory_li_does_not_register_the_poster_clicks_the_
     assert drive(chrome, scenario) == "Flats & Loafers"
 
 
-def test_curated_style_tags_only(chrome, posh, photos):
+def test_no_style_tags_are_typed(chrome, posh, photos):
+    """WO36 (the owner, 2026-10-12: the Alo set's "Coord Sets" and "Athleisure" deleted by hand): Poshmark's Style Tags
+    stay empty, whatever an older listing still carries."""
+    r = render(photos, tags=["Casual", "Coord Sets"])
+
+    async def scenario(ctx, site):
+        page = await open_form(ctx, posh)
+        await posh._tags(page, r)
+        return (await page.evaluate("window.__events"), await page.locator("#tag-chips .tag-chip").all_inner_texts())
+    events, chips = drive(chrome, scenario)
+    assert not [e for e in events if "tag" in e] and chips == []
+
+
+def test_curated_style_tags_only(chrome, posh, photos, monkeypatch):
+    """WO12's step, kept behind ALLOW_STYLE_TAGS: Poshmark's curated tags only, never a free-typed one."""
+    monkeypatch.setattr(poshmark, "ALLOW_STYLE_TAGS", True)
     r = render(photos, tags=["Casual", "Sparkly unicorn", "Denim"])
 
     async def scenario(ctx, site):
@@ -340,7 +355,7 @@ def test_a_brand_poshmark_does_not_offer_is_left_empty_and_the_form_goes_on(chro
 
 def test_j_crew_is_poshmarks_j_crew_never_the_factory_line_and_is_learned(chrome, posh, photos, tmp_path, monkeypatch):
     monkeypatch.setattr(brands, "SEED", {})                               # as live, before anything was learned
-    posh.aliases = brands.Aliases(tmp_path / "brand_aliases.yaml")
+    posh.aliases = brands.Aliases(tmp_path / "brand_aliases.learned.json", curated=None)
     r = render(photos, brand="J.Crew", title="J.Crew Red Flats size 7.5")
     seen, events = fill_and_read(chrome, posh, r, steps=["_brand"])      # "J.Crew" finds nothing, "J. Crew" both lines
     assert events == ["brand:J. Crew"] and seen["brand"] == "J. Crew" and diff_on(seen, r, posh, "brand") == {}
@@ -356,7 +371,7 @@ def test_a_two_part_brand_finds_the_part_poshmark_lists(chrome, posh, photos, tm
     """WO34, live: "MNG (Mango)" left the brand empty — the full name, then each part ("MNG", "Mango"), case aside;
     the part Poshmark lists is picked, reported once and learned."""
     monkeypatch.setattr(brands, "SEED", {})
-    posh.aliases = brands.Aliases(tmp_path / "brand_aliases.yaml")
+    posh.aliases = brands.Aliases(tmp_path / "brand_aliases.learned.json", curated=None)
     r = render(photos, brand="MNG (Mango)", title="MNG (Mango) Knit Cardigan size S")
     seen, events = fill_and_read(chrome, posh, r, steps=["_brand"])
     assert events == ["brand:Mango"] and seen["brand"] == "Mango"
@@ -374,6 +389,86 @@ def test_a_brand_poshmark_lists_only_by_one_word_of_ours_is_never_taken(chrome, 
     seen, events = fill_and_read(chrome, posh, r, steps=["_brand"])
     assert not [e for e in events if e.startswith("brand:")] and seen["brand"] == ""
     assert posh.guesses == ["brand left empty: Poshmark's list has no 'Tory Burch Sport'"]
+
+
+# ---------------------------------------------------------------- WO36: the brand Poshmark lists (the Alo set)
+
+def typed_brands(chrome, p, r, **variant):
+    """The brand step alone: (read_back, events, every text typed into Brand)."""
+    async def scenario(ctx, site):
+        page = await open_form(ctx, p)
+        await p._brand(page, r)
+        events = await page.evaluate("window.__events")
+        return await p.read_back(page), events, await page.evaluate("window.__brandTyped")
+    return drive(chrome, scenario, **variant)
+
+
+@pytest.mark.parametrize("brand,label,curated,guesses", [
+    ("Alo Yoga", "alo", True, []),                         # the copy step's name for an "alo" label: as listed
+    ("Alo", None, True, []),                               # an older listing: the alias file's Alo Yoga
+    ("Alo", None, False, ["brand set to 'ALO Yoga' (from 'Alo')"]),   # no alias: the one name that is Alo + more words
+])
+def test_alo_is_poshmarks_alo_yoga(chrome, posh, photos, tmp_path, monkeypatch, brand, label, curated, guesses):
+    """WO36, live 2026-10-12: "Alo" typed, Poshmark offered ALO Yoga, ALOHA Collection, ALOHAS, Aloha Island, Alorna —
+    and the exact-name rule left Brand empty. Now: the shop's name, the label's, the alias file's, then the ONE option
+    that is a name of ours followed by more words (whole words: never ALOHAS)."""
+    monkeypatch.setattr(poshmark, "SUGGEST_TIMEOUT_MS", 600)
+    posh.aliases = brands.Aliases(tmp_path / "learned.json", curated=brands.CURATED if curated else None)
+    r = render(photos, brand=brand, brand_label=label, title=f"{brand} Cropped Hoodie & Joggers Set size XS")
+    seen, events, typed = typed_brands(chrome, posh, r)
+    assert [e for e in events if e.startswith("brand:")] == ["brand:ALO Yoga"] and seen["brand"] == "ALO Yoga"
+    assert posh.guesses == guesses and diff_on(seen, r, posh, "brand") == {}
+    assert not any(t.lower().startswith("aloha") for t in typed)
+
+
+def test_two_names_that_start_with_ours_are_no_guess(chrome, posh, photos, tmp_path, monkeypatch):
+    """WO36: an option that is our name followed by more words is taken only when it is the ONLY one — two (Alo Yoga,
+    Alo Kids) are never guessed between: Brand left empty, the note naming what Poshmark offered (for the alias)."""
+    monkeypatch.setattr(poshmark, "SUGGEST_TIMEOUT_MS", 600)
+    posh.aliases = brands.Aliases(tmp_path / "learned.json", curated=None)
+    r = render(photos, brand="Alo")
+    seen, events, _ = typed_brands(chrome, posh, r, brands=["Alo Yoga", "Alo Kids", "ALOHAS"])
+    assert not [e for e in events if e.startswith("brand:")] and seen["brand"] == ""
+    assert posh.guesses == ["brand left empty: Poshmark's list has no 'Alo' (it offers: Alo Yoga, Alo Kids, ALOHAS)"]
+
+
+def test_solid_and_striped_is_never_solid(chrome, posh, photos, monkeypatch):
+    """The owner, 2026-10-11 and WO36: never the other way round — "Solid & Striped" never lands on Poshmark's
+    "Solid", and its first word is never typed."""
+    monkeypatch.setattr(poshmark, "SUGGEST_TIMEOUT_MS", 600)
+    r = render(photos, brand="Solid & Striped")
+    seen, events, typed = typed_brands(chrome, posh, r)
+    assert not [e for e in events if e.startswith("brand:")] and seen["brand"] == ""
+    assert "Solid" not in typed and set(typed) <= {"Solid & Striped", "Solid and Striped", ""}
+    assert posh.guesses == ["brand left empty: Poshmark's list has no 'Solid & Striped'"]
+
+
+def test_mng_finds_mango_by_the_alias_file(chrome, posh, photos, tmp_path):
+    """WO36: "MNG" — the label's text — is Mango by the alias file; nothing to report (not a guess)."""
+    posh.aliases = brands.Aliases(tmp_path / "learned.json")
+    r = render(photos, brand="MNG")
+    seen, events, typed = typed_brands(chrome, posh, r)
+    assert [e for e in events if e.startswith("brand:")] == ["brand:Mango"] and posh.guesses == []
+    assert typed[-1] == "Mango"
+
+
+def test_a_brand_the_form_shows_differently_is_cleared_once_before_the_diff(chrome, posh, photos):
+    """WO36 §4: the read-back finds another brand on the form (an optional field) — cleared, read back again: the form
+    goes on without a brand, never with a wrong one."""
+    r = render(photos)
+
+    async def scenario(ctx, site):
+        page = await open_form(ctx, posh)
+        await posh._brand(page, r)
+        await page.locator("#brand-input").fill("Vince Camuto")          # the form shows another brand
+        seen = await posh.read_back(page)
+        diff = {k: v for k, v in compare(seen, posh.expected(r)).items() if k == "brand"}
+        fixed = await posh.fix(page, r, diff)
+        return diff, fixed, await posh.read_back(page)
+    diff, fixed, seen = drive(chrome, scenario)
+    assert diff == {"brand": ("Tory Burch", "Vince Camuto")} and fixed
+    assert seen["brand"] == "" and diff_on(seen, r, posh, "brand") == {}
+    assert posh.guesses == ["brand left empty: the form read 'Vince Camuto', not 'Tory Burch'"]
 
 
 def test_the_factory_line_is_picked_only_for_the_factory_line(chrome, posh, photos, monkeypatch):
@@ -397,14 +492,14 @@ def test_brand_match_ignores_case_and_curly_quotes(chrome, posh, photos):
 
 
 @pytest.mark.parametrize("change,chosen,guess", [
-    (dict(category="Dress", subcategory=None), {"category": "Dresses"}, "category set to 'Dresses' (from 'Dress')"),
-    (dict(subcategory="Knee High Boots"), {"subcategory": "Over the Knee Boots"},
-     "subcategory set to 'Over the Knee Boots' (from 'Knee High Boots')"),
+    (dict(subcategory="Flats"), {"subcategory": "Flats & Loafers"}, "subcategory set to 'Flats & Loafers' (from 'Flats')"),
+    # WO36: never a merely similar one (WO27 took "Over the Knee Boots" for knee-high boots)
+    (dict(subcategory="Knee High Boots"), {"subcategory": None},
+     "subcategory left out (Poshmark has no 'Knee High Boots' under Shoes)"),
     (dict(subcategory="Zzyzx Shoes"), {"subcategory": None}, "subcategory left out (Poshmark has no 'Zzyzx Shoes' "
                                                              "under Shoes)"),
 ])
-def test_a_category_or_subcategory_not_offered_takes_the_closest_and_reports_it(chrome, posh, photos, change, chosen,
-                                                                                 guess):
+def test_a_subcategory_not_offered_is_ours_with_more_words_or_none(chrome, posh, photos, change, chosen, guess):
     r = render(photos, **change)
     seen, events = fill_and_read(chrome, posh, r, steps=["_category"])
     assert {k: posh.chosen[k] for k in chosen} == chosen and posh.guesses == [guess]
@@ -414,9 +509,12 @@ def test_a_category_or_subcategory_not_offered_takes_the_closest_and_reports_it(
 
 
 @pytest.mark.parametrize("change,why", [
-    (dict(category="Sweatshirts"), "Poshmark has no category 'Sweatshirts' under Women, nor one close to it (it "
-                                   "offers: Accessories, Bags, Dresses, Jeans, Shorts, Shoes, Sweaters, Tops, Other) "
-                                   "(the category is required)"),
+    (dict(category="Sweatshirts"), "Poshmark has no category 'Sweatshirts' under Women (it offers: Accessories, "
+                                   "Bags, Dresses, Jeans, Shorts, Shoes, Sweaters, Tops, Other) (the category is "
+                                   "required)"),
+    (dict(category="Dress", subcategory=None), "Poshmark has no category 'Dress' under Women (it offers: Accessories, "
+                                               "Bags, Dresses, Jeans, Shorts, Shoes, Sweaters, Tops, Other) (the "
+                                               "category is required)"),    # WO36: "Dresses" is not "Dress"
     (dict(department="Unisex"), "Poshmark has no 'Unisex' department (the category is required)"),
 ])
 def test_a_category_nothing_on_the_form_comes_close_to_skips_the_item(chrome, posh, photos, change, why,

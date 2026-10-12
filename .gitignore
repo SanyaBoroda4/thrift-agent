@@ -26,3 +26,4 @@ tests/js/node_modules/
 api/local.settings.json
 api/.python_packages/
 api/.venv/
+data/brand_aliases.learned.json

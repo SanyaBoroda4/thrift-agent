@@ -64,7 +64,7 @@ def posters(s: Settings) -> dict[str, Poster]:
         shop = str(s.get(f"marketplaces.{mp}.shop") or s.get(f"marketplaces.{mp}.username") or "")
         driver = crosslist.driver(s, mp)
         if driver == "extension":
-            out[mp] = ExtensionPoster(mp, shop, brands.for_settings(s) if mp == "depop" else None)
+            out[mp] = ExtensionPoster(mp, shop, brands.for_settings(s))     # WO36: the alias file on both sites
         elif driver == "api":
             out[mp] = DepopApiPoster(shop)
         else:

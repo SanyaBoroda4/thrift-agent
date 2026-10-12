@@ -63,6 +63,8 @@ def seen_for(job: dict) -> dict:
             seen["color"] = list(f["colors"])
         if f.get("materials"):
             seen["material"] = list(f["materials"])
+        names = f.get("brand_candidates") or ([f["brand"]] if f.get("brand") else [])
+        seen["brand_shown"] = names[0] if names else "List without brand"     # WO36: Vinted's field after the pick
     else:
         seen = {"description": copy["description"], "price": str(job["price"]), "photos": photos,
                 "group-input": [f["category"]], "condition-input": [f["condition"]], "boost": False,
@@ -71,6 +73,13 @@ def seen_for(job: dict) -> dict:
             seen["variants-input"] = [f["size"]]
         if f.get("colors"):
             seen["colour-input"] = list(f["colors"])
+        names = f.get("brand_candidates") or ([f["brand"]] if f.get("brand") else [])
+        seen["brand-input"] = names[0] if names else "Other"                 # WO36: Depop requires one
+        seen["source-input"] = list(f.get("source") or [])
+        seen["age-input"] = [f["age"]] if f.get("age") else []
+        seen["style-input"] = []                                               # never filled (the owner, 2026-10-12)
+        for name, values in (f.get("attributes") or {}).items():
+            seen[f"attributes.{name}-input"] = list(values)
         if f.get("sku"):
             seen["sku"] = f["sku"]                        # WO33 A4: Depop's SKU, our item id
     seen["submit_buttons"] = 1

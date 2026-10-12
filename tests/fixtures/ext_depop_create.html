@@ -51,7 +51,7 @@ const F = window.__FIXTURE || {};
 const DEPTS = {"Men > Bottoms": ["Sweatpants", "Pants"], "Women > Bottoms": ["Sweatpants", "Pants", "Skirts"],
                "Kids > Bottoms": ["Sweatpants", "Pants"]};
 const OPTIONS = {
-  "brand-input": ["J.Crew", "J.Crew Factory", "Tory Burch", "Mango"],
+  "brand-input": F.brands || ["J.Crew", "J.Crew Factory", "Tory Burch", "Mango"],   // WO36: F.brands
   "condition-input": ["Brand new", "Like new", "Used - Excellent", "Used - Good", "Used - Fair"],
   "colour-input": ["Black", "Grey", "Cream", "Red", "White"],
   "source-input": ["Vintage", "Preloved"],
@@ -121,7 +121,7 @@ function wire(id) {
       let hits = pool.filter((o) => !q || o.toLowerCase().includes(q));
       if (id === "shippingMethods-input" && F.pkgNoFilter && q) hits = [];   // live 2026-10-11: "No option" to typed text
       if (id === "brand-input") {                          // Depop's server search: the text as written
-        hits = pool.filter((o) => o.toLowerCase().startsWith(q));
+        hits = pool.filter((o) => (F.brandContains ? o.toLowerCase().includes(q) : o.toLowerCase().startsWith(q)));
         if (!hits.length) hits = ["Other"];
       }
       for (const o of hits) {
@@ -160,7 +160,9 @@ document.getElementById("upload-input__input").addEventListener("change", (e) =>
   }
   if (F.ai !== false) setTimeout(() => {               // Depop's own suggestions, once the photos are up
     chosen["colour-input"] = ["Cream", "Grey"]; chips("colour-input");
-    document.getElementById("brand-input").value = "J.Crew"; window.__picked["brand-input"] = "J.Crew";
+    const theirs = F.aiBrand ?? "J.Crew";                // WO36: the Alo set had "Alo Yoga" here, right
+    if (theirs) { document.getElementById("brand-input").value = theirs; window.__picked["brand-input"] = theirs; }
+    if (F.aiStyle) { chosen["style-input"] = [F.aiStyle]; chips("style-input"); }
     document.getElementById("shippingMethods-input").value = "Medium";
   }, F.aiDelay ?? 100);
 });

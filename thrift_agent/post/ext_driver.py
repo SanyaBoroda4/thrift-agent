@@ -38,6 +38,7 @@ from pathlib import Path
 from thrift_agent import brands, bridge as bridge_mod
 from thrift_agent.post.base import (AccountBlocked, Mode, Outcome, Poster, PosterError, _joined, _norm, _shows_price,
                                     compare)
+from thrift_agent.post.cross import Chosen
 from thrift_agent.schema import Render
 
 SELECTORS = bridge_mod.EXT_DIR / "selectors.json"
@@ -100,6 +101,30 @@ class OneOf:
         return f"one of {self.values}"
 
 
+class BrandOf:
+    """WO36: a read-back brand that is one of ours — exactly one of our names (brands.candidates), or a name of ours
+    followed by more words (the one the step took: "Alo Yoga" for "alo") — or the site's own fallback when none of ours
+    is listed: Depop's "Other", Vinted's "List without brand" (live 2026-10-11: what its field shows then). Never a
+    brand of someone else (live 2026-10-09: the silk pants read Vinted's own "H&M")."""
+
+    def __init__(self, names: list[str], fallback: list[str]):
+        self.names, self.fallback = list(names), list(fallback)
+
+    def matches(self, seen) -> bool:
+        v = str(seen or "")
+        if brands.key(v) in {brands.key(f) for f in self.fallback}:
+            return True
+        return bool(brands.key(v)) and any(brands.key(n) == brands.key(v) or brands.extends(n, v) for n in self.names)
+
+    def __repr__(self) -> str:
+        return f"one of {self.names} or {self.fallback}"
+
+
+# WO36 §4: the multi-selects a Depop listing may hold — ours only; every other one (Style, an occasion…) empty
+DEPOP_MULTI = ("colour-input", "source-input", "age-input", "style-input")
+DEPOP_SINGLE = ("group-input", "variants-input", "condition-input", "brand-input", "shippingMethods-input")
+
+
 def selectors(path: Path = SELECTORS) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -152,16 +177,42 @@ class ExtensionPoster(Poster):
     async def submit(self, page, mode: Mode) -> str | None:
         raise PosterError("the extension driver has no Playwright page")
 
-    def expected(self, r: Render) -> dict:
+    def expected(self, r: Render, seen: dict | None = None) -> dict:
         """WO30's plan, and two things the live forms showed matter (2026-10-06): every photo has to display (Depop's
-        tiles stayed blank once), and Vinted's package size — it picks a "Recommended" one by itself — is one of ours."""
-        self.shape.fields = self.fields
+        tiles stayed blank once), and Vinted's package size — it picks a "Recommended" one by itself — is one of ours.
+
+        WO36 §4 (the Alo listing, 2026-10-12): the brand is one of ours or the site's fallback (BrandOf); Depop's Style
+        is empty and every multi-select holds only ours (an occasion or a style Depop put in by itself fails the diff);
+        an optional value the form didn't offer (`seen["left"]`, said in the notes) is expected absent — never
+        replaced by another option."""
+        f = self.fields
+        self.shape.fields = f
         want = self.shape.expected(r)
-        want["photos_loaded"] = str(len(self.fields.photos))
-        if self.name == "vinted" and getattr(self.fields, "package_sizes", None):
-            want["package"] = OneOf(self.fields.package_sizes)
-        if self.name == "depop" and "sku" not in unverified("depop", self.selectors_path):
-            want["sku"] = r.sku                        # WO33 A4: compared once a Mac dry run has recorded it filled
+        want["photos_loaded"] = str(len(f.photos))
+        left = (seen or {}).get("left") or {}
+
+        def ours(key: str, values) -> list[str]:
+            return [v for v in values or [] if v not in (left.get(key) or [])]
+        names = brands.candidates(f.brand, getattr(f, "brand_label", None), self.aliases) if f.brand else []
+        if self.name == "vinted":
+            if getattr(f, "package_sizes", None):
+                want["package"] = OneOf(f.package_sizes)
+            want["brand_shown"] = BrandOf(names, ["List without brand", ""])
+            want["color"] = Chosen(ours("color", f.colors[:2]))
+            want["material"] = Chosen(ours("material", f.materials[:3]))
+        if self.name == "depop":
+            if "sku" not in unverified("depop", self.selectors_path):
+                want["sku"] = r.sku                    # WO33 A4: compared once a Mac dry run has recorded it filled
+            want["brand-input"] = BrandOf(names, ["Other"])
+            want["colour-input"] = Chosen(ours("colour-input", f.colors[:2]))
+            want["source-input"] = Chosen(ours("source-input", f.source))
+            want["age-input"] = Chosen(ours("age-input", [f.age] if f.age else []))
+            want["style-input"] = Chosen([])           # never (the owner, 2026-10-12)
+            for name, values in (f.attributes or {}).items():
+                want[f"attributes.{name}-input"] = Chosen(ours(f"attributes.{name}-input", values))
+            for key in (seen or {}):                   # any other multi-select on the form (an occasion…): empty
+                if key.endswith("-input") and key not in want and key not in DEPOP_SINGLE:
+                    want[key] = Chosen([])
         return want
 
     def listing_address(self, url: str) -> str | None:
@@ -185,18 +236,21 @@ class ExtensionPoster(Poster):
     def payload(self, r: Render) -> dict:
         """The job (WO32 §2): the catalog values and ids, the copy, the price, the photos as bridge addresses."""
         f = self.fields
+        # WO36: the names to try, in order — the brand as shops list it, the label's text, the alias file's names, the
+        # two parts of a name like "MNG (Mango)" — each picked only exactly, else the one option that is the whole
+        # name followed by more words; else Depop's "Other" / Vinted's "List without brand"
+        names = brands.candidates(f.brand, getattr(f, "brand_label", None), self.aliases)
         if self.name == "vinted":
             fields = {"category_id": f.category_id, "category_path": f.category_path, "brand": f.brand,
-                      "brand_candidates": brands.candidates(f.brand),       # WO34: "MNG (Mango)" -> MNG, Mango
+                      "brand_candidates": names,
                       "size": f.size, "condition": f.condition, "colors": list(f.colors), "materials": list(f.materials),
                       "skirt_length": f.skirt_length, "package_sizes": list(f.package_sizes)}
             copy = {"title": f.title, "description": f.description}
         else:
-            spelled = self.aliases.spell(f.brand) if (self.aliases is not None and f.brand) else None
-            fields = {"category": f.category, "brand": f.brand, "brand_typed": spelled or f.brand,
-                      "brand_candidates": brands.candidates(f.brand, self.aliases), "size": f.size,
+            fields = {"category": f.category, "brand": f.brand, "brand_typed": names[0] if names else f.brand,
+                      "brand_candidates": names, "size": f.size,
                       "condition": f.condition, "colors": list(f.colors), "source": list(f.source), "age": f.age,
-                      "style": list(f.style), "attributes": dict(f.attributes), "shipping": f.shipping,
+                      "style": [], "attributes": dict(f.attributes), "shipping": f.shipping,   # Style: never (WO36)
                       "package_size": f.package_size, "sku": r.sku}
             copy = {"title": f.description.splitlines()[0], "description": f.description}
         return {"fields": fields, "copy": copy, "price": f.price,
@@ -311,7 +365,7 @@ class ExtensionPoster(Poster):
         if isinstance(seen.get("fill_ms"), (int, float)):
             self.fill_seconds = round(seen["fill_ms"] / 1000, 1)
             self._say(f"filled in {self.fill_seconds} s")
-        want = self.expected(r)
+        want = self.expected(r, seen)
         diff = compare(seen, want)
         self._record(job, {"item": r.sku, "seen": seen, "expected": want, "diff": diff})
         screenshot = self._kept(job, "form")

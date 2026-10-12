@@ -204,6 +204,12 @@ class Poster(ABC):
     @abstractmethod
     async def submit(self, page: Page, mode: Mode) -> str | None: ...
 
+    async def fix(self, page: Page, r: Render, diff: dict) -> bool:
+        """WO36 §4: what the read-back found different, put right ONCE before the diff fails the item — an optional
+        field cleared, a required one filled again. True when the adapter did something (the form is then read back
+        again). Default: nothing."""
+        return False
+
     async def review(self, page: Page, r: Render, shots: Path) -> str | None:
         """Dry-run stage "review": go past the form (Next), record the page there, come back. Never the final
         publish button. Returns a remark for the owner."""
@@ -318,6 +324,13 @@ class Poster(ABC):
             seen = await self.read_back(page)
             want = self.expected(r)
             diff = compare(seen, want)
+            if diff and await self.fix(page, r, diff):   # WO36 §4: once — then whatever still differs fails the item
+                first = diff
+                seen = await self.read_back(page)
+                want = self.expected(r)
+                diff = compare(seen, want)
+                self.notes.append(f"read back {sorted(first)} differently: put right once"
+                                  + (f", still {sorted(diff)}" if diff else ""))
             await keep_evidence(page, shot, {"item": r.sku, "seen": seen, "expected": want, "diff": diff,
                                              "notes": self.notes})
             kept = True

@@ -528,6 +528,159 @@ test("Vinted: never a brand by one word of ours — the exact name or 'List with
   assert.ok(r.guesses.includes("listed without a brand (Vinted has no 'Solid & Striped')"), JSON.stringify(r.guesses));
 });
 
+// ---- WO36, the Alo set (2026-10-12): "Alo" typed found no "Alo"; Depop's own right "Alo Yoga" was replaced by "Other",
+// Vinted took its separate "alo". Now: the shop's name, the label's, the alias file's (the job's candidates, in order),
+// each exact; then the ONE option that is a name of ours followed by more words; else the site's fallback, with what it
+// offered in the note.
+const DEPOP_ALO_MENU = ["Aloye", "Jo Malone", "Halogen", "Paloma Wool", "Buffalo London", "Salomon", "Dermalogica",
+                        "Saloni", "Buffalo David Bitton", "Alo Yoga", "Yves Salomon", "Malo", "Malone Souliers"];   // live
+const ALO = { brand: "Alo Yoga", brand_typed: "Alo Yoga", brand_candidates: ["Alo Yoga", "alo"] };
+
+test("Depop: Depop's own Alo Yoga is kept when it is our name (WO36: it had been replaced by Other)", async () => {
+  const p = page("depop", undefined, undefined, { ...DEPOP_FIX, aiBrand: "Alo Yoga", brands: DEPOP_ALO_MENU, brandContains: true });
+  await run(p, { ...DEPOP_JOB, fields: { ...DEPOP_JOB.fields, ...ALO } });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(r.seen["brand-input"], "Alo Yoga");
+  assert.equal(r.seen.brand_choice, "Alo Yoga");
+  assert.deepEqual(r.guesses, []);
+});
+
+test("Depop: 'Alo' finds Alo Yoga — the one option that is our name followed by more words (WO36)", async () => {
+  const p = page("depop", undefined, undefined, { ...DEPOP_FIX, ai: false, brands: DEPOP_ALO_MENU, brandContains: true });
+  await run(p, { ...DEPOP_JOB, fields: { ...DEPOP_JOB.fields, brand: "Alo", brand_typed: "Alo", brand_candidates: ["Alo"] } });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(p.w.__picked["brand-input"], "Alo Yoga");               // never Aloye, Halogen, Malo…
+  assert.deepEqual(r.guesses, ["brand set to 'Alo Yoga' (from 'Alo')"]);
+});
+
+test("Depop: two options that start with our name are no guess — Other, and the note names them (WO36)", async () => {
+  const p = page("depop", undefined, undefined, { ...DEPOP_FIX, ai: false, brands: ["Alo Yoga", "Alo Kids", "Aloye"] });
+  await run(p, { ...DEPOP_JOB, fields: { ...DEPOP_JOB.fields, brand: "Alo", brand_typed: "Alo", brand_candidates: ["Alo"] } });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(p.w.__picked["brand-input"], "Other");
+  assert.deepEqual(r.guesses, ["brand set to 'Other' (Depop has no 'Alo'; it offers: Alo Yoga, Alo Kids, Aloye)"]);
+});
+
+test("Depop: 'Solid & Striped' is never Depop's 'Solid' — Other (the owner, 2026-10-11; WO36)", async () => {
+  const p = page("depop", undefined, undefined, { ...DEPOP_FIX, ai: false, brands: ["Solid", "Striped Sun", "Solid Gold"] });
+  const typed = [];
+  p.d.addEventListener("input", (e) => { if (e.target?.id === "brand-input") typed.push(e.target.value); }, true);
+  await run(p, { ...DEPOP_JOB, fields: { ...DEPOP_JOB.fields, brand: "Solid & Striped", brand_typed: "Solid & Striped",
+                                         brand_candidates: ["Solid & Striped"] } });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(p.w.__picked["brand-input"], "Other");
+  assert.ok(!typed.some((t) => t.trim().toLowerCase() === "solid"), JSON.stringify(typed));
+});
+
+test("Depop: Style is never filled — ours or Depop's own (the owner, 2026-10-12; WO36)", async () => {
+  const p = page("depop", undefined, undefined, { ...DEPOP_FIX, aiStyle: "Minimalist" });
+  await run(p, { ...DEPOP_JOB, fields: { ...DEPOP_JOB.fields, style: ["Casual"] } });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.deepEqual(r.failed, []);
+  assert.deepEqual(r.seen["style-input"], []);                         // Depop's Minimalist removed, our Casual never set
+  assert.deepEqual(plain(p.w.__chosen["style-input"] || []), []);
+  assert.ok(!p.events().some((e) => e.event === "step" && e.name === "style-input"));
+  assert.ok(r.notes.includes("removed 'Minimalist' from style-input (Depop's own suggestion)"), JSON.stringify(r.notes));
+});
+
+test("Depop: a colour the menu doesn't offer is left empty — never the first option, and a publish goes on (WO36)", async () => {
+  for (const mode of ["dry_run", "publish"]) {
+    const p = page("depop", undefined, undefined, { ...DEPOP_FIX, ai: false, sizeLag: 0 });
+    const job = { ...DEPOP_JOB, job_id: `depop-teal-${mode}`, mode, fields: { ...DEPOP_JOB.fields, colors: ["Teal"] } };
+    const done = run(p, job);
+    if (mode === "publish") {
+      await until(() => p.events().some((e) => e.event === "ready" || e.event === "error"));
+      p.tell({ type: "cancel", job_id: job.job_id });
+    }
+    await done;
+    const r = plain(p.events().find((e) => e.event === (mode === "publish" ? "ready" : "result")));
+    assert.ok(r, JSON.stringify(plain(p.last())));
+    assert.deepEqual(r.failed, []);
+    assert.deepEqual(r.seen["colour-input"], []);                       // not Black, the menu's first
+    assert.deepEqual(r.seen.left, { "colour-input": ["Teal"] });
+    assert.ok(r.notes.some((n) => /^colour-input: no option 'Teal'.* — left empty$/.test(n)), JSON.stringify(r.notes));
+    assert.deepEqual(plain(p.fetches), []);                             // nothing posted
+  }
+});
+
+test("Depop: a required choice that changed after ours is chosen again once before the read-back (WO36 §4)", async () => {
+  const p = page("depop", undefined, undefined, { ...DEPOP_FIX, ai: false });
+  const send = p.w.chrome.runtime.sendMessage;
+  let changed = false;
+  p.w.chrome.runtime.sendMessage = (m) => {
+    if (!changed && m.type === "event" && m.event === "step" && m.name === "price") {
+      changed = true;
+      p.d.getElementById("condition-input").value = "Used - Good";      // something changed it after ours
+    }
+    return send(m);
+  };
+  await run(p, DEPOP_JOB);
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.deepEqual(r.seen["condition-input"], ["Like new"]);
+  assert.ok(r.notes.includes("the condition read 'Used - Good': chosen again"), JSON.stringify(r.notes));
+});
+
+test("Vinted: the shop's name before the label's — Alo Yoga, not Vinted's separate 'alo' (WO36)", async () => {
+  const p = page("vinted", undefined, undefined, { brands: ["alo", "Alo Yoga", "Aloha Rag"] });
+  await run(p, { ...VINTED_JOB, fields: { ...VINTED_JOB.fields, ...ALO } });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(p.d.getElementById("brand").value, "Alo Yoga");
+  assert.equal(r.seen.brand_shown, "Alo Yoga");
+  assert.deepEqual(r.guesses, []);
+});
+
+test("Vinted: 'Alo' finds Alo Yoga by the one-longer-name rule; two such names are no guess (WO36)", async () => {
+  const p = page("vinted", undefined, undefined, { brands: ["Alo Yoga", "Aloha Rag"] });
+  await run(p, { ...VINTED_JOB, fields: { ...VINTED_JOB.fields, brand: "Alo", brand_candidates: ["Alo"] } });
+  let r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(p.d.getElementById("brand").value, "Alo Yoga");
+  assert.deepEqual(r.guesses, ["brand set to 'Alo Yoga' (from 'Alo')"]);
+  const q = page("vinted", undefined, undefined, { brands: ["Alo Yoga", "Alo Kids"] });
+  await run(q, { ...VINTED_JOB, fields: { ...VINTED_JOB.fields, brand: "Alo", brand_candidates: ["Alo"] } });
+  r = plain(q.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(q.w.__noBrand, true);
+  assert.equal(r.seen.brand_shown, "List without brand");
+  assert.deepEqual(r.guesses, ["listed without a brand (Vinted has no 'Alo'; it offers: Alo Yoga, Alo Kids)"]);
+  assert.ok(!r.notes.some((n) => /brand read/.test(n)), JSON.stringify(r.notes));   // its field's own words: no fix
+});
+
+test("Vinted: a material the list doesn't offer is left empty — never another row (WO36)", async () => {
+  const p = page("vinted");
+  await run(p, { ...VINTED_JOB, fields: { ...VINTED_JOB.fields, materials: ["Cashmere", "Wool"] } });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.deepEqual(r.failed, []);
+  assert.deepEqual(r.seen.material, ["Wool"]);
+  assert.deepEqual(r.seen.left, { material: ["Cashmere"] });
+});
+
+test("Vinted: a size that changed after ours is chosen again once before the read-back (WO36 §4)", async () => {
+  const p = page("vinted");
+  const send = p.w.chrome.runtime.sendMessage;
+  let changed = false;
+  p.w.chrome.runtime.sendMessage = (m) => {
+    if (!changed && m.type === "event" && m.event === "step" && m.name === "package") {
+      changed = true;
+      p.d.getElementById("size").value = "M / US 8-10";
+    }
+    return send(m);
+  };
+  await run(p, VINTED_JOB);
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.deepEqual(r.seen.size, ["S / US 4-6"]);
+  assert.ok(r.notes.includes("size read 'M / US 8-10': chosen again"), JSON.stringify(r.notes));
+});
+
 test("Vinted: package sizes drawn late are waited for (WO35: live, none there yet when the price was typed)", async () => {
   const p = page("vinted", undefined, undefined, { packageLag: 400 });
   p.w.Thrift.timeoutScale = 1;                               // the real 10 s wait; the sizes come after 0.4 s

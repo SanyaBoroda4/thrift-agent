@@ -494,10 +494,11 @@ The owner shares retailer screenshots (product page with price, style name, colo
 - **The verifier's edits** (WO27): `copy.changed_fields` compares word by word — case, punctuation, emoji, hashtags,
   line breaks and the Depop tag line aside — and words it only took out are no rewrite (live: "verifier rewrote
   depop_description without reporting a claim" for an emoji or a wear phrase it stripped, six items).
-- **Style tags are Poshmark's own.** Only the 130 curated tags its form offers (`data/poshmark_taxonomy.yaml:
-  style_tags`, recorded 2026-09-30), spelled Poshmark's way, at most 3. The copy prompt lists them; `fit_style_tags`
-  drops anything else before lint, including a material tag (Leather, Suede, Wool, …) that `facts.material` doesn't
-  back — tags are optional, so an unusable one is left out, never a question or a draft.
+- **No style tags (the owner, 2026-10-12 — WO36: the Alo set's "Coord Sets" and "Athleisure" deleted by hand).**
+  Poshmark's Style Tags and Depop's Style stay empty: the copy prompt asks for none, `copy.clean` and the renders drop
+  any, the Poshmark poster never types one (`poshmark.ALLOW_STYLE_TAGS = False`: WO12's curated-tag step stays behind
+  it), Depop's job carries `style: []` and its page removes a Style chip Depop put in by itself; the read-back expects
+  Depop's Style empty. Depop's hashtags are unchanged.
 - **Two-piece sets (WO24, WO25):** two garments sold together are a "2-Piece Set" in the title ("… Corset Top & Bubble
   Skirt 2-Piece Set size M"). The extraction reads `set_pieces` (2 or 3; never a bikini, shoes or jewelry) and
   `copy.ensure_set_title` puts "<n>-Piece Set" in when the copy left it out (replacing "Set", else before the size; never
@@ -647,19 +648,14 @@ The owner shares retailer screenshots (product page with price, style name, colo
   45` stores the price and reprocesses with the note; it comes back only if still unresolved (price kept). Two
   questions are never settled by a price alone: NWT without a hang-tag photo is listed as Like New (the card asks)
   unless the reply says `NWT`; a re-share hold needs `different item` (list it) or `same item` (drop it).
-- **The poster never asks (WO27).** Brand — **the exact name only (the owner's rule, 2026-10-11, on all three
-  sites):** ours as Poshmark spells it (`brands.Aliases`: `data/brand_aliases.yaml`, written by the poster on the Mac,
-  git-ignored; seed "J.Crew" → "J. Crew"; a learned spelling counts only when it is the name or one of its parts,
-  `brands.spelling_of`), then each part of a two-part name ("MNG (Mango)" → "MNG", "Mango"; `brands.candidates`), each
-  typed as written and in the other spellings of the same name (`brands.spellings`: "J.Crew" / "J. Crew", "&" / "and")
-  — never a word of it; picked only when Poshmark lists that exact name (`brands.exact`: case, spaces, dots, hyphens,
-  apostrophes aside, & = and). Nothing looser: never another line ("J. Crew Factory" for J.Crew), a shorter name ("Zara"
-  for "Zara Basic"), a word of ours ("Solid" for "Solid & Striped", "Seven" for "Seven Wonders") or a similar one —
-  WO27 had taken those. None → Brand left empty (it is optional); the real brand stays in the title and description.
-  Size: the menu's value, else
-  the nearest of the same system, one size away at most (`post/fallback.nearest_size`: 8.5 → 9, XL → L, never a
-  Petite or a kids label for a plain size). Category: the closest (≥ 0.75), else the item is skipped; subcategory: the
-  closest (≥ 0.6), else None; colours and style tags not offered are left out. Every guess goes in the "Posted ✓
+- **The poster never asks (WO27).** Brand — the names and rules of "Brands (WO36)" below, the same on all three
+  sites; on Poshmark none → Brand left empty (it is optional), the note listing what it offered. Size: the menu's value,
+  else the nearest of the same system, one size away at most (`post/fallback.nearest_size`: 8.5 → 9, XL → L, never a
+  Petite or a kids label for a plain size) — the owner's defined fallback for a required field (2026-10-09). Category
+  and subcategory (WO36, `post/fallback.matching`): the exact name, else the ONE name that is ours followed by more
+  words ("Jumpsuits" → "Jumpsuits & Rompers") or of whose " & " parts ours is one — never a merely similar one (WO27's
+  difflib took "Over the Knee Boots" for knee-high boots); a category nothing matches skips the item (required); a
+  subcategory, None. Colours not offered are left out. Every guess goes in the "Posted ✓
   <title> — check: brand set to 'J. Crew' (from 'J.Crew')" message (none → no extra words) and the event log. A
   required field nothing comes close to: `skipped` — nothing saved, the post `failed` with "skipped: …", one Telegram
   line, `thrift requeue <item>` once the listing is fixed. The outbox kind `owner_q` is no longer sent; a reply to an
@@ -793,13 +789,9 @@ Every item live on Poshmark goes on Depop, then Vinted — the same approved pri
     model with the enum). Depop: Source Preloved (Vintage only with the label's vintage cue), Age Modern unless a
     decade, optional attributes only the facts support (material, dress-length, bottom-style, body-fit). Package size
     from a weight class (X_SMALL only where the Vinted leaf offers it).
-  - Brand at fill time (WO34, on all three sites; the exact-name rule of 2026-10-11): the full name, its known
-    spelling, then each part of a two-part name ("MNG (Mango)" → "MNG", "Mango"; `brands.candidates`), each typed as
-    written and in its own spellings (`T.spellings`, Depop's `T.brandSpellings`) — never a word of it — and picked only
-    when the site lists that exact name (`brands.pick_any` / `strict_pick`, the extension's `T.strictPick`: case and
-    punctuation aside, nothing looser). None → Depop's "Other", Vinted's "List without brand" (both require a brand,
-    WO35), Poshmark's Brand left empty; the real brand stays in the title and description, and the ops chat's check
-    says so; a Vinted brand flagged for authenticity / luxury: listed, ops note.
+  - Brand at fill time: see "Brands (WO36)" — the same names and rules as Poshmark (the job's `brand_candidates`,
+    the extension's `T.brandChoose`). None → Depop's "Other", Vinted's "List without brand" (both require a brand,
+    WO35); a Vinted brand flagged for authenticity / luxury: listed, ops note.
   - Copy: Depop — the Poshmark title as the first line, a blank line, the Poshmark description, ≤ 5 hashtags (brand,
     item, style, colour, era), ≤ 1000 characters (only the body is trimmed). Vinted — Poshmark's title and
     description. Photos: Depop ≤ 8 (the front cover first, every flaw photo kept), Vinted ≤ 20 (Poshmark's order).
@@ -890,8 +882,8 @@ the pacing, the Telegram lines, the dry-run gate. Poshmark is untouched (its Pla
   40–140 ms pauses, 250–900 ms between steps, 2–5 s before the first. Real clicks (pointer / mouse events, then click)
   on the real options — Depop's Downshift menus `<id>-menu`
   cleared then typed, the size menu read until it shows the size, Vinted's category walker (the leaf by id, else the
-  path), brand search (the exact name or its two parts only, `strictPick`), size, condition, colours ≤ 2, materials ≤ 3, the
-  skirt length, the package radio; photos as Files on `input.files`, all in one DataTransfer (fallback: a drop);
+  path), brand search (our names exactly, then the one longer name — `T.brandChoose`, WO36), size, condition,
+  colours ≤ 2, materials ≤ 3, the skirt length, the package radio; photos as Files on `input.files`, all in one DataTransfer (fallback: a drop);
   `scrollIntoView`; Depop's Boost unchecked if it is on, Vinted's bump / promote offers closed; Depop's menus waited on
   until they offer the value (an older list may still show), its size menu reopened every 0.8 s while it lags, its
   comboboxes waited for (the size and the attributes come after the category); **Depop's own suggestions** (colours,
@@ -1087,6 +1079,51 @@ Telegram token is read from the Mac's .env, never printed). The same code runs o
 - **Dashboard** (`GET /dashboard?code=…`, `api/thrift_api/dashboard.py`): cards (active listings per site, sold this
   month, awaiting shipment with the nearest ship-by, unmatched), a table newest first with each site's status and
   links, filters All / Active / Sold / To ship; no buyer data; inline CSS/JS only (a CSP), light and dark.
+
+## Brands, dropdowns, the read-back (WO36 — the Alo listing, 2026-10-12)
+The live miss: the label read "alo"; the copy's title said "Alo Yoga" but the brand field stayed "Alo"; Poshmark offered
+ALO Yoga, ALOHA Collection, ALOHAS, Aloha Island, Alorna and the exact-name rule left Brand empty; Depop had filled its
+own right "Alo Yoga", which "Alo" typed replaced with "Other"; Vinted took its separate "alo". The owner fixed the live
+listings by hand (never changed back). The rules since:
+- **Brands.** The copy step returns `brand` — the name shops list ("Alo Yoga" for "alo", "Mango" for "MNG") — and
+  `brand_label`, the label's text (`CopyOut`); `pipeline.shop_brand` takes the copy's name only when it is the same
+  brand (the label's words followed by more, the alias file's name, the label as its initials), else the alias file's,
+  else the label's: never another brand. The facts keep the label's reading; the title, both descriptions and the short
+  name use the shop's name (`pipeline.named_as` / `shop_named`: "MNG Knit Cardigan" → "Mango Knit Cardigan", never "Alo
+  Yoga Yoga"); `Render.brand` = the shop's name, `Render.brand_label` = the label's when it differs (the cross fields
+  carry it). On every site the names are tried in order (`brands.candidates`): the brand, the label's text, the alias
+  file's name for each, then the two parts of "MNG (Mango)" — each typed as written and in the other spellings of the
+  same name (never a word of it) and picked when the site lists it EXACTLY (case, spaces, punctuation, accents aside,
+  & = and); only once every name was searched, the ONE option that is a name of ours followed by more words ("Alo" →
+  "ALO Yoga"; whole words — never ALOHAS; two such options → no guess) (`brands.choose` / `pick_any`, the extension's
+  `T.brandChoose`); else the fallback — Depop "Other", Vinted "List without brand", Poshmark empty — with the site's top
+  suggestions in the note ("… (it offers: …)") so the alias can be added. Never the other way round: "Solid & Striped"
+  never lands on "Solid". Depop's own fill-in is kept when it IS one of our names.
+- **The alias file:** `data/brand_aliases.json` (tracked, curated: alo → Alo Yoga, MNG → Mango, TNF → The North Face,
+  A&F, AE / AEO, BR, CK, DVF, WHBM, NY&Co, J.Crew → J. Crew, …) under `data/brand_aliases.learned.json` on the Mac
+  (`paths.brand_aliases`, git-ignored; the old `data/brand_aliases.yaml` still read). It grows two ways: a site's other
+  spelling of the same name ("J.Crew" → "J. Crew", "MNG (Mango)" → "Mango"; `Aliases.learn`), and the owner's card reply
+  **`brand <name>`** (`approve.brand_reply` → `pipeline.set_brand`): that item's brand on all three sites (the renders,
+  so Depop's and Vinted's mapped fields follow), the title and descriptions renamed once, her reply answered at once
+  ("✓ Brand: …"), and the label's text saved as an alias for her name (`learn(…, owner=True)`).
+- **No made-up values in any dropdown (§3).** Every pick is the option whose text IS the wanted value (Depop's
+  `T.matchOption`, Vinted's rows, Poshmark's `_is`) or, for a brand / a Poshmark category, the rules above — never the
+  first option a filter shows. An optional value a menu doesn't offer is left empty, never another option, and said in
+  the notes ("colour-input: no option 'Teal' … — left empty"; Depop's colours, source, age, attributes; Vinted's colours
+  and materials — optional in its catalog); the page reports it (`seen.left`) and the driver expects it absent. A
+  required field keeps its defined fallback (a Poshmark size one step away, a category → the item skipped, Depop's
+  brand "Other", Vinted's "List without brand"), with a note.
+- **The read-back before publishing (§4).** Depop's page (the tidy step): every multi-select holds only ours (Style,
+  an occasion, Depop's own colours removed), the category, size and condition read back and chosen again ONCE when they
+  aren't ours, then the brand and the package set back. Vinted's page (`check` step): size, condition and skirt length
+  chosen again once, colours and materials set to exactly ours once (`setMulti`), the brand set again, the package after
+  a fix. Poshmark (`PoshmarkPoster.fix`, called once by `Poster.post` when the diff isn't empty): a brand other than
+  ours cleared (optional), the title, description, category (+ size), size, condition and price filled again; then read
+  back again. The driver's diff (`ExtensionPoster.expected(r, seen)`): the brand one of ours or the fallback
+  (`BrandOf`; live 2026-10-09 the silk pants read Vinted's own "H&M"), Depop's Style and any other multi-select empty
+  unless ours, colours / materials ours minus `left`. Still different → nothing published (a publish is cancelled
+  before the click): the row `failed` with "Mismatch: …", the ops chat says why, and it waits — tried again each window
+  whatever its attempts, never the group's "⏭" (`crosslist.MISMATCH`). The group hears nothing.
 
 ## Kids clothing sizes (WO23)
 A kids label that gives the child's height ("104 cm", "Gr. 104", "104") or age ("4 ans", "4A", "5-6 Y", "18 mois") is

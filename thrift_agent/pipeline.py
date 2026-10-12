@@ -18,7 +18,7 @@ from thrift_agent.brain import copy as copywriter, cover as cover_brain, labels,
 from thrift_agent.brain.extract import extract, strip_screenshot_evidence
 from thrift_agent.brain.gate import OTHER_CATEGORY_QUESTION, SIZE_NOTE, GateResult, evaluate
 from thrift_agent.brain.price import price
-from thrift_agent.brain.verify import fit_style_tags, lint, verify
+from thrift_agent.brain.verify import lint, verify
 from thrift_agent.config import Settings, load_yaml
 from thrift_agent.db import DB, loads, now
 from thrift_agent.ingest import prep, segment as seg
@@ -748,9 +748,9 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
     if facts.brand.source == "owner":
         facts.brand.source = "note"
     facts = facts.model_copy(update={"premium": None})   # the close label read below sets it, never the extraction
-    if facts.brand.value:                                # Poshmark's spelling, learned (WO27): "J.Crew" -> "J. Crew"
-        spelled = brands.for_settings(s).spell(facts.brand.value)
-        facts = facts.model_copy(update={"brand": facts.brand.model_copy(update={"value": spelled})})
+    spelled = brands.for_settings(s).alias(facts.brand.value)    # Poshmark's spelling (WO27): "J.Crew" -> "J. Crew" —
+    if spelled and brands.spelling_of(facts.brand.value, spelled):  # another spelling only: a short form stays the
+        facts = facts.model_copy(update={"brand": facts.brand.model_copy(update={"value": spelled})})   # label's (WO36)
     facts = apply_owner_answers(it, facts)               # the owner's category, brand or "no brand"
     # Shoes, in doubt between brand new and worn: the owner is asked before the price (WO18) — on the model's own
     # reading, before the settles below merge its two grades. Once answered, the answer is the condition.
@@ -787,14 +787,18 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
     audit = verify(facts, draft, s["models"]["verify"])
     final = copywriter.clean(CopyOut(
         poshmark_title=audit.poshmark_title, poshmark_description=audit.poshmark_description,
-        poshmark_style_tags=draft.poshmark_style_tags, depop_description=audit.depop_description,
-        depop_hashtags=draft.depop_hashtags, short_name=draft.short_name))
+        poshmark_style_tags=[], depop_description=audit.depop_description,
+        depop_hashtags=draft.depop_hashtags, short_name=draft.short_name, brand=draft.brand,
+        brand_label=draft.brand_label))
+    shop, _label = shop_brand(facts, final.brand, brands.for_settings(s))   # WO36: "Alo Yoga" for an "alo" label
+    tfacts = title_facts(facts, shop)                    # the title and its checks name the brand as shops list it
+    final = shop_named(final, facts.brand.value, shop)   # the copy too: "MNG Knit Cardigan" → "Mango Knit Cardigan"
     final = copywriter.condition_rule(final, facts)      # wear is shown in the photos, never put in words
     final.poshmark_title = copywriter.ensure_set_title(final.poshmark_title, facts)   # "… 2-Piece Set size M"
     final.poshmark_title = (it["owner_title"] or                 # the owner's own title stays as it is (WO27)
                             premium.title_with_feature(copywriter.ensure_title_size(
-                                copywriter.fix_title(final.poshmark_title, facts), facts),
-                                facts, pcfg))   # fixed (WO33), the listing's size; brand first, the feature
+                                copywriter.fix_title(final.poshmark_title, tfacts), tfacts),
+                                tfacts, pcfg))   # fixed (WO33), the listing's size; brand first, the feature
     final.poshmark_description = premium.ensure_feature_lines(final.poshmark_description, facts, pcfg)
     final.depop_description = premium.ensure_feature_lines(final.depop_description, facts, pcfg)
     final.poshmark_description = copywriter.ensure_retail_line(final.poshmark_description, facts)
@@ -802,8 +806,8 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
     final.depop_description = copywriter.ensure_label_size(final.depop_description, facts)
     final.poshmark_description = copywriter.ensure_piece_sizes(final.poshmark_description, facts)  # "Pants: size XS."
     final.depop_description = copywriter.ensure_piece_sizes(final.depop_description, facts)
-    final.poshmark_style_tags = fit_style_tags(final.poshmark_style_tags, facts)   # Poshmark's curated tags only
-    problems = lint(facts, final, shown, known_brands(tiers))
+    final.poshmark_style_tags = []                       # none, ever (the owner, 2026-10-12: "Coord Sets" deleted)
+    problems = lint(tfacts, final, shown, known_brands(tiers))
     if not audit.unsupported:
         # The gate only sees the verifier's self-reported count. A verifier that rewrites the text but reports
         # nothing would otherwise publish an LLM-rewritten listing that nobody reviewed.
@@ -980,19 +984,26 @@ def relist(s: Settings, it, facts: Facts, renders: dict) -> dict:
     tab, value = sizes.poshmark_size(facts) or (None, None)
     pcfg = premium.config()
     old = Facts.model_validate(loads(it["facts"])) if it["facts"] else None
+    aliases = brands.for_settings(s)
     out = {}
     for mp, r in renders.items():
+        same_label = brands.key(r.get("brand_label") or r.get("brand")) == brands.key(facts.brand.value)
+        shop, label = shop_brand(facts, r.get("brand") if same_label else None, aliases)   # kept (WO36)
+        tfacts = title_facts(facts, shop)
         limit = int((s["marketplaces"].get(mp) or {}).get("max_photos", len(photos)))
         shown = fit_photos(order, flawed, limit)
-        text = premium.ensure_feature_lines(copywriter.unescape_breaks(r.get("description") or ""), facts, pcfg,
+        text = premium.ensure_feature_lines(copywriter.unescape_breaks(
+            named_as(r.get("description") or "", facts.brand.value, shop)), facts, pcfg,
                                             old=old)
         if mp == "poshmark":
             text = copywriter.ensure_retail_line(text, facts)
         out[mp] = {**r, "photos": [str(cover)] + [str(photos[i]) for i in shown[1:]], "category": facts.category,
                    "subcategory": facts.subcategory, "size": sizes.size_label(facts), "size_tab": tab,
-                   "size_value": value, "brand": facts.brand.value,
+                   "size_value": value, "brand": shop, "brand_label": label, "tags": [] if mp == "poshmark" else
+                   r.get("tags") or [],
                    "title": it["owner_title"] or premium.title_with_feature(
-                       copywriter.ensure_title_size(r.get("title") or "", facts), facts, pcfg),
+                       copywriter.ensure_title_size(named_as(r.get("title") or "", facts.brand.value, shop), tfacts),
+                       tfacts, pcfg),
                    "original_price": _dollars(facts.retail_price.value) or r.get("original_price"),
                    "description": copywriter.ensure_piece_sizes(copywriter.ensure_label_size(text, facts), facts)}
     return out
@@ -1214,13 +1225,26 @@ def set_no_brand(s: Settings, db: DB, iid: str) -> str:
     return status
 
 
+def _brand_in(old: str | None) -> str | None:
+    """The pattern of a brand name in a text — any spacing or punctuation of it ("J.Crew", "J. Crew")."""
+    parts = re.findall(r"[A-Za-z0-9]+", old or "")
+    return (r"(?<![A-Za-z0-9])" + r"[^A-Za-z0-9\n]{0,3}".join(map(re.escape, parts)) + r"(?![A-Za-z0-9])"
+            if parts else None)
+
+
 def _rename(text: str, old: str | None, new: str) -> str:
     """`text` with the old brand name — any spacing or punctuation of it ("J.Crew", "J. Crew") — as the new one."""
-    parts = re.findall(r"[A-Za-z0-9]+", old or "")
-    if not parts:
-        return text
-    return re.sub(r"(?<![A-Za-z0-9])" + r"[^A-Za-z0-9\n]{0,3}".join(map(re.escape, parts)) + r"(?![A-Za-z0-9])",
-                  lambda m: new, text, flags=re.I)
+    pattern = _brand_in(old)
+    return re.sub(pattern, lambda m: new, text, flags=re.I) if pattern else text
+
+
+def _renamed(text: str, names: list[str | None], new: str) -> str:
+    """`text` with the first of `names` it holds as the new brand: the name the listing used ("Alo Yoga"), else the
+    label's ("Alo") — one only, so "Alo Yoga" never becomes "Alo Yoga Yoga"."""
+    for was in dict.fromkeys(n for n in names if n):
+        if (pattern := _brand_in(was)) and re.search(pattern, text, re.I):
+            return _rename(text, was, new)
+    return text
 
 
 def _close_changed_card(db: DB, iid: str, was) -> None:
@@ -1241,15 +1265,20 @@ def set_brand(s: Settings, db: DB, iid: str, brand: str) -> str:
     it = _answerable(db, iid, "brand")
     facts = Facts.model_validate(loads(it["facts"]))
     old = facts.brand.value
+    before = loads(it["renders"]) or {}
+    shown = (before.get("poshmark") or {}).get("brand") or old     # the name the listing used ("Alo")
+    label = (before.get("poshmark") or {}).get("brand_label") or (old if facts.brand.source != "owner" else None)
     facts = facts.model_copy(update={"brand": Ev(value=brand, photos=facts.brand.photos, source="owner",
                                                  confidence=1.0)})
-    if old and brands.key(old) == brands.key(brand):
-        brands.for_settings(s).learn(old, brand)
+    if label:                                   # WO36: the label's text → her name, kept for the next item
+        brands.for_settings(s).learn(label, brand, owner=True)
     pcfg = premium.config()
     renders = {}
-    for mp, r in (loads(it["renders"]) or {}).items():
-        title = it["owner_title"] or premium.title_with_feature(_rename(r.get("title") or "", old, brand), facts, pcfg)
-        renders[mp] = {**r, "brand": brand, "title": title, "description": _rename(r.get("description") or "", old, brand)}
+    for mp, r in before.items():
+        title, text = (_renamed(r.get(k) or "", [r.get("brand") or shown, old], brand) for k in ("title", "description"))
+        renders[mp] = {**r, "brand": brand, "brand_label": label if label and brands.key(label) != brands.key(brand)
+                       else None, "title": it["owner_title"] or premium.title_with_feature(title, facts, pcfg),
+                       "description": text}
     photos, kinds = _photos_of(it)
     doc, status = _regate(s, {**dict(it), "owner_brand": brand}, facts, renders, photos, kinds,
                           (loads(it["gate"]) or {}).get("notes") or [])
@@ -1823,6 +1852,58 @@ def flaw_notes(facts: Facts, photos: list[int]) -> list[str]:
             if not f.photos]
 
 
+def shop_brand(facts: Facts, named: str | None, aliases: brands.Aliases | None = None) -> tuple[str | None, str | None]:
+    """(the brand as shops list it, the label's text when it differs) — WO36: "Alo Yoga" for an "alo" label. The
+    owner's answer is the name as she gave it. Else the copy step's fuller name (`named`) when it is that brand — the
+    label's words followed by more ("alo" → "Alo Yoga"), the alias file's name, or the label as its initials ("TNF" →
+    The North Face) — else the alias file's name for the label, else the label's own text. A name that is none of
+    these (another brand) is never used."""
+    label = (facts.brand.value or "").strip() or None
+    if label is None:
+        return None, None
+    if facts.brand.source == "owner":
+        return label, None
+    alias = aliases.alias(label) if aliases is not None else None
+    named = (named or "").strip() or None
+
+    def same_brand(name: str) -> bool:
+        ws = brands.words(name)
+        initials = {"".join(w[0] for w in ws), "".join(w[0] for w in ws if w not in ("the", "and", "of"))}
+        return (brands.key(name) == brands.key(label) or brands.extends(label, name)
+                or (alias is not None and brands.key(name) == brands.key(alias))
+                or (len(brands.key(label)) >= 2 and brands.key(label) in initials))
+    if named and same_brand(named) and brands.key(named) != brands.key(label):
+        shop = named                                     # the copy step's fuller name ("Alo Yoga")
+    else:
+        shop = alias or label                            # the alias file's, else the label's (an older listing too)
+    return shop, (label if brands.key(label) != brands.key(shop) else None)
+
+
+def named_as(text: str, label: str | None, shop: str | None) -> str:
+    """WO36: the brand named as shops list it in a text — the label's name ("MNG") as the shop's ("Mango") — unless the
+    text names it so already ("Alo Yoga …" holds "Alo": left as it is, never "Alo Yoga Yoga")."""
+    if not text or not label or not shop or brands.key(label) == brands.key(shop):
+        return text
+    if (pattern := _brand_in(shop)) and re.search(pattern, text, re.I):
+        return text
+    return _rename(text, label, shop)
+
+
+def shop_named(c: CopyOut, label: str | None, shop: str | None) -> CopyOut:
+    """The copy with the brand named as shops list it (named_as): the title, both descriptions and the short name."""
+    if not label or not shop or brands.key(label) == brands.key(shop):
+        return c
+    return c.model_copy(update={k: named_as(getattr(c, k), label, shop)
+                                for k in ("poshmark_title", "poshmark_description", "depop_description", "short_name")})
+
+
+def title_facts(facts: Facts, shop: str | None) -> Facts:
+    """The facts as the title sees them: the brand named as shops list it (WO36) — the stored facts keep the label's."""
+    if not shop or brands.key(shop) == brands.key(facts.brand.value):
+        return facts
+    return facts.model_copy(update={"brand": facts.brand.model_copy(update={"value": shop})})
+
+
 def build_renders(s: Settings, iid: str, d: Path, photos: list[Path], facts: Facts, c: CopyOut,
                   pr: PriceResult, kinds: list[str] | None = None) -> dict[str, Render]:
     order = photo_order(facts, len(photos), kinds)
@@ -1836,7 +1917,8 @@ def build_renders(s: Settings, iid: str, d: Path, photos: list[Path], facts: Fac
         return [str(cover)] + [str(photos[i]) for i in shown[1:]]
 
     tab, value = sizes.poshmark_size(facts) or (None, None)      # exactly a value of the form's size menu (WO25)
-    common = dict(brand=facts.brand.value, department=facts.department, category=facts.category,
+    shop, label = shop_brand(facts, c.brand, brands.for_settings(s))   # WO36: the brand as shops list it, the label's
+    common = dict(brand=shop, brand_label=label, department=facts.department, category=facts.category,
                   subcategory=facts.subcategory, size=sizes.size_label(facts), size_tab=tab, size_value=value,
                   colors=list(facts.colors),
                   kids_gender=facts.kids_gender if facts.department == "Kids" else None,
@@ -1851,7 +1933,7 @@ def build_renders(s: Settings, iid: str, d: Path, photos: list[Path], facts: Fac
             marketplace=mp,
             title=c.poshmark_title,
             description=c.poshmark_description if is_posh else c.depop_description,
-            tags=c.poshmark_style_tags if is_posh else c.depop_hashtags,
+            tags=[] if is_posh else c.depop_hashtags,         # no style tags on Poshmark (the owner, 2026-10-12)
             short_name=copywriter.short_name(c.short_name, c.poshmark_title, facts),   # WO34: the group's name
             price=pr.by_marketplace.get(mp, pr.list_price or 0),
             photos=paths(mcfg["max_photos"]),

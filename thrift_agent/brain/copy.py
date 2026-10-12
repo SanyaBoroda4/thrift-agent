@@ -7,7 +7,7 @@ import re
 
 import yaml
 
-from thrift_agent.brain import llm, taxonomy
+from thrift_agent.brain import llm
 from thrift_agent.brain.sizes import kids_clothing_size, size_label, title_size
 from thrift_agent.config import style_dir
 from thrift_agent.schema import CopyOut, Ev, Facts, VerifyOut
@@ -73,6 +73,13 @@ def style_examples() -> str:
 
 SYSTEM = """You write resale listings for one seller's closet, in her established style.
 
+BRAND
+- brand: the facts' brand by its full name as shops list it — "Alo Yoga" for a label that reads "alo", "Mango" for
+  "MNG", "The North Face" for "TNF"; the name as written when it already is the full name. The same brand, never
+  another one, never one guessed from the style; empty when the facts have no brand. The title and the description use
+  this name, so buyers searching for it find the item.
+- brand_label: exactly what the label says ("alo", "MNG"); empty when the facts have no brand.
+
 POSHMARK
 - Title ≤80 chars: the Brand FIRST, always; then item type, standout detail/material, color, then "size X" (US
   size). Include the style name when known — buyers search for it (e.g. "Birkenstock Arizona ...").
@@ -99,8 +106,7 @@ POSHMARK
   3) If retail_price is known, the description ends with "Original retail $<price>." as its own last line
      (after the condition line).
   4) Then the footer if one is given. No keyword stuffing, no emojis.
-- Style tags: up to 3 from POSHMARK STYLE TAGS below, spelled as listed, or none. A material tag (Leather, Suede,
-  Wool, Silk, Cashmere, Linen, Nylon, Satin, Denim, Faux Fur) only when `material` states that material.
+- Style tags: none — leave poshmark_style_tags empty (the owner, 2026-10-12).
 
 DEPOP
 - Casual, first-person-seller voice, lowercase is fine. Same facts, fewer words; condition_line verbatim.
@@ -155,7 +161,6 @@ def write(facts: Facts, model: str, cfg: dict) -> CopyOut:
         "STYLE EXAMPLES\n" + style_examples() +
         "\n\nFACTS\n" + json.dumps(view, indent=1) +
         f"\n\nPOSHMARK FOOTER: {cfg['poshmark_footer']}\nDEPOP FOOTER: {cfg['depop_footer']}"
-        "\n\nPOSHMARK STYLE TAGS (the only ones Poshmark offers): " + ", ".join(taxonomy.style_tags())
     )]
     out = llm.ask(model, SYSTEM, content, CopyOut, "write_listing", "Write both listings", max_tokens=2500)
     return clean(out)
@@ -270,7 +275,9 @@ def changed_fields(draft: CopyOut, audit: VerifyOut) -> list[str]:
 def clean(out: CopyOut) -> CopyOut:
     out.poshmark_title = clamp_title(unescape_breaks(out.poshmark_title))
     out.poshmark_description = fix_decimal_commas(unescape_breaks(out.poshmark_description)).strip()
-    out.poshmark_style_tags = [t.strip() for t in out.poshmark_style_tags if t and t.strip()][:3]
+    out.poshmark_style_tags = []                           # no style tags on Poshmark (the owner, 2026-10-12)
+    out.brand = re.sub(r"\s+", " ", out.brand or "").strip()
+    out.brand_label = re.sub(r"\s+", " ", out.brand_label or "").strip()
     tags = [re.sub(r"[^\w]", "", t.lower()) for t in out.depop_hashtags]
     out.depop_hashtags = [t for t in tags if t][:5]
     body = strip_tag_lines(fix_decimal_commas(unescape_breaks(out.depop_description)))   # its hashtags, wherever

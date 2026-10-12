@@ -22,7 +22,8 @@ class VintedFields(BaseModel):
     category_path: str
     title: str
     description: str
-    brand: str | None = None                   # looked up in Vinted's brands at fill time: exact or normalized only
+    brand: str | None = None                   # looked up in Vinted's brands at fill time (WO36: brands.choose)
+    brand_label: str | None = None             # WO36: the label's text, when it differs ("alo" for Alo Yoga)
     size_id: int | None = None
     size: str | None = None
     condition_id: int
@@ -114,7 +115,8 @@ def map_vinted(view: ItemView, ask=None, ask_length=None) -> VintedFields:
     if not set(packages) <= known:
         raise MappingError(f"package sizes {packages} aren't Vinted's")
     return VintedFields(category_id=int(pick.value), category_path=leaf.path, title=r.title, description=r.description,
-                        brand=r.brand, size_id=size_id, size=size_title, condition_id=cond.id, condition=cond.title,
+                        brand=r.brand, brand_label=r.brand_label, size_id=size_id, size=size_title,
+                        condition_id=cond.id, condition=cond.title,
                         color_ids=[i for i in color_ids if i is not None], colors=colors, material_ids=mat_ids,
                         materials=mats, skirt_length_id=sl_id, skirt_length=sl, package_sizes=packages, price=view.price,
                         photos=photos_for(view, int(cat.form["photos"]["max"])), category_source=pick.source,

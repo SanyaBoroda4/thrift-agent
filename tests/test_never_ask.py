@@ -1,12 +1,14 @@
 """WO27: the poster never stops to ask (brands spelled Poshmark's way, the nearest size, the closest subcategory), and the
 content rules (brand-first titles, a set's bottom decides its category, denim and a cutoff's raw hem, the verifier's
 false alarm, the sample line). Pure functions; no network, no browser (the form itself: test_poshmark_form)."""
+import json
+
 import pytest
 
 from thrift_agent import brands, pipeline
 from thrift_agent.brain import copy as copywriter, premium
 from thrift_agent.brain.verify import lint, unsupported_materials
-from thrift_agent.post.fallback import closest, nearest_size
+from thrift_agent.post.fallback import matching, nearest_size
 from thrift_agent.post.runner import condition_rule_breaks
 from thrift_agent.schema import CopyOut, Ev, Fiber, Premium, Render, VerifyOut
 
@@ -21,7 +23,7 @@ LINE = "Gently pre-loved, please see photos for condition."
     ("J. Crew", ["J. Crew", "J. Crew Factory"], "J. Crew", None),                    # the same spelling: nothing to say
     ("J.Crew Factory", ["J. Crew", "J. Crew Factory"], "J. Crew Factory",
      "brand set to 'J. Crew Factory' (from 'J.Crew Factory')"),
-    ("levi's", ["Levi's", "Levi's Kids"], "Levi's", "brand set to 'Levi's' (from 'levi's')"),
+    ("levi's", ["Levi's", "Levi's Kids"], "Levi's", None),                       # case only: the same name, no note
     ("Levis", ["Levi's"], "Levi's", "brand set to 'Levi's' (from 'Levis')"),
     ("Solid & Striped", ["Solid and Striped"], "Solid and Striped",
      "brand set to 'Solid and Striped' (from 'Solid & Striped')"),                  # "&" is "and": the same name
@@ -76,18 +78,54 @@ def test_brand_keys_ignore_case_spaces_dots_hyphens_apostrophes_and_and():
 
 def test_resolved_spellings_are_learned_and_used(tmp_path, monkeypatch):
     monkeypatch.setattr(brands, "SEED", {"J.Crew": "J. Crew"})
-    aliases = brands.Aliases(tmp_path / "data" / "brand_aliases.yaml")
+    aliases = brands.Aliases(tmp_path / "data" / "brand_aliases.learned.json", curated=None)
     assert aliases.spell("J.Crew") == "J. Crew" and aliases.spell("j crew") == "J. Crew"   # the seed: live, 2026-10-04
     assert aliases.spell("Vince") == "Vince" and aliases.spell(None) is None
     assert aliases.learn("Levis", "Levi's") and not aliases.learn("Levis", "Levi's")
     assert aliases.learn("MNG (Mango)", "Mango")                       # one of the two parts of the name
     assert not aliases.learn("Mistguided", "Missguided")               # another name: never learned (2026-10-11)
     assert not aliases.learn("J.Crew", "J. Crew")                      # already known: the file isn't touched for it
-    text = (tmp_path / "data" / "brand_aliases.yaml").read_text(encoding="utf-8")
-    assert text.startswith("# Brand names as Poshmark's brand list spells them") and "Levis: Levi's" in text
-    assert "Missguided" not in text
-    assert brands.Aliases(aliases.path).spell("levis") == "Levi's"     # a fresh reader sees it
-    assert brands.Aliases(None).spell("J.Crew") == "J. Crew"               # no file: the seed alone
+    learned = json.loads((tmp_path / "data" / "brand_aliases.learned.json").read_text(encoding="utf-8"))
+    assert learned == {"Levis": "Levi's", "MNG (Mango)": "Mango"}         # WO36: JSON, ignored by git
+    assert brands.Aliases(aliases.path, curated=None).spell("levis") == "Levi's"   # a fresh reader sees it
+    assert brands.Aliases(None, curated=None).spell("J.Crew") == "J. Crew"          # no file: the seed alone
+
+
+# ---------- WO36: the brand as shops list it, the names every site tries ----------
+
+@pytest.mark.parametrize("label,source,named,shop,kept", [
+    ("alo", "photo", "Alo Yoga", "Alo Yoga", "alo"),                 # the copy step's fuller name
+    ("Alo", "photo", "Alo", "Alo Yoga", "Alo"),                      # an older listing: the alias file's name
+    ("Alo", "photo", "Beyond Yoga", "Alo Yoga", "Alo"),              # another brand: never taken
+    ("TNF", "photo", "The North Face", "The North Face", "TNF"),     # its initials
+    ("DVF", "photo", "", "Diane von Furstenberg", "DVF"),            # the alias file alone
+    ("Seven Wonders", "photo", "", "Seven Wonders", None),           # nothing fuller: the label's own
+    ("Alo", "owner", "Alo Yoga", "Alo", None),                       # the owner's answer stands as she gave it
+])
+def test_the_brand_as_shops_list_it(facts, label, source, named, shop, kept):
+    f = facts(brand=Ev(value=label, photos=[1], source=source, confidence=0.9))
+    assert pipeline.shop_brand(f, named, brands.Aliases(None)) == (shop, kept)
+
+
+def test_the_names_each_site_tries_and_the_rule_for_its_options(tmp_path):
+    aliases = brands.Aliases(tmp_path / "learned.json")              # the curated file: data/brand_aliases.json
+    assert brands.candidates("Alo Yoga", "alo", aliases) == ["Alo Yoga", "alo"]
+    assert brands.candidates("Alo", None, aliases) == ["Alo", "Alo Yoga"]
+    assert brands.candidates("MNG (Mango)", None, aliases) == ["MNG (Mango)", "MNG", "Mango"]
+    assert brands.candidates(None, None, aliases) == []
+    pick = brands.pick_any
+    assert pick(["Alo"], ["ALO Yoga", "ALOHA Collection", "ALOHAS", "Aloha Island", "Alorna"]) == (
+        "ALO Yoga", "brand set to 'ALO Yoga' (from 'Alo')")             # the live list: whole words only
+    assert pick(["Alo"], ["Alo Yoga", "Alo Kids"])[0] is None            # two: never a guess
+    assert pick(["Alo"], ["Alo Yoga", "Alo Kids"])[1] == ("brand left empty: Poshmark's list has no 'Alo' (it offers: "
+                                                          "Alo Yoga, Alo Kids)")
+    assert pick(["Solid & Striped"], ["Solid", "Striped Sun"])[0] is None   # never the other way round
+    assert pick(["Seven Wonders"], ["Seven", "Seven For All Mankind"])[0] is None
+    assert pick(["Alo Yoga", "alo"], ["alo", "Alo Yoga"])[0] == "Alo Yoga"   # the shop's name before the label's
+    assert pick(["Alo", "Alo Yoga"], ["Alo Kids", "Alo Yoga"])[0] == "Alo Yoga"   # a later name, exact, first
+    assert not aliases.learn("Seven Wonders", "Seven")                   # a site's shorter name: never learned
+    assert aliases.learn("sw", "Seven Wonders", owner=True)              # the owner's answer: kept
+    assert brands.Aliases(tmp_path / "learned.json").alias("SW") == "Seven Wonders"
 
 
 # ---------- 1b. sizes and subcategories ----------
@@ -112,15 +150,20 @@ def test_the_nearest_size_of_the_same_kind(want, offered, got):
     assert nearest_size(want, offered) == got
 
 
-@pytest.mark.parametrize("want,offered,cutoff,got", [
-    ("Jumpsuits", ["Pants & Jumpsuits", "Shorts"], 0.6, "Pants & Jumpsuits"),
-    ("Knee High Boots", ["Ankle Boots & Booties", "Over the Knee Boots", "Sneakers"], 0.6, "Over the Knee Boots"),
-    ("Flats and Loafers", ["Flats & Loafers"], 0.6, "Flats & Loafers"),
-    ("Zzyzx Shoes", ["Sneakers", "Sandals"], 0.6, None),
-    ("Sweatshirts", ["Dresses", "Shorts", "Sweaters", "Tops"], 0.75, None),
+@pytest.mark.parametrize("want,offered,got", [
+    ("Jumpsuits", ["Pants & Jumpsuits", "Shorts"], "Pants & Jumpsuits"),          # one whole part of the name
+    ("Jumpsuits", ["Jumpsuits & Rompers", "Pants"], "Jumpsuits & Rompers"),       # the name, followed by more words
+    ("Flats and Loafers", ["Flats & Loafers"], "Flats & Loafers"),
+    # WO36: never a merely similar name (WO27 took "Over the Knee Boots" for knee-high boots)
+    ("Knee High Boots", ["Ankle Boots & Booties", "Over the Knee Boots", "Sneakers"], None),
+    ("Zzyzx Shoes", ["Sneakers", "Sandals"], None),
+    ("Sweatshirts", ["Dresses", "Shorts", "Sweaters", "Tops"], None),
+    ("Pants", ["Track Pants & Joggers", "Pants & Jumpsuits"], "Pants & Jumpsuits"),   # the one that starts with it
+    ("Jean", ["Jean Jackets", "Jean Shorts"], None),                              # two longer names: no guess
+    ("Track Pants & Joggers", ["Pants"], None),                                    # never a shorter name
 ])
-def test_the_closest_name_on_a_menu(want, offered, cutoff, got):
-    assert closest(want, offered, cutoff) == got
+def test_a_menu_name_is_taken_only_when_it_is_ours(want, offered, got):
+    assert matching(want, offered) == got
 
 
 # ---------- 2a. the title: the brand first ----------

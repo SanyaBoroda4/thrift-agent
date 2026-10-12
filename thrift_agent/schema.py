@@ -259,6 +259,11 @@ class CopyOut(BaseModel):
     depop_hashtags: list[str] = Field(description="Exactly 5, no # sign")
     short_name: str = Field("", description="The item's short name for the owner's group: brand + item, at most 6 "
                                             "words, no size, no colour — 'MNG Knit Cardigan & Pants Set'")
+    # WO36: the brand as shops list it, and what the label says ("Alo Yoga" / "alo", "Mango" / "MNG")
+    brand: str = Field("", description="The brand's full name as shops list it, from the facts' brand: 'Alo Yoga' for "
+                                       "a label reading 'alo', 'Mango' for 'MNG', 'The North Face' for 'TNF'; the name "
+                                       "as written when it already is the full name; empty when the facts have no brand")
+    brand_label: str = Field("", description="Exactly what the label says ('alo', 'MNG'); empty when no brand")
 
 
 class Render(BaseModel):
@@ -266,7 +271,8 @@ class Render(BaseModel):
     title: str
     description: str
     tags: list[str] = Field(default_factory=list)
-    brand: str | None
+    brand: str | None                       # the brand as shops list it (WO36: "Alo Yoga")
+    brand_label: str | None = None          # what the label says, when it differs ("alo"): tried on each site too
     department: str
     category: str
     subcategory: str | None

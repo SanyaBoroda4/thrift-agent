@@ -63,7 +63,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeout
 from thrift_agent import brands
 from thrift_agent.post.base import (AccountBlocked, Cancelled, Contains, Mode, Poster, PosterError, Skipped, human_type,
                                     keep_evidence, settle)
-from thrift_agent.post.fallback import closest, nearest_size
+from thrift_agent.post.fallback import matching, nearest_size
 from thrift_agent.schema import Render
 
 # The condition menu's labels (verified). Poshmark has no "new without tags": unworn goes up as Like New. It has no
@@ -354,6 +354,9 @@ def _is(want: str, el_id: str, text: str, attrs: str, loose: bool = False) -> bo
     return loose and re.fullmatch(rf"{re.escape(w)}(?:\s*\(.*\))?", _key(text)) is not None
 
 
+ALLOW_STYLE_TAGS = False     # the owner, 2026-10-12: no style tags on Poshmark
+
+
 def _brand_queries(name: str) -> list[str]:
     """What to type for a brand: the name, then other spellings of the SAME name ("J.Crew" -> "J. Crew": Poshmark's
     search takes the text as written) — never a word of it (the owner, 2026-10-11: "Solid & Striped" must never find
@@ -537,9 +540,9 @@ class PoshmarkPoster(Poster):
         if not picked:
             if not options:
                 raise PosterError(f"the {r.department} category list did not show")
-            guess = closest(r.category, options, 0.75)
+            guess = matching(r.category, options)          # WO36: exact, else the one longer name — never similar
             if guess is None or not (await self._choose(page, SEL["category_items"](page), guess))[0]:
-                raise Skipped(f"Poshmark has no category '{r.category}' under {r.department}, nor one close to it"
+                raise Skipped(f"Poshmark has no category '{r.category}' under {r.department}"
                               f"{_offer(options)} (the category is required)")
             self.chosen["category"] = guess
             self.guesses.append(f"category set to '{guess}' (from '{r.category}')")
@@ -559,7 +562,7 @@ class PoshmarkPoster(Poster):
         await self._remember("subcategory", items.first)
         picked, options = await self._choose(page, items, r.subcategory or "None")
         if not picked and r.subcategory:                 # the closest one, else none (a subcategory is optional)
-            guess = closest(r.subcategory, [o for o in options if _key(o) != "none"], 0.6)
+            guess = matching(r.subcategory, [o for o in options if _key(o) != "none"])
             picked = guess is not None and (await self._choose(page, items, guess))[0]
             self.chosen["subcategory"] = guess if picked else None
             if not picked:
@@ -617,6 +620,43 @@ class PoshmarkPoster(Poster):
             await page.wait_for_timeout(POLL_MS)
             waited += POLL_MS
 
+    async def fix(self, page: Page, r: Render, diff: dict) -> bool:
+        """WO36 §4, once: the brand (optional) cleared when the form shows another one; the title, description,
+        category (with its subcategory and the size after it), size, condition and price filled again. Colours and
+        photos are left to the diff (a second pass over the colour tiles would turn them off)."""
+        done: list[str] = []
+        try:
+            if "brand" in diff:
+                await SEL["brand"](page).fill("")
+                self.chosen["brand"] = None
+                self.guesses.append(f"brand left empty: the form read '{diff['brand'][1]}', not '{diff['brand'][0]}'")
+                done.append("brand")
+            if "title" in diff:
+                await _type(SEL["title"](page), r.title)
+                done.append("title")
+            if "description" in diff:
+                await SEL["description"](page).fill(r.description)
+                done.append("description")
+            if "category" in diff or "subcategory" in diff:
+                await self._category(page, r)
+                done.append("category")
+            if ("size" in diff or "category" in done) and size_choice(r) is not None:
+                await self._size(page, r)
+                done.append("size")
+            if "condition" in diff:
+                await self._condition(page, r)
+                done.append("condition")
+            if "price" in diff or "original_price" in diff:
+                await self._price(page, r)
+                done.append("price")
+        except (AccountBlocked, Cancelled, Skipped):
+            raise
+        except Exception as e:  # noqa: BLE001 — the second read-back says what is still wrong
+            self.notes.append(f"putting {', '.join(diff)} right stopped: {type(e).__name__}: {e}")
+        if done:
+            await settle(page)
+        return bool(done)
+
     async def _condition(self, page: Page, r: Render) -> None:
         """Clicked by Poshmark's code, then checked by the label the item shows over its description."""
         label, code = CONDITION_TO_POSH[r.condition], CONDITION_CODES[r.condition]
@@ -635,48 +675,58 @@ class PoshmarkPoster(Poster):
         await settle(page, 0.3, 0.8)
 
     async def _brand(self, page: Page, r: Render) -> None:
-        """Ours as Poshmark spells it (data/brand_aliases.yaml), typed; then the suggestion that IS our brand — the exact
-        name ("J.Crew" is "J. Crew"), or one of the two parts of a name like "MNG (Mango)" — and nothing else (the
-        owner's rule, 2026-10-11: never a line we don't have, a shorter or a similar name); else none: Brand is optional
-        on the form, so it is left empty (WO27). A name it had to resolve is learned."""
+        """WO36 (the owner, 2026-10-12): our names in order — the brand as shops list it, the label's text, the alias
+        file's names, the two parts of a name like "MNG (Mango)" (brands.candidates) — each typed as written and in
+        the other spellings of the same name, never a word of it; picked when Poshmark lists it exactly (case, spaces,
+        punctuation aside), else the ONE suggestion that is a whole name of ours followed by more words ("Alo" →
+        "ALO Yoga"); else Brand left empty (it is optional), the note listing what Poshmark offered so the alias can be
+        added. Another spelling of the same name it had to resolve is learned ("J.Crew" → "J. Crew")."""
         if not r.brand:
             return
-        spelled = self.aliases.spell(r.brand)
-        ours = spelled if brands.spelling_of(r.brand, spelled) else r.brand
-        names = list(dict.fromkeys([ours, *brands.candidates(r.brand, self.aliases)]))   # WO34: then each part
-        box = SEL["brand"](page)
+        names = brands.candidates(r.brand, r.brand_label, self.aliases)
+        box, items = SEL["brand"](page), SEL["brand_options"](page)
         options: list[str] = []
         for name in names:
-            for query in _brand_queries(name):
+            known = self.aliases.alias(name)               # a spelling learned before ("J. Crew") is typed first
+            first = [known] if known and brands.spelling_of(name, known) else []
+            for query in dict.fromkeys([*first, *_brand_queries(name)]):
                 await _type(box, _straight(query))
-                picked, offered = await self._choose(page, SEL["brand_options"](page), name,
-                                                     timeout_ms=SUGGEST_TIMEOUT_MS)
-                if picked:                                 # exact, or a spelling learned before
-                    self.chosen["brand"] = name
-                    if brands.key(name) != brands.key(ours):
-                        self.aliases.learn(r.brand, name)
-                        self.guesses.append(f"brand set to '{name}' (from '{r.brand}')")
+                picked, offered = await self._choose(page, items, name, timeout_ms=SUGGEST_TIMEOUT_MS)
+                hit = name if picked else brands.exact(name, offered)       # "J. Crew" for "J.Crew"
+                if not picked and hit is not None:
+                    picked = (await self._choose(page, items, hit))[0]
+                if picked:
+                    shown = next((o for o in offered if _key(o) == _key(hit)), hit)
+                    self._brand_chosen(r, name, shown)
                     await settle(page)
                     return
-                if offered:
-                    options += [o for o in offered if o not in options]
-                    break
-        choice, guess = brands.pick_any(names, options)
-        shown = choice is not None and (await self._choose(page, SEL["brand_options"](page), choice))[0]
+                options += [o for o in offered if o not in options]
+        choice, note = brands.pick_any(names, options)     # no exact name: the ONE longer one ("Alo" → "ALO Yoga")
+        shown = choice is not None and (await self._choose(page, items, choice))[0]
         if choice is not None and not shown:               # it came from an earlier query: asked for by its own name
             await _type(box, _straight(choice))
-            shown = (await self._choose(page, SEL["brand_options"](page), choice, timeout_ms=SUGGEST_TIMEOUT_MS))[0]
+            shown = (await self._choose(page, items, choice, timeout_ms=SUGGEST_TIMEOUT_MS))[0]
         if shown:
             self.chosen["brand"] = choice
-            self.aliases.learn(r.brand, choice)
-            guess = f"brand set to '{choice}' (from '{r.brand}')" if choice.lower() != r.brand.lower() else guess
         else:
             await box.fill("")                             # optional: left empty rather than a wrong brand
             self.chosen["brand"] = None
-            guess = guess or f"brand left empty: Poshmark's list has no '{r.brand}'"
-        if guess:
-            self.guesses.append(guess)
+            if choice is not None:
+                note = f"brand left empty: '{choice}' didn't take{brands.offered(options)}"
+        if note:
+            self.guesses.append(note)
         await settle(page)
+
+    def _brand_chosen(self, r: Render, name: str, shown: str) -> None:
+        """Poshmark lists this name of ours: picked. Reported when it isn't our brand as written (case aside) nor the
+        alias file's name for it (nothing new to say); another spelling of the same name — or one of its two parts —
+        is learned ("J.Crew" → "J. Crew", "MNG (Mango)" → "Mango")."""
+        self.chosen["brand"] = shown
+        if shown.lower() == r.brand.lower():
+            return
+        if (self.aliases.alias(r.brand) or "").lower() != shown.lower():
+            self.guesses.append(f"brand set to '{shown}' (from '{r.brand}')")
+        self.aliases.learn(r.brand, shown)                 # learn() keeps spellings of the same name only
 
     async def _colors(self, page: Page, r: Render) -> None:
         colors = [c for c in r.colors if c][:2]
@@ -700,8 +750,11 @@ class PoshmarkPoster(Poster):
         await settle(page, 0.3, 0.8)
 
     async def _tags(self, page: Page, r: Render) -> None:
-        """Curated style tags only: each tag is typed and picked from Poshmark's own suggestions. A tag it doesn't
-        offer is cleared and left out (free-typed tags are UNVERIFIED), and the owner is told."""
+        """No style tags (the owner, 2026-10-12: the Alo set's "Coord Sets" and "Athleisure" were deleted by hand) — an
+        item processed before keeps its tags in the render, never filled. (WO12's curated-tag step below stays for the
+        record: each tag typed and picked from Poshmark's own suggestions, one it doesn't offer left out.)"""
+        if not ALLOW_STYLE_TAGS:
+            return
         box, skipped = SEL["style_tag"](page), []
         for tag in [t for t in r.tags if t][:3]:
             await _type(box, tag)

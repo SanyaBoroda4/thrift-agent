@@ -3,7 +3,6 @@ to ask; every guess is reported in the "Posted ✓" message). Pure functions: th
 asks here which to pick."""
 from __future__ import annotations
 
-import difflib
 import re
 
 _LETTERS = ["XXXS", "XXS", "XS", "S", "M", "L", "XL", "XXL", "XXXL", "4XL", "5XL", "6XL"]
@@ -43,16 +42,23 @@ def _key(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", re.sub(r"\band\b", "&", str(text).lower()))
 
 
-def closest(want: str, offered: list[str], cutoff: float) -> str | None:
-    """The offered name closest to `want` (case, spacing and punctuation ignored; "and" = "&"): a name containing it
-    or contained in it first ("Jumpsuits" -> "Jumpsuits & Rompers"), else the most similar at `cutoff` or above."""
+def matching(want: str, offered: list[str]) -> str | None:
+    """WO36 (the owner: pick only an option whose text matches the wanted value): the offered name that IS `want`
+    (case, spacing and punctuation ignored; "and" = "&"); else the ONE name that is `want` followed by more words
+    ("Jumpsuits" → "Jumpsuits & Rompers"), else the ONE name `want` is a whole " & " part of ("Rompers" → "Jumpsuits
+    & Rompers"). Never a shorter name and never a merely similar one (WO27's difflib guess is gone)."""
     keyed = {_key(o): o for o in offered if o and _key(o)}
     k = _key(want)
     if not k:
         return None
     if k in keyed:
         return keyed[k]
-    if inside := sorted((o for ko, o in keyed.items() if k in ko or ko in k), key=lambda o: abs(len(_key(o)) - len(k))):
-        return inside[0]
-    near = difflib.get_close_matches(k, list(keyed), n=1, cutoff=cutoff)
-    return keyed[near[0]] if near else None
+
+    def words(text: str) -> list[str]:
+        return re.findall(r"[a-z0-9]+|&", re.sub(r"\band\b", "&", str(text).lower()))
+    w = words(want)
+    longer = [o for o in keyed.values() if len(words(o)) > len(w) and words(o)[:len(w)] == w]
+    if len(longer) == 1:
+        return longer[0]
+    part = [o for o in keyed.values() if any(_key(p) == k for p in re.split(r"\s*(?:&|\band\b)\s*", str(o), flags=re.I))]
+    return part[0] if len(part) == 1 else None

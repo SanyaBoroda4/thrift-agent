@@ -53,7 +53,7 @@
   sizeFieldLabel (what the size field shows after an auto-close), promoteOn, promoteText (the toggle without a
   checkbox: only its "Off"/"On" text), toListing, listStays, listError, listAlert (a native alert after List),
   listTwice (two listings come of one click), skuOnListing (the listing page shows the SKU), closetUser (the closet
-  the redirect goes to; default "closet", the tests' poster).
+  the redirect goes to; default "closet", the tests' poster), brands (the brand list; WO36).
   The page reports to the test site: POST /api/list-click on each List This Item, GET /api/created?title=&price= for
   the listing it creates (the site answers its slug and id).
   The Drafts count lives in localStorage, so a reopened create page shows what the last one left.
@@ -602,11 +602,15 @@
   $('#condition-selector').addEventListener('click', () => show($('#condition-menu'), !isOpen($('#condition-menu'))));
 
   // ---- brand (suggestions' markup: WO9's a.dropdown__link) ----
-  const BRANDS = ['Tory Burch', 'Tory Sport', 'Birkenstock', 'UGG', 'Nike', 'Vince', 'Vince Camuto', "Levi's",
-                  'Madewell', 'J. Crew', 'J. Crew Factory', 'Mango'];   // a substring search: "J.Crew" finds neither (WO27)
+  // a substring search: "J.Crew" finds neither J. Crew (WO27); "Alo" finds ALO Yoga and the ALOHA lines (live, WO36)
+  const BRANDS = cfg.brands || ['Tory Burch', 'Tory Sport', 'Birkenstock', 'UGG', 'Nike', 'Vince', 'Vince Camuto',
+                  "Levi's", 'Madewell', 'J. Crew', 'J. Crew Factory', 'Mango', 'ALO Yoga', 'ALOHA Collection', 'ALOHAS',
+                  'Aloha Island', 'Solid'];
+  window.__brandTyped = [];
   $('#brand-input').addEventListener('input', () => later(() => {
     const list = $('#brand-list');
     const q = $('#brand-input').value.trim().toLowerCase();
+    window.__brandTyped.push($('#brand-input').value);
     const hits = q ? BRANDS.filter(b => b.toLowerCase().includes(q)).slice(0, 8) : [];
     list.innerHTML = '';
     for (const b of hits) {

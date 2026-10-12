@@ -60,9 +60,9 @@ def test_title_hard_limit_without_spaces():
     assert len(clamp_title("a" * 79 + " " + "b" * 10)) <= 80
 
 
-def test_style_tags_are_truncated_not_rejected():
-    out = clean(co(poshmark_style_tags=["a", "b", "c", "d"]))       # 4 tags must validate, then be cut to 3
-    assert out.poshmark_style_tags == ["a", "b", "c"]
+def test_style_tags_are_dropped_not_rejected():
+    out = clean(co(poshmark_style_tags=["a", "b", "c", "d"]))       # 4 tags must validate, then go (WO36: no tags)
+    assert out.poshmark_style_tags == []
 
 
 def test_depop_limit_without_spaces():
@@ -121,7 +121,7 @@ def test_facts_view_omits_null_facts(facts):
     assert facts_view(facts(material=ev("Suede")))["material"]["value"] == "Suede"
 
 
-def test_verify_sends_depop_body_without_tags_and_includes_style_tags(facts, monkeypatch):
+def test_verify_sends_depop_body_without_tags(facts, monkeypatch):
     seen = {}
 
     def fake_ask(model, system, content, out, tool, description, **kw):
@@ -132,7 +132,7 @@ def test_verify_sends_depop_body_without_tags_and_includes_style_tags(facts, mon
     verify(facts(), draft, "m")
     sent = json.loads(seen["text"].split("\n\nCOPY\n", 1)[1])
     assert "#" not in sent["depop_description"] and sent["depop_description"].startswith("cute red flats")
-    assert sent["poshmark_style_tags"] == ["classic", "preppy"]
+    assert sent["poshmark_style_tags"] == []                             # WO36: no Poshmark style tags
 
 
 def test_lint_brand_blank_and_normalised(facts):
@@ -427,7 +427,9 @@ def test_style_tags_are_poshmarks_curated_ones_and_materials_need_evidence(facts
     assert fit_style_tags([], facts()) == []
 
 
-def test_the_copy_prompt_offers_only_poshmarks_style_tags(facts, monkeypatch):
+def test_the_copy_prompt_asks_for_the_shop_brand_and_no_style_tags(facts, monkeypatch):
+    """WO36 (the owner, 2026-10-12): the brand as shops list it ("Alo Yoga" for an "alo" label) next to the label's text,
+    and no Poshmark style tags — the curated list is no longer offered."""
     from thrift_agent.brain import copy as copywriter
     seen = {}
 
@@ -436,8 +438,9 @@ def test_the_copy_prompt_offers_only_poshmarks_style_tags(facts, monkeypatch):
         return CopyOut(poshmark_title="t", poshmark_description="d", depop_description="d", depop_hashtags=[])
     monkeypatch.setattr("thrift_agent.brain.llm.ask", ask)
     copywriter.write(facts(), "model", {"poshmark_footer": "", "depop_footer": ""})
-    assert "POSHMARK STYLE TAGS below" in seen["system"]
-    assert "POSHMARK STYLE TAGS (the only ones Poshmark offers): 70s, 80s, 90s, Activewear," in seen["text"]
+    assert "POSHMARK STYLE TAGS" not in seen["text"] and "leave poshmark_style_tags empty" in seen["system"]
+    assert '"Alo Yoga" for a label that reads "alo"' in seen["system"] and "brand_label: exactly what the label says" \
+        in seen["system"]
 
 
 # ---------------------------------------------------------------- WO16: the owner's condition rule
