@@ -1110,3 +1110,12 @@ def test_an_order_that_isnt_the_planned_one_is_never_saved():
     assert "nothing saved" in out["error"] and fake.commands[-1]["type"] == "cancel"
     out, fake = run(_cover_with_fake([Outcome("failed", error="stuck")]))
     assert not out["ok"] and not out["saved"] and fake.clicks == 0
+
+
+def test_a_change_the_site_refuses_is_reported_as_nothing_saved():
+    """Live 2026-10-13 (the Tory loafers on Depop): the edit form came up with required fields empty and refused the
+    Save — the report must say nothing was saved (it had said "it WAS saved")."""
+    out, fake = run(_cover_with_fake([Outcome("posted", note="refused")]))
+    assert fake.clicks == 1 and not out["ok"] and not out["saved"], out
+    assert out["error"].startswith("Depop refused the change (Category: This field is required")
+    assert out["error"].endswith("nothing saved")

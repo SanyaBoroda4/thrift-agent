@@ -1206,9 +1206,15 @@ The first long evening at gap 0 (17 items, 15 shares). What went wrong, and what
   recorded live on 2026-10-13, Update only slides up the Share Listing panel (the new cover, Promote My Closet Off,
   List This Item) and the edit is saved by List This Item — that press needs the owner's go-ahead (the session's
   permission check refused it), so a real run reports "nothing saved" and a dry run is all it does today.
-  Live results (2026-10-13): Depop's keyboard move took (the UGG Chestnut's Depop cover fixed; the Tory loafers' and
-  the Schutz's dry runs took); Vinted's grid ignored the keyboard both on the sortable and on the element inside it
-  (dnd-kit's live region stayed empty) — its covers are left for the owner. Stand-ins:
+  Live results (2026-10-13): Depop's keyboard move took — the UGG Chestnut's and the Schutz's Depop covers saved (the
+  owner's go-ahead); the Tory loafers' Depop edit page came up with its Category, Brand, Condition and Colour empty
+  (its "Pumps" category no longer loads there) and refused the Save: nothing saved, now reported so (it had said "it WAS
+  saved"). Vinted's grid ignored the keyboard both on the sortable and on the element inside it (dnd-kit's live region
+  stayed empty). The owner fixes Poshmark's and Vinted's covers, the late photos on live listings and the smaller
+  issues by hand, from one list in her private chat (each listing, site, change, and the photo — by its IMG name —
+  that goes first). The UGG Tazz and the Marc Jacobs, not yet on Poshmark, got their late photos before posting (a
+  one-off: the photos normalized into the item, the front check asked again, the cover file and photo lists rebuilt —
+  titles, category, size and price untouched). Stand-ins:
   `tests/fixtures/ext_edit_photos.html`, `tests/fixtures/poshmark_edit_listing.html`.
 
 ## Kids clothing sizes (WO23)

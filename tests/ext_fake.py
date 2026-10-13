@@ -190,6 +190,11 @@ class FakeExtension:
             return
         self.clicks += 1
         self.clicked.append((job["site"], "cover"))
+        if res.note == "refused":                       # the site keeps its form, with its errors: nothing saved
+            self.event(writer, event="error", job_id=jid, stage="after_publish", page="form",
+                       message="refused: Category: This field is required | Brand: This field is required")
+            await writer.drain()
+            return
         self.event(writer, event="result", job_id=jid, url=job.get("listing_url"),
                    live={"first_photo": after[0].replace("/P2.jpg", "/P0.jpg"), "photos": n})
         await writer.drain()

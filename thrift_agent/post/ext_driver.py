@@ -603,15 +603,19 @@ class ExtensionPoster(Poster):
             ev = await job.wait(("result", "error"), AFTER_CLICK_MIN)
         except (TimeoutError, asyncio.TimeoutError):
             ev = {"event": "error", "message": "no listing page after Save"}
-        out.update(saved=True, shot=self._kept(job, "after-publish", "refused", "form") or out["shot"])
+        # a form the site refused stays on the page with its errors: nothing was saved (live 2026-10-13, the Tory
+        # loafers: Depop's edit form had come up with its category, brand and condition empty)
+        refused = ev.get("event") == "error" and str(ev.get("message") or "").startswith("refused:")
+        out.update(saved=not refused, shot=self._kept(job, "after-publish", "refused", "form") or out["shot"])
+        if refused:
+            return {**out, "ok": False, "error": f"{self.site} refused the change ({ev['message'][len('refused: '):]}): "
+                                                 "nothing saved"}
         live = ev.get("live") or {} if ev.get("event") == "result" else {}
         if not live.get("first_photo"):                # the listing page read again (the landing may be another page)
             check = await self._job("verify", {"listing_url": url}, 120)
             live = check.get("live") or {} if check.get("event") == "result" else live
         moved, first = photo_key(before[photo]), photo_key(live.get("first_photo"))
         out["live"] = live
-        if ev.get("event") == "error" and str(ev.get("message") or "").startswith("refused:"):
-            return {**out, "ok": False, "error": f"{self.site} refused the change: {ev['message'][len('refused: '):]}"}
         if first == moved:
             return {**out, "ok": True}
         return {**out, "ok": False, "error": f"after Save the listing's first photo is {first or 'not shown'}, not the "
