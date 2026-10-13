@@ -439,3 +439,36 @@ def test_a_cover_fix_finds_the_right_photo_in_each_live_listing(env, tmp_path, f
     assert coverfix.right_photo(s, db, iid, 3)[0] == 2                                   # her 3rd photo
     with pytest.raises(ValueError, match="there is no photo 9"):
         coverfix.right_photo(s, db, iid, 9)
+
+
+def test_photos_a_share_took_after_it_was_registered_are_not_late(env, monkeypatch):
+    """Live 2026-10-13: the Zadig boots' share was registered with 5 photos and prepared with 7 — its two newest were
+    told as "late" though the listing has them. What the preparation read is what the share took."""
+    s, db = env
+    said = []
+    monkeypatch.setattr(pipeline.notify, "say", said.append)
+    archived = s.path("archive") / "20261012_2026-10-12_210634"
+    archived.mkdir(parents=True)
+    for i in range(7):
+        Image.new("RGB", (30, 40)).save(archived / f"IMG_10{70 + i}.jpeg")
+    bid = db.add_batch(str(s.path("inbox") / "2026-10-12_210634"), 5)
+    db.set_batch(bid, status="split")
+    db.log(bid, "archived", {"dest": str(archived)})
+    db.log(bid, "batch_registered", {"folder": "2026-10-12_210634", "photos": 5,
+                                     "names": [f"IMG_10{70 + i}.jpeg" for i in range(5)]})
+    db.log(bid, "batch_prepped", {"names": [f"IMG_10{70 + i}.jpeg" for i in range(7)]})
+    iid = db.add_item(bid, 1, str(s.path("work") / "item"))
+    db.set_item(iid, renders={"poshmark": {"title": "Zadig & Voltaire Tyler Ankle Boots"}})
+    assert pipeline.late_photos(s, db) == [] and said == []
+    old = s.path("archive") / "20261012_2026-10-12_210635"                 # a share from before the names: counted
+    old.mkdir(parents=True)
+    for i in range(7):
+        Image.new("RGB", (30, 40)).save(old / f"IMG_20{70 + i}.jpeg")
+    bid2 = db.add_batch(str(s.path("inbox") / "2026-10-12_210635"), 5)
+    db.set_batch(bid2, status="split")
+    db.log(bid2, "archived", {"dest": str(old)})
+    (s.path("work") / bid2 / "all").mkdir(parents=True)
+    for i in range(7):
+        Image.new("RGB", (30, 40)).save(s.path("work") / bid2 / "all" / f"{i:03d}.jpg")
+    db.add_item(bid2, 1, str(s.path("work") / "item2"))
+    assert pipeline.late_photos(s, db) == [] and said == []

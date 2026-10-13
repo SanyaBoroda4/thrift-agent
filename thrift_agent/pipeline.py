@@ -130,8 +130,10 @@ def late_photos(s: Settings, db: DB) -> list[str]:
         except OSError:
             continue
         taken = registered_names(db, b["id"])
-        if taken is None:                                # registered before WO37: the first to arrive were taken
-            taken = {p.name for p in sorted(photos, key=arrived)[:int(b["n_photos"] or 0)]}
+        if taken is None:                                # from before WO37: the first to arrive were taken — as many
+            work = s.path("work") / b["id"] / "all"      # as its preparation read (more than registered, at times)
+            n = len(list(work.glob("*.jpg"))) if work.is_dir() else 0
+            taken = {p.name for p in sorted(photos, key=arrived)[:n or int(b["n_photos"] or 0)]}
         new = [p for p in photos if p.name not in taken and f"{b['id']}:{p.name}" not in seen]
         seen.update(f"{b['id']}:{p.name}" for p in new)
         if not new:
@@ -158,11 +160,15 @@ def late_photos(s: Settings, db: DB) -> list[str]:
 
 
 def registered_names(db: DB, bid: str) -> set[str] | None:
-    """The photo files a share had when it was taken (WO37), or None for one registered before they were recorded."""
-    for e in db.conn.execute("SELECT detail FROM events WHERE ref=? AND kind='batch_registered' ORDER BY rowid DESC "
-                             "LIMIT 1", (bid,)):
-        names = (loads(e["detail"]) or {}).get("names")
-        return set(names) if isinstance(names, list) else None
+    """The photo files a share's items were made from (WO37): the ones its preparation read (`batch_prepped` — live,
+    the Zadig boots: registered with 5, prepared with 7), else the ones it was registered with; None for a share from
+    before they were recorded."""
+    for kind in ("batch_prepped", "batch_registered"):
+        for e in db.conn.execute("SELECT detail FROM events WHERE ref=? AND kind=? ORDER BY rowid DESC LIMIT 1",
+                                 (bid, kind)):
+            names = (loads(e["detail"]) or {}).get("names")
+            if isinstance(names, list):
+                return set(names)
     return set() if (db.batch(bid) or {"n_photos": 1})["n_photos"] == 0 else None
 
 
@@ -216,6 +222,7 @@ def process_batch(s: Settings, db: DB, bid: str) -> None:
     if not listed:
         raise ValueError(f"no photos in {src} (moved away, or still downloading from iCloud?)")
     raw = [p for p, _ in listed]
+    db.log(bid, "batch_prepped", {"names": sorted(p.name for p in raw)})   # WO37: the photos it really took
     times = {p.name: t for p, t in listed}
     kinds_raw = prep.photo_kinds(raw)                     # from the originals: normalize() strips the EXIF
     norm = [prep.normalize(p, work / "all" / f"{i:03d}.jpg", s["images"]["work_long_edge"]) for i, p in enumerate(raw)]
