@@ -1073,6 +1073,31 @@ def delist(run: bool = typer.Option(False, "--run", help="do the pending take-do
         print(escape(line))
 
 
+@app.command("cover-fix")
+def cover_fix(items: list[str] = typer.Argument(..., help="the items whose live covers are fixed"),
+              marketplace: list[str] = typer.Option(None, "--marketplace", help="poshmark | depop | vinted (repeat)"),
+              photo: int = typer.Option(None, "--photo", help="her Nth photo of the item (from 1) as the cover"),
+              dry_run: bool = typer.Option(False, "--dry-run", help="moved on the edit page, never saved")) -> None:
+    """WO37: a live listing's cover fixed on each site's edit page — the right photo first, nothing else changed
+    (Depop / Vinted: moved first; Poshmark: replaced, the old cover's photo put in its place). The poster stopped;
+    Poshmark in the GUI session: bash deploy/gui_once.sh cover-fix <item> --marketplace poshmark."""
+    from thrift_agent import coverfix
+    s = settings()
+    if not s.is_prod:
+        raise typer.BadParameter("cover fixes run on the Mac only (machine_role: prod)")
+    if bad := [m for m in marketplace or [] if m not in coverfix.SITES]:
+        raise typer.BadParameter(f"unknown marketplace {bad[0]}")
+    db = _db()
+    for iid in items:
+        try:
+            lines = asyncio.run(coverfix.fix(s, db, iid, list(marketplace or []) or None, photo, dry_run))
+        except ValueError as e:
+            print(f"[red]{escape(iid)}[/]: {escape(str(e))}")
+            continue
+        for line in lines:
+            print(f"{escape(iid)} {escape(line)}")
+
+
 @app.command()
 def relist(item_id: str, marketplace: str = typer.Option(None, "--marketplace", help="poshmark | depop | vinted")) -> None:
     """Undo our take-down of an item where the site allows it (Poshmark: For Sale again). The owner's command — never

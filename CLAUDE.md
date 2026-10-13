@@ -1173,7 +1173,7 @@ The first long evening at gap 0 (17 items, 15 shares). What went wrong, and what
 - **No size at all**: the title never carries a size no photo shows (`copy.ensure_title_size` takes a made-up "size 8"
   out — live: the Clarks); the card says "⚠️ No size on the photos — reply 'size …' (it can't be listed without one)";
   Depop and Vinted skip it with ONE private line for the item (`crosslist.NO_SIZE`); a reply 'size 8' puts every site
-  skipped or failed for it back in line (`pipeline.set_size`).
+  that skipped or failed it before any publish click back in line — never an unconfirmed publish (`pipeline.set_size`).
 - **Depop's colours**: Depop put its own colour back AFTER our tidy (live: the jacket, the UGG Tazz — the form check
   stopped both before Post): the tidy lets the page settle and reads the multi-selects once more (`chipsOurs`,
   `addBack`; "Depop changed the form again after the tidy: set back once more").
@@ -1184,6 +1184,27 @@ The first long evening at gap 0 (17 items, 15 shares). What went wrong, and what
   …", `premium.collab`); the 80-character cut never takes the brand or the size (`premium.fit_title`); a fiber's weaker
   wording goes with its last word ("Leather … Leather").
 - **The diagnostic** (2026-10-12, read only, sent to the owner as a file): `reports/2026-10-12_37_wo37-diagnostic.md`.
+- **A live listing's cover fixed on its edit page** (`thrift cover-fix <item> [--marketplace m] [--photo N]
+  [--dry-run]`, `thrift_agent/coverfix.py`; the owner's authorization: "put the right photo first and change nothing
+  else"; the poster stopped — the bridge's port, Poshmark's Chrome profile —, Poshmark's part in the GUI session:
+  `bash deploy/gui_once.sh cover-fix …`). The right photo: `--photo N` (her Nth, from 1), else the WO37 rule on the
+  item's labelled check. Each site's photos as posted (Poshmark's render, Depop's / Vinted's `fields_json`) say where
+  it is; a listing without it is left for the owner. Recorded by WO37's read-only probes of the UGG Chestnut
+  (2026-10-12, nothing saved): Depop `/products/edit/<slug>/` and Vinted `/items/<id>/edit` are forms whose photo
+  grids are dnd-kit sortables (`edit_photos`; Depop's "Cover", Vinted's "Main" badge on the first; Vinted: "To
+  reorder photos, press the space bar") with one Save (`edit_save`: Depop "Save changes", Vinted
+  `upload-form-save-button`, disabled until something changes). The extension's "cover" job (`T.coverFirst`) moves the
+  photo with the keyboard (focus, Space, ArrowUp to the first row, ArrowLeft, Space), reads the order back, and the
+  driver (`ExtensionPoster.set_cover`, `cover_moved`) gives its one go-ahead only when the order is the old one with
+  that photo first; Save once; the listing page's first photo must be that photo (`photo_key`: Depop's
+  `…/<id>/P2.jpg` = the JSON-LD's `…/<id>/P0.jpg`, Vinted's `/tc/<id>/` = `/t/<id>/`). Poshmark's edit page
+  (`/edit-listing/<id>`) has no order to change: its cover's "Edit Covershot" (shown on hover) opens a dialog with only
+  the photo, "Replace Photo" (`input[name=replaceImage]`), Cancel and Apply — so `PoshmarkPoster.set_cover` replaces
+  the cover by the right photo's 3:4 cover and puts the old cover's own photo on the tile the right one had (the
+  listing keeps its photos), checks that exactly those two tiles changed, presses Update once (never in a dry run) and
+  reads the public listing's cover (`crosslist.poshmark_cover`) until it changed. The keyboard move and the
+  replacement are verified only once a dry run on the live page shows them taking (the `moved` notes in
+  `ext/selectors.json`). Stand-ins: `tests/fixtures/ext_edit_photos.html`, `tests/fixtures/poshmark_edit_listing.html`.
 
 ## Kids clothing sizes (WO23)
 A kids label that gives the child's height ("104 cm", "Gr. 104", "104") or age ("4 ans", "4A", "5-6 Y", "18 mois") is

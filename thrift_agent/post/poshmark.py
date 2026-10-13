@@ -237,6 +237,19 @@ SEL = {
         'a.dropdown__link[data-et-on-name="availability"][data-et-name="%s"]'
         % ("available" if text == "For Sale" else "not_for_sale")),
     "update_listing": lambda p: p.locator('button[data-et-name="update"]'),
+    # WO37, recorded by the read-only probe of the UGG Chestnut's edit page (2026-10-12; its cover dialog opened, then
+    # Cancel): the filled photo tiles (the cover first, .large), each with an overlay [data-et-name=edit_photo] shown on
+    # hover ("Edit Covershot" / "Edit Photo"); the dialog [data-test=modal-container] with the photo
+    # (img.image-edit-modal__selected-image), "Replace Photo" = input[name=replaceImage] (.png .jpg .jpeg), Cancel / Apply
+    # by data-et-name. No thumbnails to pick another photo from: the cover is changed by replacing it.
+    "edit_tiles": lambda p: p.locator("div.listing-editor__images.listing-editor__image"),
+    "edit_tile_photo": lambda tile: tile.locator("img.listing-editor__image"),
+    "edit_tile_open": lambda tile: tile.locator('[data-et-name="edit_photo"]'),
+    "photo_dialog": lambda p: p.locator('[data-test="modal-container"]').filter(
+        has=p.locator('input[name="replaceImage"]')),
+    "photo_dialog_image": lambda d: d.locator("img.image-edit-modal__selected-image"),
+    "photo_dialog_file": lambda d: d.locator('input[name="replaceImage"]'),
+    "photo_dialog_apply": lambda d: d.locator('[data-et-name="apply"]'),
     "promote_toggle": lambda panel: panel.locator('input[type="checkbox"]'),
     "draft_saved": re.compile(r"/closet/|/listing/"),
     "captcha": lambda p: p.get_by_text(re.compile("captcha|verify you are human", re.I)),
@@ -272,6 +285,14 @@ def _poshmark_live(url: str) -> bool | None:
 
 
 PUBLIC_STATE = _poshmark_live
+
+
+def _poshmark_cover(url: str) -> str | None:
+    from thrift_agent.crosslist import poshmark_cover
+    return poshmark_cover(url)
+
+
+PUBLIC_COVER = _poshmark_cover                   # WO37: the public listing's cover, behind a name tests replace
 
 # [id, visible text, "title|aria-label|data-et-name"] of each element in a list.
 _ITEM_JS = """e => [e.id || '', (e.innerText || e.textContent || '').trim(),
@@ -1288,6 +1309,81 @@ class PoshmarkPoster(Poster):
             return state is None or state == available
         finally:
             await page.close()
+
+    async def set_cover(self, ctx: BrowserContext, url: str, cover: Path, swap: tuple[int, Path] | None,
+                        dry: bool = False, shots: Path | None = None) -> dict:
+        """WO37 (the owner: "put the right photo first and change nothing else"). Poshmark's edit page has no photo
+        order to change (its cover dialog only replaces): the cover is replaced by `cover` (the right photo's 3:4
+        cover) and — `swap` (tile, file) — the tile where that photo was gets the old cover's own photo, so the
+        listing keeps the same photos. The tiles are checked (exactly those two changed) before Update, which is
+        pressed once — never in a dry run; then the public listing's cover must have changed. {"ok", "saved", "error",
+        "shot"}."""
+        m = SEL["listing_url"].search(urlparse(url or "").path)
+        if m is None:
+            return {"ok": False, "saved": False, "error": f"not a Poshmark listing address: {url!r}"}
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.shot = (shots or Path(".")) / f"{m['id']}-poshmark-{stamp}-cover.png"
+        was = await asyncio.to_thread(PUBLIC_COVER, url)
+        page = await ctx.new_page()
+        try:
+            await page.goto(SEL["edit_url"].format(base=self.base_url, id=m["id"]))
+            await page.wait_for_load_state("domcontentloaded")
+            tiles = SEL["edit_tiles"](page)
+            await tiles.first.wait_for(state="visible", timeout=MENU_TIMEOUT_MS)
+
+            async def photos() -> list[str]:
+                return [await SEL["edit_tile_photo"](tiles.nth(i)).first.get_attribute("src") or ""
+                        for i in range(await tiles.count())]
+            before = await photos()
+            if swap is not None and not 0 < swap[0] < len(before):
+                return {"ok": False, "saved": False, "error": f"no photo {swap[0] + 1} on the edit page ({len(before)})"}
+            await self._replace(page, tiles.nth(0), cover)
+            if swap is not None:
+                await self._replace(page, tiles.nth(swap[0]), swap[1])
+            after = await photos()
+            changed = [i for i, (a, b) in enumerate(zip(before, after)) if a != b]
+            want = [0] + ([swap[0]] if swap is not None else [])
+            await keep_evidence(page, self.shot, {"url": url, "before": before, "after": after, "dry": dry})
+            if len(after) != len(before) or changed != want:
+                return {"ok": False, "saved": False, "shot": str(self.shot),
+                        "error": f"the photos changed on the edit page aren't the ones replaced ({changed} vs {want}): "
+                                 "nothing saved"}
+            if dry:
+                return {"ok": True, "saved": False, "shot": str(self.shot)}
+            await SEL["update_listing"](page).first.click()            # once
+            try:
+                await page.wait_for_url(lambda u: "/edit-listing/" not in u, timeout=UPDATE_TIMEOUT_MS)
+            except PlaywrightTimeout:
+                pass                                    # stayed: the public page below decides
+            now = was
+            end = time.monotonic() + PUBLIC_CHECK_S
+            while now == was and time.monotonic() < end:
+                await asyncio.sleep(PUBLIC_EVERY_S)
+                now = await asyncio.to_thread(PUBLIC_COVER, url)
+            ok = bool(now) and now != was
+            return {"ok": ok, "saved": True, "shot": str(self.shot), "cover": now,
+                    "error": None if ok else f"the public listing's cover is still {now or 'unread'}"}
+        finally:
+            await page.close()
+
+    async def _replace(self, page: Page, tile: Locator, photo: Path) -> None:
+        """One tile's photo replaced (WO37): hovered, its Edit overlay, the dialog's Replace Photo given the file,
+        Apply — Poshmark's own default crop."""
+        await tile.scroll_into_view_if_needed()
+        await tile.hover()
+        await SEL["edit_tile_open"](tile).first.click(timeout=MENU_TIMEOUT_MS)
+        dialog = SEL["photo_dialog"](page).first
+        await dialog.wait_for(state="visible", timeout=MENU_TIMEOUT_MS)
+        old = await SEL["photo_dialog_image"](dialog).first.get_attribute("src")
+        await SEL["photo_dialog_file"](dialog).first.set_input_files(str(photo))
+        waited = 0
+        while await SEL["photo_dialog_image"](dialog).first.get_attribute("src") == old and waited < MENU_TIMEOUT_MS:
+            await page.wait_for_timeout(POLL_MS)
+            waited += POLL_MS
+        await settle(page, 0.5, 1.0)
+        await SEL["photo_dialog_apply"](dialog).first.click()
+        await dialog.wait_for(state="hidden", timeout=MENU_TIMEOUT_MS)
+        await settle(page, 0.5, 1.0)
 
     async def _public_state(self, url: str, want: bool) -> bool | None:
         """The listing's public page (the WO30 backfill checker: inventory status "available" or not), read until it

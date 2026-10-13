@@ -383,10 +383,11 @@ def test_no_size_is_one_line_for_the_item_and_a_size_puts_its_sites_back_in_line
     for mp in ("depop", "vinted"):
         crosslist.skip_unmappable(db, iid, mp, "Clarks Ankle Boots", crosslist.NO_SIZE)
     assert set(said) == {"⏭ Clarks Ankle Boots: no size on the item — it goes up once you reply 'size …' to its card"}
-    pipeline.set_size(s, db, iid, "8")
+    db.upsert_listing(iid, "poshmark", status="failed", error="PosterError: the Share Listing panel did not show")
+    pipeline.set_size(s, db, iid, "8")         # (an unconfirmed publish anywhere: refused before — _answerable)
     rows = {r["marketplace"]: (r["status"], r["error"]) for r in
             db.conn.execute("SELECT * FROM listings WHERE item_id=?", (iid,))}
-    assert rows == {"depop": ("queued", None), "vinted": ("queued", None)}
+    assert rows == {"depop": ("queued", None), "vinted": ("queued", None), "poshmark": ("queued", None)}
 
 
 @pytest.mark.parametrize("item_type,sub,department,owner,want", [
@@ -411,3 +412,30 @@ def test_loafers_are_never_heels(facts, item_type, sub, department, owner, want)
 def test_only_a_request_that_went_out_whole_counts_as_maybe_sent(error, maybe):
     from thrift_agent.telegram import maybe_delivered
     assert maybe_delivered(RuntimeError(error)) is maybe
+
+
+def test_a_cover_fix_finds_the_right_photo_in_each_live_listing(env, tmp_path, facts):
+    """WO37 §2: each site's photos as posted (Poshmark's render, Depop's and Vinted's form fields): where the right photo
+    is among them — a listing that doesn't have it is left for the owner."""
+    from pathlib import Path
+
+    from thrift_agent import coverfix
+    s, db = env
+    iid = _card_item(db, tmp_path, facts)
+    d = Path(db.item(iid)["dir"])
+    for i in range(4):
+        Image.new("RGB", (30, 40), "blue").save(d / "photos" / f"{i:02d}.jpg")
+    paths = [str(d / "cover.jpg")] + [str(d / "photos" / f"{i:02d}.jpg") for i in (2, 1, 3)]
+    db.set_item(iid, status="posted", renders={"poshmark": {"title": "UGG", "photos": paths}})
+    db.upsert_listing(iid, "poshmark", status="posted", url="https://poshmark.com/listing/UGG-6acd8ea6ce5b0ac5ccde36eb")
+    db.upsert_listing(iid, "depop", status="posted", url="https://www.depop.com/products/x-ugg-87d9/",
+                      fields_json={"photos": paths})
+    db.upsert_listing(iid, "vinted", status="posted", url="https://www.vinted.com/items/1",
+                      fields_json={"photos": paths[:2]})
+    plans = coverfix.plans(db, iid, d / "photos" / "01.jpg")
+    assert [(p.mp, p.position, len(p.photos)) for p in plans] == [("poshmark", 2, 4), ("depop", 2, 4),
+                                                                   ("vinted", None, 2)]
+    assert [p.mp for p in coverfix.plans(db, iid, d / "photos" / "01.jpg", ["depop"])] == ["depop"]
+    assert coverfix.right_photo(s, db, iid, 3)[0] == 2                                   # her 3rd photo
+    with pytest.raises(ValueError, match="there is no photo 9"):
+        coverfix.right_photo(s, db, iid, 9)

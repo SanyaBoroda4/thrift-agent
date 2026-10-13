@@ -1053,3 +1053,62 @@ test("depop: the probe finds the bin and presses nothing", async () => {
   assert.equal(result.text, "Delete listing");
   assert.deepEqual(plain(p.w.clicks), []);
 });
+
+// ---------------------------------------------------------------- WO37: a live listing's cover, on its edit page
+
+const EDIT = { depop: "https://www.depop.com/products/edit/tetianusorokina-ugg-new-chestnut-shearling-platform-87d9/",
+               vinted: "https://www.vinted.com/items/10356580141/edit" };
+const editPage = (site, fixture = {}) => page(site, read("tests/fixtures/ext_edit_photos.html"), EDIT[site],
+                                              { site, ...fixture });
+const coverJob = (site, extra = {}) => ({ job_id: `${site}-cover`, site, mode: "cover", from: 2, count: 6,
+                                          edit_url: EDIT[site], listing_url: null, ...extra });
+
+for (const site of ["depop", "vinted"]) {
+  test(`${site}: the right photo is moved first with the keyboard, checked, and saved once on the go-ahead (WO37)`,
+    async () => {
+      const p = editPage(site);
+      const before = plain(p.w.__order());
+      const done = run(p, coverJob(site, { from: 5 }));                // the 6th photo: one row down, one column in
+      await until(() => p.events().some((e) => e.event === "ready" || e.event === "error"));
+      const ready = plain(p.events().find((e) => e.event === "ready"));
+      assert.ok(ready, JSON.stringify(p.last()));
+      assert.deepEqual(ready.seen.cover_before, before);
+      assert.deepEqual(ready.seen.cover_after, [before[5], ...before.slice(0, 5)]);
+      assert.equal(ready.seen.submit_buttons, 1);
+      assert.equal(p.w.__saves, 0);                                    // nothing saved before the go-ahead
+      p.tell({ type: "submit", job_id: `${site}-cover` });
+      await done;
+      assert.equal(p.w.__saves, 1);                                    // Save, exactly once
+      assert.deepEqual(plain(p.w.__order()), [before[5], ...before.slice(0, 5)]);
+    });
+
+  test(`${site}: a cover dry run moves the photo on the page and never saves (WO37)`, async () => {
+    const p = editPage(site);
+    await run(p, coverJob(site, { dry: true }));
+    const r = plain(p.last());
+    assert.equal(r.event, "result", JSON.stringify(r));
+    assert.equal(r.dry_run, true);
+    assert.equal(r.seen.cover_after[0], r.seen.cover_before[2]);
+    assert.equal(p.w.__saves, 0);
+  });
+}
+
+test("a grid that doesn't answer the keyboard, or a listing with other photos, is never saved (WO37)", async () => {
+  let p = editPage("vinted", { ignoreKeys: true });
+  await run(p, coverJob("vinted"));
+  let r = plain(p.last());
+  assert.equal(r.event, "error", JSON.stringify(r));
+  assert.match(r.message, /^photo 3 didn't get to the front \(the order now: 1, 2, 3, 4, 5, 6\): nothing saved/);
+  assert.equal(p.w.__saves, 0);
+  p = editPage("depop", { stuck: true });                             // each move stops one place short
+  await run(p, coverJob("depop"));
+  r = plain(p.last());
+  assert.equal(r.event, "error", JSON.stringify(r));
+  assert.equal(p.w.__saves, 0);
+  p = editPage("depop", { photos: 7 });                               // the owner added a photo since
+  await run(p, coverJob("depop"));
+  r = plain(p.last());
+  assert.equal(r.event, "error");
+  assert.match(r.message, /the listing shows 7 photos, not the 6 posted: changed since — left as it is/);
+  assert.equal(p.w.__saves, 0);
+});

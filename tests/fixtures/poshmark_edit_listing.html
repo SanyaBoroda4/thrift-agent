@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Edit Listing (test fixture)</title>
+<!--
+  A stand-in for https://poshmark.com/edit-listing/<id> (WO37), for tests/test_poshmark_form.py, as the read-only probe of
+  2026-10-12 recorded it: the filled photo tiles div.listing-editor__images.listing-editor__image (the cover first,
+  .large), each with an overlay [data-et-name=edit_photo] that shows on hover ("Edit Covershot" / "Edit Photo") and its
+  img.listing-editor__image; then the empty tiles. The overlay opens the photo dialog [data-test=modal-container]: the
+  photo (img.image-edit-modal__selected-image), "Replace Photo" = input[name=replaceImage], Cancel / Apply by
+  data-et-name — no thumbnails to choose another photo from. Update = button[data-et-name=update]: it reports to
+  /api/update, then the page goes to the listing.
+  window.__FIXTURE: photos (default 4), replaceIgnored (the dialog doesn't take the file), applyLost (Apply doesn't put
+  the photo on the tile). window.__events records what the page registered.
+-->
+<style>
+  .tile { display: inline-block; position: relative; width: 120px; height: 160px; margin: 4px; }
+  .listing-editor__edit-overlay { display: none; position: absolute; inset: 0; background: rgba(0, 0, 0, .4); }
+  .listing-editor__images:hover .listing-editor__edit-overlay { display: block; }
+  .listing-editor__image { width: 100%; height: 100%; }
+  #dialog, #backdrop { display: none; }
+  #dialog.open, #backdrop.open { display: block; }
+</style>
+</head>
+<body>
+<h1>Edit Listing</h1>
+<div id="photos"></div>
+<button class="btn btn--tertiary">Cancel</button>
+<button data-et-name="update" id="update" class="btn btn--primary">Update</button>
+<div data-test="modal" class="modal-backdrop" id="backdrop"></div>
+<div data-test="modal-container" class="modal simple-modal" id="dialog">
+  <div data-test="modal-body" class="modal__body listing-editor__image-modal">
+    <img class="image-edit-modal__selected-image" id="selected" alt="parentImage" src="">
+    <label><input type="file" name="replaceImage" accept=".png, .jpg, .jpeg" class="image-edit-modal__input-file" id="replace">
+      <span data-et-name="replace_photo" class="image-edit-modal__replace-photo">Replace Photo</span></label>
+  </div>
+  <div data-test="modal-footer" class="modal__footer">
+    <button data-et-name="cancel" id="cancel" class="btn btn--tertiary">Cancel</button>
+    <button data-et-name="apply" id="apply" class="btn btn--primary">Apply</button>
+  </div>
+</div>
+<script>
+(function () {
+  const F = window.__FIXTURE || {};
+  const n = F.photos || 4;
+  const events = window.__events = [];
+  const box = document.getElementById("photos");
+  for (let i = 0; i < n; i++) {
+    const t = document.createElement("div");
+    t.className = "listing-editor__images listing-editor__image tile" + (i === 0 ? " large" : "");
+    t.innerHTML = `<div data-et-name="edit_photo" class="listing-editor__edit-overlay"><div class="tc--white">${
+      i === 0 ? "Edit Covershot" : "Edit Photo"}</div></div><div class="listing-editor__image-content"><img
+      alt="listing-editor__image" class="listing-editor__image"
+      src="https://di2ponv0v5otw.cloudfront.net/posts/2026/10/12/listing/m_photo${i}.jpeg"></div>`;
+    box.appendChild(t);
+  }
+  for (let i = 0; i < 2; i++) {
+    const e = document.createElement("div");
+    e.className = "listing-editor__images tile";
+    e.innerHTML = '<input type="file" class="listing-editor__file-list">';
+    box.appendChild(e);
+  }
+  const dialog = document.getElementById("dialog"), backdrop = document.getElementById("backdrop");
+  const selected = document.getElementById("selected");
+  let editing = null;
+  box.addEventListener("click", (e) => {
+    const overlay = e.target.closest("[data-et-name=edit_photo]");
+    if (!overlay) return;
+    editing = overlay.closest(".listing-editor__images");
+    selected.src = editing.querySelector("img").src;
+    dialog.classList.add("open");
+    backdrop.classList.add("open");
+    events.push(`open:${[...box.children].indexOf(editing)}`);
+  });
+  document.getElementById("replace").addEventListener("change", (e) => {
+    const f = e.target.files[0];
+    if (!f || F.replaceIgnored) return;
+    selected.src = URL.createObjectURL(f);
+    events.push(`replace:${f.name}`);
+  });
+  const close = () => { dialog.classList.remove("open"); backdrop.classList.remove("open"); };
+  document.getElementById("cancel").addEventListener("click", () => { events.push("cancel"); close(); });
+  document.getElementById("apply").addEventListener("click", () => {
+    if (editing && !F.applyLost) editing.querySelector("img").src = selected.src;
+    events.push("apply");
+    close();
+  });
+  document.getElementById("update").addEventListener("click", () => {
+    events.push("update");
+    fetch("/api/update", { method: "POST" }).finally(() => { location.href = "/listing/edited-6acd8ea6ce5b0ac5ccde36eb"; });
+  });
+})();
+</script>
+</body>
+</html>

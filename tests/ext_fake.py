@@ -163,9 +163,43 @@ class FakeExtension:
     def event(self, writer, **ev) -> None:
         ws_send(writer, {"type": "event", **ev})
 
+    async def cover(self, writer, job: dict, commands: asyncio.Queue) -> None:
+        """The edit page's photo grid (WO37): the photo moved first (an Outcome "failed": it doesn't move; its note
+        "wrong": another order comes back), the order reported, Save clicked once on the go-ahead, the listing page's
+        first photo after it."""
+        jid, n, k = job["job_id"], job["count"], job["from"]
+        res = self.next_result(job["site"]) if (self.results or job["site"] in self.sites) else Outcome("posted")
+        before = [f"https://media-photos.depop.com/b1/1/{i}_photo{i}/P2.jpg" for i in range(n)]
+        if res.status == "failed":
+            self.event(writer, event="error", job_id=jid, stage="cover", page="form",
+                       message=f"photo {k + 1} didn't get to the front: nothing saved")
+            await writer.drain()
+            return
+        after = [before[k], *before[:k], *before[k + 1:]] if res.note != "wrong" else list(reversed(before))
+        seen = {"cover_before": before, "cover_after": after, "submit_buttons": 1, "save_enabled": True}
+        if job.get("dry"):
+            self.event(writer, event="result", job_id=jid, dry_run=True, seen=seen, failed=[], guesses=[], notes=[])
+            await writer.drain()
+            return
+        self.event(writer, event="ready", job_id=jid, seen=seen, failed=[], guesses=[], notes=[])
+        await writer.drain()
+        cmd = await asyncio.wait_for(commands.get(), 30)
+        if cmd["type"] != "submit":
+            self.event(writer, event="error", job_id=jid, stage="cancelled", page="form", message="cancelled")
+            await writer.drain()
+            return
+        self.clicks += 1
+        self.clicked.append((job["site"], "cover"))
+        self.event(writer, event="result", job_id=jid, url=job.get("listing_url"),
+                   live={"first_photo": after[0].replace("/P2.jpg", "/P0.jpg"), "photos": n})
+        await writer.drain()
+
     async def answer(self, writer, job: dict, commands: asyncio.Queue) -> None:
         self.jobs.append(job)
         jid, mode, site = job["job_id"], job["mode"], job["site"]
+        if mode == "cover":                             # WO37: a live listing's cover, on its edit page
+            await self.cover(writer, job, commands)
+            return
         if mode in ("find", "verify", "check_login", "delist"):
             res = self.next_result(site) if (self.results or site in self.sites) else Outcome("posted")
             if mode == "find":

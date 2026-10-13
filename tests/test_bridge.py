@@ -1056,3 +1056,57 @@ def test_verified_steps_carry_their_evidence_and_the_publish_gate_stays_closed()
         assert not (ext_driver.PUBLISH_NEEDS & ext_driver.unverified(site))
         assert not (ext_driver.AUTOPUBLISH_NEEDS & ext_driver.unverified(site))
         assert data[site]["pages"]["login"]["verified"]
+
+
+# ---------------------------------------------------------------- WO37: a live listing's cover, on its edit page
+
+def test_a_photo_key_is_the_same_on_the_edit_page_and_the_listing_page():
+    from thrift_agent.post.ext_driver import photo_key
+    assert photo_key("https://media-photos.depop.com/b1/44365321/4936092927_d27fe749c50e44e29dc818a9bb487a7b/P2.jpg")         == photo_key("https://media-photos.depop.com/b1/44365321/4936092927_d27fe749c50e44e29dc818a9bb487a7b/P0.jpg")
+    assert photo_key("https://images1.vinted.net/tc/02_00e33_QLtcBw6QonTpbB2WTW96KVpu/f800/1791854236.webp?s=ce7")         == photo_key("https://images1.vinted.net/t/02_00e33_QLtcBw6QonTpbB2WTW96KVpu/f800/1791854236.webp?s=db4")
+
+
+@pytest.mark.parametrize("after,ok", [
+    (["c", "a", "b", "d"], True),                     # photo 3 first, the rest in their order
+    (["c", "b", "a", "d"], False),                    # the rest shuffled
+    (["a", "b", "c", "d"], False),                    # nothing moved
+    (["c", "a", "b"], False),                         # one lost
+])
+def test_the_new_order_must_be_the_old_one_with_that_photo_first(after, ok):
+    from thrift_agent.post.ext_driver import cover_moved
+    assert cover_moved(["a", "b", "c", "d"], after, 2) is ok
+
+
+async def _cover_with_fake(results, mp="depop", dry=False, photo=2, count=6):
+    b = await _bridge()
+    fake = FakeExtension(b.port, TOKEN, results)
+    fake.start()
+    await asyncio.wait_for(fake.connected.wait(), 5)
+    p = _poster(mp, b, None)
+    url = ("https://www.depop.com/products/tetianusorokina-ugg-new-chestnut-shearling-platform-87d9/" if mp == "depop"
+           else "https://www.vinted.com/items/10356580141")
+    try:
+        out = await p.set_cover(url, photo, count, dry=dry)
+    finally:
+        fake.stop()
+        await b.close()
+    return out, fake
+
+
+@pytest.mark.parametrize("mp,edit", [
+    ("depop", "https://www.depop.com/products/edit/tetianusorokina-ugg-new-chestnut-shearling-platform-87d9/"),
+    ("vinted", "https://www.vinted.com/items/10356580141/edit")])
+def test_a_cover_dry_run_never_saves_and_a_fix_saves_once(mp, edit):
+    out, fake = run(_cover_with_fake([Outcome("posted")], mp=mp, dry=True))
+    assert out["ok"] and not out["saved"] and fake.clicks == 0
+    assert fake.jobs[0]["mode"] == "cover" and fake.jobs[0]["edit_url"] == edit and fake.jobs[0]["from"] == 2
+    out, fake = run(_cover_with_fake([Outcome("posted")], mp=mp))
+    assert out["ok"] and out["saved"] and fake.clicks == 1, out
+
+
+def test_an_order_that_isnt_the_planned_one_is_never_saved():
+    out, fake = run(_cover_with_fake([Outcome("posted", note="wrong")]))
+    assert not out["ok"] and not out["saved"] and fake.clicks == 0
+    assert "nothing saved" in out["error"] and fake.commands[-1]["type"] == "cancel"
+    out, fake = run(_cover_with_fake([Outcome("failed", error="stuck")]))
+    assert not out["ok"] and not out["saved"] and fake.clicks == 0

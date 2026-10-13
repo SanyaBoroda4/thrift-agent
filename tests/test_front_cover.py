@@ -503,3 +503,28 @@ def test_the_cover_turn_comes_from_the_upright_check_with_the_comparison_as_fall
     monkeypatch.setattr(pipeline.cover_brain, "upright_check", fails)
     assert pipeline.upright_view(s, db, "i_x", tmp_path / "00.jpg", 90) == 90      # the comparison's reading
     assert db.conn.execute("SELECT COUNT(*) FROM events WHERE kind='upright_check_failed'").fetchone()[0] == 1
+
+
+def test_no_full_photo_takes_the_one_showing_the_most_and_says_so_once_in_private(tmp_path, facts, monkeypatch):
+    """WO37: when no photo shows the whole item, the one showing the most of it is the cover — never a label or a close-up
+    — with ONE line to the private chat, never a question."""
+    from thrift_agent.schema import FrontOut, View
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    partial = FrontOut(views=[View(photo=0, view="detail", whole=False, cut_off=True, fill=0.95),
+                              View(photo=1, view="front", whole=False, cut_off=True, fill=0.7),
+                              View(photo=2, view="label", whole=False, cut_off=True, fill=0.8),
+                              View(photo=3, view="back", whole=False, cut_off=True, fill=0.6)], front=0)
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", _ask(facts, front=partial))
+    monkeypatch.setattr(pipeline.approve, "pump", lambda *a: None)
+    said = []
+    monkeypatch.setattr(pipeline.notify, "say", said.append)
+    iid = _tee_item(s, db, tmp_path)
+    pipeline.process_item(s, db, iid)
+    it = db.item(iid)
+    gate = loads(it["gate"])
+    assert loads(it["facts"])["cover_photo"] == 1                        # the front, cut off — never the label
+    assert pipeline.NO_FULL_COVER in gate["notes"] and gate["questions"] == []
+    title = loads(it["renders"])["poshmark"]["title"]
+    assert [x for x in said if x.startswith("No full photo of")] == [f"No full photo of {title} — a full front shot "
+                                                                      "next time"]

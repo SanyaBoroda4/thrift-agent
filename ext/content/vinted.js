@@ -357,7 +357,8 @@
       // 2026-10-11: the first check of two live listings read "no title")
       await T.until(() => text(S().listing_title.selectors) || null, 10000);
       return { url: location.href, title: text(S().listing_title.selectors), price: text(S().listing_price.selectors),
-               photos: T.$$(S().listing_photos.selectors).length, body: T.textOf().slice(0, 3000) };
+               photos: T.$$(S().listing_photos.selectors).length, body: T.textOf().slice(0, 3000),
+               first_photo: T.$(S().listing_photos.selectors)?.getAttribute("src") || null };   // WO37
     },
 
     // WO33, recorded from the first supervised publish (2026-10-08): Upload lands on the member page with an "Item

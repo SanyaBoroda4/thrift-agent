@@ -559,10 +559,12 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
       const title = description.split("\n")[0].trim() || String(ld.name || "");
       const price = text(S().listing_price.selectors) || (ld.offers?.price ? `$${ld.offers.price}` : "");
       const photos = Array.isArray(ld.image) ? ld.image.length : T.$$(S().listing_photos.selectors).length;
+      const first = Array.isArray(ld.image) && ld.image.length ? String(ld.image[0]?.url || ld.image[0])
+        : (T.$(S().listing_photos.selectors)?.getAttribute("src") || null);   // WO37: the cover, checked after a fix
       const attributes = text(S().listing_attributes.selectors);
       const href = T.$(S().shop_link.selectors)?.getAttribute("href") || "";
       const shop = (href.match(/^\/([^/?#]+)\/?/) || [])[1] || null;
-      return { url: location.href, title, price, photos, attributes, shop, skus: skusShown(),
+      return { url: location.href, title, price, photos, first_photo: first, attributes, shop, skus: skusShown(),
                product: String(ld["@type"] || "") === "Product" || !!ld.offers,
                availability: String(ld.offers?.availability || "") || null,
                body: [title, price, attributes, description].join("\n").slice(0, 3000) };

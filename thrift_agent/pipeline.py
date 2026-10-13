@@ -944,9 +944,6 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
     # The card shows only what needs the owner (WO20): these warnings and the allowed questions; the rest (an unsure
     # grade, a subcategory left out) is kept in the item's record as info.
     notes += flaw_notes(facts, shown) + ([cover_note] if cover_note else [])
-    if cover_note == NO_FULL_COVER:                       # WO37: one line to the private chat, never a question
-        notify.say(f"No full photo of {facts.brand.value or ''} {facts.item_type or 'this item'} ({iid}) — the one "
-                   f"showing the most of it is the cover; a full front shot next time".replace("  ", " ").strip())
     info = list(fit_notes)
     tiers, pcfg = load_yaml("brand_tiers.yaml"), premium.config()
     pr = price(facts, tiers, s["pricing"], it["note"], premium.price_factor(facts, pcfg))
@@ -1041,6 +1038,9 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
             db.log(iid, "item_processed", {"decision": gate.decision, "reasons": gate.reasons, "status": status,
                                            "cover": facts.cover_photo, "upright": facts.cover_upright,
                                            **({"card": "changed" if changed else "unchanged"} if in_place else {})})
+            if cover_note == NO_FULL_COVER:              # WO37: one line to the private chat, never a question
+                title = (row.get("poshmark") or {}).get("title") or _title_of(db.item(iid))
+                notify.say(f"No full photo of {title} — a full front shot next time")
     if stale:
         if in_place:
             raise ValueError(f"item {iid} changed while it was being reprocessed (an answer came in) — run it again")
@@ -1492,9 +1492,12 @@ def set_size(s: Settings, db: DB, iid: str, size: str) -> str:
         db.set_item(iid, owner_size=size, facts=facts.model_dump(), renders=renders, gate=doc, status=status)
         db.log(iid, "size_set", {"size": size, "status": status})
         _close_changed_card(db, iid, was)
+        # WO37: the owner's size is "list it": every site that failed or skipped it before any publish click goes
+        # back in line (live: the Clarks — Depop and Vinted skipped "no size", Poshmark's Next showed "Required");
+        # an unconfirmed publish never (invariant 4)
         for row in db.conn.execute("SELECT marketplace FROM listings WHERE item_id=? AND status IN ('skipped', "
-                                   "'failed') AND error LIKE '%no size%'", (iid,)).fetchall():
-            db.upsert_listing(iid, row["marketplace"], status="queued", error=None)   # WO37: back in line
+                                   "'failed') AND COALESCE(error, '') NOT LIKE 'unconfirmed%'", (iid,)).fetchall():
+            db.upsert_listing(iid, row["marketplace"], status="queued", error=None)
     return status
 
 

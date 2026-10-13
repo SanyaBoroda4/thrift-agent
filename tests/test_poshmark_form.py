@@ -27,6 +27,7 @@ from thrift_agent.post.base import PosterError, Skipped, compare  # noqa: E402
 from thrift_agent.schema import Render  # noqa: E402
 
 FIXTURE = Path(__file__).parent / "fixtures" / "poshmark_create_listing.html"
+EDIT_FIXTURE = Path(__file__).parent / "fixtures" / "poshmark_edit_listing.html"
 BASE = "https://fixture.invalid"
 SKU = "i_260929_abc123"
 
@@ -79,6 +80,7 @@ class Site:
         self.listings: list[dict] = [dict(x) for x in closet]     # listing() dicts, oldest first
         self.appear = [dict(x) for x in appear]                    # listed elsewhere while List This Item is pressed
         self.lag, self.closet_loads, self.list_clicks = lag, 0, 0
+        self.updates = 0                                           # WO37: Update pressed on the edit page
 
     async def _html(self, route, body: str):
         await route.fulfill(status=200, content_type="text/html; charset=utf-8", body=body)
@@ -102,6 +104,11 @@ class Site:
             await route.abort()
         elif path == "/create-listing":
             await self._html(route, FIXTURE.read_text(encoding="utf-8"))
+        elif path.startswith("/edit-listing/"):                    # WO37: the edit page's photos
+            await self._html(route, EDIT_FIXTURE.read_text(encoding="utf-8"))
+        elif path == "/api/update":
+            self.updates += 1
+            await route.fulfill(status=204, body="")
         elif path == "/api/list-click":
             self.list_clicks += 1
             self.listings += [{**x, "shows_at": self.closet_loads + 1 + self.lag} for x in self.appear]
@@ -1069,3 +1076,40 @@ def test_an_item_without_a_size_is_skipped_before_next(chrome, posh, photos, mon
     """Live 2026-10-12 (the Clarks): no size on any photo — Next only showed "Required" under Size."""
     err, price = fill_expecting(chrome, posh, render(photos, size=None), Skipped, steps=["_category", "_size"])
     assert str(err) == "no size on the item" and price == ""
+
+
+# ---------------------------------------------------------------- WO37: a live listing's cover, on its edit page
+
+EDIT_URL = BASE + "/listing/UGG-New-Chestnut-Shearling-Platform-Slide-Slippers-size-7-6acd8ea6ce5b0ac5ccde36eb"
+
+
+def cover_fix(chrome, p, photos, monkeypatch, dry, swap=1, **variant):
+    """set_cover on the edit-page stand-in: photo 3 (blue) as the cover, the old cover's photo (red) where it was."""
+    monkeypatch.setattr(poshmark, "PUBLIC_CHECK_S", 2.0)
+    monkeypatch.setattr(poshmark, "PUBLIC_EVERY_S", 0.05)
+
+    async def scenario(ctx, site):
+        monkeypatch.setattr(poshmark, "PUBLIC_COVER", lambda url: "new-cover" if site.updates else "old-cover")
+        out = await p.set_cover(ctx, EDIT_URL, Path(photos[2]), (swap, Path(photos[0])) if swap else None, dry=dry,
+                                shots=Path(photos[0]).parent)
+        return out, site
+    return drive(chrome, scenario, **variant)
+
+
+def test_a_cover_dry_run_replaces_on_the_page_and_never_updates(chrome, posh, photos, monkeypatch):
+    out, site = cover_fix(chrome, posh, photos, monkeypatch, dry=True)
+    assert out["ok"] and not out["saved"] and site.updates == 0, out
+    assert site.visited("/edit-listing/6acd8ea6ce5b0ac5ccde36eb")
+
+
+def test_a_cover_fix_replaces_the_cover_swaps_the_old_one_in_and_updates_once(chrome, posh, photos, monkeypatch):
+    out, site = cover_fix(chrome, posh, photos, monkeypatch, dry=False)
+    assert out["ok"] and out["saved"] and site.updates == 1 and out["cover"] == "new-cover", out
+
+
+@pytest.mark.parametrize("variant", [dict(replaceIgnored=True), dict(applyLost=True)])
+def test_a_replacement_that_doesnt_take_is_never_saved(chrome, posh, photos, monkeypatch, variant):
+    monkeypatch.setattr(poshmark, "MENU_TIMEOUT_MS", 600)
+    out, site = cover_fix(chrome, posh, photos, monkeypatch, dry=False, **variant)
+    assert not out["ok"] and not out["saved"] and site.updates == 0, out
+    assert "nothing saved" in out["error"]

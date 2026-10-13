@@ -380,26 +380,38 @@
     }
     const t0 = performance.now();
     try {
-      await site.fill(job, (photos || []).map(T.fileOf), st);
+      if (job.mode === "cover") await T.coverFirst(job, st);          // WO37: the right photo first, nothing else
+      else await site.fill(job, (photos || []).map(T.fileOf), st);
     } catch (e) {
       await T.screenshot("form");
       return fail(st.failed.length ? st.failed[0].split(":")[0] : "fill", "form",
                   String(e && e.message ? e.message : e).slice(0, 300));
     }
-    const seen = site.readBack(job, st);
-    seen.submit_buttons = site.submitButtons().length;               // seen, never clicked in a dry run
+    const seen = job.mode === "cover" ? T.coverSeen(job, st) : site.readBack(job, st);
+    seen.submit_buttons = (job.mode === "cover" ? T.saveButtons(job.site) : site.submitButtons()).length;
     seen.fill_ms = Math.round(performance.now() - t0);
     T.emit({ event: "step", job_id: job.job_id, name: "submit_seen", ok: seen.submit_buttons === 1,
              detail: `${seen.submit_buttons} button(s)` });
     await T.screenshot("form");
     const report = { job_id: job.job_id, seen, failed: st.failed, guesses: st.guesses, notes: st.notes, shown: st.shown };
-    if (job.mode === "dry_run") return T.emit({ event: "result", dry_run: true, ...report });
+    if (job.mode === "dry_run" || (job.mode === "cover" && job.dry)) {
+      return T.emit({ event: "result", dry_run: true, ...report });   // a cover dry run: moved on the page, never saved
+    }
     if (T.off.has(job.job_id)) return fail("cancelled", "form", "called off by the bridge");
     T.emit({ event: "ready", ...report });
     const ok = await new Promise((resolve) => { go = resolve; });     // the bridge's go-ahead, after its diff
     go = null;
     if (!ok) return fail("cancelled", "form", "cancelled");
-    await site.submit(job, st);                                       // exactly one click; the page then navigates
+    if (job.mode === "cover") {
+      try {
+        await T.saveEdit(job, st);                                    // exactly one click on Save
+      } catch (e) {
+        await T.screenshot("form");
+        return fail("save", "form", String(e && e.message ? e.message : e).slice(0, 300));
+      }
+    } else {
+      await site.submit(job, st);                                     // exactly one click; the page then navigates
+    }
     // WO35: a form the site refused stays, with its error (live 2026-10-09: Depop "This field is required" under
     // Brand; Vinted "Fill in brand to continue"): said at once, with the error — nothing was published.
     const refused = await T.until(() => (T.classify(job.site) === "form" && T.errorsShown().length ? true : null), 8000);
@@ -414,6 +426,67 @@
   };
   // The errors a form shows: alerts and error texts that say something (an empty error wrapper — Depop's red icon —
   // is no message), with the field each belongs to when its label is known.
+  // ---- WO37: a live listing's cover fixed on its edit page (the owner, 2026-10-12: "put the right photo first and
+  // change nothing else"). Both sites' photo grids are dnd-kit sortables (recorded on their edit pages 2026-10-12:
+  // [aria-roledescription=sortable] per photo, Depop's "Cover" / Vinted's "Main" badge on the first; Vinted's alt text:
+  // "To reorder photos, press the space bar"). The photo is focused, picked up with Space, moved with the arrow keys —
+  // up to the first row, then left — and dropped with Space; the order is read back, again up to three rounds.
+  const KEY_CODES = { " ": "Space", ArrowLeft: "ArrowLeft", ArrowUp: "ArrowUp" };
+  const press = (el, key) => {
+    const at = { key, code: KEY_CODES[key] || key, bubbles: true, cancelable: true };
+    el.dispatchEvent(new KeyboardEvent("keydown", at));
+    el.dispatchEvent(new KeyboardEvent("keyup", at));
+  };
+  const sameList = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+  T.editTiles = (site) => T.$$(T.selectors[site].steps.edit_photos.selectors).filter(T.visible);
+  T.tileSrc = (tile) => tile.querySelector("img")?.getAttribute("src") || "";
+  T.saveButtons = (site) => T.$$(T.selectors[site].steps.edit_save.selectors).filter(T.visible);
+  T.coverFirst = async (job, st) => {
+    const order = () => T.editTiles(job.site).map(T.tileSrc);
+    await T.until(() => (order().length >= job.count && order().every(Boolean) ? true : null), 20000);
+    const before = order();
+    st.coverBefore = before;
+    st.coverAfter = before;
+    if (before.length !== job.count) {
+      throw new Error(`the listing shows ${before.length} photos, not the ${job.count} posted: changed since — left as it is`);
+    }
+    if (!(job.from > 0 && job.from < before.length)) throw new Error(`no photo ${job.from + 1} to move first`);
+    const target = before[job.from];
+    const want = [target, ...before.filter((_, i) => i !== job.from)];
+    for (let round = 0; round < 3 && !sameList(order(), want); round++) {
+      const tiles = T.editTiles(job.site);
+      const tile = tiles[order().indexOf(target)];
+      const r = tile.getBoundingClientRect();
+      const rects = tiles.map((t) => t.getBoundingClientRect());
+      const up = [...new Set(rects.map((x) => Math.round(x.top)))].filter((top) => top < r.top - 4).length;
+      const left = rects.filter((x) => Math.abs(x.top - r.top) < 5 && x.left < r.left - 4).length;
+      tile.scrollIntoView?.({ block: "center" });
+      tile.focus();
+      await T.settle(150);
+      press(tile, " ");                                               // picked up
+      await T.settle(300);
+      for (let k = 0; k < up; k++) { press(document.activeElement || tile, "ArrowUp"); await T.settle(200); }
+      for (let k = 0; k < left; k++) { press(document.activeElement || tile, "ArrowLeft"); await T.settle(200); }
+      press(document.activeElement || tile, " ");                     // dropped
+      await T.until(() => (sameList(order(), want) ? true : null), 3000);
+      T.emit({ event: "step", job_id: job.job_id, name: "cover_move", ok: sameList(order(), want),
+               detail: `round ${round + 1}: ${up} up, ${left} left` });
+    }
+    st.coverAfter = order();
+    if (!sameList(st.coverAfter, want)) {
+      throw new Error(`photo ${job.from + 1} didn't get to the front (the order now: ${
+        st.coverAfter.map((x) => before.indexOf(x) + 1).join(", ")}): nothing saved`);
+    }
+  };
+  T.coverSeen = (job, st) => ({ cover_before: st.coverBefore || [], cover_after: st.coverAfter || [],
+                                save_enabled: T.saveButtons(job.site).some((b) => !b.disabled) });
+  T.saveEdit = async (job, st) => {
+    const save = await T.until(() => T.saveButtons(job.site).find((b) => !b.disabled) || null, 5000);
+    if (!save) throw new Error("the edit page's Save stayed disabled: nothing saved");
+    st.notes.push("Save pressed once");
+    await T.click(save);
+  };
+
   // WO35: a listing's title as the site keeps it, the same as ours (spaces aside — the exact words, the exact case).
   T.sameTitle = (a, b) => String(a ?? "").replace(/\s+/g, " ").trim() === String(b ?? "").replace(/\s+/g, " ").trim();
   T.errorsShown = () => {

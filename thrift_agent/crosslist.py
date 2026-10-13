@@ -669,6 +669,21 @@ def poshmark_page(url: str) -> tuple[bool | None, int | None]:
     return (None if not status else status == "available"), (price or None)
 
 
+def poshmark_cover(url: str) -> str | None:
+    """The Poshmark listing's cover as its public page shows it (listingDetails.picture_url), or None (WO37)."""
+    import httpx
+
+    from thrift_agent.harvest import parse_state
+    try:
+        r = httpx.get(url, headers={"User-Agent": UA, "Accept": "text/html"}, timeout=20, follow_redirects=True,
+                      verify=_tls())
+        details = parse_state(r.text).get("$_listing_details", {}).get("listingDetails", {}) if r.status_code == 200 \
+            else {}
+    except (httpx.HTTPError, ValueError):
+        return None
+    return details.get("picture_url") or None
+
+
 def backfill(s: Settings, db: DB, mps: list[str], check: bool = True, dry: bool = False,
              live=None, page=None) -> list[tuple[str, str]]:
     """`thrift crosslist --backfill`: every item live on Poshmark that isn't on these marketplaces yet, oldest first,

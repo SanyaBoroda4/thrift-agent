@@ -34,6 +34,7 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 from thrift_agent import brands, bridge as bridge_mod
 from thrift_agent.post.base import (AccountBlocked, Mode, Outcome, Poster, PosterError, _joined, _norm, _shows_price,
@@ -133,6 +134,19 @@ def unverified(site: str, path: Path = SELECTORS) -> set[str]:
     """The steps of a site not yet recorded working (ext/selectors.json "verified": false)."""
     steps = (selectors(path).get(site) or {}).get("steps") or {}
     return {name for name, step in steps.items() if not step.get("verified")}
+
+
+def photo_key(url: str | None) -> str:
+    """A site photo's own id, the same on its edit page, its listing page and in its JSON (WO37, recorded 2026-10-12):
+    Depop media-photos.depop.com/b1/<user>/<id>/P2.jpg (P0 in the JSON-LD), Vinted images1.vinted.net/tc|t/<id>/f800/…
+    — the longest part of the path with an underscore in it."""
+    parts = [p for p in urlparse(str(url or "")).path.split("/") if "_" in p]
+    return max(parts, key=len) if parts else str(url or "")
+
+
+def cover_moved(before: list, after: list, photo: int) -> bool:
+    """The order after the move is the old one with photo `photo` first and every other one in its order (WO37)."""
+    return 0 < photo < len(before) and after == [before[photo], *before[:photo], *before[photo + 1:]]
 
 
 class ExtensionPoster(Poster):
@@ -519,6 +533,89 @@ class ExtensionPoster(Poster):
         finally:
             if not job.done:
                 bridge.drop(job)
+
+    # ---- WO37: a live listing's cover fixed on its edit page (the owner, 2026-10-12)
+
+    def edit_url(self, url: str) -> str | None:
+        """The listing's edit page, as WO37's probe recorded it: Depop /products/edit/<slug>/, Vinted /items/<id>/edit."""
+        address = self.listing_address(url or "") or ""
+        if self.name == "depop" and (m := re.search(r"/products/([a-z0-9]+(?:-[a-z0-9]+)+)/?$", address)):
+            return f"https://www.depop.com/products/edit/{m[1]}/"
+        if self.name == "vinted" and (m := re.search(r"/items/(\d+)", address)):
+            return f"https://www.vinted.com/items/{m[1]}/edit"
+        return None
+
+    async def set_cover(self, url: str, photo: int, count: int, dry: bool = False) -> dict:
+        """The listing's photo at `photo` (0-based, its order as posted: `count` photos) moved first on its edit page with
+        the photo grid's own keyboard reordering (ext/content/common.js T.coverFirst); the page's new order checked here
+        — that photo first, every other one in its order — before the ONE go-ahead; Save pressed once (never in a dry
+        run); then the listing page read: its first photo must be the one moved. Returns {"ok", "saved", "before",
+        "after", "live", "error", "shot"}. Nothing is saved when anything differs."""
+        edit = self.edit_url(url)
+        if edit is None:
+            return {"ok": False, "saved": False, "error": f"not a {self.site} listing address: {url}"}
+        if not await self.wait_connected():
+            raise PosterError(f"{self.site}: the Thrift Chrome extension isn't connected")
+        bridge = self._bridge()
+        job = bridge.submit(self.name, "cover", {"fields": {}, "copy": {}, "price": None, "photos": [],
+                                                 "listing_url": url, "edit_url": edit, "from": photo, "count": count,
+                                                 "dry": dry}, shot=self.shot)
+        job.listener = self._listen
+        try:
+            out = await self._cover(bridge, job, url, photo, dry)
+        finally:
+            if not job.done:                      # given up on: called off, its tab closed — nothing saved
+                bridge.drop(job)
+                try:
+                    await bridge.settle(job, 5.0)
+                except BaseException:  # noqa: BLE001
+                    pass
+        return out
+
+    async def _cover(self, bridge: bridge_mod.Bridge, job: bridge_mod.Job, url: str, photo: int, dry: bool) -> dict:
+        try:
+            ev = await self._await(job, ("ready", "result", "error"), job.created + bridge_mod.JOB_TIMEOUT)
+        except TimeoutError:
+            return {"ok": False, "saved": False, "error": "the edit page wasn't done in time: nothing saved"}
+        if ev.get("event") == "error":
+            if ev.get("page") in STOP_PAGES:
+                raise self._stop(ev)
+            return {"ok": False, "saved": False, "shot": self._kept(job, "form"),
+                    "error": f"{ev.get('stage') or 'edit'}: {ev.get('message')}"}
+        seen = ev.get("seen") or {}
+        before, after = list(seen.get("cover_before") or []), list(seen.get("cover_after") or [])
+        out = {"before": before, "after": after, "shot": self._kept(job, "form"), "saved": False}
+        if not cover_moved(before, after, photo):
+            if ev.get("event") == "ready":
+                bridge.command(job, "cancel")
+            return {**out, "ok": False, "error": "the page's order isn't the old one with that photo first: nothing saved"}
+        if ev.get("event") == "result" or dry:
+            if ev.get("event") == "ready":
+                bridge.command(job, "cancel")
+            return {**out, "ok": True}                                  # a dry run: moved on the page, never saved
+        if (n := seen.get("submit_buttons")) != 1:
+            bridge.command(job, "cancel")
+            return {**out, "ok": False, "error": f"the edit page's Save differs from the recording ({n} found): "
+                                                 "nothing saved"}
+        self._say("go-ahead sent: Save once")
+        bridge.command(job, "submit")
+        try:
+            ev = await job.wait(("result", "error"), AFTER_CLICK_MIN)
+        except (TimeoutError, asyncio.TimeoutError):
+            ev = {"event": "error", "message": "no listing page after Save"}
+        out.update(saved=True, shot=self._kept(job, "after-publish", "refused", "form") or out["shot"])
+        live = ev.get("live") or {} if ev.get("event") == "result" else {}
+        if not live.get("first_photo"):                # the listing page read again (the landing may be another page)
+            check = await self._job("verify", {"listing_url": url}, 120)
+            live = check.get("live") or {} if check.get("event") == "result" else live
+        moved, first = photo_key(before[photo]), photo_key(live.get("first_photo"))
+        out["live"] = live
+        if ev.get("event") == "error" and str(ev.get("message") or "").startswith("refused:"):
+            return {**out, "ok": False, "error": f"{self.site} refused the change: {ev['message'][len('refused: '):]}"}
+        if first == moved:
+            return {**out, "ok": True}
+        return {**out, "ok": False, "error": f"after Save the listing's first photo is {first or 'not shown'}, not the "
+                                             f"one moved ({moved})"}
 
     async def wait_connected(self, timeout: float = CONNECT_WAIT) -> bool:
         end = time.monotonic() + timeout
