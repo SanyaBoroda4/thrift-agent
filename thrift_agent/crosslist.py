@@ -301,6 +301,8 @@ def record(s: Settings, db: DB, iid: str, mp: str, title: str, out, fields: dict
         else:
             again = "retried next window" if row and row["attempts"] < MAX_ATTEMPTS else "no more attempts: skipped next window"
         notify.ops_photo(shot, f"❌ {LABEL[mp]} failed ({iid}): {title}\n{error}{note}\n({again})")
+    elif out.status == "skipped" and NO_SIZE in (out.error or ""):
+        say_no_size(title)
     elif out.status == "skipped":
         notify.ops_photo(shot, f"⏭ {LABEL[mp]} skipped ({iid}): {title}\n{out.error}{note}")
         from thrift_agent.post import runner
@@ -370,13 +372,19 @@ def rechecks_due(db: DB, mp: str, now: datetime | None = None) -> list[str]:
 NO_SIZE = "no size on the item"
 
 
+def say_no_size(title: str) -> None:
+    """WO37: an item with no size, ONE private line whichever site found it (the same text: said once) — her reply
+    'size …' to its card puts every site back in line; never the group's 'retry' line, which would only skip again."""
+    notify.say(f"⏭ {title}: {NO_SIZE} — it goes up once you reply 'size …' to its card")
+
+
 def skip_unmappable(db: DB, iid: str, mp: str, title: str, why: str) -> None:
     """A required field the catalog can't take from the facts: this marketplace is skipped for this item (the others
     go on), with the reason in the ops chat."""
     db.upsert_listing(iid, mp, status="skipped", error=SKIPPED + why)
     db.log(iid, "post_skipped", {"mp": mp, "error": why, "mapping": True})
     if why == NO_SIZE:                                   # WO37: one line for the item, not one per site
-        notify.say(f"⏭ {title}: {NO_SIZE} — it goes up once you reply 'size …' to its card")
+        say_no_size(title)
         return
     notify.say(f"⏭ {LABEL[mp]} skipped ({iid}): {title}\ncan't map: {why}")
 

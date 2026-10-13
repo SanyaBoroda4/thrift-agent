@@ -461,6 +461,21 @@ def test_a_skipped_item_saves_nothing_is_reported_and_the_loop_goes_on(tmp_path,
     assert runner.next_job(s, db, ["poshmark"], False) is None          # never retried on its own
 
 
+def test_an_item_without_a_size_is_one_private_line_never_the_groups_retry(tmp_path, monkeypatch, harness):
+    """WO37 (the alo bras, priced with no size on their photos): Poshmark skips them before Next — the owner hears ONE
+    private line asking for the size (the same as Depop's and Vinted's, so said once), never the group's "Reply
+    'retry'", which would only skip again."""
+    said, pauses = harness
+    s = _settings(tmp_path, role="prod", autopublish=True, dry_run=False)
+    db = DB(s.path("db"))
+    a = _ready_item(db, seq=1)
+    poster = StubPoster(Outcome("skipped", error="no size on the item"))
+    _run(monkeypatch, s, db, poster, once=True)
+    assert db.listing(a, "poshmark")["status"] == "skipped"
+    assert f"⏭ {RENDER.title}: no size on the item — it goes up once you reply 'size …' to its card" in said
+    assert not said.group and not any("retry" in m for m in said)
+
+
 def test_a_skip_leaves_the_failure_counter_alone(tmp_path, monkeypatch, harness):
     """Neither a failure nor a success for the circuit breaker: failed, skipped, failed still trips max_fail=2."""
     s = _settings(tmp_path, max_fail=2)

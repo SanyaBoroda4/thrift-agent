@@ -549,6 +549,8 @@ def record_outcome(db: DB, iid: str, mp: str, render: Render, out: Outcome, mark
         ask_unconfirmed(db, iid, mp, unconfirmed_text(render.title, slept))
     elif out.status == "failed":
         notify.photo(Path(out.screenshot or ""), f"❌ {mp} failed ({iid}): {render.title}\n{error}{note}")
+    elif out.status == "skipped" and crosslist.NO_SIZE in (error or ""):
+        crosslist.say_no_size(render.title)            # WO37: her size is the answer, never 'retry'; one line an item
     elif out.status == "skipped":
         ask_skipped(db, iid, mp, render.title, "Poshmark's form doesn't take one of its details")   # a reply settles it
         notify.photo(Path(out.screenshot or ""), f"⏭ skipped on {mp} ({iid}): {render.title}\n{out.error}\n"
