@@ -250,6 +250,9 @@ SEL = {
     "photo_dialog_image": lambda d: d.locator("img.image-edit-modal__selected-image"),
     "photo_dialog_file": lambda d: d.locator('input[name="replaceImage"]'),
     "photo_dialog_apply": lambda d: d.locator('[data-et-name="apply"]'),
+    # WO37, the first dry run (2026-10-13): after the file is chosen the dialog shows its crop editor — croppie, a 3:4
+    # frame (also in a plain photo's dialog: "Delete | Replace"), zoom slider, rotate — and the photo it had is gone
+    "photo_dialog_crop": lambda d: d.locator(".croppie-container"),
     "promote_toggle": lambda panel: panel.locator('input[type="checkbox"]'),
     "draft_saved": re.compile(r"/closet/|/listing/"),
     "captcha": lambda p: p.get_by_text(re.compile("captcha|verify you are human", re.I)),
@@ -1337,9 +1340,13 @@ class PoshmarkPoster(Poster):
             before = await photos()
             if swap is not None and not 0 < swap[0] < len(before):
                 return {"ok": False, "saved": False, "error": f"no photo {swap[0] + 1} on the edit page ({len(before)})"}
-            await self._replace(page, tiles.nth(0), cover)
-            if swap is not None:
-                await self._replace(page, tiles.nth(swap[0]), swap[1])
+            try:
+                await self._replace(page, tiles.nth(0), cover)
+                if swap is not None:
+                    await self._replace(page, tiles.nth(swap[0]), swap[1])
+            except (PosterError, PlaywrightTimeout) as e:     # left without Update: nothing saved
+                await keep_evidence(page, self.shot, {"url": url, "before": before, "error": str(e)[:300]})
+                return {"ok": False, "saved": False, "shot": str(self.shot), "error": str(e).splitlines()[0][:300]}
             after = await photos()
             changed = [i for i, (a, b) in enumerate(zip(before, after)) if a != b]
             want = [0] + ([swap[0]] if swap is not None else [])
@@ -1367,19 +1374,20 @@ class PoshmarkPoster(Poster):
             await page.close()
 
     async def _replace(self, page: Page, tile: Locator, photo: Path) -> None:
-        """One tile's photo replaced (WO37): hovered, its Edit overlay, the dialog's Replace Photo given the file,
-        Apply — Poshmark's own default crop."""
+        """One tile's photo replaced (WO37): hovered, its Edit overlay, the dialog's Replace given the file, its crop
+        editor waited for (the photo is 3:4: Poshmark's default crop takes it whole), Apply."""
         await tile.scroll_into_view_if_needed()
         await tile.hover()
         await SEL["edit_tile_open"](tile).first.click(timeout=MENU_TIMEOUT_MS)
         dialog = SEL["photo_dialog"](page).first
         await dialog.wait_for(state="visible", timeout=MENU_TIMEOUT_MS)
-        old = await SEL["photo_dialog_image"](dialog).first.get_attribute("src")
         await SEL["photo_dialog_file"](dialog).first.set_input_files(str(photo))
-        waited = 0
-        while await SEL["photo_dialog_image"](dialog).first.get_attribute("src") == old and waited < MENU_TIMEOUT_MS:
+        crop, waited = SEL["photo_dialog_crop"](dialog), 0
+        while not await crop.count() and waited < MENU_TIMEOUT_MS:
             await page.wait_for_timeout(POLL_MS)
             waited += POLL_MS
+        if not await crop.count():
+            raise PosterError("the photo dialog didn't take the file (its crop editor never showed): nothing saved")
         await settle(page, 0.5, 1.0)
         await SEL["photo_dialog_apply"](dialog).first.click()
         await dialog.wait_for(state="hidden", timeout=MENU_TIMEOUT_MS)

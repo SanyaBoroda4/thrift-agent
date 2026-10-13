@@ -77,9 +77,19 @@
     const f = e.target.files[0];
     if (!f || F.replaceIgnored) return;
     selected.src = URL.createObjectURL(f);
+    selected.style.display = "none";                      // as on the live page: the crop editor takes its place
+    const crop = document.createElement("div");
+    crop.className = "croppie-container";
+    crop.innerHTML = '<img class="cr-original-image" alt=""><canvas class="cr-image"></canvas>';
+    selected.after(crop);
     events.push(`replace:${f.name}`);
   });
-  const close = () => { dialog.classList.remove("open"); backdrop.classList.remove("open"); };
+  const close = () => {
+    dialog.classList.remove("open");
+    backdrop.classList.remove("open");
+    dialog.querySelectorAll(".croppie-container").forEach((c) => c.remove());
+    selected.style.display = "";
+  };
   document.getElementById("cancel").addEventListener("click", () => { events.push("cancel"); close(); });
   document.getElementById("apply").addEventListener("click", () => {
     if (editing && !F.applyLost) editing.querySelector("img").src = selected.src;

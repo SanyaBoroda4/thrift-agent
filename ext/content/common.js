@@ -461,13 +461,22 @@
       const up = [...new Set(rects.map((x) => Math.round(x.top)))].filter((top) => top < r.top - 4).length;
       const left = rects.filter((x) => Math.abs(x.top - r.top) < 5 && x.left < r.left - 4).length;
       tile.scrollIntoView?.({ block: "center" });
-      tile.focus();
-      await T.settle(150);
-      press(tile, " ");                                               // picked up
-      await T.settle(300);
-      for (let k = 0; k < up; k++) { press(document.activeElement || tile, "ArrowUp"); await T.settle(200); }
-      for (let k = 0; k < left; k++) { press(document.activeElement || tile, "ArrowLeft"); await T.settle(200); }
-      press(document.activeElement || tile, " ");                     // dropped
+      // dnd-kit marks the dragged sortable aria-pressed; its keyboard handle may be an element inside it (live,
+      // 2026-10-13: Vinted didn't pick the photo up from the sortable itself) — tried in turn until a drag starts
+      const dragging = () => [tile, ...tile.querySelectorAll("[aria-pressed]")]
+        .some((n) => n.getAttribute("aria-pressed") === "true");
+      let handle = tile;
+      for (const h of [tile, ...tile.querySelectorAll("[tabindex]:not([tabindex='-1'])")]) {
+        h.focus();
+        await T.settle(150);
+        press(h, " ");                                                // picked up
+        await T.settle(300);
+        handle = h;
+        if (dragging()) break;
+      }
+      for (let k = 0; k < up; k++) { press(document.activeElement || handle, "ArrowUp"); await T.settle(200); }
+      for (let k = 0; k < left; k++) { press(document.activeElement || handle, "ArrowLeft"); await T.settle(200); }
+      press(document.activeElement || handle, " ");                   // dropped
       await T.until(() => (sameList(order(), want) ? true : null), 3000);
       T.emit({ event: "step", job_id: job.job_id, name: "cover_move", ok: sameList(order(), want),
                detail: `round ${round + 1}: ${up} up, ${left} left` });

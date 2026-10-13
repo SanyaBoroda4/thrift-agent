@@ -111,7 +111,9 @@ async def fix(s: Settings, db: DB, iid: str, mps: list[str] | None = None, photo
                 if plan.mp == "poshmark":
                     width, height = prep.cover_dims(s["images"]["cover_size"])
                     cover = prep.portrait_cover(right, d / f"cover-fix-{pick:02d}.jpg", width, height, rotate=upright)
-                    swap = (plan.position, d / "photos" / f"{old:02d}.jpg") if old is not None else None
+                    swap = (plan.position, prep.portrait_cover(d / "photos" / f"{old:02d}.jpg",
+                                                               d / f"cover-fix-swap-{old:02d}.jpg", width, height)
+                            ) if old is not None else None     # 3:4 too: the photo dialog's frame takes it whole
                     out = await ps["poshmark"].set_cover(ctx, plan.url, cover, swap, dry=dry, shots=shots)
                 else:
                     ps[plan.mp].shot = shots / f"{iid}-{plan.mp}-{stamp}-cover.png"

@@ -12,7 +12,8 @@
   "Space") on a focused photo picks it up, ArrowLeft / ArrowUp (on the window) move it one place / one row, Space drops it
   there. jsdom has no layout: each photo's box comes from its place in a grid of `cols` columns.
   window.__FIXTURE: site ("depop" | "vinted"), photos (default 6), cols (4), ignoreKeys (the grid doesn't move),
-  stuck (a move stops one place short).
+  stuck (a move stops one place short), handleInside (the keyboard handle is the photo's inner [role=button] — as
+  Vinted's live page behaved, 2026-10-13). The dragged sortable is aria-pressed="true", as dnd-kit marks it.
   window.__saves counts the presses on Save; window.__order() is the photos' order.
 -->
 </head>
@@ -46,7 +47,8 @@
   for (let i = 0; i < n; i++) {
     const box = document.createElement("div");
     box.className = "photo-box";
-    box.innerHTML = `<div role="button" tabindex="0" aria-roledescription="sortable"><img alt="Uploaded photo ${i + 1} of ${n}" src="${src(i)}"></div>`;
+    box.innerHTML = `<div role="button" tabindex="0" aria-roledescription="sortable"><div class="inner" role="button"
+      tabindex="0"><img alt="Uploaded photo ${i + 1} of ${n}" src="${src(i)}"></div></div>`;
     grid.appendChild(box);
   }
   const tiles = () => [...grid.querySelectorAll("[aria-roledescription='sortable']")];
@@ -72,8 +74,10 @@
     if (F.ignoreKeys || e.code !== "Space" || active) return;
     const t = e.target.closest("[aria-roledescription='sortable']");
     if (!t) return;
+    if (F.handleInside && !e.target.classList.contains("inner")) return;   // only the inner handle starts a drag
     e.preventDefault();
     active = t;
+    t.setAttribute("aria-pressed", "true");
     target = place(t);
     setTimeout(() => window.addEventListener("keydown", moving), 0);   // dnd-kit's window listener, after the start
   });
@@ -89,6 +93,7 @@
       grid.removeChild(box);
       grid.insertBefore(box, grid.children[to] || null);
       if (from !== to && site === "vinted") save.disabled = false;
+      active.removeAttribute("aria-pressed");
       active = null;
       badge();
     }

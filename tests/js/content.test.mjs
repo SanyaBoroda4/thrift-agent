@@ -1093,6 +1093,17 @@ for (const site of ["depop", "vinted"]) {
   });
 }
 
+test("vinted: a keyboard handle inside the photo is found when the photo itself doesn't start a drag (WO37)",
+  async () => {
+    const p = editPage("vinted", { handleInside: true });
+    const before = plain(p.w.__order());
+    await run(p, coverJob("vinted", { dry: true }));
+    const r = plain(p.last());
+    assert.equal(r.event, "result", JSON.stringify(r));
+    assert.deepEqual(r.seen.cover_after, [before[2], before[0], before[1], ...before.slice(3)]);
+    assert.equal(p.w.__saves, 0);
+  });
+
 test("a grid that doesn't answer the keyboard, or a listing with other photos, is never saved (WO37)", async () => {
   let p = editPage("vinted", { ignoreKeys: true });
   await run(p, coverJob("vinted"));
