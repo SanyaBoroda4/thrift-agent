@@ -1172,7 +1172,8 @@ The first long evening at gap 0 (17 items, 15 shares). What went wrong, and what
   the item"; live: the Clarks went to Next and Poshmark only showed "Required").
 - **No size at all**: the title never carries a size no photo shows (`copy.ensure_title_size` takes a made-up "size 8"
   out — live: the Clarks); the card says "⚠️ No size on the photos — reply 'size …' (it can't be listed without one)";
-  Depop and Vinted skip it with ONE private line for the item (`crosslist.NO_SIZE`); a reply 'size 8' puts every site
+  every site skips it with ONE private line for the item (`crosslist.say_no_size`, the same text on Poshmark, Depop and
+  Vinted, so said once — never the group's "⏭ … Reply 'retry'", which would only skip again); a reply 'size 8' puts every site
   that skipped or failed it before any publish click back in line — never an unconfirmed publish (`pipeline.set_size`).
 - **Depop's colours**: Depop put its own colour back AFTER our tidy (live: the jacket, the UGG Tazz — the form check
   stopped both before Post): the tidy lets the page settle and reads the multi-selects once more (`chipsOurs`,
