@@ -45,7 +45,7 @@ def right_photo(s: Settings, db: DB, iid: str, photo: int | None) -> tuple[int, 
     if photo is not None:
         if not 1 <= photo <= len(photos):
             raise ValueError(f"this item has photos 1 to {len(photos)} — there is no photo {photo}")
-        return photo - 1, turn.get(photo - 1, 0), "the owner's choice"
+        return photo - 1, turn.get(photo - 1, 0), "picked by its number"
     facts = Facts.model_validate(loads(it["facts"]))
     if not pipeline.labelled(check):
         check = pipeline.front_view(s, db, iid, photos, facts, kinds)
