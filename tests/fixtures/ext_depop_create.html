@@ -167,6 +167,7 @@ document.getElementById("upload-input__input").addEventListener("change", (e) =>
   }, F.aiDelay ?? 100);
 });
 window.__chosen = chosen;
+window.__readd = (id, v) => { chosen[id] = [...(chosen[id] || []), v]; chips(id); };   // Depop's own, again (WO37)
 document.getElementById("form").addEventListener("submit", (e) => {
   e.preventDefault();
   fetch("/api/post-click").catch(() => {});

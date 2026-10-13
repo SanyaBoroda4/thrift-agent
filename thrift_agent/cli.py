@@ -93,6 +93,12 @@ def _scan_inbox(s, db) -> int:
     alerts.scan_done(db)
     alerts.inbox_ok(db)
     alerts.not_busy(db, "the inbox")
+    if time.time() - float(db.kv_get("late_photos_at") or 0) >= 120:     # WO37: photos that came after a share was taken
+        db.kv_set("late_photos_at", str(time.time()))
+        try:
+            pipeline.late_photos(s, db)
+        except OSError as e:                              # the archive in iCloud, busy or refused: next time
+            db.log(None, "late_photos_skipped", f"{type(e).__name__}: {e}")
     return n
 
 
@@ -206,8 +212,8 @@ def _safe_window(db, fn) -> None:
 
 def _telegram_iteration(s, db, bot, state: dict) -> None:
     """One turn of the Telegram thread: long-poll for the owner's replies and button presses (each answer sends the
-    next question), make sure one question is out, and every RESEND_CHECK_SECONDS re-send the open one if it has
-    waited longer than telegram.resend_after_hours."""
+    next question), make sure one question is out, and every RESEND_CHECK_SECONDS look after the queue
+    (resend_pending: since WO37 nothing is ever sent twice)."""
     _safe_poll(s, db, bot, int(s.get("telegram.poll_timeout", 25)))
     _safe_pump(s, db)
     if started := alerts.scan_stuck(db):                   # the main thread waits on macOS's permission prompt

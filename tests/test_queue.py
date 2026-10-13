@@ -28,6 +28,16 @@ class FakeBot(Bot):
             return {"message_id": self.next_id}
         return [] if method == "getUpdates" else True
 
+
+    def shown(self):
+        """The newest card as the owner sees it now — the last caption or text sent, or edited in (WO37: a card is
+        edited in place, never sent twice)."""
+        for m, p in reversed(self.calls):
+            if m in ("sendMessage", "sendPhoto", "editMessageCaption", "editMessageText"):
+                return p.get("text") or p.get("caption")
+            if m == "editMessageMedia":
+                return (p.get("media") or {}).get("caption")
+        return None
     def texts(self):
         return [p.get("text") or p.get("caption") for m, p in self.calls if m in ("sendMessage", "sendPhoto")]
 
@@ -176,9 +186,9 @@ def test_the_worker_processes_in_the_queues_order(env, tmp_path, facts, monkeypa
 
 # ---------- a restart ----------
 
-def test_a_restart_sends_again_only_the_open_message_and_only_once_it_is_old(env, tmp_path, facts):
-    """WO24, live: every deploy restarts the worker, and each restart sent the open card again. A restart repeats only
-    a card that waited past telegram.resend_after_hours (the Mac slept) — and only that one."""
+def test_a_card_is_never_sent_again_after_a_restart_however_old(env, tmp_path, facts):
+    """WO24 then WO37 (the owner): every message goes out once per item and kind — a restart, or a card waiting for
+    hours, never sends it again; it stays where it is and its buttons keep working."""
     s, db, bot = env
     a = _batch(db, EARLY)
     a1 = _item(db, tmp_path, facts, a, 1, title="Tee A1")
@@ -188,8 +198,7 @@ def test_a_restart_sends_again_only_the_open_message_and_only_once_it_is_old(env
     assert resend_pending(s, db) == [] and bot.calls == []                 # a deploy right after: nothing repeated
     old = (datetime.now(timezone.utc) - timedelta(hours=7)).isoformat(timespec="seconds")
     db.conn.execute("UPDATE outbox SET sent_at=?", (old,))
-    assert resend_pending(s, db) == [a1]                                   # the worker starts after a long sleep
-    assert bot.questions() == ["Tee A1"]                                   # only the open card, not A2
+    assert resend_pending(s, db) == [] and bot.calls == []                 # after a long sleep: still never again
     assert approve.pump(s, db) is None                                     # A2 still waits for the answer
     handle_update(s, db, bot, _callback(f"approve:{a1}:40", mid=bot.next_id))
     assert bot.questions()[-1] == "Tee A2"
@@ -229,7 +238,8 @@ def test_later_moves_the_card_behind_everything_queued_so_far(env, tmp_path, fac
     n1 = _item(db, tmp_path, facts, newer, 1, title="Bag N1")              # shared after the tap on Later
     assert approve.queue(db) == [("item", a2), ("item", a1), ("item", n1)]
     handle_update(s, db, bot, _callback(f"approve:{a2}:40"))
-    assert bot.questions()[-1] == "Tee A1"
+    assert bot.questions()[-1] == "Tee A2" and _open(db) == ("item", a1)   # WO37: A1's card reopened, not sent again
+    assert bot.shown().startswith("Tee A1")                                # ...edited in place, its buttons back
     handle_update(s, db, bot, _callback(f"approve:{a1}:40"))
     assert bot.questions()[-1] == "Bag N1"
     assert handle_update(s, db, bot, _callback(f"later:{a1}")).startswith(f"later {a1}: rejected")   # priced already
@@ -306,7 +316,7 @@ def test_the_card_says_poshmarks_condition(env, tmp_path, facts, condition, labe
     s, db, bot = env
     _item(db, tmp_path, facts, _batch(db, EARLY), 1, title="Flats", condition=condition)
     approve.pump(s, db)
-    assert bot.texts()[-1] == f"Flats\nSize 7.5\nCondition: {label}"
+    assert bot.texts()[-1] == f"Flats\nSize 7.5\nCondition: {label}\n{approve.CORRECT_HINT}"
 
 
 def test_the_card_shows_the_kids_size_as_poshmarks_menu_does(env, tmp_path, facts):

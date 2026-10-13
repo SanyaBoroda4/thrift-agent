@@ -1037,3 +1037,35 @@ def test_a_page_without_the_control_is_false_with_evidence(chrome, posh, tmp_pat
     site.handle = bare
     assert run(chrome, site, lambda ctx: posh.set_availability(ctx, URL, False, shots=tmp_path)) is False
     assert '"label_on_page": true' in posh.shot.with_suffix(".json").read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------- WO37: tonight's three Poshmark failures
+
+def test_a_size_pick_that_closed_the_menu_with_no_size_is_picked_again(chrome, posh, photos):
+    """Live 2026-10-12 (the Marc Jacobs bag's "One Size"): the pick closed the menu and the form still said "Select
+    Size" — the menu is opened again and the size picked again."""
+    r = render(photos)
+    seen, events = fill_and_read(chrome, posh, r, steps=["_category", "_size"], sizeLostOnce=True)
+    assert "size-lost" in events and diff_on(seen, r, posh, "size") == {} and seen["size"] == "7.5"
+    assert seen["size_menu"] == "Done (picked 2×)"
+
+
+def test_the_promote_part_drawn_after_the_panel_is_waited_for(chrome, posh, photos, tmp_path):
+    """Live 2026-10-12 (the UGG Tazz): the panel was read before its Promote My Closet part was drawn."""
+    out, site, shown = publish(chrome, posh, render(photos), tmp_path / "shots", promoteLate=True)
+    assert out.status == "posted" and site.list_clicks == 1, out
+    assert "Promote My Closet Off" in shown[0]
+
+
+def test_a_panel_that_cant_be_read_is_kept_with_its_text(chrome, posh, photos, tmp_path):
+    out, site, _ = publish(chrome, posh, render(photos), tmp_path / "shots", promoteOn=True, promoteText=True)
+    assert out.status == "failed" and site.list_clicks == 0
+    assert "can't tell whether Promote My Closet is off" in out.error and "the panel read: " in out.error
+    assert "Promote My Closet On" in out.error
+    assert list((tmp_path / "shots").glob(f"{SKU}-poshmark-*-panel.png"))      # the panel before ‹ Back
+
+
+def test_an_item_without_a_size_is_skipped_before_next(chrome, posh, photos, monkeypatch):
+    """Live 2026-10-12 (the Clarks): no size on any photo — Next only showed "Required" under Size."""
+    err, price = fill_expecting(chrome, posh, render(photos, size=None), Skipped, steps=["_category", "_size"])
+    assert str(err) == "no size on the item" and price == ""

@@ -80,9 +80,8 @@ iCloud Posh/inbox/<ts>/ (+ _done) ─► register batch ─► prep (HEIC→JPEG
   ─► verify (LLM strip unsupported claims) + lint (deterministic; what it flags is fixed in code where it can be —
      the title's size, "New" on a used item, an EU size — and never holds the item, owner rule 2026-10-09)
   ─► gate: publish | needs_info (the allowed questions only)
-  ─► (shoes in doubt, brand new vs worn: awaiting_condition ─► "Brand new or worn?" [NWT] [Like New] [Good] ─►
-      reprocessed with the answer)
-  ─► (a kids item, under 0.70 sure of Girls/Boys: "Girls or Boys?" [Girls] [Boys])
+  ─► (WO37: nothing but the price waits — a shoe in doubt is Like New, an unsure kids item Girls, an unsure category the
+      model's own pick; each shown on the card, a reply 'condition …' / 'boys' / 'category …' corrects it)
   ─► awaiting_price ─► the price card [$X-10] [⭐$X] [$X+10 … +60] [Later] [Change] (allowed questions folded in) ─► ready
      (Telegram is ONE queue: one open message at a time, the oldest batch first — see "Telegram")
   ─► poster: fill form → read back → diff → dry-run | draft | publish → verify live page → record URL
@@ -122,6 +121,9 @@ rows were copied in once (kv `listings_migrated`); `posts` is left as it was.
      listed as Good; check before approving"; the form never selects Fair (`CONDITION_TO_POSH`, `POSH_FAIR` recorded
      only). NWT stays strict (`settle_nwt`); NWOT / like_new for "new, no tags". Excellent → Like New on Poshmark:
      confirmed by the owner (WO18).
+   - **WO37 (the owner, 2026-10-12): never asked any more** — a pair in doubt is listed Like New (NWT only with a tag
+     photo), shown on the card; a reply 'condition nwt|like new|good' (`pipeline.correct_condition`, no model call: the
+     size and the copy stay) corrects it. What follows is the WO18 rule as it was, for items asked before.
    - **Shoes: brand new or worn? (owner rule, WO18 — ask only in doubt, never routinely).** For shoes (any
      department) the model reads `unworn` (yes/no + confidence + photos: soles, insoles, toe-box creasing, box, tags,
      sole stickers) and `box_photo`. `pipeline.shoe_condition_doubt` — code, on the model's own reading — asks when
@@ -162,6 +164,10 @@ rows were copied in once (kv `listings_migrated`); `posts` is left as it was.
      'Cardigan=S,Pants=XS'`, kept as `items.owner_sizes`). The copy check fixes what it can (the title's size,
      `copy.ensure_title_size`; "New" on a used item and an EU size, `copy.fix_title`) and never holds: a `ready` item with
      the owner's approved price always publishes, whatever its gate said (`runner.publishable`, `parallel.feed`).
+   - **WO37: only the price waits.** The brand below 0.70 and NWT without a tag photo stay lines on the price card; a
+     possible re-share is a warning on the card, never a hold ('same item' drops it, a price lists it); the category,
+     Girls/Boys and the condition are decided and shown ("Category: …"), corrected by a reply (size … · brand … ·
+     condition … · category … · cover N — `approve.CORRECT_HINT` on every card). The list below is how it was.
    - **The only questions.** Brand below 0.70 (the brand question carries a [No brand] button, WO25), NWT without a
      hang-tag photo, "Which category?" — the
      model under 0.70 sure of its category, or one Poshmark doesn't have / "Other": its own message with 1-3 real paths
@@ -538,13 +544,15 @@ The owner shares retailer screenshots (product page with price, style name, colo
      answer twice on all ten live items). The cover is turned by that exact quarter turn before the 3:4 padding
      (`prep.portrait_cover`), never cropped; if the call fails, the comparison's reading. EXIF orientation is applied
      to every photo at prep (`prep.normalize`), before any model sees it.
-  5. **"cover N"** — a reply to the card, or typed while it is open (no button): photo N of the item (its photos in
-     shooting order, from 0) becomes the cover (`items.owner_cover`, kept through reprocessing) and the card is sent
-     again. Never for an item on the marketplace.
+  5. **"cover N"** — a reply to the card, or typed while it is open (no button): her Nth photo of the item (shooting
+     order, counting from 1 since WO37 — `approve.cover_index`) becomes the cover (`items.owner_cover`, kept through
+     reprocessing) and the card is EDITED to show it, answered at once ("✓ Cover: photo 3"). Never for an item on the
+     marketplace.
 
   Facts from before WO20 (no roles) keep the model's pick and the old rule (no flaw photo as cover).
-- **The cover is 3:4 portrait** (`images.cover_size: [1200, 1600]`), padded with the photo's own edge colour, never
-  cropped: the frame of Poshmark's cover dialog, so its default crop takes the whole picture. The re-share check keeps
+- **The cover is 3:4 portrait** (`images.cover_size: [1200, 1600]`), never cropped: the frame of Poshmark's cover
+  dialog, so its default crop takes the whole picture. WO37 (live: flat grey bars above and below a sideways photo):
+  the photo, whole, over a blurred enlarged copy of itself (`prep.portrait_cover`); an exact 3:4 photo is only resized. The re-share check keeps
   hashing the square cover the photo would have made (`prep.cover_hash`), so it compares with older items bit for
   bit.
 - **Sizes in the title are US only, never EU.** Adults: "size 7.5". Kids shoes: "Toddler size 7.5" /
@@ -615,8 +623,10 @@ The owner shares retailer screenshots (product page with price, style name, colo
   rebuilt", the details of a hold or a skip, every ❌ error. The ops chat is the owner's private chat with the bot:
   `TELEGRAM_OPS_CHAT_ID` (`.env`), else `telegram.ops_chat_id` (set in `private/settings.yaml`), never the group's id;
   it works once the owner has sent the bot /start. A send there that fails is logged (event `ops_chat_down`), dropped and
-  not tried for 10 min (kv `ops_down_until`) — **never sent to the group instead**. The same text again: once, then
-  at most once a day (kv `ops_sent`, ids ignored), except the status message (edited in place) and the CLI echoes.
+  not tried for 10 min (kv `ops_down_until`) — **never sent to the group instead**. The same text again: never (WO37;
+  was once a day — kv `ops_sent`, ids ignored, kept 30 days), except the status message (edited in place) and the CLI
+  echoes. Routine poster notes ("category menu: …", Depop's "refused … looked up" of a listing found live, "removed
+  'X' … (Depop's own suggestion)") stay out of it (`crosslist.noteworthy`).
   On the dev machine both print (`[notify]` / `[ops]`). `notify.group*` is called only for (a)-(c).
 - Batch (WO20b): the grouping is accepted at once (`segmentation.auto_confirm: true`) — no contact sheet, the
   batch's first message is its first item. The sheet is still drawn (`work/<batch>/contact_sheet.png`); the code's
@@ -663,10 +673,15 @@ The owner shares retailer screenshots (product page with price, style name, colo
 - **A plain reply is the answer to THAT question** (WO27): to a card that asks the brand, "J. Crew" is the brand
   (`approve.brand_reply` → `pipeline.set_brand`: no model call; the old name replaced in the copy, the title brand-first,
   the card sent again when it changed); "brand X" works on any card; a size, NWT, a number… keep their meaning.
-- Re-send: once the open message — only that one — has waited longer than `telegram.resend_after_hours` (default 6),
-  it is sent again; checked when the worker starts and about hourly (Telegram keeps updates 24 h; the Mac sleeps). A
-  restart — every deploy — never repeats a card sent less than that ago (WO24: it used to, at every start; one skirt's
-  card went out 13 times in a day between deploys and `thrift recover` runs).
+- **WO37: no message is ever sent twice** (the owner; live 2026-10-12: one question came 4 times). `approve.once`
+  records a placeholder row in the outbox (a negative message id) BEFORE the send: a send that timed out after the
+  request went out (`telegram.maybe_delivered`: ReadTimeout, WriteTimeout, RemoteProtocolError…) counts as sent —
+  never sent again; only a connection that never opened is taken back and sent on the next pump. A card that changes
+  (a correction, a reprocessing, "cover N", Later) is EDITED in place (`approve.refresh_card`, `Bot.edit_card`:
+  editMessageMedia / Caption / Text), never sent anew; `resend_pending` sends nothing — the wake, a restart, a deploy
+  never repeat a message (`telegram.resend_after_hours` is no longer used). Uploads get 90 s (`UPLOAD_TIMEOUT`).
+- Before WO37: once the open message had waited longer than `telegram.resend_after_hours` (default 6), it was sent
+  again (WO24: a restart never repeated a card sent less than that ago).
 - Settings: `telegram.enabled`, `telegram.resend_after_hours`, `telegram.poll_timeout`, `telegram.ops_chat_id`. On
   prod, `thrift run` and `thrift poster` refuse to start when `telegram.enabled` but any of the three env vars is
   missing (the ops chat is optional: without one the technical messages are only logged).
@@ -979,9 +994,11 @@ sequential loop): an approved item goes to every site at once — about its slow
 - **Poshmark** in its own thread (own event loop, Playwright instance, SQLite connection); **Depop and Vinted** as
   asyncio workers beside the bridge. Each, between its own listings: its pending take-downs first (Part D), then the
   next approved item with a `queued` row for it, in approval order (ties: queue order), within the hours, under its
-  own daily cap, a pause after each listing — Poshmark the schedule's human gap (`schedule.gap_seconds`, 150–420 s,
-  now and then 2–4× longer), Depop and Vinted their own `marketplaces.<m>.gap_seconds` (30–90 s: the owner,
-  2026-10-11; `crosslist.listing_gap`). Unchanged per site: one job at a time, one click per publish,
+  own daily cap, a pause after each listing — WO37 (the owner, 2026-10-12): **none** on any site
+  (`schedule.gap_seconds`, `marketplaces.<m>.gap_seconds`, `crosslist.gap_seconds` all [0, 0]; `scheduler.next_gap`
+  gives 0 and no occasional longer break; `schedule.per_hour_max` 60 so the hour never stops a site); the daily cap
+  (25 a site), the hours, PAUSE and the login / CAPTCHA / block stops stay. Before: Poshmark 150–420 s (now and then
+  2–4× longer), Depop and Vinted 30–90 s (`crosslist.listing_gap`). Unchanged per site: one job at a time, one click per publish,
   `posting` at the go-ahead (extension) / before the form (Poshmark), never retried blind, the shop check, 3 attempts.
 - **Isolation:** a failure, a timeout, a login wall or a CAPTCHA stops only that site for the window
   (`crosslist.block`, Poshmark too in parallel mode — never the owner's PAUSE, which stays the brake for all).
@@ -1124,6 +1141,49 @@ listings by hand (never changed back). The rules since:
   unless ours, colours / materials ours minus `left`. Still different → nothing published (a publish is cancelled
   before the click): the row `failed` with "Mismatch: …", the ops chat says why, and it waits — tried again each window
   whatever its attempts, never the group's "⏭" (`crosslist.MISMATCH`). The group hears nothing.
+
+## Tonight's fixes (WO37, 2026-10-12)
+The first long evening at gap 0 (17 items, 15 shares). What went wrong, and what the code does now:
+- **Covers: the whole item, from the front** (the owner's rule). The front check (`brain/cover.py`, Opus) labels EVERY
+  photo of the item — view (front, three_quarter, side, back, top, worn, label, detail, inside, sole, flaw, box),
+  `whole`, `cut_off`, `fill`, `held` — and names the one it would make the cover; code decides (`pipeline.cover_rule`):
+  shoes the pair from the side, 3/4 or front, whole; clothing and sets a front flat lay / hanger shot, whole (worn only
+  when there is none); bags and the rest a whole outside view; never a label, a close-up, a look into shoes, a sole, a
+  flaw, a box, a hand-held shot from behind (`back`) or a photo cut off. Several fit: the model's pick, then the
+  printed side (clothing), then the most of the frame. None fits: the photo showing the most of the item, and ONE line
+  to the private chat, never a question ("No full photo of … — a full front shot next time"; `NO_FULL_COVER`). The
+  rest follow in her order of kinds (`labelled_order`: other fronts, back, side, top, worn, details, labels, flaws). The
+  stored check is reused while it covers every photo (the cover never changes between runs). Tonight's five kinds are
+  fixtures: `tests/test_wo37.py` (labels) and `private/tests/fixtures/wo37_covers/` (the photos, the expected covers).
+- **Shares whose photos come late** (live: the alo bras taken with 0 photos; the leggings' and the vest's full shots a
+  minute after their labels). A share is taken only when it is whole (`pipeline.share_complete`): nothing new in the
+  folder for `inbox.settle_seconds` (60 s) by ARRIVAL on this Mac (`arrived`: ctime / birthtime — the photos' own
+  dates are the phone's), the `_done` file at least `inbox.min_wait_seconds` (90 s) old, the count `_done` may carry
+  ("done 7") waited for up to 30 minutes, a share with no photo waited 30 minutes. Photos that still come late
+  (`late_photos`, every 2 minutes, kv `late_photos_seen`; the names each share had are in its `batch_registered`
+  event): a share failed for having none goes back into the inbox as "<name>-late" and is taken again ("📸 … taken again
+  now"); otherwise one private line names the photos the listing doesn't have.
+- **No message twice** (see Telegram), **no pauses** (see Parallel posting), **only the price waits** (invariant 2).
+- **Poshmark** (`post/poshmark.py`): the Share Listing panel is read once its Promote My Closet part is drawn (≤ 8 s,
+  `PANEL_WAIT_MS`; live: read too early, the UGG Tazz failed "can't tell whether Promote … is off"), and when it still
+  can't be read the panel's text is in the error and its picture kept (`…-panel.png`) before ‹ Back; a size pick that
+  didn't register — the menu closed, or Done pressed, with no size on the form — is picked again, twice at most
+  (`SIZE_REPICKS`; live: the Marc Jacobs bag's "One Size"); an item with no size is skipped before Next ("no size on
+  the item"; live: the Clarks went to Next and Poshmark only showed "Required").
+- **No size at all**: the title never carries a size no photo shows (`copy.ensure_title_size` takes a made-up "size 8"
+  out — live: the Clarks); the card says "⚠️ No size on the photos — reply 'size …' (it can't be listed without one)";
+  Depop and Vinted skip it with ONE private line for the item (`crosslist.NO_SIZE`); a reply 'size 8' puts every site
+  skipped or failed for it back in line (`pipeline.set_size`).
+- **Depop's colours**: Depop put its own colour back AFTER our tidy (live: the jacket, the UGG Tazz — the form check
+  stopped both before Post): the tidy lets the page settle and reads the multi-selects once more (`chipsOurs`,
+  `addBack`; "Depop changed the form again after the tidy: set back once more").
+- **Sizes and categories**: a label's waist (23-34) on jeans, pants and shorts is the size listed (`settle_waist`; live:
+  FRAME "24" went up as "00"); loafers, moccasins and flats are Flats & Loafers (Men: Loafers & Slip-Ons), never Heels
+  (`settle_shoe_kind`; live: the Tory Burch loafers).
+- **Titles**: a collab that is the brand itself is never said ("adidas by Stella McCartney adidas by Stella McCartney
+  …", `premium.collab`); the 80-character cut never takes the brand or the size (`premium.fit_title`); a fiber's weaker
+  wording goes with its last word ("Leather … Leather").
+- **The diagnostic** (2026-10-12, read only, sent to the owner as a file): `reports/2026-10-12_37_wo37-diagnostic.md`.
 
 ## Kids clothing sizes (WO23)
 A kids label that gives the child's height ("104 cm", "Gr. 104", "104") or age ("4 ans", "4A", "5-6 Y", "18 mois") is

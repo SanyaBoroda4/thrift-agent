@@ -334,9 +334,9 @@ def ensure_title_size(title: str, facts: Facts) -> str:
     """The title's size is the listing's (WO33): a "size …" that says another size becomes this one; a title without
     one gets it at the end ("… 2-Piece Set size S"). Nothing without a US size."""
     phrase = title_size(facts)
-    if not phrase:
-        return title
     found = list(_TITLE_SIZE.finditer(title))
+    if not phrase:                                      # WO37 (live: the Clarks' "size 8", read from no photo)
+        return re.sub(r"\s{2,}", " ", _TITLE_SIZE.sub("", title)).strip(" ,-") if found else title
     if found:
         last = found[-1]
         if last.group(0).lower() == phrase.lower():

@@ -37,7 +37,9 @@ images:
 
 inbox:
   done_marker: _done       # the Shortcut writes this file last
-  settle_seconds: 30
+  settle_seconds: 60
+  min_wait_seconds: 90   # WO37: a share is taken no sooner than this after its _done came (the photos may be
+                         # still on their way from the phone); none at all: waited for up to 30 minutes
 
 segmentation:
   min_confidence: 0.85
@@ -113,7 +115,7 @@ marketplaces:
     driver: extension
     autopublish: false     # the owner turns it on after the supervised --publish-first (owner steps, WO30)
     daily_cap: 25          # new listings a day on Depop (dry runs count: they fill the real form)
-    gap_seconds: [30, 90]  # the pause after each Depop listing (the owner, 2026-10-11; Poshmark keeps schedule's)
+    gap_seconds: [0, 0]    # no pause after a Depop listing (the owner, WO37: each site goes straight on)
     max_photos: 8
     shop: ""               # depop.com/<shop>/
   vinted:
@@ -121,12 +123,12 @@ marketplaces:
     driver: extension
     autopublish: false
     daily_cap: 25
-    gap_seconds: [30, 90]  # the pause after each Vinted listing (the owner, 2026-10-11)
+    gap_seconds: [0, 0]    # no pause after a Vinted listing (the owner, WO37)
     max_photos: 20
     shop: ""               # vinted.com/member/<shop> (the member page's path)
 
 crosslist:
-  gap_seconds: [5, 15]     # between an item's marketplaces (Poshmark -> Depop -> Vinted), then the human gap (WO32b)
+  gap_seconds: [0, 0]      # between an item's marketplaces in the sequential loop (WO37: no pauses)
   refresh_days: 7          # the catalogs re-read from the logged-in sites this often, in the daily window (Playwright
                            # driver only: on the extension driver the poster profile never visits the site, WO32)
 
@@ -139,9 +141,9 @@ ext:
 schedule:
   timezone: America/New_York
   hours: ["09:00", "21:00"]
-  per_hour_max: 10
-  daily_cap: 25
-  gap_seconds: [150, 420]  # Poshmark's pause after each listing (Depop and Vinted: marketplaces.<m>.gap_seconds)
+  per_hour_max: 60         # WO37: a site goes straight on — 10 an hour made it wait out the hour
+  daily_cap: 25            # per site (the owner decides if it changes)
+  gap_seconds: [0, 0]      # no pause after a Poshmark listing, no occasional longer break (the owner, WO37)
 
 telegram:
   enabled: false

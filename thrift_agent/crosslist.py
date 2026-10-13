@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -104,14 +105,29 @@ def gap(s: Settings) -> float:
 
 
 def listing_gap(s: Settings, mp: str) -> float:
-    """The pause after a listing on `mp` before its next one (the owner, 2026-10-11): Depop and Vinted their own
-    `marketplaces.<m>.gap_seconds` (30–90 s); Poshmark the schedule's human gap (150–420 s, now and then longer)."""
+    """The pause after a listing on `mp` before its next one: Depop and Vinted their own `marketplaces.<m>.gap_seconds`,
+    Poshmark the schedule's — all [0, 0] since WO37 (the owner: each site goes straight on, no longer breaks)."""
     from thrift_agent.scheduler import next_gap
     own = s.get(f"marketplaces.{mp}.gap_seconds") if mp != "poshmark" else None
     if not own:
-        return next_gap(s["schedule"]) if mp == "poshmark" else random.uniform(30.0, 90.0)
+        return next_gap(s["schedule"])                 # unset: the schedule's (WO37: [0, 0], no pause)
     lo, hi = own[:2]
-    return random.uniform(float(lo), float(hi))
+    return random.uniform(float(lo), float(hi)) if float(hi) > 0 else 0.0     # [0, 0]: none (the owner, WO37)
+
+
+# WO37: what the private chat needn't hear about a listing that went up — the form's routine (the category menu read, a
+# suggestion of the site's own removed or set back, a value added back), and a "problem" banner the site showed after
+# Post for a listing that IS live (Depop's "There was a problem listing your product", nine times on 2026-10-12)
+ROUTINE = re.compile(r"^(?:category menu:|removed '|'[^']*' was gone from|Depop changed the |closed the open |"
+                     r"after the click: form page: refused: |Boost was on: turned off|the (?:size|condition|category) "
+                     r"read |\w+ read '.*': set to )", re.I)
+
+
+def noteworthy(note: str | None) -> str | None:
+    """The parts of a posted listing's note the owner should know (a value guessed or left out), or None."""
+    parts = [p.strip() for p in re.split(r";\s+", note or "") if p.strip()]
+    keep = [p for p in parts if not ROUTINE.match(p) and not p.startswith("looked up:")]
+    return "; ".join(keep) or None
 
 
 def unconfirmed_ref(iid: str, mp: str) -> str:
@@ -292,8 +308,8 @@ def record(s: Settings, db: DB, iid: str, mp: str, title: str, out, fields: dict
     elif out.status == "dryrun":
         notify.ops_photo(shot, f"🧪 dry-run {LABEL[mp]} ({iid}): {title} — ${fields.get('price')}\n"
                                f"{fields_summary(fields)}{progress}{note}")
-    elif out.status == "posted" and out.note:
-        notify.ops_photo(shot, f"{LABEL[mp]} posted ({iid}) {out.url}: {out.note}")
+    elif out.status == "posted" and (worth := noteworthy(out.note)):
+        notify.ops_photo(shot, f"{LABEL[mp]} posted ({iid}) {out.url}: {worth}")
 
 
 # ---------------------------------------------------------------- an unconfirmed publish (WO35 §4)
@@ -351,11 +367,17 @@ def rechecks_due(db: DB, mp: str, now: datetime | None = None) -> list[str]:
     return out
 
 
+NO_SIZE = "no size on the item"
+
+
 def skip_unmappable(db: DB, iid: str, mp: str, title: str, why: str) -> None:
     """A required field the catalog can't take from the facts: this marketplace is skipped for this item (the others
     go on), with the reason in the ops chat."""
     db.upsert_listing(iid, mp, status="skipped", error=SKIPPED + why)
     db.log(iid, "post_skipped", {"mp": mp, "error": why, "mapping": True})
+    if why == NO_SIZE:                                   # WO37: one line for the item, not one per site
+        notify.say(f"⏭ {title}: {NO_SIZE} — it goes up once you reply 'size …' to its card")
+        return
     notify.say(f"⏭ {LABEL[mp]} skipped ({iid}): {title}\ncan't map: {why}")
 
 

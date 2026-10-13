@@ -91,7 +91,20 @@ def vintage(facts: Facts) -> str | None:
 
 
 def collab(facts: Facts) -> str | None:
-    return _seen(facts.premium.collab) if facts.premium else None
+    """A collab / limited edition / sample a label shows — never the brand itself (WO37, live: the label read gave
+    "adidas by Stella McCartney" for an adidas by Stella McCartney sneaker, and the title said it twice). A collab
+    that starts with the brand is what follows it ("H&M x Erdem" for H&M: "x Erdem")."""
+    value = _seen(facts.premium.collab) if facts.premium else None
+    brand = (facts.brand.value or "").strip()
+    if not value or not brand:
+        return value
+    if _k(value) == _k(brand) or _k(value) in _k(brand):
+        return None
+    words = value.split()
+    n = len(brand.split())
+    if _k(" ".join(words[:n])) == _k(brand) and len(words) > n:
+        return " ".join(words[n:])
+    return value
 
 
 _SAMPLE = re.compile(r"\bsample\b", re.I)
@@ -128,7 +141,8 @@ def strongest(facts: Facts, cfg: dict) -> Strongest | None:
     fiber = premium_fiber(facts, cfg)
     if fiber and fiber[1] >= 90:
         name, short = fiber[0], fiber[0].split()[0]     # a title's "100% Merino" is "100% Merino Wool" said shorter
-        weaker = (f"100% {short}", name, short) if short != name else (name,)
+        last = name.split()[-1]                          # WO37: "… Black Leather" after "100% Genuine Leather"
+        weaker = tuple(dict.fromkeys((f"100% {short}", name, short, last))) if short != name else (name,)
         return Strongest("fiber", f"100% {name}" if fiber[1] == 100 else name, weaker)
     if line := premium_line(facts, cfg):
         return Strongest("line", line[1], ())
@@ -186,6 +200,20 @@ def fit_title(title: str, keep: list[str]) -> str:
                 hanging = True
                 break
     out = " ".join(words[j] for j in alive)
+    if len(out) > TITLE_MAX:                                # WO37: still too long — the kept words go too, the least
+        last = [i for i in reversed(alive) if i in protected]   # needed first; never the brand or the US size
+        firm = set()
+        for phrase in filter(None, keep[:1] + keep[2:3]):        # keep[0] the brand, keep[2] the US size
+            pw = [_k(w) for w in phrase.split() if _k(w)]
+            for i in range(len(keys) - len(pw) + 1):
+                if pw and keys[i:i + len(pw)] == pw:
+                    firm.update(range(i, i + len(pw)))
+        for i in last:
+            if len(" ".join(words[j] for j in alive)) <= TITLE_MAX:
+                break
+            if i not in firm:
+                alive.remove(i)
+        out = " ".join(words[j] for j in alive)
     return out if len(out) <= TITLE_MAX else copywriter.clamp_title(out)
 
 

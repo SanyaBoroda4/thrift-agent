@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 import imagehash
-from PIL import Image, ImageOps, ImageStat
+from PIL import Image, ImageFilter, ImageOps, ImageStat
 from pillow_heif import register_heif_opener
 
 register_heif_opener()
@@ -144,20 +144,23 @@ _CLOCKWISE = {90: Image.Transpose.ROTATE_270, 180: Image.Transpose.ROTATE_180, 2
 
 
 def portrait_cover(src: Path, dst: Path, width: int = 1200, height: int = 1600, rotate: int = 0) -> Path:
-    """The listing cover: padded (never cropped) to width:height — 3:4 portrait, the frame of Poshmark's cover dialog,
-    so its default crop takes the whole picture — with the colour of the edges that grow (top and bottom for a photo
-    wider than 3:4, left and right for a taller one). A 3:4 phone photo is only resized. `rotate`: clockwise degrees
-    (90, 180, 270) that put an item lying sideways or upside down upright first (WO23) — an exact quarter turn."""
+    """The listing cover: 3:4 portrait — the frame of Poshmark's cover dialog, so its default crop takes the whole
+    picture — never cropped: the whole photo, on a canvas extended with the photo's own background (WO37, the owner:
+    no flat grey bars) — the photo itself scaled to fill the canvas and blurred. A 3:4 phone photo is only resized.
+    `rotate`: clockwise degrees (90, 180, 270) that put an item lying sideways or upside down upright first (WO23)."""
     with Image.open(src) as im:
         im = im.convert("RGB")
         if rotate % 360:
             im = im.transpose(_CLOCKWISE[rotate % 360])
         w, h = im.size
+        if w * height == h * width:
+            return _save_jpeg(im.resize((width, height), Image.Resampling.LANCZOS), dst)
         if w * height > h * width:                     # wider than width:height: taller canvas
-            size, rows = (w, round(w * height / width)), True
-        else:                                          # taller (or exact): wider canvas
-            size, rows = (round(h * width / height), h), False
-        canvas = Image.new("RGB", size, _edge_color(im, rows))
+            size = (w, round(w * height / width))
+        else:                                          # taller: wider canvas
+            size = (round(h * width / height), h)
+        canvas = ImageOps.fit(im, size, Image.Resampling.BILINEAR).filter(
+            ImageFilter.GaussianBlur(radius=max(size) / 25))
         canvas.paste(im, ((size[0] - w) // 2, (size[1] - h) // 2))
         return _save_jpeg(canvas.resize((width, height), Image.Resampling.LANCZOS), dst)
 

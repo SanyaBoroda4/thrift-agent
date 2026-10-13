@@ -51,16 +51,32 @@ class Flaw(BaseModel):
 TOP_TURN = {"top": 0, "left": 90, "bottom": 180, "right": 270}     # where the item's top lies -> clockwise turn
 
 
+PhotoViewName = Literal["front", "three_quarter", "side", "back", "top", "worn", "label", "detail", "inside", "sole",
+                        "flaw", "box", "other", "unclear"]
+
+
 class View(BaseModel):
-    """One photo in the front/back comparison (brain/cover.py, WO23)."""
+    """One photo of the item, labelled for the cover (brain/cover.py; WO23 the front/back comparison, WO37 every photo:
+    its view, whether the whole item is in the frame, cut off at an edge, how much of the frame it fills, held)."""
     photo: int
-    view: Literal["front", "back", "side", "unclear"] = Field(description="Which side of the item this photo shows")
+    view: PhotoViewName = Field(description="What the photo shows: front / three_quarter / side / back = the item seen "
+                                            "from there; top = looked down at from above (shoes: into their opening); "
+                                            "worn = on a person; label = a brand, size or care label or a tag; detail "
+                                            "= a close-up of part of the item; inside = its inside; sole = a shoe's "
+                                            "sole; flaw = a close-up of a flaw; box = box or packaging; other")
     design: Literal["none", "some", "strong"] = Field("none", description="How much printed design it shows: a print, "
                                                                           "graphic, text or logo (not seams, zips or "
                                                                           "pockets)")
     top: Literal["top", "left", "right", "bottom"] = Field("top", description="Which edge of the photo the item's top "
                                                                               "is nearest to: the collar or neckline; "
                                                                               "the waistband; a shoe's opening")
+    # WO37 (the owner: the cover shows the WHOLE item, nothing cut off, not too close); a check from before had none:
+    # the defaults keep its reading as it was
+    whole: bool = Field(True, description="The WHOLE item is in the frame: every part of it — both shoes of a pair, "
+                                          "both pieces of a set, the whole garment from top to hem")
+    cut_off: bool = Field(False, description="Part of the item runs out of the frame at an edge")
+    fill: float = Field(0.5, ge=0, le=1, description="How much of the frame the item fills, 0 to 1")
+    held: bool = Field(False, description="A hand holds the item")
 
     @model_validator(mode="before")
     @classmethod
@@ -79,7 +95,8 @@ class View(BaseModel):
 
 class FrontOut(BaseModel):
     views: list[View] = Field(description="Every photo you were shown, once")
-    front: int = Field(description="The number of the photo that shows the FRONT of the item")
+    front: int = Field(description="The number of the photo that shows the WHOLE item from the FRONT — the cover you "
+                                   "would choose")
 
 
 class UprightOut(BaseModel):

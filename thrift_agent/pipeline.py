@@ -61,14 +61,114 @@ def ready_folders(s: Settings, db: DB | None = None) -> list[Path]:
                     subprocess.run(["brctl", "download", str(target)], check=False, capture_output=True)
             waiting[str(d)] = len(pending)
             continue
-        if not any(f.name == marker or f.stem == marker for f in d.iterdir()):   # "_done" or "_done.txt"
+        marks = [f for f in d.iterdir() if f.name == marker or f.stem == marker]   # "_done" or "_done.txt"
+        if not marks:
             continue
-        newest = max((f.stat().st_mtime for f in d.iterdir()), default=0)
-        if time.time() - newest >= settle:
+        if share_complete(s, d, marks[0], settle):
             out.append(d)
     if db is not None:
         _icloud_wait(db, waiting)
     return out
+
+
+EMPTY_SHARE_WAIT = 30 * 60        # WO37: a share whose photos haven't come yet — waited for this long before "no photos"
+
+
+def arrived(p: Path) -> float:
+    """When the file came onto this Mac: its inode change time, never its modification time — that one comes from the
+    phone (live 2026-10-12: photos dated Oct 9, so a share always looked "quiet for a while")."""
+    st = p.stat()
+    return max(st.st_ctime, getattr(st, "st_birthtime", 0) or 0)
+
+
+def expected_photos(marker: Path) -> int | None:
+    """The number of photos the Shortcut says it saved, when its marker carries one ("done 4", "4"); else None."""
+    try:
+        m = re.search(r"\d+", marker.read_text(encoding="utf-8", errors="ignore")[:64])
+    except OSError:
+        return None
+    return int(m.group()) if m and 0 < int(m.group()) < 500 else None
+
+
+def share_complete(s: Settings, d: Path, marker: Path, settle: float) -> bool:
+    """Is this share whole? WO37 (live 2026-10-12: the iPhone's `_done` came before its photos — two shares taken with
+    no photos, two with only their small label shots): nothing has come into the folder for `settle` seconds (arrival
+    on this Mac, not the photos' dates), the marker itself is at least `inbox.min_wait_seconds` old, and — when the
+    marker carries a count — that many photos are here. A share with no photo at all waits up to 30 minutes."""
+    now = time.time()
+    files = list(d.iterdir())
+    photos = [f for f in files if prep.is_photo(f)]
+    newest = max((arrived(f) for f in files), default=0)          # each file's arrival: a new one is fresh
+    since_marker = now - arrived(marker)
+    if now - newest < settle or since_marker < float(s.get("inbox.min_wait_seconds", 90) or 0):
+        return False
+    want = expected_photos(marker)
+    if want is not None and len(photos) < want:
+        return since_marker >= EMPTY_SHARE_WAIT          # the count never came: take what is here, said in register
+    return bool(photos) or since_marker >= EMPTY_SHARE_WAIT
+
+
+def late_photos(s: Settings, db: DB) -> list[str]:
+    """WO37: photos that came into a share after it was taken (live 2026-10-12: two alo bras' shares failed as "no
+    usable photos", and the leggings' and the vest's full shots came after their label shots). Looks at the archived
+    shares of the last two days, once per new file:
+    - a share failed for having no photo now has some: it goes back into the inbox and is taken as a new share;
+    - a share taken whole whose single item isn't on any site yet: the item is noted for the owner (ops) — a reply
+      'redo' rebuilds it with every photo;
+    - otherwise one line to the private chat: which photos came late for which item.
+    Returns what was done (for the log)."""
+    done, seen = [], set(json.loads(db.kv_get("late_photos_seen") or "[]"))
+    since = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat(timespec="seconds")
+    for b in db.conn.execute("SELECT * FROM batches WHERE created_at >= ?", (since,)).fetchall():
+        dest = None
+        for e in db.conn.execute("SELECT detail FROM events WHERE ref=? AND kind='archived'", (b["id"],)):
+            dest = (loads(e["detail"]) or {}).get("dest")
+        if not dest or not Path(dest).is_dir():
+            continue
+        try:
+            photos = sorted(p for p in Path(dest).iterdir() if prep.is_photo(p))
+        except OSError:
+            continue
+        taken = registered_names(db, b["id"])
+        if taken is None:                                # registered before WO37: the first to arrive were taken
+            taken = {p.name for p in sorted(photos, key=arrived)[:int(b["n_photos"] or 0)]}
+        new = [p for p in photos if p.name not in taken and f"{b['id']}:{p.name}" not in seen]
+        seen.update(f"{b['id']}:{p.name}" for p in new)
+        if not new:
+            continue
+        items = db.conn.execute("SELECT * FROM items WHERE batch_id=?", (b["id"],)).fetchall()
+        if b["status"] == "failed" and not int(b["n_photos"] or 0):
+            back = s.path("inbox") / f"{Path(dest).name.split('_', 1)[-1]}-late"
+            try:
+                shutil.move(dest, str(back))
+            except OSError as e:
+                db.log(b["id"], "late_photos_failed", str(e))
+                continue
+            db.log(b["id"], "late_photos", {"photos": len(photos), "to": back.name, "how": "taken again as a new share"})
+            notify.say(f"📸 {len(photos)} photos came late into a share that had none — taken again now ({back.name})")
+            done.append(f"{b['id']}: retaken")
+            continue
+        names = ", ".join(p.name for p in new[:6])
+        title = (_title_of(items[0]) if len(items) == 1 else f"batch {b['id']}")
+        db.log(b["id"], "late_photos", {"photos": [p.name for p in new], "items": [it["id"] for it in items]})
+        notify.say(f"📸 {len(new)} photos of {title} came after it was taken ({names}) — the listing doesn't have them")
+        done.append(f"{b['id']}: {len(new)} late")
+    db.kv_set("late_photos_seen", json.dumps(sorted(seen)))
+    return done
+
+
+def registered_names(db: DB, bid: str) -> set[str] | None:
+    """The photo files a share had when it was taken (WO37), or None for one registered before they were recorded."""
+    for e in db.conn.execute("SELECT detail FROM events WHERE ref=? AND kind='batch_registered' ORDER BY rowid DESC "
+                             "LIMIT 1", (bid,)):
+        names = (loads(e["detail"]) or {}).get("names")
+        return set(names) if isinstance(names, list) else None
+    return set() if (db.batch(bid) or {"n_photos": 1})["n_photos"] == 0 else None
+
+
+def _title_of(it) -> str:
+    posh = (loads(it["renders"]) or {}).get("poshmark") or {}
+    return posh.get("title") or it["id"]
 
 
 def _icloud_wait(db: DB, waiting: dict[str, int]) -> None:
@@ -100,7 +200,8 @@ def register(s: Settings, db: DB, folder: Path) -> str | None:
         notify.say(f"batch {folder.name}: no usable photos (jpg/jpeg/png/heic/heif/webp)")
         archive_share(s, db, bid, folder)
         return None
-    db.log(bid, "batch_registered", {"folder": folder.name, "photos": len(photos)})
+    db.log(bid, "batch_registered", {"folder": folder.name, "photos": len(photos),
+                                     "names": sorted(p.name for p in photos)})   # WO37: what came late is told apart
     return bid
 
 
@@ -474,8 +575,8 @@ def duplicate_check(s: Settings, db: DB, iid: str, cover_src: Path, note: str | 
             continue
         if h - other <= max_distance:
             title = next(iter((loads(row["renders"]) or {}).values()), {}).get("title", "")
-            return str(h), (f"looks like item {row['id']} ({title}) — same item? Held until you reply "
-                            f"'different item' (list it) or 'same item' (drop it); a price alone does not release it")
+            return str(h), (f"looks like item {row['id']} ({title}) — same item? Reply 'same item' to drop it; "
+                            f"a price lists it (WO37: a warning, never a hold)")
     return str(h), None
 
 
@@ -583,6 +684,59 @@ def category_question(facts: Facts, fit_questions: list[str], owner_category: st
     unsure = facts.category_confidence is not None and facts.category_confidence < CATEGORY_SURE
     other = facts.category.strip().lower() in ("", "other") or (facts.subcategory or "").strip().lower() == "other"
     return taxonomy.category_options(facts) if unsure or other or fit_questions else []
+
+
+WAIST = re.compile(r"(?:W\s*)?(2[3-9]|3[0-4])", re.I)
+WAIST_CATEGORIES = ("jeans", "pants & jumpsuits", "shorts")
+
+
+def settle_waist(facts: Facts) -> Facts:
+    """WO37 (live: FRAME jeans labelled "24" went up as "size 00", the model's conversion): jeans, pants and shorts
+    whose label prints a waist (23-34) are listed in it — Poshmark's menus have the waists, buyers search them — unless
+    the owner gave the size."""
+    printed = (facts.size_printed.value or "").strip()
+    m = WAIST.fullmatch(printed)
+    if (not m or (facts.category or "").strip().lower() not in WAIST_CATEGORIES or facts.size_us.source == "owner"
+            or (facts.size_us.value or "").strip() == m[1]):
+        return facts
+    ev = Ev(value=m[1], photos=facts.size_printed.photos, source="photo", confidence=facts.size_printed.confidence)
+    return facts.model_copy(update={"size_us": ev})
+
+
+LOAFERS = re.compile(r"\b(loafers?|moccasins?|ballet flats?|flats|penny|driving shoes?)\b", re.I)
+LOAFER_HOME = {"Women": "Flats & Loafers", "Men": "Loafers & Slip-Ons"}
+
+
+def settle_shoe_kind(facts: Facts, owner_category: str | None) -> Facts:
+    """WO37 (live: Tory Burch block-heel loafers went up under Heels, Depop "Pumps"): shoes the item type calls loafers,
+    moccasins or flats are listed under Poshmark's Flats & Loafers (Men: Loafers & Slip-Ons), whatever their heel —
+    unless the owner chose the category."""
+    home = LOAFER_HOME.get(facts.department or "")
+    if (owner_category or not home or facts.category != "Shoes" or facts.subcategory not in ("Heels", "Pumps")
+            or not LOAFERS.search(facts.item_type or "")):
+        return facts
+    return facts.model_copy(update={"subcategory": home})
+
+
+def settle_open_questions(facts: Facts, fit_questions: list[str], owner_category: str | None) -> tuple[Facts, list[str]]:
+    """WO37 (the owner): nothing but the price waits — what used to be a question is decided here and shown on the card,
+    and a reply corrects it. Girls or Boys for a kids size: the model's reading, else Girls (Poshmark's kids clothing
+    default). The category: the model's own when Poshmark has it, else the first real path that fits (a set: its
+    bottom, settle_set). Returns the facts and what was decided (the item's record)."""
+    said = []
+    if kids_question(facts):
+        gender = facts.kids_gender if facts.kids_gender in ("girls", "boys") else "girls"
+        facts = facts.model_copy(update={"kids_gender": gender})
+        said.append(f"kids: {gender} (not sure from the photos) — a reply 'boys' / 'girls' changes it")
+    options = category_question(facts, fit_questions, owner_category)
+    if options:
+        own = taxonomy.place(facts, facts.department, facts.category, facts.subcategory)
+        path = own or options[0]
+        facts = facts.model_copy(update={"department": path.get("department") or facts.department,
+                                         "category": path["category"], "subcategory": path.get("subcategory")})
+        said.append(f"category: {taxonomy.path_label(path, facts.department)} (not sure from the photos) — a reply "
+                    "'category …' changes it")
+    return facts, said
 
 
 def category_unsure(facts: Facts) -> list[str]:
@@ -754,7 +908,7 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
     facts = apply_owner_answers(it, facts)               # the owner's category, brand or "no brand"
     # Shoes, in doubt between brand new and worn: the owner is asked before the price (WO18) — on the model's own
     # reading, before the settles below merge its two grades. Once answered, the answer is the condition.
-    ask_condition = (not it["owner_condition"] and not it["owner_price"] and shoe_condition_doubt(facts))
+    # WO37: never "Brand new or worn?" — NWT only with tags (settle_nwt); in doubt Like New, never Fair (settle_condition)
     facts, nwt_questions = settle_nwt(facts, it["note"])   # NWT needs a tag photo or the owner's word; else like new
     facts, notes = settle_condition(facts)               # doubt -> like new; never Fair (Good, and a warning)
     if it["owner_condition"]:                            # the owner's word settles it all
@@ -763,20 +917,36 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
         facts = facts.model_copy(update={"kids_gender": it["owner_kids_gender"], "kids_gender_confidence": 1.0})
     facts = settle_set(facts, it["owner_category"])      # a set goes under its bottom, no question (WO27)
     facts = settle_set_size(facts)                       # pieces of different sizes: the bigger one (WO33)
+    facts = settle_waist(facts)                          # a waist on the label is the size, not its conversion (WO37)
     facts, fit_notes, fit_questions = taxonomy.fit(facts)   # Poshmark's own category names (Kids Tops -> Shirts & Tops)
+    facts = settle_shoe_kind(facts, it["owner_category"])  # loafers are Flats & Loafers, never Heels (WO37)
     facts = settle_kids_size(s, facts, photos)            # a kids label's cm or age -> Poshmark's size, no question
-    ask_kids = kids_question(facts)                      # Girls or Boys, below 0.70 sure: a question before the price
-    options = category_question(facts, fit_questions, it["owner_category"])   # "Which category?" (WO25)
-    check = front_view(s, db, iid, photos, facts, kinds)  # which photo shows the front: a comparison (WO23)
+    facts, decided = settle_open_questions(facts, fit_questions, it["owner_category"])   # WO37: decided, not asked
+    if any(x.startswith("category:") for x in decided):
+        fit_questions = []                               # the category was decided: nothing left to ask about it
+    ask_kids, options = False, []
+    kept = _stored_check(it)
+    kept = kept if labelled(kept) and {v.photo for v in kept.views} >= {i for i in range(len(photos))
+                                                                       if kinds[i] != "retail"} else None
+    check = kept or front_view(s, db, iid, photos, facts, kinds)   # every photo labelled (WO37), once per item
     cover, upright, cover_note = choose_cover(facts, len(photos), kinds, check, it["owner_cover"])
     if cover is not None:
-        upright = upright_view(s, db, iid, photos[cover], upright)   # turned upright: four pictures, pick one
+        before = loads(it["facts"]) or {} if it["facts"] else {}
+        if kept is not None and before.get("cover_photo") == cover and before.get("cover_upright") is not None:
+            upright = before["cover_upright"]            # the same photo, turned upright before: kept
+        else:
+            upright = upright_view(s, db, iid, photos[cover], upright)   # turned upright: four pictures, pick one
         facts = facts.model_copy(update={"cover_photo": cover, "cover_upright": upright})
+    if labelled(check):
+        facts = facts.model_copy(update={"photo_order": labelled_order(check, len(photos))})
     facts = premium.merge(facts, label_view(s, db, iid, photos, facts, kinds), len(photos))   # the labels (WO26)
     shown = listing_photos(s, facts, len(photos), kinds)  # every flaw photo in the listing
     # The card shows only what needs the owner (WO20): these warnings and the allowed questions; the rest (an unsure
     # grade, a subcategory left out) is kept in the item's record as info.
     notes += flaw_notes(facts, shown) + ([cover_note] if cover_note else [])
+    if cover_note == NO_FULL_COVER:                       # WO37: one line to the private chat, never a question
+        notify.say(f"No full photo of {facts.brand.value or ''} {facts.item_type or 'this item'} ({iid}) — the one "
+                   f"showing the most of it is the cover; a full front shot next time".replace("  ", " ").strip())
     info = list(fit_notes)
     tiers, pcfg = load_yaml("brand_tiers.yaml"), premium.config()
     pr = price(facts, tiers, s["pricing"], it["note"], premium.price_factor(facts, pcfg))
@@ -834,7 +1004,7 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
     # `hold` marks a question a price alone must not settle: set_price() keeps a held item waiting until the owner
     # answers it ("different item" lists it, "same item" drops it). `notes` are told to the owner but need no answer.
     gate_doc = {"decision": gate.decision, "reasons": gate.reasons, "questions": questions, "notes": notes,
-                "info": info + gate.notes, "hold": "reshare" if twin else None, "ask_kids": ask_kids,
+                "info": info + gate.notes + decided, "hold": None, "ask_kids": ask_kids,   # WO37: only the price waits
                 "ask_category": options}
     (d / "item.json").write_text(json.dumps({
         "facts": facts.model_dump(), "price": pr.model_dump(),
@@ -845,9 +1015,7 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
     # Nothing publishes without the owner's price. Open questions (an unreadable brand or size, a possible
     # re-share) ride along in the same message; an item the owner already priced comes back only while something
     # is still unresolved.
-    unresolved = gate.decision == "needs_info"
-    status = ("awaiting_condition" if ask_condition
-              else "awaiting_price" if unresolved or not it["owner_price"] or ask_kids else "ready")
+    status = "awaiting_price" if not it["owner_price"] else "ready"   # WO37: the price is the only thing that waits
     row = {k: v.model_dump() for k, v in renders.items()}
     new_card = approve.card(iid, {**dict(it), "status": status, "facts": json.dumps(facts.model_dump()),
                                   "price": json.dumps(pr.model_dump()), "renders": json.dumps(row),
@@ -924,15 +1092,15 @@ def settle_kids_size(s: Settings, facts: Facts, photos: list[Path] | None = None
 def front_view(s: Settings, db: DB, iid: str, photos: list[Path], facts: Facts, kinds: list[str]) -> FrontOut | None:
     """The front check (brain/cover.py) on the item's photos of the item alone; None without such photos, or when
     the call fails (the cover then follows the extraction's roles, and the failure is logged)."""
-    cands = cover_candidates(facts, len(photos), kinds)
-    if not cands:
+    own = [i for i in range(len(photos)) if kinds[i] != "retail"]
+    if not own:
         return None
-    worn = sorted(r.photo for r in facts.photo_roles if r.role == "worn" and 0 <= r.photo < len(photos))[:2]
-    try:
-        return cover_brain.front_check([(i, photos[i]) for i in sorted(cands)],    # in shooting order: no bias
+    worn = {r.photo for r in facts.photo_roles if r.role == "worn" and 0 <= r.photo < len(photos)}
+    try:     # WO37: every own photo labelled, in shooting order — the extraction's roles can be wrong
+        return cover_brain.front_check([(i, photos[i]) for i in own if i not in worn],
                                        s["models"].get("cover") or s["models"]["extract"],
                                        int(s["images"].get("cover_check_long_edge", 1024)),
-                                       worn=[(i, photos[i]) for i in worn])   # how the front looks when worn
+                                       worn=[(i, photos[i]) for i in own if i in worn])
     except Exception as e:  # noqa: BLE001
         db.log(iid, "front_check_failed", f"{type(e).__name__}: {e}")
         return None
@@ -1010,7 +1178,8 @@ def relist(s: Settings, it, facts: Facts, renders: dict) -> dict:
 
 
 def set_cover(s: Settings, db: DB, iid: str, n: int) -> str:
-    """The owner's "cover N" (WO23): photo N of the item (its photos in shooting order, from 0) becomes the cover — kept
+    """The owner's "cover N" (WO23): photo n of the item (its photos in shooting order, from 0 here; her reply counts
+    from 1, WO37 — approve.cover_index) becomes the cover — kept
     through any later reprocessing (items.owner_cover). The listing is rebuilt at once, no model call. Never for an
     item that is on the marketplace. Returns the item's status."""
     it = db.item(iid)
@@ -1022,7 +1191,7 @@ def set_cover(s: Settings, db: DB, iid: str, n: int) -> str:
         raise ValueError(f"item {iid} is {it['status']} — it has no listing yet")
     count = len(list((Path(it["dir"]) / "photos").glob("*.jpg")))
     if not 0 <= n < count:
-        raise ValueError(f"item {iid} has photos 0..{count - 1} — no photo {n}")
+        raise ValueError(f"this item has photos 1 to {count} — there is no photo {n + 1}")
     facts = Facts.model_validate(loads(it["facts"]))
     views = FrontOut.model_validate(loads(it["views"])) if it["views"] else None
     _, upright, _ = choose_cover(facts, count, None, views, owner=n)
@@ -1030,7 +1199,7 @@ def set_cover(s: Settings, db: DB, iid: str, n: int) -> str:
     upright = upright_view(s, db, iid, photos[n], upright)              # the owner's photo, turned upright too
     facts = facts.model_copy(update={"cover_photo": n, "cover_upright": upright})
     gate = loads(it["gate"]) or {}
-    gate["notes"] = [x for x in gate.get("notes") or [] if x != NO_FRONT_COVER]
+    gate["notes"] = [x for x in gate.get("notes") or [] if x not in (NO_FRONT_COVER, NO_FULL_COVER)]
     with db.tx():
         db.set_item(iid, owner_cover=n, facts=facts.model_dump(), renders=relist(s, it, facts, loads(it["renders"])),
                     gate=gate)
@@ -1088,7 +1257,9 @@ def recover_item(s: Settings, db: DB, iid: str, recheck: bool = False, relabel: 
     before = {"cover": _listed_cover(it, photos), "category": facts.category, "subcategory": facts.subcategory,
               "size": facts.size_us.value}
     was = (approve.card(iid, it), _digest(d / "cover.jpg"))
-    facts, _, _ = taxonomy.fit(settle_set_size(settle_set(apply_owner_answers(it, facts), it["owner_category"])))
+    facts, _, _ = taxonomy.fit(settle_waist(settle_set_size(settle_set(apply_owner_answers(it, facts),
+                                                                       it["owner_category"]))))
+    facts = settle_shoe_kind(facts, it["owner_category"])
     facts = settle_kids_size(s, facts, photos)
     stored = None if recheck else _stored_check(it)
     check = stored or front_view(s, db, iid, photos, facts, kinds)
@@ -1099,6 +1270,8 @@ def recover_item(s: Settings, db: DB, iid: str, recheck: bool = False, relabel: 
         else:
             upright = facts.cover_upright                    # the same photo, turned upright before: kept
         facts = facts.model_copy(update={"cover_photo": cover, "cover_upright": upright})
+    if labelled(check):
+        facts = facts.model_copy(update={"photo_order": labelled_order(check, len(photos))})
     if facts.premium is None or recheck or relabel:      # the labels, read closely once (WO26); --relabel again
         facts = premium.merge(facts, label_view(s, db, iid, photos, facts, kinds), len(photos))
     renders = relist(s, it, facts, loads(it["renders"]))
@@ -1162,8 +1335,7 @@ def _regate(s: Settings, it, facts: Facts, renders: dict, photos: list[Path], ki
                     s["gate"], s["pricing"], sized=not sizes.one_size(facts.department, facts.category,
                                                                       facts.subcategory))
     doc = loads(it["gate"]) or {}
-    twin = next((q for q in doc.get("questions") or [] if q.startswith("looks like item")), None) \
-        if doc.get("hold") else None
+    twin = next((q for q in doc.get("questions") or [] if q.startswith("looks like item")), None)
     options = category_question(facts, fit_questions, it["owner_category"])
     asked = list(fit_questions)
     menu_note = size_menu_note(facts, sizes.poshmark_size(facts))
@@ -1175,11 +1347,10 @@ def _regate(s: Settings, it, facts: Facts, renders: dict, photos: list[Path], ki
     unsure = category_unsure(facts) if options else []
     doc.update(decision=decision, reasons=([twin] if twin else []) + asked + unsure + gate.reasons, questions=questions,
                notes=notes, info=list(fit_notes) + gate.notes + ([menu_note] if menu_note else []),
-               ask_kids=kids_question(facts), ask_category=options)
+               ask_kids=False, ask_category=[], hold=None)       # WO37: nothing but the price waits
     status = it["status"]
-    if status in ("awaiting_price", "needs_info") and it["owner_price"] and decision != "needs_info" \
-            and not doc.get("ask_kids") and not doc.get("hold"):
-        status = "ready"                                     # its only question is settled now; the price it has
+    if status in ("awaiting_condition", "awaiting_price", "needs_info") and it["owner_price"]:
+        status = "ready"                                     # WO37: the price it has is all that waited
     return doc, status
 
 
@@ -1321,6 +1492,9 @@ def set_size(s: Settings, db: DB, iid: str, size: str) -> str:
         db.set_item(iid, owner_size=size, facts=facts.model_dump(), renders=renders, gate=doc, status=status)
         db.log(iid, "size_set", {"size": size, "status": status})
         _close_changed_card(db, iid, was)
+        for row in db.conn.execute("SELECT marketplace FROM listings WHERE item_id=? AND status IN ('skipped', "
+                                   "'failed') AND error LIKE '%no size%'", (iid,)).fetchall():
+            db.upsert_listing(iid, row["marketplace"], status="queued", error=None)   # WO37: back in line
     return status
 
 
@@ -1691,6 +1865,37 @@ def owner_choice(choice: str) -> str | None:
     return key if key in OWNER_CONDITIONS else None
 
 
+def correct_condition(s: Settings, db: DB, iid: str, choice: str) -> str:
+    """WO37: the owner's condition, by a reply to the card (`condition nwt|like new|good`) or `thrift condition` — no
+    model call and no new reading of the photos (live 2026-10-12: reprocessing after "Brand new or worn?" lost the
+    Clarks' size and changed the Schutz's cover). The grade is the owner's (source owner: NWT needs no hang-tag photo),
+    the descriptions take its condition line, the title its "New" or none; the price stays. Returns the status."""
+    if (key := owner_choice(choice)) is None:
+        raise ValueError(f"condition must be one of {', '.join(OWNER_CONDITIONS)}, got {choice!r}")
+    condition = OWNER_CONDITIONS[key]
+    it = _answerable(db, iid, "condition")
+    facts = apply_owner_condition(Facts.model_validate(loads(it["facts"])), condition)
+    before = loads(it["renders"]) or {}
+    tfacts = title_facts(facts, (before.get("poshmark") or {}).get("brand"))
+    pcfg = premium.config()
+    renders = {}
+    for mp, r in before.items():
+        text = r.get("description") or ""
+        c = copywriter.condition_rule(CopyOut(poshmark_title=r.get("title") or "-", poshmark_description=text or "-",
+                                              depop_description=text or "-", depop_hashtags=[]), facts)
+        title = it["owner_title"] or premium.title_with_feature(copywriter.fix_title(r.get("title") or "", tfacts),
+                                                                 tfacts, pcfg)
+        renders[mp] = {**r, "title": title, "condition": condition,
+                       "description": c.depop_description if mp == "depop" else c.poshmark_description}
+    photos, kinds = _photos_of(it)
+    doc, status = _regate(s, {**dict(it), "owner_condition": condition}, facts, renders, photos, kinds,
+                          (loads(it["gate"]) or {}).get("notes") or [])
+    with db.tx():
+        db.set_item(iid, owner_condition=condition, facts=facts.model_dump(), renders=renders, gate=doc, status=status)
+        db.log(iid, "condition_set", {"condition": condition, "from": it["status"], "how": "corrected, no reprocessing"})
+    return status
+
+
 def set_condition(s: Settings, db: DB, iid: str, choice: str) -> str:
     """The owner's answer to "Brand new or worn?" (a button, a reply, or `thrift condition`): nwt | like_new | good.
     Stored as items.owner_condition (a reprocessing keeps it and never asks again) and the item goes through the
@@ -1704,6 +1909,8 @@ def set_condition(s: Settings, db: DB, iid: str, choice: str) -> str:
         raise ValueError(f"unknown item {iid}")
     if it["status"] not in CONDITIONABLE:
         raise ValueError(f"item {iid} is {it['status']} — its condition can't be changed now")
+    if it["status"] in PRICEABLE and it["facts"] and it["renders"]:
+        return correct_condition(s, db, iid, choice)      # WO37: a correction, no new reading of the photos
     with db.tx():
         # As with a note: earlier dry-runs and queue entries are forgotten, real post history stays.
         db.conn.execute("DELETE FROM listings WHERE item_id=? AND status IN ('dryrun','queued')", (iid,))
@@ -1725,7 +1932,9 @@ def answer(s: Settings, db: DB, iid: str, note: str) -> str:
     if NO_BRAND_WORDS.fullmatch(note.strip(" .!")):     # "no brand" / "unbranded": the [No brand] button (WO25)
         return set_no_brand(s, db, iid)
     merged = f"{it['note']}; {note}" if it["note"] else note
-    if (loads(it["gate"]) or {}).get("hold") == "reshare" and SAME_ITEM.search(note) and not NOT_A_DUPLICATE.search(note):
+    gate = loads(it["gate"]) or {}
+    twin = gate.get("hold") == "reshare" or any(q.startswith("looks like item") for q in gate.get("questions") or [])
+    if twin and SAME_ITEM.search(note) and not NOT_A_DUPLICATE.search(note):     # WO37: a warning, no longer a hold
         with db.tx():
             db.set_item(iid, note=merged, status="dropped")     # the same garment is already listed: never list it twice
             db.log(iid, "dropped", {"note": note})
@@ -1761,17 +1970,67 @@ def cover_candidates(facts: Facts, n: int, kinds: list[str] | None = None) -> li
     return [i for i in preferred if kinds[i] != "retail" and roles.get(i) in ITEM_ALONE]
 
 
+NO_FULL_COVER = "cover: no photo shows the whole item — the one showing the most of it is used"
+# WO37 (the owner): the cover shows the WHOLE item from the front — shoes the pair from the side or 3/4 front, clothing
+# flat or on a hanger (worn only without one), a set both pieces — and is never one of these
+NEVER_COVER = ("back", "top", "label", "detail", "inside", "sole", "flaw", "box", "other")
+SHOE_COVER = ("three_quarter", "side", "front")
+WORN_ALONE = ("front", "three_quarter", "side")                 # a bag, an accessory: any whole outside view
+LATER = {"front": 1, "three_quarter": 1, "side": 2, "back": 3, "top": 4, "worn": 5, "detail": 6, "inside": 6,
+         "sole": 6, "unclear": 6, "label": 7, "flaw": 8, "box": 9, "other": 9}   # WO37: back, side, worn, details,
+                                                                                   # label, flaws
+
+
+def shoes(facts: Facts) -> bool:
+    return (facts.category or "").strip().lower() == "shoes"
+
+
+def cover_rule(facts: Facts, check: FrontOut, n: int, kinds: list[str]) -> tuple[int | None, str | None]:
+    """WO37, the owner's rule, from the check's labels (brain/cover.py): the WHOLE item, from the front, nothing cut off.
+    Shoes: the pair from the side or 3/4 front (three_quarter, side, front), whole. Clothing and sets: a front flat lay
+    or hanger shot, whole; a worn photo only when there is none. Bags and the rest: a whole outside view. Never a
+    label, a close-up, a look into shoes, a sole, a flaw, a box, a hand-held shot from behind (view back) or a photo cut
+    off at an edge. Several fit: the model's own pick, else the one filling more of the frame (the printed side first
+    for clothing). None fits: the photo showing the most of the item (whole, not cut off, the most of the frame — never
+    a label, a close-up, a sole, a look inside), with NO_FULL_COVER: one line to the private chat, never a question."""
+    views = [v for v in check.views if 0 <= v.photo < n and kinds[v.photo] != "retail"]
+    if not views:
+        return None, None
+    worn_ok = False
+    if shoes(facts):
+        allowed = SHOE_COVER
+    elif facts.department in ("Women", "Men", "Kids") and (facts.category or "").strip().lower() not in (
+            "bags", "jewelry", "accessories"):
+        allowed, worn_ok = ("front",), True
+    else:
+        allowed = WORN_ALONE
+
+    def good(v) -> bool:
+        return v.whole and not v.cut_off
+
+    def rank(v) -> tuple:
+        return (v.photo == check.front, DESIGN.get(v.design, 0) if not shoes(facts) else 0, v.fill, -v.photo)
+    fits = [v for v in views if v.view in allowed and good(v)]
+    if not fits and worn_ok:
+        fits = [v for v in views if v.view == "worn" and good(v)]
+    if fits:
+        return max(fits, key=rank).photo, None
+    shown = [v for v in views if v.view not in ("label", "detail", "inside", "sole", "flaw", "box", "other")] or views
+    best = max(shown, key=lambda v: (v.whole, not v.cut_off, v.view not in NEVER_COVER, v.fill, v.photo == check.front,
+                                     -v.photo))
+    return best.photo, NO_FULL_COVER
+
+
 def choose_cover(facts: Facts, n: int, kinds: list[str] | None = None, check: FrontOut | None = None,
                  owner: int | None = None) -> tuple[int | None, int, str | None]:
-    """(cover, clockwise turn that puts it upright, note for the card) — the owner rule (absolute, WO23): the first
-    photo of every listing is the FRONT of the item, alone, flat lay or hanger.
+    """(cover, clockwise turn that puts it upright, note for the card) — the owner's rules: the first photo of every
+    listing is the item (WO23), the WHOLE item from the front (WO37, `cover_rule`).
 
-    The owner's "cover N" wins. Else the front check (brain/cover.py: the item-alone photos compared side by side),
-    checked here: a photo the check calls the back is never the cover while another candidate isn't, and a plain photo
-    never while another candidate shows design (a print, logo, buttons… — the owner's cue for the front). Without a
-    check: the extraction's roles, front, else side (a shoe's profile is a fine cover), else back. The note "cover: no
-    front flat-lay photo" only when no candidate could be the front (backs only, or no photo of the item alone).
-    (None, 0, None): no photo roles at all — facts from before WO20 keep the model's pick."""
+    The owner's "cover N" wins. Else, with the check's labels (brain/cover.py, every photo — WO37): `cover_rule`.
+    A check from before WO37 (no labels of whole / cut off) still follows them: its defaults read every candidate as
+    whole. Without a check: the extraction's roles, front, else side (a shoe's profile is a fine cover), else back; the
+    note "cover: no front flat-lay photo" only when no candidate could be the front. (None, 0, None): no photo roles at
+    all — facts from before WO20 keep the model's pick."""
     kinds = kinds or ["own"] * n
     views = {v.photo: v for v in (check.views if check else []) if 0 <= v.photo < n}
 
@@ -1780,6 +2039,10 @@ def choose_cover(facts: Facts, n: int, kinds: list[str] | None = None, check: Fr
 
     if owner is not None and 0 <= owner < n:
         return owner, turn(owner), None
+    if labelled(check):
+        pick, note = cover_rule(facts, check, n, kinds)      # a WO37 check: every photo labelled
+        if pick is not None:
+            return pick, turn(pick), note
     roles = {r.photo: r.role for r in facts.photo_roles if 0 <= r.photo < n}
     if not roles:
         return None, 0, None
@@ -1807,15 +2070,29 @@ def choose_cover(facts: Facts, n: int, kinds: list[str] | None = None, check: Fr
     return pick, turn(pick), NO_FRONT_COVER if back(pick) else None
 
 
+def labelled(check: FrontOut | None) -> bool:
+    """A check made by WO37's labelling (every photo: view, whole, cut off …), not WO23's front/back comparison."""
+    return check is not None and any(v.view not in ("front", "back", "side", "unclear") or not v.whole or v.cut_off
+                                     or v.fill != 0.5 or v.held for v in check.views)
+
+
+def labelled_order(check: FrontOut, n: int) -> list[int]:
+    """WO37: after the cover — the other whole front views, back, side, the look from above, worn, details, labels,
+    flaws, box (each group in shooting order). Stored as facts.photo_order where the cover is chosen."""
+    labels = {v.photo: v.view for v in check.views if 0 <= v.photo < n}
+    return sorted(range(n), key=lambda i: (LATER.get(labels.get(i, "unclear"), 6), i))
+
+
 def photo_order(facts: Facts, n: int, kinds: list[str] | None = None) -> list[int]:
-    """The listing's photo order: the cover first — facts.cover_photo, which choose_cover settled (WO23) — then the
-    model's order, every photo once; retail screenshots last and never the cover. Facts from before WO20 (no photo
-    roles) keep their older rule: a photo that shows a flaw is not the cover when a clean own photo exists."""
+    """The listing's photo order: the cover first — facts.cover_photo, which choose_cover settled (WO23) — then
+    facts.photo_order (WO37: the check's labelled order — back, side, worn, details, labels, flaws), every photo once;
+    retail screenshots last and never the cover. Facts from before WO20 (no photo roles) keep their older rule: a photo
+    that shows a flaw is not the cover when a clean own photo exists."""
     kinds = kinds or ["own"] * n
     order = [i for i in facts.photo_order if 0 <= i < n]
     if 0 <= facts.cover_photo < n:
         order = [facts.cover_photo] + order
-    order = list(dict.fromkeys(order + list(range(n))))         # cover first, then the model's order, no repeats
+    order = list(dict.fromkeys(order + list(range(n))))         # cover first, then the order, no repeats
     own = [i for i in order if kinds[i] != "retail"]
     order = (own + [i for i in order if kinds[i] == "retail"]) if own else order   # screenshots last, never the cover
     if not facts.photo_roles:

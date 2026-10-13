@@ -1,7 +1,7 @@
 """The daily window (WO28): the Mac is opened about once a day for ~30 minutes, often on battery, then closed.
 
-On worker start and on every wake: the same catch-up as a restart — the inbox looked at, the open card re-sent only if
-it is older than telegram.resend_after_hours — and ONE line, "Back online — …", when there is work. During the
+On worker start and on every wake: the same catch-up as a restart — the inbox looked at, the queue looked after (never
+a message sent twice, WO37) — and ONE line, "Back online — …", when there is work. During the
 window, ONE status message per window is kept up to date by editing it: "⏳ Working …, please don't close the Mac
 yet" while items are processed or listings published, "✓ Safe to close …" once only the owner's answers (or the listing
 hours) are left, "✓ All done — safe to close the Mac." when nothing is. Nothing is said while the lid is closed (the
@@ -286,8 +286,8 @@ class Window:
 
     def begin(self, why: str) -> None:
         """A new window: its own status message from now on; the inbox looked at; "Back online" when there is work;
-        the open card re-sent only if it is older than telegram.resend_after_hours (the 24 h Telegram keeps
-        answers: one older than that is lost and the card simply comes again)."""
+        the queue looked after — never a card sent twice (WO37); an answer older than Telegram's 24 h is lost, and the
+        card's buttons still work."""
         stamp = self.now().isoformat(timespec="seconds")
         old = loads(self.db.kv_get(STATUS_KEY)) or {}
         if old.get("message_id") and self.bot is not None:     # ONE status message: the last window's goes

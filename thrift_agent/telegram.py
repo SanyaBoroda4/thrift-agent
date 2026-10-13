@@ -6,12 +6,27 @@ Path is uploaded as a multipart file — so tests subclass Bot, override call() 
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import httpx
 
 API = "https://api.telegram.org"
 TIMEOUT = 20                # seconds; getUpdates adds its own long-poll timeout on top
+UPLOAD_TIMEOUT = 90         # a photo goes up on a slow network (WO37: 20 s timed out three times on the hotel Wi-Fi)
+UPLOADS = ("sendPhoto", "editMessageMedia")
+# WO37: a request that went out but whose answer never came — Telegram may well have delivered it (live 2026-10-12:
+# three timed-out sendPhoto calls, three copies of one question). Never sent again; a connection that never opened is.
+# The request went out whole and the answer never came: Telegram may have acted on it (live 2026-10-12: a sendPhoto that
+# timed out three times was delivered three times). A write that failed or timed out never reached it whole: not sent.
+MAYBE_SENT = ("ReadTimeout", "RemoteProtocolError", "ReadError")
+
+
+def maybe_delivered(error: Exception) -> bool:
+    """Did this failed call perhaps reach Telegram (sent, no answer)? Then it must never be sent again."""
+    m = re.match(r"telegram \w+: (\w+):", str(error))
+    return bool(m) and m.group(1) in MAYBE_SENT
+
 MAX_TEXT = 4096             # Telegram limits: message text / photo caption
 MAX_CAPTION = 1024
 ALLOWED_UPDATES = ["message", "callback_query"]
@@ -34,7 +49,8 @@ class Bot:
                 data[k] = json.dumps(v)
             else:
                 data[k] = v
-        timeout = int(params.get("timeout") or 0) + 10 if method == "getUpdates" else TIMEOUT
+        timeout = (int(params.get("timeout") or 0) + 10 if method == "getUpdates"
+                   else UPLOAD_TIMEOUT if method in UPLOADS else TIMEOUT)
         try:
             r = httpx.post(f"{API}/bot{self.token}/{method}", data=data, files=files or None, timeout=timeout)
         except httpx.HTTPError as e:
@@ -77,6 +93,29 @@ class Bot:
         res = self.call("sendPhoto", chat_id=self.chat_id, photo=Path(path), caption=caption[:MAX_CAPTION],
                         reply_markup={"inline_keyboard": buttons} if buttons else None)
         return int(res["message_id"])
+
+    def edit_card(self, message_id: int, caption: str, buttons: list[list[dict]] | None = None,
+                  photo: Path | None = None) -> None:
+        """WO37: a card changed (a correction, a new cover) is EDITED in place — never sent twice: its photo (with
+        `photo`), its caption and its buttons; a text card's text. "message is not modified" is no error."""
+        markup = {"inline_keyboard": buttons or []}
+        try:
+            if photo is not None:
+                self.call("editMessageMedia", chat_id=self.chat_id, message_id=int(message_id),
+                          media={"type": "photo", "media": "attach://photo", "caption": caption[:MAX_CAPTION]},
+                          photo=Path(photo), reply_markup=markup)
+                return
+            try:
+                self.call("editMessageCaption", chat_id=self.chat_id, message_id=int(message_id),
+                          caption=caption[:MAX_CAPTION], reply_markup=markup)
+            except RuntimeError as e:
+                if "no caption" not in str(e).lower() and "there is no" not in str(e).lower():
+                    raise
+                self.call("editMessageText", chat_id=self.chat_id, message_id=int(message_id), text=caption[:MAX_TEXT],
+                          reply_markup=markup, disable_web_page_preview=True)
+        except RuntimeError as e:
+            if "not modified" not in str(e):
+                raise
 
     def get_updates(self, offset: int | None, timeout: int) -> list[dict]:
         res = self.call("getUpdates", offset=offset, timeout=int(timeout), allowed_updates=ALLOWED_UPDATES)

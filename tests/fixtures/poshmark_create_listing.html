@@ -50,7 +50,9 @@
   window.__FIXTURE (set by the test) switches variants: lastDept, smartSell, noCoverDialog, slowCover, coverNoApply,
   coverSecondSelected, strangeDialog, priceBug, noLeaveDialog, categoryLinks, conditionLabel, leaveDraft,
   sizeAutoClose (the size menu closes itself on a pick, no Done: Kids shoes on the Mac), sizeStuck (neither),
-  sizeFieldLabel (what the size field shows after an auto-close), promoteOn, promoteText (the toggle without a
+  sizeFieldLabel (what the size field shows after an auto-close), sizeLostOnce (WO37, the Marc Jacobs bag: the
+  first pick closes the menu and selects nothing), promoteLate (WO37, the UGG Tazz: the panel's Promote part is drawn
+  1.5 s after the panel), promoteOn, promoteText (the toggle without a
   checkbox: only its "Off"/"On" text), toListing, listStays, listError, listAlert (a native alert after List),
   listTwice (two listings come of one click), skuOnListing (the listing page shows the SKU), closetUser (the closet
   the redirect goes to; default "closet", the tests' poster), brands (the brand list; WO36).
@@ -340,7 +342,7 @@
   </div>
   <p>Share your listing to your networks to increase exposure and boost sales!</p>
   <div class="share-listing__item"><img alt="cover" id="share-cover"><h4 id="share-item-title"></h4></div>
-  <div class="share-listing__row">
+  <div class="share-listing__row" id="promote-row">
     <h4>Promote My Closet</h4>
     <div data-test="toggle"><label data-test="toggle-switch" class="toggle__switch">
       <input type="checkbox" data-test="toggle-input" class="toggle__switch__input" id="promote">
@@ -542,6 +544,12 @@
     for (const s of menu.tabs[tab]) {
       const b = make('button', {type: 'button', id: `size-${s}`, class: 'multi-size-selector__button'}, s);
       b.addEventListener('click', () => {
+        if (cfg.sizeLostOnce && !window.__sizeLost) {                 // WO37: the pick lost, the menu closed
+          window.__sizeLost = true;
+          events.push('size-lost');
+          later(() => show($('#size-menu'), false));
+          return;
+        }
         box.querySelectorAll('button').forEach(x => x.classList.remove('selected'));
         b.classList.add('selected');
         chosenSize = s;
@@ -711,6 +719,10 @@
     $('#share-item-title').textContent = $('[data-vv-name="title"]').value;
     if ($('#promote')) $('#promote').checked = !!cfg.promoteOn;
     $('#share-panel .toggle__switch__slider').textContent = cfg.promoteOn ? 'On' : 'Off';
+    if (cfg.promoteLate) {                                          // WO37: drawn a moment after the panel
+      $('#promote-row').style.display = 'none';
+      setTimeout(() => { $('#promote-row').style.display = ''; }, 1500);
+    }
     later(() => { show($('#share-backdrop')); show($('#share-panel')); });
   });
   $('#share-back').addEventListener('click', () => {

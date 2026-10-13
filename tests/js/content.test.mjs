@@ -363,6 +363,32 @@ test("Depop: a package size Depop changes after ours is set back before the read
   assert.ok(result.notes.some((n) => /changed the package size to 'Medium': set back to Large/.test(n)), result.notes);
 });
 
+test("Depop: a colour Depop puts back after the tidy is taken out again before the read-back (WO37)", async () => {
+  // Live 2026-10-12 (the lululemon jacket, the UGG Tazz): Depop re-added its own colour after our tidy, and the form
+  // check stopped the listing ("picked ['tan'], ['Grey', 'Tan']").
+  const p = page("depop", undefined, undefined, { sizeLag: 150, brandDelay: 100 });
+  p.w.Thrift.timeoutScale = 1;                          // the tidy's real wait for the page to settle
+  const send = p.w.chrome.runtime.sendMessage;
+  p.w.chrome.runtime.sendMessage = (m) => {
+    if (m.type === "event" && m.event === "step" && m.name === "package") {
+      const watch = setInterval(() => {                 // once the tidy has taken Depop's Grey out...
+        if (!(p.w.__chosen["colour-input"] || []).includes("Grey")) {
+          clearInterval(watch);
+          setTimeout(() => p.w.__readd("colour-input", "Grey"), 300);   // ... Depop puts it back
+        }
+      }, 20);
+    }
+    return send(m);
+  };
+  await run(p, DEPOP_JOB);
+  const result = p.last();
+  assert.equal(result.event, "result", JSON.stringify(result));
+  assert.deepEqual(plain(result.failed), []);
+  assert.deepEqual(plain(result.seen["colour-input"]), ["Cream"]);
+  assert.ok(result.notes.includes("Depop changed the form again after the tidy: set back once more"),
+    JSON.stringify(result.notes));
+});
+
 test("Depop: the brand typed as Depop spells it when our spelling finds nothing", async () => {
   const p = page("depop", undefined, undefined, { ...DEPOP_FIX, ai: false });
   await run(p, DEPOP_JOB);

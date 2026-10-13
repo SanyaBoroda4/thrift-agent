@@ -32,6 +32,16 @@ class FakeBot(Bot):
             return {"message_id": self.next_id}
         return True
 
+
+    def shown(self):
+        """The newest card as the owner sees it now — the last caption or text sent, or edited in (WO37: a card is
+        edited in place, never sent twice)."""
+        for m, p in reversed(self.calls):
+            if m in ("sendMessage", "sendPhoto", "editMessageCaption", "editMessageText"):
+                return p.get("text") or p.get("caption")
+            if m == "editMessageMedia":
+                return (p.get("media") or {}).get("caption")
+        return None
     def sent(self, method):
         return [p for m, p in self.calls if m == method]
 
@@ -196,8 +206,7 @@ def test_send_item_shows_only_the_allowed_questions_and_the_warnings(env, tmp_pa
     (method, p), = bot.calls
     assert method == "sendMessage"                                # no cover.jpg -> text message
     assert p["text"] == ("Flats\nSize 7.5\nCondition: Good\n\u26a0\ufe0f cover: no front flat-lay photo\n"
-                         "\u2753 Brand? Couldn't read it \u2014 reply 'brand \u2026'\n"
-                         "Reply to this card with the answer (a price too if you like), e.g. 'size 8, 45'")
+                         "\u2753 Brand? Couldn't read it \u2014 reply 'brand \u2026'\n" + approve.CORRECT_HINT)
     assert "lint" not in p["text"] and "unsure" not in p["text"] and "no price history" not in p["text"]
     assert [b["text"] for b in p["reply_markup"]["inline_keyboard"][0]] == ["$30", "⭐$40", "$50", "$60"]
 
@@ -503,9 +512,10 @@ def _age(db, message_id, hours):
     db.conn.execute("UPDATE outbox SET sent_at=? WHERE message_id=?", (old, message_id))
 
 
-def test_resend_pending_resends_only_the_open_message(env, tmp_path, facts):
-    """WO20: the flood of messages from before the queue (or any older copy) is closed; only the newest message whose
-    item still waits is open, and only it is sent again."""
+def test_resend_pending_never_sends_a_message_again(env, tmp_path, facts):
+    """WO20 then WO37 (the owner: never the same message twice): the flood of messages from before the queue (or any
+    older copy) is closed and only the newest message whose item still waits stays open — and nothing is ever sent
+    again, however long it waits."""
     s, db, bot = env
     bid = _batch(s, db)
     send_batch(s, db, bid)                                                        # 11
@@ -518,25 +528,17 @@ def test_resend_pending_resends_only_the_open_message(env, tmp_path, facts):
     for mid in (11, 12, 99, 13):
         _age(db, mid, hours=7)
     bot.calls.clear()
-
-    assert resend_pending(s, db) == [fresh]
-    assert [m for m, _ in bot.calls] == ["sendPhoto"] and bot.texts()[0].startswith("Tory Burch Suede Ballet Flats")
+    assert resend_pending(s, db) == [] and bot.calls == []
     assert [(r["kind"], r["ref"]) for r in db.outbox_pending()] == [("item", fresh)]   # the rest are closed
-    assert [r["message_id"] for r in _outbox(db, fresh)] == [13, 14]              # the old copy stays, closed
-    bot.calls.clear()
-    assert resend_pending(s, db) == [] and bot.calls == []                        # the open one is recent now
-    _age(db, 14, hours=7)
-    assert resend_pending(s, db) == [fresh]                                       # old again: sent again
 
 
-def test_resend_pending_uses_the_configured_timeout_and_clock(env, monkeypatch):
+def test_resend_pending_ignores_the_clock(env, monkeypatch):
     s, db, bot = env
     s.data["telegram"]["resend_after_hours"] = 1
     bid = _batch(s, db)
     send_batch(s, db, bid)
-    assert resend_pending(s, db) == []
-    monkeypatch.setattr(approve, "_now", lambda: datetime.now(timezone.utc) + timedelta(hours=2))
-    assert resend_pending(s, db) == [bid]
+    monkeypatch.setattr(approve, "_now", lambda: datetime.now(timezone.utc) + timedelta(hours=30))
+    assert resend_pending(s, db) == [] and len(bot.texts()) == 1                    # WO37: once, ever
 
 
 def test_resend_pending_without_bot_does_nothing(tmp_path):
@@ -626,28 +628,30 @@ def test_a_typed_answer_works_too(env, tmp_path, facts):
         "nwt", "nwt", "like_new", "good", "good", None]
 
 
-def test_a_pending_question_is_sent_again_after_a_restart_and_dropped_once_answered(env, tmp_path, facts):
+def test_a_pending_question_is_never_sent_again_and_the_queue_goes_on_once_answered(env, tmp_path, facts):
     s, db, bot = env
     iid = _waiting_shoe(db, tmp_path, facts)
-    approve.ask_condition(s, db, iid)
-    _age(db, bot.next_id, hours=9)                                                       # the Mac slept overnight
-    assert resend_pending(s, db) == [iid]                                               # the worker starts again
-    assert len(bot.sent("sendPhoto")) == 2 and len(db.outbox_pending()) == 1           # the new message is the one
-    db.set_item(iid, status="awaiting_price")                                            # answered elsewhere
-    assert resend_pending(s, db) == []                                                  # nothing to send again...
-    assert [(r["kind"], r["ref"]) for r in db.outbox_pending()] == [("item", iid)]       # ...the next one goes out
+    approve.ask_condition(s, db, iid)                                              # an old item's question
+    _age(db, bot.next_id, hours=9)                                                 # the Mac slept overnight
+    assert resend_pending(s, db) == [] and len(bot.sent("sendPhoto")) == 1        # WO37: never again
+    db.set_item(iid, status="awaiting_price")                                      # answered elsewhere
+    assert resend_pending(s, db) == []
+    assert [(r["kind"], r["ref"]) for r in db.outbox_pending()] == [("item", iid)]   # the next one goes out
 
 
-def test_the_whole_flow_tap_then_the_price_card_with_the_new_price(env, tmp_path, facts, monkeypatch):
-    """A shoe in doubt: the question, a tap on NWT, the reprocessing, then the normal price card — priced as new."""
+def test_a_shoe_in_doubt_gets_its_card_at_once_and_a_condition_reply_edits_it(env, tmp_path, facts, monkeypatch):
+    """WO37: no "Brand new or worn?" — a shoe in doubt is listed Like New and its price card comes at once; a reply
+    'condition nwt' corrects it (no model call) and the card is edited to say so."""
     from thrift_agent.schema import CopyOut, Ev, VerifyOut
     s, db, bot = env
     model = dict(category="Shoes", condition="good", condition_alternative="like_new",
                  unworn=Ev(value="yes", photos=[2], source="photo", confidence=0.6), photo_order=[0, 1, 2])
     copy = dict(poshmark_title="Tory Burch Red Ballet Flats size 7.5", poshmark_description="Red flats.",
                 depop_description="red tory burch flats")
+    calls = []
 
     def ask(model_name, system, content, out, tool, description, **kw):    # the model, stubbed: no API call
+        calls.append(out.__name__)
         if out.__name__ == "Facts":
             return facts(**model)
         if out is CopyOut:
@@ -666,15 +670,15 @@ def test_the_whole_flow_tap_then_the_price_card_with_the_new_price(env, tmp_path
     db.set_batch(bid, status="split")
     iid = db.add_item(bid, 1, str(d))
     pipeline.process_item(s, db, iid)
-    assert db.item(iid)["status"] == "awaiting_condition"
-    assert not any("⭐$" in str(p.get("reply_markup")) for p in bot.sent("sendPhoto"))   # no price card yet
-    guess = loads(db.item(iid)["price"])["list_price"]
-    handle_update(s, db, bot, _callback(f"cond:{iid}:nwt"))
-    pipeline.process_item(s, db, iid)                                                    # what the worker does next
+    assert db.item(iid)["status"] == "awaiting_price"
     card = bot.sent("sendPhoto")[-1]
-    price = loads(db.item(iid)["price"])["list_price"]
-    assert price > guess and f"⭐${price}" in str(card["reply_markup"])
-    assert "Condition: NWT (your answer)" in card["caption"]
+    assert "⭐$" in str(card["reply_markup"]) and "Condition: Like New" in card["caption"]   # the price card at once
+    calls.clear()
+    handle_update(s, db, bot, _reply("condition nwt", reply_to=bot.next_id))
+    assert calls == [] and loads(db.item(iid)["facts"])["condition"] == "NWT"
+    edited = [p.get("caption") or (p.get("media") or {}).get("caption") for m, p in bot.calls
+              if m in ("editMessageMedia", "editMessageCaption")]
+    assert edited and "Condition: NWT (your answer)" in edited[-1] and len(bot.sent("sendPhoto")) == 1   # edited
 
 
 # ---------- WO28: the Mac sleeps between windows ----------
@@ -724,7 +728,9 @@ def test_answers_given_while_the_mac_slept_are_applied_in_order_on_wake(env, tmp
     assert order == [first, second]
 
 
-def test_an_answer_lost_after_24_h_just_means_the_card_comes_again_on_wake(env, tmp_path, facts, monkeypatch):
+def test_a_card_waiting_past_24_h_is_not_sent_again_on_wake(env, tmp_path, facts, monkeypatch):
+    """WO37 (the owner: never the same message twice): a card whose answer was lost while the Mac slept stays where it
+    is — the wake sends nothing again; its buttons, and a number typed, still price it."""
     from thrift_agent import daily
     s, db, bot = env
     iid = _item(db, tmp_path, facts)
@@ -734,7 +740,7 @@ def test_an_answer_lost_after_24_h_just_means_the_card_comes_again_on_wake(env, 
                     ((datetime.now(timezone.utc) - timedelta(hours=30)).isoformat(timespec="seconds"),))
     window = daily.Window(s, db, bot, say=lambda text: None, lid=lambda: False, battery=lambda: None)
     window.step()                                                          # the wake's catch-up
-    assert len(bot.texts()) == 2 and bot.texts()[1] == bot.texts()[0]      # the same card, once more
-    window.step()
-    assert len(bot.texts()) == 2                                           # once
+    assert len(bot.texts()) == 1                                           # never again
     assert iid in [r["ref"] for r in _outbox(db, iid)]
+
+

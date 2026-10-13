@@ -352,6 +352,38 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
     return out;
   };
 
+  // Every multi-select holds only our values: Depop's own chips removed. Returns how many were removed.
+  async function chipsOurs(st, f) {
+    let n = 0;
+    for (const [cid, want] of Object.entries(planned(f))) {
+      for (const b of chipButtons(cid)) {
+        if (!want.some((w) => T.norm(w) === T.norm(chipValue(b)))) {
+          st.notes.push(`removed '${chipValue(b)}' from ${cid} (Depop's own suggestion)`);
+          await T.click(b);
+          await T.until(() => !b.isConnected, 1500);
+          n++;
+        }
+      }
+    }
+    return n;
+  }
+
+  // Our values a multi-select lost: added back (one it doesn't take is left out). Returns how many were added.
+  async function addBack(st, f) {
+    let n = 0;
+    for (const [cid, want] of Object.entries(planned(f))) {
+      for (const w of want) {
+        if ((st.left[cid] || []).includes(w)) continue;
+        if (!T.chipsOf(cid).some((c) => T.norm(c) === T.norm(w))) {
+          st.notes.push(`'${w}' was gone from ${cid}: added back`);
+          await choose(st, cid, w, { optional: true });
+          n++;
+        }
+      }
+    }
+    return n;
+  }
+
   // Boost's switch: a checkbox whose label offers the paid promotion (recorded 2026-10-06: "Promote your item in search
   // to help it sell faster. Pay an extra 12% fee, only if you sell.").
   const boosts = () => {
@@ -426,15 +458,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
       // Depop's own suggestions that aren't ours: every multi-select keeps only the values we chose; a brand we didn't
       // ask for is cleared (the listing says only what the facts support).
       await T.step("tidy", st, async () => {
-        for (const [cid, want] of Object.entries(planned(f))) {
-          for (const b of chipButtons(cid)) {
-            if (!want.some((w) => T.norm(w) === T.norm(chipValue(b)))) {
-              st.notes.push(`removed '${chipValue(b)}' from ${cid} (Depop's own suggestion)`);
-              await T.click(b);
-              await T.until(() => !b.isConnected, 1500);
-            }
-          }
-        }
+        await chipsOurs(st, f);
         // WO36 §4: the required single choices read back — one that isn't ours is chosen again, once (the category
         // first: the size and the attributes come after it)
         const leaf = String(f.category || "").split(" > ").pop();
@@ -466,17 +490,15 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
           st.notes.push(`Depop changed the brand to '${brandBox.value}': set back`);
           await brand(st, f.brand, f.brand_typed, T.brandNames(f));
         }
-        // Our values a multi-select lost: added back (once; one it doesn't take is left out).
-        for (const [cid, want] of Object.entries(planned(f))) {
-          for (const w of want) {
-            if ((st.left[cid] || []).includes(w)) continue;
-            if (!T.chipsOf(cid).some((c) => T.norm(c) === T.norm(w))) {
-              st.notes.push(`'${w}' was gone from ${cid}: added back`);
-              await choose(st, cid, w, { optional: true });
-            }
-          }
+        await addBack(st, f);
+        // WO37 (live 2026-10-12, twice): Depop put its own colour back AFTER this tidy — the page left to settle,
+        // then the multi-selects read once more and set to ours again if they changed
+        await T.quiet(1200, 6000);
+        if (await chipsOurs(st, f) + await addBack(st, f)) {
+          st.notes.push("Depop changed the form again after the tidy: set back once more");
+          await T.quiet(800, 4000);
         }
-      });
+      }, { limit: 60000 });                                 // the checks, a size read again, the page left to settle
     },
 
     // The form as it is: the single-selects' values, the multi-selects' chips (the category's input shows its leaf

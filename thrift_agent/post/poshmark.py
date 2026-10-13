@@ -259,6 +259,8 @@ CLOSET_EVERY_MS = 10_000         # ... once every this often
 ID_SKEW_S = 600                  # a listing id created this long before the run started is still "new" (clock skew)
 FIND_TRIES, FIND_WAIT_MS = 3, 10_000   # the closet check after a sleep: looks, and the wait between them (WO28)
 POLL_MS = 250
+PANEL_WAIT_MS = 8_000            # WO37: the Share Listing panel's Promote section, drawn a moment after the panel
+SIZE_REPICKS = 2                 # WO37: a size menu that closed with no size is opened again, twice at most
 UPDATE_TIMEOUT_MS = 15_000       # WO33: Update on the edit page, then the page leaving it
 PUBLIC_CHECK_S, PUBLIC_EVERY_S = 20.0, 4.0   # ... then the public listing read until it agrees, every this often
 ROOT_TEXT_MAX = 300              # a dropdown "root" showing more text than this holds more than one field
@@ -575,8 +577,8 @@ class PoshmarkPoster(Poster):
 
     async def _size(self, page: Page, r: Render) -> None:
         choice = size_choice(r)
-        if choice is None:
-            return
+        if choice is None:                             # WO37 (live: the Clarks): Poshmark's size is required — Next
+            raise Skipped("no size on the item")       # would only show "Required"; nothing is saved
         where = f"{r.department}/{r.category}" + (f" ({choice.tab})" if choice.tab else "")
         await SEL["size_open"](page).click()
         if choice.tab:
@@ -601,20 +603,56 @@ class PoshmarkPoster(Poster):
 
     async def _confirm_size(self, page: Page, choice: SizeChoice) -> None:
         """After the pick, Poshmark's size menu either waits for Done (the inspection, 2026-09-29) or closes by itself
-        with the size on the form's size field (Kids shoes, Mac dry-run #2, 2026-10-01). Either is fine, for any size;
-        anything else fails the item (Poster.post keeps the screenshot and the page)."""
+        with the size on the form's size field (Kids shoes, Mac dry-run #2, 2026-10-01). Either is fine, for any size.
+        WO37 (live: the Marc Jacobs bag's "One Size"): a pick that didn't register — the menu closed, or Done was
+        pressed, and the form still shows no size — is picked again, twice at most. Anything else fails the item
+        (Poster.post keeps the screenshot and the page)."""
         done, field, sizes = SEL["size_done"](page), SEL["size_open"](page), SEL["size_buttons"](page)
-        waited = 0
+        waited, repicked, closed_since = 0, 0, None
+
+        async def shown_now() -> str:
+            return re.sub(r"\s+", " ", await field.inner_text()).strip() if await field.count() else ""
+
+        async def pick_again() -> None:
+            nonlocal repicked, closed_since
+            repicked += 1
+            if not await sizes.count():
+                await field.click()                    # the menu opened again
+            if choice.tab:
+                await self._choose(page, SEL["size_tabs"](page), choice.tab)
+            await self._choose(page, sizes, choice.button, loose=choice.loose)
+            closed_since = None
+
+        def how(menu: str) -> str:
+            return menu + (f" (picked {repicked + 1}×)" if repicked else "")
+
         while True:
             if await done.count():                     # (b) Done to press
-                await done.first.click()
-                self._state["size_menu"] = "Done"
-                return
-            shown = re.sub(r"\s+", " ", await field.inner_text()).strip() if await field.count() else ""
+                try:
+                    await done.first.click(timeout=2_000)
+                except PlaywrightTimeout:              # the menu closed under it: looked at again below
+                    pass
+                else:
+                    for _ in range(4):                 # the size field follows the press
+                        if Contains(choice.button).matches(await shown_now()):
+                            break
+                        await page.wait_for_timeout(POLL_MS)
+                    if Contains(choice.button).matches(await shown_now()) or repicked >= SIZE_REPICKS:
+                        self._state["size_menu"] = how("Done")      # (the read-back has the last word)
+                        return
+                    await pick_again()                 # Done, and still no size: the pick hadn't registered
+                    continue
+            shown = await shown_now()
             if not await sizes.count() and Contains(choice.button).matches(shown):
-                self._state["size_menu"] = "closed by itself"   # (a) the menu closed with the size on the form
+                self._state["size_menu"] = how("closed by itself")   # (a) the menu closed with the size on the form
                 return
-            if waited >= MENU_TIMEOUT_MS:
+            if await sizes.count():
+                closed_since = None
+            elif closed_since is None:
+                closed_since = waited
+            elif waited - closed_since >= 1_000 and repicked < SIZE_REPICKS:
+                await pick_again()                     # closed a second ago with no size on the form
+            if waited >= MENU_TIMEOUT_MS * (1 + repicked):
                 raise PosterError(f"after picking '{choice.button}' the size menu neither showed Done nor closed with "
                                   f"that size on the form (the size field shows '{shown}')")
             await page.wait_for_timeout(POLL_MS)
@@ -974,17 +1012,32 @@ class PoshmarkPoster(Poster):
         """Before List This Item: the panel shows this item's title and Promote My Closet is off (never touched). An
         unreadable toggle stops here, before anything is published. Returns the panel's text."""
         panel = SEL["share_panel"](page).first
-        text = re.sub(r"\s+", " ", await panel.inner_text()).strip()
-        if _key(r.title)[:40] not in _key(text):
-            raise PosterError("the Share Listing panel doesn't show this item's title")
-        toggle = SEL["promote_toggle"](panel)
-        n = await toggle.count()
-        if n > 1:
-            raise PosterError(f"the Share Listing panel has {n} toggles: can't tell which is Promote My Closet")
-        if n == 1 and await toggle.is_checked():
-            raise PosterError("Promote My Closet is on in the Share Listing panel; it must stay off")
-        if n == 0 and not re.search(r"promote my closet off\b", _key(text)):
-            raise PosterError("can't tell whether Promote My Closet is off in the Share Listing panel")
+        waited, text = 0, ""
+        while True:                                    # WO37 (live: the UGG Tazz): read once its Promote part is drawn
+            text = re.sub(r"\s+", " ", await panel.inner_text()).strip()
+            if ("promote my closet" in _key(text) and _key(r.title)[:40] in _key(text)) or waited >= PANEL_WAIT_MS:
+                break
+            await page.wait_for_timeout(POLL_MS)
+            waited += POLL_MS
+        try:
+            if _key(r.title)[:40] not in _key(text):
+                raise PosterError("the Share Listing panel doesn't show this item's title")
+            toggle = SEL["promote_toggle"](panel)
+            n = await toggle.count()
+            if n > 1:
+                raise PosterError(f"the Share Listing panel has {n} toggles: can't tell which is Promote My Closet")
+            if n == 1 and await toggle.is_checked():
+                raise PosterError("Promote My Closet is on in the Share Listing panel; it must stay off")
+            if n == 0 and not re.search(r"promote my closet off\b", _key(text)):
+                raise PosterError("can't tell whether Promote My Closet is off in the Share Listing panel")
+        except PosterError as e:                       # the panel as it was, kept before ‹ Back takes it away
+            try:
+                shot = self._evidence("panel", r.sku)
+                await page.screenshot(path=str(shot), full_page=True)
+                shot.with_suffix(".html").write_text(await page.content(), encoding="utf-8")
+            except Exception:  # noqa: BLE001 — the evidence is a help, never the failure
+                pass
+            raise PosterError(f"{e} (the panel read: {text[:240]!r})") from None
         return text
 
     async def submit(self, page: Page, mode: Mode) -> str | None:

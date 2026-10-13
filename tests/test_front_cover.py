@@ -234,6 +234,16 @@ class FakeBot(Bot):
             return {"message_id": self.next_id}
         return [] if method == "getUpdates" else True
 
+
+    def shown(self):
+        """The newest card as the owner sees it now — the last caption or text sent, or edited in (WO37: a card is
+        edited in place, never sent twice)."""
+        for m, p in reversed(self.calls):
+            if m in ("sendMessage", "sendPhoto", "editMessageCaption", "editMessageText"):
+                return p.get("text") or p.get("caption")
+            if m == "editMessageMedia":
+                return (p.get("media") or {}).get("caption")
+        return None
     def texts(self):
         return [p.get("text") or p.get("caption") for m, p in self.calls if m in ("sendMessage", "sendPhoto")]
 
@@ -261,18 +271,21 @@ def _msg(text, reply_to=None, mid=60):
     return {"update_id": 5, "message": m}
 
 
-def test_a_reply_cover_n_sets_the_cover_and_sends_the_card_again(tmp_path, facts, monkeypatch):
+def test_a_reply_cover_n_sets_the_cover_and_edits_the_card(tmp_path, facts, monkeypatch):
+    """WO37: "cover 3" is her 3rd photo (counted from 1); the card is EDITED to show it — never sent twice."""
     s, db, bot = _bot_env(tmp_path, monkeypatch)
     iid = _processed_tee(s, db, tmp_path, facts, monkeypatch)
     card = bot.next_id                                                # the card went out after processing
-    assert approve.handle_update(s, db, bot, _msg("cover 2", reply_to=card)) == f"cover {iid}: photo 2 (awaiting_price)"
+    assert approve.handle_update(s, db, bot, _msg("cover 3", reply_to=card)) == f"cover {iid}: photo 2 (awaiting_price)"
     it = db.item(iid)
     assert it["owner_cover"] == 2 and loads(it["facts"])["cover_photo"] == 2
     assert [Path(p).name for p in loads(it["renders"])["poshmark"]["photos"]][:2] == ["cover.jpg", "00.jpg"]
-    assert bot.calls[-3][0] == "editMessageReplyMarkup" and bot.calls[-3][1]["message_id"] == card   # WO29: marked
-    assert bot.calls[-3][1]["reply_markup"]["inline_keyboard"][0][0]["text"] == "✓ cover: photo 2"
-    assert bot.calls[-2][0] == "sendMessage" and bot.calls[-2][1]["text"].startswith("✓ Cover: photo 2 — ")   # WO33:
-    assert bot.calls[-1][0] == "sendPhoto" and bot.next_id == card + 2          # her reply answered; the card again
+    sends = [m for m, _ in bot.calls if m in ("sendPhoto", "sendMessage")]
+    assert sends.count("sendPhoto") == 1                               # the card went out once, ever
+    edits = [p for m, p in bot.calls if m == "editMessageMedia"]
+    assert edits and edits[-1]["message_id"] == card and Path(edits[-1]["photo"]).name == "cover.jpg"   # its new cover
+    answers = [p["text"] for m, p in bot.calls if m == "sendMessage"]
+    assert answers and answers[-1].startswith("✓ Cover: photo 3 — ")   # her reply answered, in her numbers
     pipeline.process_item(s, db, iid)                                 # kept through any reprocessing
     assert loads(db.item(iid)["facts"])["cover_photo"] == 2
 
@@ -280,9 +293,9 @@ def test_a_reply_cover_n_sets_the_cover_and_sends_the_card_again(tmp_path, facts
 def test_cover_n_typed_while_the_card_is_open_and_its_limits(tmp_path, facts, monkeypatch):
     s, db, bot = _bot_env(tmp_path, monkeypatch)
     iid = _processed_tee(s, db, tmp_path, facts, monkeypatch)
-    assert approve.handle_update(s, db, bot, _msg("Cover 3")).startswith(f"cover {iid}: photo 3")
-    assert approve.handle_update(s, db, bot, _msg("cover 9")).startswith(f"cover {iid}: rejected 9")
-    assert "has photos 0..3 — no photo 9" in bot.texts()[-1]
+    assert approve.handle_update(s, db, bot, _msg("Cover 3")).startswith(f"cover {iid}: photo 2")   # her 3rd
+    assert approve.handle_update(s, db, bot, _msg("cover 9")).startswith(f"cover {iid}: rejected 8")
+    assert "has photos 1 to 4 — there is no photo 9" in bot.texts()[-1]
     db.set_item(iid, status="posted")
     db.upsert_listing(iid, "poshmark", status="posted", url="https://poshmark.com/listing/x-0000000000000000000000a1")
     with pytest.raises(ValueError, match="already on the marketplace"):
@@ -314,7 +327,7 @@ def test_recover_fixes_cover_category_and_size_and_keeps_price_and_answers(tmp_p
     out = pipeline.recover_item(s, db, iid)
     assert (out["cover"], out["role"], out["view"], out["upright"]) == (0, "front", "front", 90)
     assert (out["category"], out["size"], out["questions"], out["status"]) == ("Shirts & Tops", "4T", [], "ready")
-    assert asked == [[0, 3]]                                          # only the photos of the item alone compared
+    assert asked == [[0, 1, 2, 3]]                                    # WO37: every own photo labelled
     it = db.item(iid)
     assert (it["owner_price"], it["owner_condition"], it["owner_kids_gender"]) == (20, "NWOT", "boys")
     assert loads(it["price"]) == price                                 # the price stays as it was
@@ -436,7 +449,8 @@ def test_the_turn_is_worked_out_from_where_the_top_lies(top, turn):
 
 
 def test_worn_photos_go_along_as_a_reference_never_as_a_candidate(tmp_path, facts, monkeypatch):
-    """Live: a skirt's centre-back zip side was taken for the front; the mirror selfie shows the front has no zip."""
+    """Live: a skirt's centre-back zip side was taken for the front; the mirror selfie shows the front has no zip.
+    WO37: every own photo is labelled — the worn one marked as such."""
     s = _settings(tmp_path)
     db = DB(s.path("db"))
     seen = {}
@@ -449,7 +463,7 @@ def test_worn_photos_go_along_as_a_reference_never_as_a_candidate(tmp_path, fact
                   photo_order=[2, 0, 1, 3, 4])
     photos = [tmp_path / f"{i:02d}.jpg" for i in range(5)]
     out = pipeline.front_view(s, db, "i_x", photos, skirt, ["own"] * 5)
-    assert seen == {"alone": [0, 2], "worn": [4]} and out.front == 0
+    assert seen == {"alone": [0, 1, 2, 3], "worn": [4]} and out.front == 0
     assert pipeline.choose_cover(skirt, 5, None, out) == (0, 90, None)
 
 

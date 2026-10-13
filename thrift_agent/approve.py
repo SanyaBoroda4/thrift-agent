@@ -24,6 +24,7 @@ import contextvars
 import json
 import math
 import os
+import random
 import re
 import sys
 import time
@@ -41,7 +42,7 @@ from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
 from thrift_agent.ingest import segment as seg
 from thrift_agent.schema import POSH_CONDITION, Facts, Render
-from thrift_agent.telegram import MAX_CAPTION, Bot
+from thrift_agent.telegram import maybe_delivered, MAX_CAPTION, Bot
 
 OFFSET_KEY = "telegram_offset"                       # kv: the last getUpdates update_id we handled
 LOCK_KEY = "telegram_queue_lock"                     # kv: who is sending the next message ("<token>@<epoch>")
@@ -58,6 +59,7 @@ WAITING_ITEM = ("awaiting_price", "needs_info")      # item statuses whose price
 BATCH_HINT = "Reply to this message: ok | 12>2 | split 7 | merge 2 3 | drop 7"
 REGROUP_HINT = "Reply with the fix: 12>2 | split 7 | merge 2 3 | drop 7 (or ok: nothing changes)"
 ITEM_HINT = "Tap a price, type a number, or reply with an answer like 'size 8, 45'"
+CORRECT_HINT = "To change: reply size … · brand … · condition … · category … · cover 2"   # WO37: corrections by reply
 HELD_HINT = " (still held as a possible re-share: reply 'different item' to list it or 'same item' to drop it)"
 CONDITION_QUESTION = "Brand new or worn? (couldn't tell from the photos)"
 CONDITION_BUTTONS = (("NWT", "nwt"), ("Like New", "like_new"), ("Good", "good"))    # label, callback choice
@@ -81,7 +83,14 @@ _UNIT_AFTER = re.compile(r"\s*(?:cm|mm|in|inch|inches|us|uk|eu|y|t|m|w)\b", re.I
 # A message that is nothing but a price: "28", "$28", "28.00", "28 dollars" (typed without a reply, WO20).
 # "cover 2": photo 2 of the item becomes its cover (WO23; a reply to the card, or typed while it is open).
 COVER_CMD = re.compile(r"^\s*cover\s*#?\s*(\d{1,2})\s*$", re.I)
-SHIPPED_CMD = re.compile(r"^\s*shipped\s+(.+?)\s*$", re.I | re.S)       # WO33: "shipped <title words>"
+
+
+def cover_index(number: str) -> int:
+    """WO37: "cover 3" is her 3rd shared photo (counted from 1, as she sees them); "cover 0" is taken as the first."""
+    return max(int(number) - 1, 0)
+
+
+SHIPPED_CMD =re.compile(r"^\s*shipped\s+(.+?)\s*$", re.I | re.S)       # WO33: "shipped <title words>"
 # Replies to "⚠️ … I can't see it in the closet" (outbox kind "unconfirmed", WO28 §3): "posted <url>" / "retry".
 POSTED_CMD = re.compile(r"^\s*(?:it'?s\s+)?posted\s*[:\-]?\s*(\S+)\s*$", re.I)
 RETRY_CMD = re.compile(r"^\s*(?:retry|try again|not there|isn'?t there)\s*[.!]*\s*$", re.I)
@@ -485,14 +494,18 @@ def send_batch(s: Settings, db: DB, bid: str) -> None:
     if bot is None:
         notify.group_photo(sheet, f"{caption}\n(thrift confirm {bid} ok)")
         return
-    if sheet.is_file() and len(caption) <= MAX_CAPTION:
-        mid = bot.send_photo(sheet, caption)
-    elif sheet.is_file():                                   # too many items for one caption: sheet, then the text
-        db.add_outbox(bot.chat_id, bot.send_photo(sheet, caption.splitlines()[0]), "batch", bid)
-        mid = bot.send_message(caption)
-    else:
-        mid = bot.send_message(caption)
-    db.add_outbox(bot.chat_id, mid, "batch", bid)
+    if (row := sent_before(db, bot.chat_id, "batch", bid)) is not None:   # WO37: once per batch
+        db.conn.execute("UPDATE outbox SET resolved_at=NULL WHERE chat_id=? AND message_id=?",
+                        (row["chat_id"], row["message_id"]))
+        return
+
+    def send() -> int:
+        if sheet.is_file() and len(caption) <= MAX_CAPTION:
+            return bot.send_photo(sheet, caption)
+        if sheet.is_file():                                 # too many items for one caption: sheet, then the text
+            bot.send_photo(sheet, caption.splitlines()[0])
+        return bot.send_message(caption)
+    once(db, bot, "batch", bid, caption, send)
 
 
 def send_regroup(s: Settings, db: DB, bid: str) -> None:
@@ -515,14 +528,18 @@ def send_regroup(s: Settings, db: DB, bid: str) -> None:
     if bot is None:
         notify.group_photo(sheet, f"{caption}\n(thrift confirm {bid} <fix>)")
         return
-    if sheet.is_file() and len(caption) <= MAX_CAPTION:
-        mid = bot.send_photo(sheet, caption)
-    elif sheet.is_file():
-        db.add_outbox(bot.chat_id, bot.send_photo(sheet, lines[0]), "regroup", bid)
-        mid = bot.send_message(caption)
-    else:
-        mid = bot.send_message(caption)
-    db.add_outbox(bot.chat_id, mid, "regroup", bid)
+    if (row := sent_before(db, bot.chat_id, "regroup", bid)) is not None:   # WO37: once per batch
+        db.conn.execute("UPDATE outbox SET resolved_at=NULL WHERE chat_id=? AND message_id=?",
+                        (row["chat_id"], row["message_id"]))
+        return
+
+    def send() -> int:
+        if sheet.is_file() and len(caption) <= MAX_CAPTION:
+            return bot.send_photo(sheet, caption)
+        if sheet.is_file():
+            bot.send_photo(sheet, lines[0])
+        return bot.send_message(caption)
+    once(db, bot, "regroup", bid, caption, send)
 
 
 def _ev(facts: dict, name: str) -> str | None:
@@ -566,18 +583,23 @@ def item_caption(iid: str, it) -> tuple[str, int | None]:
     guessed = [n for n in [*(gate.get("info") or []), *notes] if n.startswith(SIZE_NOTE)]   # WO33: shown, never asked
     if size := size_words(posh, facts):
         lines.append(f"Size {size}" + (" — my best reading; reply 'size …' to change it" if guessed else ""))
-    elif guessed:
-        lines.append("Size: not read from the photos — reply 'size …'")
+    elif guessed:                                                   # WO37: no site lists it without one
+        lines.append("⚠️ No size on the photos — reply 'size …' (it can't be listed without one)")
     cond = facts.get("condition")
     label = POSH_CONDITION.get(cond, cond or "unknown")
     if (facts.get("condition_evidence") or {}).get("source") == "owner":
         label += " (your answer)"                                   # "Brand new or worn?" was answered
     lines.append(f"Condition: {label}")
+    if posh.get("category"):                                        # WO37: what the rules decided, shown
+        lines.append("Category: " + taxonomy.path_label({"department": posh.get("department"),
+                                                         "category": posh.get("category"),
+                                                         "subcategory": posh.get("subcategory")},
+                                                        posh.get("department")))
     if "questions" in gate:                                         # processed since WO20
         lines += [f"⚠️ {n}" for n in notes if not n.startswith(SIZE_NOTE)]
         if questions := gate.get("questions") or []:
             lines += [f"❓ {q}" for q in questions]
-            lines.append("Reply to this card with the answer (a price too if you like), e.g. 'size 8, 45'")
+        lines.append(CORRECT_HINT)
     else:                                                           # processed before WO20: as it was recorded
         lines += [f"Note: {n}" for n in gate.get("notes") or []]
         if gate.get("decision") == "needs_info":
@@ -644,6 +666,68 @@ def item_buttons(iid: str, price: int | None, no_brand: bool = False) -> list[li
     return rows
 
 
+def sent_before(db: DB, chat_id: str, kind: str, ref: str):
+    """The message of this kind about `ref` already sent to this chat (the newest), or None — WO37: every message to
+    the group or the private chat goes out ONCE per item and kind, whatever restarts or reprocessing come after."""
+    return db.conn.execute("SELECT * FROM outbox WHERE chat_id=? AND kind=? AND ref=? ORDER BY sent_at DESC, "
+                           "rowid DESC LIMIT 1", (str(chat_id), kind, ref)).fetchone()
+
+
+def once(db: DB, bot: Bot, kind: str, ref: str, text: str | None, send) -> int | None:
+    """Send `send()` (returns the message id) as THE message of `kind` about `ref` (WO37): recorded in the outbox
+    BEFORE it goes, under a placeholder id; the id replaces it once Telegram answers. A send that went out but got no
+    answer (a read timeout — live 2026-10-12, three copies of one question) keeps the placeholder: it counts as sent
+    and is never sent again (its buttons work by their data; a reply to it reaches the open card). A send that never
+    left (no connection) is taken back, to be tried again. None when it was sent before, or may have been."""
+    if sent_before(db, bot.chat_id, kind, ref) is not None:
+        return None
+    placeholder = -int(time.time() * 1000) - random.randint(0, 999)
+    db.add_outbox(bot.chat_id, placeholder, kind, ref, text=text)
+    try:
+        mid = send()
+    except RuntimeError as e:
+        if maybe_delivered(e):
+            db.log(ref, "telegram_maybe_sent", {"kind": kind, "error": str(e)[:200]})
+            return None
+        db.conn.execute("DELETE FROM outbox WHERE chat_id=? AND message_id=?", (str(bot.chat_id), placeholder))
+        raise
+    db.conn.execute("UPDATE outbox SET message_id=? WHERE chat_id=? AND message_id=?",
+                    (int(mid), str(bot.chat_id), placeholder))
+    return int(mid)
+
+
+def refresh_card(s: Settings, db: DB, iid: str, reopen: bool = False) -> bool:
+    """The item's price card as it is now — caption, buttons, cover photo — EDITED in place (WO37: never a second card;
+    "the price card always shows the chosen cover"). `reopen`: it waits for the owner again (the queue's open message).
+    An answered card keeps one inert "✓ $X" button. False when there is no card to edit (none sent, or sent without an
+    answer from Telegram)."""
+    bot = bot_for(s)
+    it = db.item(iid)
+    if bot is None or it is None:
+        return False
+    row = sent_before(db, bot.chat_id, "item", iid)
+    if row is None:
+        return False
+    if reopen:
+        db.conn.execute("UPDATE outbox SET resolved_at=NULL WHERE chat_id=? AND message_id=?",
+                        (row["chat_id"], row["message_id"]))
+    if int(row["message_id"]) < 0:
+        return False
+    caption, price = item_caption(iid, it)
+    waiting = reopen or row["resolved_at"] is None
+    buttons = (item_buttons(iid, price, asks_brand(loads(it["gate"]) or {})) if waiting else
+               [[{"text": f"\u2713 ${it['owner_price']}" if it["owner_price"] else "\u2713", "callback_data": NOOP}]])
+    cover = Path(it["dir"]) / "cover.jpg"
+    try:
+        bot.edit_card(int(row["message_id"]), caption, buttons, photo=cover if cover.is_file() else None)
+    except RuntimeError as e:
+        db.log(iid, "card_edit_failed", str(e)[:200])
+        return False
+    db.conn.execute("UPDATE outbox SET text=? WHERE chat_id=? AND message_id=?",
+                    (caption, row["chat_id"], row["message_id"]))
+    return True
+
+
 def send_item(s: Settings, db: DB, iid: str) -> None:
     """The item's price card: cover photo, item_caption, item_buttons. Records the outbox row. Without a bot: print
     (dev)."""
@@ -658,11 +742,12 @@ def send_item(s: Settings, db: DB, iid: str) -> None:
         notify.group_photo(cover, text) if cover.is_file() else notify.group(text)
         return
     buttons = item_buttons(iid, price, asks_brand(loads(it["gate"]) or {}))
-    if cover.is_file() and len(caption) <= MAX_CAPTION:
-        mid = bot.send_photo(cover, caption, buttons)
-    else:
-        mid = bot.send_message(caption, buttons)
-    db.add_outbox(bot.chat_id, mid, "item", iid, text=caption)
+    if sent_before(db, bot.chat_id, "item", iid) is not None:   # WO37: the card that went out is edited, never resent
+        refresh_card(s, db, iid, reopen=True)
+        return
+    once(db, bot, "item", iid, caption,
+         lambda: bot.send_photo(cover, caption, buttons) if cover.is_file() and len(caption) <= MAX_CAPTION
+         else bot.send_message(caption, buttons))
 
 
 def _ask(s: Settings, db: DB, iid: str, kind: str, question: str, buttons: list[list[dict]], cli: str) -> None:
@@ -678,8 +763,12 @@ def _ask(s: Settings, db: DB, iid: str, kind: str, question: str, buttons: list[
         text = f"{caption}\n({cli})"
         notify.group_photo(cover, text) if cover.is_file() else notify.group(text)
         return
-    mid = bot.send_photo(cover, caption, buttons) if cover.is_file() else bot.send_message(caption, buttons)
-    db.add_outbox(bot.chat_id, mid, kind, iid, text=caption)
+    if (row := sent_before(db, bot.chat_id, kind, iid)) is not None:     # WO37: asked once, ever
+        db.conn.execute("UPDATE outbox SET resolved_at=NULL WHERE chat_id=? AND message_id=?",
+                        (row["chat_id"], row["message_id"]))
+        return
+    once(db, bot, kind, iid, caption,
+         lambda: bot.send_photo(cover, caption, buttons) if cover.is_file() else bot.send_message(caption, buttons))
 
 
 def condition_buttons(iid: str) -> list[list[dict]]:
@@ -983,12 +1072,18 @@ def _typed(s: Settings, db: DB, bot: Bot, text: str, mid: int | None) -> str:
         if row is None or row["kind"] != "item":
             bot.send_message("No price card is open", reply_to=mid)
             return f"typed {text!r}: no price card open"
-        return _set_cover(s, db, bot, row["ref"], int(m[1]), mid)
+        return _set_cover(s, db, bot, row["ref"], cover_index(m[1]), mid)
     if pipeline.NO_BRAND_WORDS.fullmatch((text or "").strip(" .!")):
         row = open_message(db)
         if row is None or row["kind"] != "item":
             return "ignored: not a reply to the bot"
         return _set_no_brand(s, db, bot, row["ref"], mid)
+    if CONDITION_CMD.match(text or "") or CATEGORY_CMD.match(text or ""):   # WO37: typed while a card is open
+        row = open_message(db)
+        if row is None or row["kind"] != "item":
+            bot.send_message("No price card is open", reply_to=mid)
+            return f"typed {text!r}: no price card open"
+        return _correction(s, db, bot, row["ref"], text, None, mid) or "ignored"
     amount = plain_price(text)
     if amount is None:
         return "ignored: not a reply to the bot"
@@ -1140,17 +1235,15 @@ def _reply_regroup(s: Settings, db: DB, bot: Bot, bid: str, text: str, mid: int 
 
 
 def _set_cover(s: Settings, db: DB, bot: Bot, iid: str, n: int, reply_to: int | None) -> str:
-    """The owner's "cover N": the item's listing is rebuilt with photo N first; a card still waiting is sent again
-    (the queue re-sends it with the new cover), an item already priced shows its new cover in the reply."""
+    """The owner's "cover N" (n counted from 0 here; she counts from 1, WO37): the item's listing is rebuilt with that
+    photo first and its card EDITED to show it — never sent again — and her reply answered."""
     try:
         status = pipeline.set_cover(s, db, iid, n)
     except ValueError as e:
         _tell(bot, reply_to, str(e))
         return f"cover {iid}: rejected {n}: {e}"
-    _ack(db, bot, "item", iid, f"✓ cover: photo {n}")
-    _confirm(s, db, bot, reply_to, iid, f"Cover: photo {n}")
-    if status in WAITING_ITEM:
-        db.outbox_resolve("item", iid)                 # the card comes again with its new cover
+    refresh_card(s, db, iid)                           # "the price card always shows the chosen cover" (WO37)
+    _confirm(s, db, bot, reply_to, iid, f"Cover: photo {n + 1}")
     return f"cover {iid}: photo {n} ({status})"
 
 
@@ -1250,7 +1343,7 @@ def _set_brand(s: Settings, db: DB, bot: Bot, iid: str, brand: str, reply_to: in
 
 def _reply_item(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int | None) -> str:
     if m := COVER_CMD.match(text or ""):
-        return _set_cover(s, db, bot, iid, int(m[1]), mid)
+        return _set_cover(s, db, bot, iid, cover_index(m[1]), mid)
     if pipeline.NO_BRAND_WORDS.search(text or ""):     # "no brand", "unbranded, 25": the [No brand] button (WO25)
         price, note = parse_reply(pipeline.NO_BRAND_WORDS.sub("", text).strip(" ,.;:-!"))
         if price is not None:
@@ -1272,6 +1365,8 @@ def _reply_item(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int | N
         return _set_price(s, db, bot, iid, price, mid)
     if (size := size_reply(note)) is not None:          # WO33: "Size S", "size s", "S" — with or without a price
         return _set_size(s, db, bot, iid, size, price, mid)
+    if (fixed := _correction(s, db, bot, iid, note, price, mid)) is not None:   # WO37: condition / category / kids
+        return fixed
     it = db.item(iid)
     if (brand := brand_reply(note, (loads(it["gate"]) or {}) if it else {})) is not None:
         if price is not None:
@@ -1301,6 +1396,37 @@ def _reply_item(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int | N
     if errors:
         _tell(bot, mid, "\n".join(errors))
     return f"item {iid}: " + "; ".join(recorded + [f"error: {e}" for e in errors])
+
+
+CONDITION_CMD = re.compile(r"^\s*condition\s*[:=]?\s*(.+?)\s*$", re.I)           # WO37: "condition nwt"
+CATEGORY_CMD = re.compile(r"^\s*category\s*[:=]?\s*(.+?)\s*$", re.I)             # "category Shoes / Flats & Loafers"
+
+
+def _correction(s: Settings, db: DB, bot: Bot, iid: str, note: str, price: int | None, mid: int | None) -> str | None:
+    """WO37: what the rules decided, corrected by a reply to the card — `condition nwt|like new|good`, `category …`,
+    `girls` / `boys`. Answered at once; None when the reply is none of these."""
+    if m := CONDITION_CMD.match(note or ""):
+        choice = parse_condition(m[1])
+        if choice is None:
+            _tell(bot, mid, "Condition: reply 'condition nwt', 'condition like new' or 'condition good'")
+            return f"item {iid}: condition {m[1]!r} not understood"
+        if price is not None:
+            _set_price(s, db, bot, iid, price, mid)
+        try:
+            pipeline.correct_condition(s, db, iid, choice)
+        except ValueError as e:
+            _tell(bot, mid, str(e))
+            return f"condition {iid}: rejected {choice!r}: {e}"
+        refresh_card(s, db, iid)
+        _confirm(s, db, bot, mid, iid, f"Condition: {CONDITION_TAPPED.get(choice, choice)}")
+        return f"condition {iid}: {choice}"
+    if m := CATEGORY_CMD.match(note or ""):
+        if price is not None:
+            _set_price(s, db, bot, iid, price, mid)
+        return _reply_category(s, db, bot, iid, m[1], mid)
+    if (kids := parse_kids(note)) is not None and price is None:
+        return _set_kids(s, db, bot, iid, kids, mid)
+    return None
 
 
 SIZE_SAID = re.compile(r"^\s*(?:size|sz)\s*[:=#]?\s*([A-Za-z0-9][A-Za-z0-9./ -]{0,11}?)\s*[.!]?\s*$", re.I)
@@ -1407,11 +1533,10 @@ def poll_once(s: Settings, db: DB, bot: Bot, timeout: int) -> int:
 
 
 def resend_pending(s: Settings, db: DB) -> list[str]:
-    """Send the open message again — only that one (WO20) — once it has waited longer than
-    telegram.resend_after_hours (the Mac slept; Telegram keeps the owner's replies 24 h). The worker runs this when it
-    starts too, with the same rule: a restart — every deploy — never repeats a card the owner has just been sent
-    (WO24; it used to, each time). The copy above keeps working (its buttons, replies to it). With nothing open, the
-    next message goes out instead, so a restart never stalls the queue. Returns the refs re-sent."""
+    """WO37 (the owner: never the same message twice): nothing is sent again, however long the open message has
+    waited — the worker runs this on start and on a wake only to close older copies and, with nothing open, to send
+    the next message (a restart never stalls the queue). The open copy keeps working (its buttons, replies to it).
+    Returns the refs re-sent: always none since WO37 (was: the open one past telegram.resend_after_hours)."""
     if bot_for(s) is None or db.conn.in_transaction:
         return []
     token = _lock(db)
@@ -1424,11 +1549,6 @@ def resend_pending(s: Settings, db: DB) -> list[str]:
             if head := next_up(db):
                 _send(s, db, *head)
             return []
-        hours = float(s.get("telegram.resend_after_hours", 6) or 0)
-        if row["sent_at"] >= (_now() - timedelta(hours=hours)).isoformat(timespec="seconds"):
-            return []
-        db.outbox_resolve(row["kind"], row["ref"])
-        _send(s, db, row["kind"], row["ref"])
-        return [row["ref"]]
+        return []                     # WO37: a card is sent once — never again after hours (it stays where it is)
     finally:
         _unlock(db, token)

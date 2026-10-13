@@ -28,6 +28,16 @@ class FakeBot(Bot):
             return {"message_id": self.next_id}
         return [] if method == "getUpdates" else True
 
+
+    def shown(self):
+        """The newest card as the owner sees it now — the last caption or text sent, or edited in (WO37: a card is
+        edited in place, never sent twice)."""
+        for m, p in reversed(self.calls):
+            if m in ("sendMessage", "sendPhoto", "editMessageCaption", "editMessageText"):
+                return p.get("text") or p.get("caption")
+            if m == "editMessageMedia":
+                return (p.get("media") or {}).get("caption")
+        return None
     def sent(self):
         return [p for m, p in self.calls if m in ("sendMessage", "sendPhoto")]
 
@@ -181,7 +191,7 @@ def test_the_listing_carries_the_menus_value_and_a_size_it_lacks_is_asked(env, f
     gate = loads(db.item(iid)["gate"])
     assert gate["questions"] == []                                   # WO33: shown, never asked
     assert f"{SIZE_NOTE} 38 — not on Poshmark's Women Shoes size list (Standard): the nearest is used" in gate["info"]
-    assert "Size 38 — my best reading; reply 'size …' to change it" in bot.sent()[-1]["caption"]
+    assert "Size 38 — my best reading; reply 'size …' to change it" in bot.shown()     # WO37: the card, edited
     state["facts"] = lambda: facts(category="Bags", subcategory=None, size_us=Ev())   # a bag: no size to ask
     db.set_item(iid, status="new")
     pipeline.process_item(s, db, iid)
@@ -198,31 +208,31 @@ def _unsure(facts):
                          category_confidence=0.55, category_alternatives=[CategoryPath(category="Shorts")])
 
 
-def test_an_unsure_category_is_asked_with_real_paths_and_the_models_pick_settles_at_once(env, facts, monkeypatch):
+def test_an_unsure_category_is_the_models_pick_shown_on_the_card_and_a_reply_changes_it(env, facts, monkeypatch):
+    """WO37: no "Which category?" message — the model's own pick when Poshmark has it, on the card; a reply
+    'category …' moves it."""
     s, db, bot = env
     monkeypatch.setattr("thrift_agent.brain.llm.ask", _model({"facts": _unsure(facts)}))
     iid = _item(s.path("db").parent, db)
     pipeline.process_item(s, db, iid)
-    assert bot.sent()[-1]["caption"].endswith(approve.CATEGORY_QUESTION)            # before the price card
-    assert bot.buttons() == [("Skirts › Circle & Skater", f"cat:{iid}:0"), ("Shorts", f"cat:{iid}:1")]
-    assert loads(db.item(iid)["gate"])["reasons"][0] == "category unsure (0.55)"
-    approve.handle_update(s, db, bot, _cb(f"cat:{iid}:0", bot.next_id))           # the model's own pick
+    caption = bot.sent()[-1]["caption"]
+    assert "Category: Skirts › Circle & Skater" in caption and approve.CATEGORY_QUESTION not in caption
+    assert any(text.startswith("⭐$") for text, _ in bot.buttons())                 # the price card at once
     it = db.item(iid)
-    assert it["status"] == "awaiting_price" and loads(it["facts"])["category_confidence"] == 1.0
-    assert loads(it["gate"])["ask_category"] == [] and loads(it["owner_category"])["subcategory"] == "Circle & Skater"
-    assert bot.sent()[-1]["caption"].startswith("Tory Burch")                     # now the price card
-    assert any(text.startswith("⭐$") for text, _ in bot.buttons())
+    assert loads(it["gate"])["ask_category"] == [] and it["status"] == "awaiting_price"
+    assert any(x.startswith("category: Skirts › Circle & Skater") for x in loads(it["gate"])["info"])
+    out = approve.handle_update(s, db, bot, _reply("category Shorts", bot.next_id))
+    assert loads(db.item(iid)["owner_category"])["category"] == "Shorts", out
 
 
-def test_another_category_reprocesses_the_item_with_it(env, facts, monkeypatch):
+def test_another_category_by_reply_reprocesses_the_item_with_it(env, facts, monkeypatch):
     s, db, bot = env
     notes = []
     monkeypatch.setattr("thrift_agent.brain.llm.ask", _model({"facts": _unsure(facts)}, notes))
     iid = _item(s.path("db").parent, db)
     pipeline.process_item(s, db, iid)
-    question = bot.next_id
-    approve.handle_update(s, db, bot, _cb(f"cat:{iid}:1", question))               # Shorts
-    assert db.item(iid)["status"] == "new" and bot.marks() == [(question, "✓ Shorts")]   # WO29: the card, quietly
+    approve.handle_update(s, db, bot, _reply("category Shorts", bot.next_id))
+    assert db.item(iid)["status"] == "new"
     pipeline.process_item(s, db, iid)                                               # the model still says Skirts, 0.55
     it = db.item(iid)
     f = loads(it["facts"])
@@ -231,19 +241,18 @@ def test_another_category_reprocesses_the_item_with_it(env, facts, monkeypatch):
     assert notes[-1] == "Seller note: Category (the owner's answer): Shorts"         # the copy follows the answer
 
 
-def test_typed_answers_keep_working(env, facts, monkeypatch):
+def test_typed_category_answers_keep_working(env, facts, monkeypatch):
+    """A reply 'category …' takes any real path; text that is no path is a note, as before."""
     s, db, bot = env
     monkeypatch.setattr("thrift_agent.brain.llm.ask", _model({"facts": _unsure(facts)}))
     iid = _item(s.path("db").parent, db)
     pipeline.process_item(s, db, iid)
-    question = bot.next_id
-    approve.handle_update(s, db, bot, _reply("Pants & Jumpsuits / Wide Leg", question))
+    card = bot.next_id
+    approve.handle_update(s, db, bot, _reply("category Pants & Jumpsuits / Wide Leg", card))
     assert loads(db.item(iid)["owner_category"]) == {"department": "Women", "category": "Pants & Jumpsuits",
                                                      "subcategory": "Wide Leg"}
-    db.set_item(iid, status="awaiting_price", owner_category=None,
-                gate={**loads(db.item(iid)["gate"]), "ask_category": [{"department": "Women", "category": "Shorts",
-                                                                       "subcategory": None}]})
-    approve.handle_update(s, db, bot, _reply("the bottom has legs, it's shorts really", question))
+    db.set_item(iid, status="awaiting_price", owner_category=None)
+    approve.handle_update(s, db, bot, _reply("the bottom has legs, it's shorts really", card))
     assert db.item(iid)["status"] == "new" and "shorts really" in db.item(iid)["note"]   # a note, as before
 
 
@@ -347,7 +356,7 @@ def test_reprocess_keeps_an_unchanged_card_and_resends_a_changed_one(env, facts,
     state["title"] = "Knit Top & Flare Pants Set size 7.5"
     out = pipeline.reprocess(s, db, iid)
     assert out["card"] == "sent again" and out["title"] == "Knit Top & Flare Pants 2-Piece Set size 7.5"
-    assert bot.sent()[-1]["caption"].startswith("Knit Top & Flare Pants 2-Piece Set") and bot.next_id == card + 1
+    assert bot.shown().startswith("Knit Top & Flare Pants 2-Piece Set") and bot.next_id == card   # WO37: edited
 
 
 def test_reprocess_loses_to_an_answer_and_never_touches_a_listed_item(env, facts, monkeypatch):
@@ -435,8 +444,10 @@ def test_a_plain_reply_to_the_cards_brand_question_is_the_brand(env, facts, monk
     assert (f["brand"]["value"], f["brand"]["source"]) == ("Vince", "owner")
     assert (posh["brand"], posh["title"]) == ("Vince", "Vince Red Ballet Flats size 7.5")
     assert loads(it["gate"])["questions"] == []
-    assert bot.sent()[-1]["caption"].startswith("Vince Red Ballet Flats")          # the card again, with the brand
-    assert bot.next_id == card + 2 and bot.marks() == [(card, "✓ brand: Vince")]   # the old copy marked, and
+    edits = [(p.get("media") or {}).get("caption") or p.get("caption") for m, p in bot.calls
+             if m in ("editMessageMedia", "editMessageCaption")]
+    assert edits and edits[-1].startswith("Vince Red Ballet Flats")                 # WO37: the card edited in place
+    assert bot.next_id == card + 1                                                 # only her reply's answer went out
     assert _answers(bot)[-1].startswith("✓ Brand: Vince — ")                      # WO33: her reply answered
 
 

@@ -50,7 +50,7 @@ def test_call_encodes_json_files_and_drops_none(monkeypatch, tmp_path):
     assert seen["data"] == {"chat_id": "100", "caption": "hi",
                             "reply_markup": '{"inline_keyboard": [[{"text": "x", "callback_data": "y"}]]}'}
     assert seen["files"] == {"photo": ("cover.jpg", b"jpegbytes")}
-    assert seen["timeout"] == 20
+    assert seen["timeout"] == 90                        # WO37: a photo upload gets 90 s (20 s timed out on hotel Wi-Fi)
 
 
 def test_call_get_updates_uses_long_poll_timeout_plus_ten(monkeypatch):

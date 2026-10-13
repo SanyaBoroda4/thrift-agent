@@ -662,7 +662,9 @@ def test_archive_can_live_next_to_the_inbox(tmp_path):
 
 # ---------- WO4: the owner's price, open questions, kids sizes ----------
 
-def test_open_questions_ride_with_the_price_and_come_back_until_resolved(tmp_path, monkeypatch, facts, owner_messages):
+def test_a_price_alone_makes_the_item_ready_whatever_it_could_not_read(tmp_path, monkeypatch, facts, owner_messages):
+    """WO37 (the owner): the only thing that waits for her is the price — an unreadable brand is a question ON the card,
+    and her price lists the item; nothing comes back for it."""
     s = _settings(tmp_path)
     db = DB(s.path("db"))
     state = {"brand": Ev(value=None, confidence=0.2)}                   # the model can't read the brand
@@ -681,19 +683,12 @@ def test_open_questions_ride_with_the_price_and_come_back_until_resolved(tmp_pat
     assert owner_messages.count(("item", iid)) == 1
     assert any(q.startswith("Brand? Couldn't read it") for q in loads(it["gate"])["questions"])
 
-    assert pipeline.set_price(s, db, iid, 45) == "ready"                  # the owner replied "brand Vince, 45":
-    pipeline.answer(s, db, iid, "brand Vince")                            # price first, then the note
-    pipeline.process_item(s, db, iid)                                     # still unreadable -> asks again, price kept
+    assert pipeline.set_price(s, db, iid, 45) == "ready"                  # her price: listed as it is
+    pipeline.answer(s, db, iid, "brand Vince")                            # a note reprocesses it, the price kept
+    pipeline.process_item(s, db, iid)                                     # still unreadable: ready all the same
     it = db.item(iid)
-    assert it["status"] == "awaiting_price" and loads(it["price"])["list_price"] == 45
-    assert owner_messages.count(("item", iid)) == 2
-
-    state["brand"] = Ev(value="Vince", photos=[], source="note", confidence=1.0)
-    pipeline.answer(s, db, iid, "yes, Vince")
-    pipeline.process_item(s, db, iid)
-    it = db.item(iid)
-    assert it["status"] == "ready" and loads(it["price"])["source"] == "owner"
-    assert owner_messages.count(("item", iid)) == 2                       # resolved: no third message
+    assert it["status"] == "ready" and loads(it["price"])["list_price"] == 45
+    assert owner_messages.count(("item", iid)) == 1                       # never a second card
 
 
 def test_set_price_rules(tmp_path):
@@ -760,7 +755,9 @@ def test_nwt_without_tag_lists_like_new_unless_the_owner_says_nwt(tmp_path, monk
     assert loads(it["renders"])["poshmark"]["condition"] == "NWT" and loads(it["price"])["list_price"] == 90
 
 
-def test_reshare_hold_needs_an_explicit_answer(tmp_path, monkeypatch, facts, owner_messages):
+def test_a_possible_reshare_is_a_warning_on_the_card_not_a_hold(tmp_path, monkeypatch, facts, owner_messages):
+    """WO37 (the owner): only the price waits — a photo that looks like an item shared before is a warning on the card
+    ("same item?"); 'same item' drops it, a price lists it."""
     s = _settings(tmp_path)
     db = DB(s.path("db"))
     monkeypatch.setattr("thrift_agent.brain.llm.ask", fake_ask(facts))
@@ -776,23 +773,19 @@ def test_reshare_hold_needs_an_explicit_answer(tmp_path, monkeypatch, facts, own
     pipeline.process_item(s, db, iids[0])
     pipeline.set_price(s, db, iids[0], 70)
 
-    pipeline.process_item(s, db, iids[1])                                  # held as a possible re-share
-    assert loads(db.item(iids[1])["gate"])["hold"] == "reshare"
-    assert pipeline.set_price(s, db, iids[1], 60) == "awaiting_price"      # the price alone does not release it
-    it = db.item(iids[1])
-    assert it["status"] == "awaiting_price" and it["owner_price"] == 60
+    pipeline.process_item(s, db, iids[1])                                  # a warning, never a hold
+    gate = loads(db.item(iids[1])["gate"])
+    assert gate["hold"] is None and any(q.startswith("looks like item") for q in gate["questions"])
     sent_before = len(owner_messages)
     assert pipeline.answer(s, db, iids[1], "same item") == "dropped"       # confirmed duplicate: dropped, not reprocessed
     assert db.item(iids[1])["status"] == "dropped" and len(owner_messages) == sent_before
     with pytest.raises(ValueError, match="can't reopen"):
         pipeline.answer(s, db, iids[1], "actually list it")
 
-    pipeline.process_item(s, db, iids[2])                                  # held again (twin of item 1)
-    assert pipeline.set_price(s, db, iids[2], 65) == "awaiting_price"
-    assert pipeline.answer(s, db, iids[2], "different item") == "new"
-    pipeline.process_item(s, db, iids[2])
+    pipeline.process_item(s, db, iids[2])                                  # warned again (twin of item 1)
+    assert pipeline.set_price(s, db, iids[2], 65) == "ready"               # her price lists it
     it = db.item(iids[2])
-    assert it["status"] == "ready" and loads(it["gate"])["hold"] is None and loads(it["price"])["list_price"] == 65
+    assert loads(it["gate"])["hold"] is None and loads(it["price"])["list_price"] == 65
 
 
 # ---------- WO9: Poshmark's category names, kids size tab ----------
@@ -804,8 +797,10 @@ def _one_item(tmp_path, db, n=3):
     return db.add_item(_split(db, "share", n), 1, str(d))
 
 
-def test_kids_items_get_poshmarks_category_and_unisex_is_a_girls_or_boys_question(tmp_path, monkeypatch, facts,
+def test_a_kids_item_unsure_of_girls_or_boys_goes_on_girls_and_a_reply_changes_it(tmp_path, monkeypatch, facts,
                                                                                     owner_messages):
+    """WO37: no "Girls or Boys?" message — unread or unisex goes on Girls (Poshmark's kids default), said in the item's
+    record; a reply 'boys' moves it."""
     s = _settings(tmp_path)
     db = DB(s.path("db"))
     kid = dict(department="Kids", category="Tops", subcategory=None, kids_gender="unisex", kids_gender_confidence=0.8,
@@ -817,17 +812,13 @@ def test_kids_items_get_poshmarks_category_and_unisex_is_a_girls_or_boys_questio
     it = db.item(iid)
     posh = loads(it["renders"])["poshmark"]
     assert loads(it["facts"])["category"] == "Shirts & Tops" and posh["category"] == "Shirts & Tops"
-    assert posh["kids_gender"] == "unisex" and posh["size"] == "4T"
+    assert posh["kids_gender"] == "girls" and posh["size"] == "4T"
     gate = loads(it["gate"])
-    assert gate["ask_kids"] and gate["notes"] == [] and owner_messages == [("kids", iid)]   # before the price card
-    assert pipeline.set_kids_gender(s, db, iid, "Boys") == "awaiting_price"                 # not priced yet: the card
+    assert not gate["ask_kids"] and owner_messages == [("item", iid)]             # the card only
+    assert any(x.startswith("kids: girls") for x in gate["info"])
+    assert pipeline.set_kids_gender(s, db, iid, "Boys") == "awaiting_price"
     it = db.item(iid)
     assert loads(it["renders"])["poshmark"]["kids_gender"] == "boys" and it["owner_kids_gender"] == "boys"
-    assert not loads(it["gate"])["ask_kids"]
-    pipeline.approve.pump(s, db)
-    assert owner_messages == [("kids", iid), ("item", iid)]
-    pipeline.process_item(s, db, iid)                                    # a reprocessing never asks again
-    assert not loads(db.item(iid)["gate"])["ask_kids"]
 
 
 @pytest.mark.parametrize("kw,asked", [
@@ -843,8 +834,8 @@ def test_kids_department_question_only_below_0_70(facts, kw, asked):
     assert pipeline.kids_question(facts(**{"department": "Kids", **kw})) is asked
 
 
-def test_a_kids_item_already_priced_is_ready_once_girls_or_boys_is_answered(tmp_path, monkeypatch, facts,
-                                                                            owner_messages):
+def test_a_kids_item_priced_is_ready_at_once(tmp_path, monkeypatch, facts, owner_messages):
+    """WO37: Girls or Boys no longer waits — her price makes it ready; a reply still changes it."""
     s = _settings(tmp_path)
     db = DB(s.path("db"))
     kid = dict(department="Kids", category="Shoes", subcategory=None, kids_gender="girls", kids_gender_confidence=0.5,
@@ -852,14 +843,15 @@ def test_a_kids_item_already_priced_is_ready_once_girls_or_boys_is_answered(tmp_
     monkeypatch.setattr("thrift_agent.brain.llm.ask", fake_ask(lambda **kw: facts(**kid, **kw)))
     iid = _one_item(tmp_path, db)
     pipeline.process_item(s, db, iid)
-    assert pipeline.set_price(s, db, iid, 30) == "awaiting_price"        # Girls/Boys is still open: not ready yet
-    assert pipeline.set_kids_gender(s, db, iid, "girls") == "ready"
+    assert pipeline.set_price(s, db, iid, 30) == "ready"
     with pytest.raises(ValueError, match="girls or boys"):
         pipeline.set_kids_gender(s, db, iid, "unisex")
 
 
-def test_a_category_poshmark_does_not_have_is_asked_in_the_approval_message(tmp_path, monkeypatch, facts,
-                                                                            owner_messages):
+def test_a_category_poshmark_does_not_have_is_decided_and_shown_on_the_card(tmp_path, monkeypatch, facts,
+                                                                           owner_messages):
+    """WO37: no "Which category?" message — a category Poshmark doesn't have takes the first real path that fits (the
+    model's subcategory names one: Shoes › Flats & Loafers), shown on the card; a reply 'category …' changes it."""
     s = _settings(tmp_path)
     db = DB(s.path("db"))
     monkeypatch.setattr("thrift_agent.brain.llm.ask", fake_ask(lambda **kw: facts(category="Gadgets", **kw)))
@@ -868,16 +860,13 @@ def test_a_category_poshmark_does_not_have_is_asked_in_the_approval_message(tmp_
     iid = _one_item(tmp_path, db)
     pipeline.process_item(s, db, iid)
     it = db.item(iid)
-    gate = loads(it["gate"])
-    # WO25: asked with buttons, real paths only — the model's subcategory names one (Shoes › Flats & Loafers)
-    assert it["status"] == "awaiting_price" and gate["decision"] == "needs_info" and owner_messages == [("category", iid)]
-    assert gate["reasons"][0] == "category 'Gadgets' is not one of Poshmark's Women categories — reply e.g. " \
-                                 "'category Tops'"
-    assert gate["ask_category"] == [{"department": "Women", "category": "Shoes", "subcategory": "Flats & Loafers"}]
-    assert not any(q.startswith("category") for q in gate["questions"])        # not on the card as well
-    assert pipeline.set_price(s, db, iid, 60) == "awaiting_price"              # like Girls/Boys: answered first
-    assert pipeline.set_category(s, db, iid, gate["ask_category"][0]) == "new"   # not the model's: reprocessed
-    assert loads(db.item(iid)["owner_category"])["category"] == "Shoes" and db.item(iid)["owner_price"] == 60
+    gate, posh = loads(it["gate"]), loads(it["renders"])["poshmark"]
+    assert it["status"] == "awaiting_price" and owner_messages == [("item", iid)] and gate["ask_category"] == []
+    assert (posh["category"], posh["subcategory"]) == ("Shoes", "Flats & Loafers")
+    assert any(x.startswith("category: Shoes › Flats & Loafers") for x in gate["info"])
+    assert not any("Gadgets" in q for q in gate["questions"])
+    assert "Category: Shoes › Flats & Loafers" in pipeline.approve.item_caption(iid, it)[0]
+    assert pipeline.set_price(s, db, iid, 60) == "ready"
 
 
 def test_the_listing_has_no_style_tags(tmp_path, monkeypatch, facts, owner_messages):
@@ -1114,30 +1103,35 @@ def _shoe_ask(facts, **kw):
     return fake_ask(lambda **k: facts(**{**base, **kw, **k}))
 
 
-def test_a_shoe_in_doubt_is_asked_before_the_price_and_the_answer_reprices_it(tmp_path, monkeypatch, facts,
-                                                                              owner_messages):
+def test_a_shoe_in_doubt_is_never_asked_and_a_reply_corrects_the_condition_without_a_new_reading(
+        tmp_path, monkeypatch, facts, owner_messages):
+    """WO37 (live 2026-10-12: "Brand new or worn?" went out four times, and its reprocessing lost the Clarks' size):
+    no condition question — in doubt it is Like New, NWT only with a hang tag — and a reply 'condition …' corrects it
+    with no model call: the facts, the condition line and the title's "New" follow, the price stays."""
     s = _settings(tmp_path)
     db = DB(s.path("db"))
-    monkeypatch.setattr("thrift_agent.brain.llm.ask", _shoe_ask(facts))
+    shoe = dict(category="Shoes", condition="good", condition_alternative="like_new",
+                unworn=Ev(value="yes", photos=[1], source="photo", confidence=0.6))
+    calls = []
+    base = fake_ask(lambda **kw: facts(**shoe, **kw))
+    monkeypatch.setattr("thrift_agent.brain.llm.ask", lambda *a, **k: calls.append(a[3].__name__) or base(*a, **k))
     monkeypatch.setattr("thrift_agent.pipeline.load_yaml",
                         lambda name: {"brands": {"tory burch": {"target": 70}}, "aliases": {}, "category_defaults": {}})
     iid = _one_item(tmp_path, db)
     pipeline.process_item(s, db, iid)
     it = db.item(iid)
-    assert it["status"] == "awaiting_condition" and owner_messages == [("condition", iid)]     # no price card yet
-    before = loads(it["price"])["list_price"]
-
-    assert pipeline.set_condition(s, db, iid, "NWT") == "new"
-    assert db.item(iid)["owner_condition"] == "NWT"
-    pipeline.process_item(s, db, iid)
+    assert it["status"] == "awaiting_price" and owner_messages == [("item", iid)]       # no question first
+    assert loads(it["facts"])["condition"] == "like_new"                                # in doubt: Like New
+    pipeline.set_price(s, db, iid, 80)
+    calls.clear()
+    assert pipeline.correct_condition(s, db, iid, "good") == "ready"
     it = db.item(iid)
-    facts_after = loads(it["facts"])
-    assert facts_after["condition"] == "NWT" and facts_after["condition_evidence"]["source"] == "owner"
-    assert it["status"] == "awaiting_price" and owner_messages[-1] == ("item", iid)    # now the price card
-    assert loads(it["price"])["list_price"] > before                                     # repriced as new with tags
-    assert not any("hang-tag" in r for r in loads(it["gate"])["reasons"])                # the owner's word is the proof
-    pipeline.process_item(s, db, iid)                                                    # a later reprocessing
-    assert owner_messages.count(("condition", iid)) == 1                                 # never asks again
+    assert calls == []                                                                  # no model call
+    facts_now, posh = loads(it["facts"]), loads(it["renders"])["poshmark"]
+    assert facts_now["condition"] == "good" and facts_now["condition_evidence"]["source"] == "owner"
+    assert posh["condition"] == "good" and "Gently pre-loved" in posh["description"] and it["owner_price"] == 80
+    assert pipeline.set_condition(s, db, iid, "nwt") == "ready"                         # `thrift condition` too
+    assert loads(db.item(iid)["facts"])["condition"] == "NWT" and calls == []
 
 
 @pytest.mark.parametrize("choice,condition,line", [("like_new", "NWOT", "New without tags."),

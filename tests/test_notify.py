@@ -84,7 +84,8 @@ def test_an_ops_chat_that_fails_is_left_alone_for_a_while_and_never_falls_back(w
     assert sent[-1] == ("refused", "5550001", "third")                   # tried again after the pause
 
 
-def test_identical_ops_messages_go_once_a_day(wire):
+def test_identical_ops_messages_go_once_and_never_again(wire):
+    """WO37 (the owner): one message per problem per item in the private chat, no repeats — not even a day later."""
     sent, db = wire
     notify.say("❌ i_261005_aaaaaa: RuntimeError: invalid x-api-key")
     notify.say("❌ i_261005_bbbbbb: RuntimeError: invalid x-api-key")      # the same error on another item
@@ -95,7 +96,12 @@ def test_identical_ops_messages_go_once_a_day(wire):
     db.kv_set(notify.OPS_SENT, '{"' + notify.signature("❌ i_x: RuntimeError: invalid x-api-key").replace(
         "i_x", "<id>") + f'": "{yesterday}"}}')
     notify.say("❌ i_261005_cccccc: RuntimeError: invalid x-api-key")
-    assert sent[-1][2] == "❌ i_261005_cccccc: RuntimeError: invalid x-api-key"   # a day later: once more
+    assert sent[-1][2] == "Back online — 1 item waiting"                     # a day later: still never again
+    month = (datetime.now(timezone.utc) - timedelta(days=31)).isoformat(timespec="seconds")
+    db.kv_set(notify.OPS_SENT, '{"' + notify.signature("❌ i_x: RuntimeError: invalid x-api-key").replace(
+        "i_x", "<id>") + f'": "{month}"}}')
+    notify.say("❌ i_261005_cccccc: RuntimeError: invalid x-api-key")
+    assert sent[-1][2] == "❌ i_261005_cccccc: RuntimeError: invalid x-api-key"   # forgotten only after 30 days
 
 
 def test_notify_never_raises(monkeypatch, tmp_path, capsys):

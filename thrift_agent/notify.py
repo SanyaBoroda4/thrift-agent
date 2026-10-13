@@ -27,7 +27,7 @@ from thrift_agent.config import Settings, settings
 
 OPS_SENT = "ops_sent"            # kv: {message signature: when it last went to the ops chat}
 OPS_DOWN = "ops_down_until"      # kv: after a failed send, the ops chat is left alone until then
-REPEAT_EVERY = timedelta(days=1)
+REPEAT_EVERY = timedelta(days=30)   # WO37: one message per problem per item, never repeated (was: once a day)
 DOWN_FOR = timedelta(minutes=10)
 _IDS = re.compile(r"\b[ib]_\d{6}_[0-9a-f]{6}\b")
 
@@ -146,14 +146,15 @@ def mark_ops_down(db, why: str) -> None:
 
 
 def _repeat(db, text: str) -> bool:
-    """True when the same message went to the ops chat less than a day ago; else records it now."""
+    """True when the same message already went to the ops chat (WO37: never twice — kept 30 days); else records it
+    now."""
     if db is None:
         return False
     sig, now = signature(text), datetime.now(timezone.utc)
     sent = json.loads(db.kv_get(OPS_SENT) or "{}")
     if (last := sent.get(sig)) and now - datetime.fromisoformat(last) < REPEAT_EVERY:
         return True
-    sent = {k: v for k, v in sent.items() if now - datetime.fromisoformat(v) < timedelta(days=7)}
+    sent = {k: v for k, v in sent.items() if now - datetime.fromisoformat(v) < REPEAT_EVERY}
     sent[sig] = now.isoformat(timespec="seconds")
     db.kv_set(OPS_SENT, json.dumps(sent))
     return False

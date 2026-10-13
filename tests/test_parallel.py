@@ -132,15 +132,23 @@ def test_an_item_takes_its_slowest_site_not_the_sum(tmp_path, quick):
     assert took - base < 6.0, (took, base)                         # about Poshmark's 3.6 s, not the 7.2 s sum
 
 
-def test_depop_and_vinted_pause_30_to_90_s_between_listings_poshmark_keeps_its_human_gap(tmp_path, quick, monkeypatch):
-    """The owner, 2026-10-11: after each listing Poshmark waits the schedule's gap (150–420 s), Depop and Vinted their
-    own marketplaces.<m>.gap_seconds (30–90 s)."""
-    s = _settings(tmp_path, parallel=True)
-    assert {LISTING_GAP(s, mp) // 1 for mp in ("depop", "vinted") for _ in range(50)} <= set(range(30, 91))
+def test_no_pause_between_listings_on_any_site(tmp_path, quick, monkeypatch):
+    """WO37 (the owner's decision): no pause after a listing on any site — schedule.gap_seconds and each site's
+    marketplaces.<m>.gap_seconds are [0, 0] and there is no occasional longer break; the hourly cap no longer makes a
+    site wait out the hour. Each worker still asks for its own gap (Poshmark the schedule's, the others their own)."""
     import yaml
     from thrift_agent.config import ROOT
-    base = yaml.safe_load((ROOT / "config" / "settings.yaml").read_text(encoding="utf-8"))["marketplaces"]
-    assert base["depop"]["gap_seconds"] == [30, 90] == base["vinted"]["gap_seconds"]   # the repo's defaults
+    from thrift_agent.scheduler import next_gap
+    base = yaml.safe_load((ROOT / "config" / "settings.yaml").read_text(encoding="utf-8"))
+    s = _settings(tmp_path, parallel=True)
+    s.data["schedule"]["gap_seconds"] = base["schedule"]["gap_seconds"]          # the repo's own settings
+    for mp in ("depop", "vinted"):
+        s.data["marketplaces"][mp]["gap_seconds"] = base["marketplaces"][mp]["gap_seconds"]
+    assert {LISTING_GAP(s, mp) for mp in ("poshmark", "depop", "vinted") for _ in range(50)} == {0.0}
+    assert {next_gap(s["schedule"]) for _ in range(200)} == {0.0}           # not even the one-in-ten longer break
+    assert base["marketplaces"]["depop"]["gap_seconds"] == [0, 0] == base["marketplaces"]["vinted"]["gap_seconds"]
+    assert base["schedule"]["gap_seconds"] == [0, 0] and base["schedule"]["per_hour_max"] >= 60
+    assert base["schedule"]["daily_cap"] == 25                              # kept: the owner decides
     asked = []
     monkeypatch.setattr(parallel, "next_gap", lambda schedule: asked.append(("poshmark", schedule["gap_seconds"])) or 0.0)
     monkeypatch.setattr(parallel.crosslist, "listing_gap", lambda s_, mp: asked.append((mp, None)) or 0.0)
@@ -148,7 +156,7 @@ def test_depop_and_vinted_pause_30_to_90_s_between_listings_poshmark_keeps_its_h
     _item(db, 1)
     ps = {"poshmark": Timed("poshmark", 0.05), "depop": Timed("depop", 0.05), "vinted": Timed("vinted", 0.05)}
     _run(s, db, ps)
-    assert ("poshmark", [150, 420]) in asked and ("depop", None) in asked and ("vinted", None) in asked
+    assert ("poshmark", [0, 0]) in asked and ("depop", None) in asked and ("vinted", None) in asked
     assert not any(mp in ("depop", "vinted") and gap is not None for mp, gap in asked)   # never the schedule's for them
 
 

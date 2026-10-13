@@ -64,7 +64,11 @@ def windows(now: datetime | None = None, tz: str = "America/New_York") -> tuple[
 
 
 def next_gap(sch: dict) -> float:
+    """The pause after a listing: schedule.gap_seconds, now and then 2-4x longer — none at all when it is [0, 0] (the
+    owner, WO37: each site goes straight on to its next listing, no occasional longer breaks)."""
     lo, hi = sch["gap_seconds"]
+    if float(hi) <= 0:
+        return 0.0
     gap = random.uniform(lo, hi)
     if random.random() < 0.1:          # occasional longer break
         gap *= random.uniform(2, 4)

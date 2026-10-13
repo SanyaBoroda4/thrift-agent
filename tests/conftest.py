@@ -114,3 +114,12 @@ def pricing_cfg():
 @pytest.fixture
 def gate_cfg():
     return {"min_confidence": {"brand": 0.70, "size": 0.70, "condition": 0.70}}
+
+
+@pytest.fixture(autouse=True)
+def _arrival_by_mtime(monkeypatch):
+    """Tests age a share with os.utime (its mtime) to make it quiet: the inbox's arrival clock reads that here. On the
+    Mac it reads the inode change time (WO37: the photos' own dates come from the phone), which a test can't set back;
+    tests/test_inbox.py checks that rule with arrival times of its own."""
+    from thrift_agent import pipeline
+    monkeypatch.setattr(pipeline, "arrived", lambda p: p.stat().st_mtime)
