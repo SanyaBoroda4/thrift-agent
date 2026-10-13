@@ -1357,19 +1357,12 @@ class PoshmarkPoster(Poster):
                                  "nothing saved"}
             if dry:
                 return {"ok": True, "saved": False, "shot": str(self.shot)}
-            await SEL["update_listing"](page).first.click()            # once
-            try:
-                await page.wait_for_url(lambda u: "/edit-listing/" not in u, timeout=UPDATE_TIMEOUT_MS)
-            except PlaywrightTimeout:
-                pass                                    # stayed: the public page below decides
-            now = was
-            end = time.monotonic() + PUBLIC_CHECK_S
-            while now == was and time.monotonic() < end:
-                await asyncio.sleep(PUBLIC_EVERY_S)
-                now = await asyncio.to_thread(PUBLIC_COVER, url)
-            ok = bool(now) and now != was
-            return {"ok": ok, "saved": True, "shot": str(self.shot), "cover": now,
-                    "error": None if ok else f"the public listing's cover is still {now or 'unread'}"}
+            # Recorded on the live edit page (2026-10-13): Update doesn't save — it slides up the Share Listing panel
+            # (the new cover, Promote My Closet, List This Item), and the edit is saved only by List This Item. That
+            # press needs the owner's go-ahead (not given in WO37): the page is left as it is — nothing saved.
+            return {"ok": False, "saved": False, "shot": str(self.shot), "cover": was,
+                    "error": "Poshmark saves a photo change only through Update → Share Listing → List This Item, "
+                             "which needs the owner's go-ahead: replaced on the page, nothing saved"}
         finally:
             await page.close()
 

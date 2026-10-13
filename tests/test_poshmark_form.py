@@ -1102,9 +1102,12 @@ def test_a_cover_dry_run_replaces_on_the_page_and_never_updates(chrome, posh, ph
     assert site.visited("/edit-listing/6acd8ea6ce5b0ac5ccde36eb")
 
 
-def test_a_cover_fix_replaces_the_cover_swaps_the_old_one_in_and_updates_once(chrome, posh, photos, monkeypatch):
+def test_a_cover_fix_never_saves_on_poshmark_without_the_owners_go_ahead(chrome, posh, photos, monkeypatch):
+    """Poshmark saves an edit only through Update → Share Listing → List This Item (recorded 2026-10-13); that press
+    needs the owner's go-ahead: the photos are replaced on the page, nothing is saved."""
     out, site = cover_fix(chrome, posh, photos, monkeypatch, dry=False)
-    assert out["ok"] and out["saved"] and site.updates == 1 and out["cover"] == "new-cover", out
+    assert not out["ok"] and not out["saved"] and site.updates == 0, out
+    assert "List This Item" in out["error"] and "nothing saved" in out["error"]
 
 
 @pytest.mark.parametrize("variant", [dict(replaceIgnored=True), dict(applyLost=True)])

@@ -1199,12 +1199,17 @@ The first long evening at gap 0 (17 items, 15 shares). What went wrong, and what
   that photo first; Save once; the listing page's first photo must be that photo (`photo_key`: Depop's
   `…/<id>/P2.jpg` = the JSON-LD's `…/<id>/P0.jpg`, Vinted's `/tc/<id>/` = `/t/<id>/`). Poshmark's edit page
   (`/edit-listing/<id>`) has no order to change: its cover's "Edit Covershot" (shown on hover) opens a dialog with only
-  the photo, "Replace Photo" (`input[name=replaceImage]`), Cancel and Apply — so `PoshmarkPoster.set_cover` replaces
-  the cover by the right photo's 3:4 cover and puts the old cover's own photo on the tile the right one had (the
-  listing keeps its photos), checks that exactly those two tiles changed, presses Update once (never in a dry run) and
-  reads the public listing's cover (`crosslist.poshmark_cover`) until it changed. The keyboard move and the
-  replacement are verified only once a dry run on the live page shows them taking (the `moved` notes in
-  `ext/selectors.json`). Stand-ins: `tests/fixtures/ext_edit_photos.html`, `tests/fixtures/poshmark_edit_listing.html`.
+  the photo, "Replace Photo" (`input[name=replaceImage]`), Cancel and Apply; after a file the dialog shows its crop
+  editor (`.croppie-container`, a 3:4 frame — a plain photo's "Delete | Replace" dialog too) — so
+  `PoshmarkPoster.set_cover` replaces the cover by the right photo's 3:4 cover and puts the old cover's own photo
+  (fitted to 3:4) on the tile the right one had, and checks that exactly those two tiles changed. **It never saves:**
+  recorded live on 2026-10-13, Update only slides up the Share Listing panel (the new cover, Promote My Closet Off,
+  List This Item) and the edit is saved by List This Item — that press needs the owner's go-ahead (the session's
+  permission check refused it), so a real run reports "nothing saved" and a dry run is all it does today.
+  Live results (2026-10-13): Depop's keyboard move took (the UGG Chestnut's Depop cover fixed; the Tory loafers' and
+  the Schutz's dry runs took); Vinted's grid ignored the keyboard both on the sortable and on the element inside it
+  (dnd-kit's live region stayed empty) — its covers are left for the owner. Stand-ins:
+  `tests/fixtures/ext_edit_photos.html`, `tests/fixtures/poshmark_edit_listing.html`.
 
 ## Kids clothing sizes (WO23)
 A kids label that gives the child's height ("104 cm", "Gr. 104", "104") or age ("4 ans", "4A", "5-6 Y", "18 mois") is
