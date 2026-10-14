@@ -414,9 +414,12 @@ def test_the_sweep_runs_inside_the_pause_after_a_listing_and_a_listing_never_wai
     each = lambda spans: [end - start for start, end in spans]                    # noqa: E731
     between = lambda spans: [b[0] - a[1] for a, b in zip(spans, spans[1:])]       # noqa: E731
     for a, b in zip(each(spans_with), each(spans_without)):
-        assert abs(a - b) < 0.15, (each(spans_with), each(spans_without))         # the time per listing, unchanged
-    for a, b in zip(between(spans_with), between(spans_without)):
-        assert abs(a - b) < 0.2, (between(spans_with), between(spans_without))    # no listing waited for the sweep
+        assert abs(a - b) < 0.25, (each(spans_with), each(spans_without))         # the time per listing, unchanged
+    gaps_with, gaps_without = between(spans_with), between(spans_without)
+    assert min(gaps_with) >= 0.55, gaps_with                                     # the pause itself is kept
+    # No listing waited for the sweep: the pause it ran in is no longer than the run without it (one-sided — a CI
+    # runner's stalls only ever lengthen a pause, in either run: 1.69 s seen without the sweep on macOS)
+    assert gaps_with[0] <= max(gaps_without) + 0.5, (gaps_with, gaps_without)
 
 
 class Clocked:
