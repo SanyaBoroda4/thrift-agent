@@ -1097,6 +1097,24 @@ Telegram token is read from the Mac's .env, never printed). The same code runs o
   month, awaiting shipment with the nearest ship-by, unmatched), a table newest first with each site's status and
   links, filters All / Active / Sold / To ship; no buyer data; inline CSS/JS only (a CSP), light and dark.
 
+## The sites' sold orders, read only (WO38, 2026-10-14 — in progress)
+None of the three sites emails the seller when an order ships: the shipping state lives only on each site, so the
+reminders, the overdue line and the dashboard's "to ship" must follow what the sites themselves show.
+- **Read only, always:** nothing on an order page is clicked, typed or submitted (no ship, label, mark, accept, decline,
+  rate, offer or message control); no buyer is ever written to; no label is downloaded. **Never stored:** buyer names,
+  addresses, tracking numbers — what leaves an order page is scrubbed in the page first (`ext/content/common.js`
+  `T.scrub`, the same rules as `orders.scrub`: a key cut into its words, a value under a DENY word "<scrubbed>", a
+  string kept only under a SAFE word, @handles / e-mails / long numbers masked), and an order page is never pictured
+  (`T.noShots`; background.js `shoot` refuses an orders job).
+- **§1, the diagnostic** (`thrift orders --probe [--marketplace m]`, the poster stopped; Poshmark in the GUI session:
+  `bash deploy/gui_once.sh orders --probe`): Depop's /sellinghub/sold-items/ and Vinted's /my_orders?order_type=sold
+  through the extension's `orders` job, in the Thrift Chrome's own **"Orders" window** (`siteWindow("orders")`, its
+  idle page says so) — the JSON the page loaded read again (GET, same site, never an action / event / conversation /
+  label address: `T.readable`), the JSON it carries, its status words (`T.statusTexts`: every word an order word, a
+  number of ≤ 10 characters — never a name or a tracking number), its data-testids and link shapes; Poshmark's
+  /order/sales and /news/order in a NEW page of its own browser (never the poster's page) and the first orders' own
+  pages as JSON (`$_order_details.order`). Saved scrubbed to `<control>/orders_probe/<site>.json`.
+
 ## Brands, dropdowns, the read-back (WO36 — the Alo listing, 2026-10-12)
 The live miss: the label read "alo"; the copy's title said "Alo Yoga" but the brand field stayed "Alo"; Poshmark offered
 ALO Yoga, ALOHA Collection, ALOHAS, Aloha Island, Alorna and the exact-name rule left Brand empty; Depop had filled its

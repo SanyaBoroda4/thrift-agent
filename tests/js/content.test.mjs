@@ -1123,3 +1123,75 @@ test("a grid that doesn't answer the keyboard, or a listing with other photos, i
   assert.match(r.message, /the listing shows 7 photos, not the 6 posted: changed since — left as it is/);
   assert.equal(p.w.__saves, 0);
 });
+
+// ---------------------------------------------------------------- WO38: the sold orders, read only
+
+const ORDERS_URL = { depop: "https://www.depop.com/sellinghub/sold-items/",
+                     vinted: "https://www.vinted.com/my_orders?order_type=sold" };
+const ORDERS_API = { depop: "https://webapi.depop.com/api/v1/sellinghub/sold-items/?limit=20",
+                     vinted: "https://www.vinted.com/api/v2/my_orders?type=sold&status=all&page=1" };
+const BUYER = ["Jane Doe", "janedoe", "12 Main St", "9400111899223344556677", "jane@example.com", "hi, Jane here"];
+
+function ordersPage(site) {
+  const html = `<!doctype html><html><head><title>Sold items</title></head><body><main>
+    <ul data-testid="sold-list">
+      <li data-testid="order-row"><a href="/transactions/22942401831">Nike sandals boy size 10</a>
+        <span data-testid="buyer">Jane Doe</span> <span>@janedoe</span> <span>12 Main St, Springfield</span>
+        <span data-testid="order-status">Awaiting shipment</span> <span>Ship by Oct 14</span>
+        <button id="ship">Mark as shipped</button> <button id="label">Print label</button>
+        <a id="msg" href="/inbox/123">Message buyer</a></li>
+      <li data-testid="order-row"><a href="/transactions/22845581943">Sparkling boots size 6</a>
+        <span data-testid="order-status">Delivered</span> <span>Tracking 9400111899223344556677</span></li>
+    </ul></main>
+    <script>
+      window.clicks = [];
+      for (const kind of ["click", "pointerdown", "mousedown", "keydown", "submit", "input", "change"]) {
+        document.addEventListener(kind, (e) => window.clicks.push(kind + ":" + (e.target.id || e.target.tagName)), true);
+      }
+    </script></body></html>`;
+  const p = page(site, html, ORDERS_URL[site]);
+  const action = site === "vinted" ? "https://www.vinted.com/api/v2/transactions/22942401831/mark_as_shipped"
+    : "https://webapi.depop.com/api/v1/orders/1/mark-shipped";
+  const entries = [ORDERS_API[site], action, "https://www.google-analytics.com/g/collect?v=2",
+                   `https://www.${site}.com/api/v2/conversations/123`, ORDERS_API[site]];
+  p.w.performance.getEntriesByType = (kind) => (kind === "resource"
+    ? [...entries.map((name) => ({ name, initiatorType: "fetch" })), { name: "https://x/y.jpg", initiatorType: "img" }]
+    : []);
+  p.fetched = [];
+  p.w.fetch = (u) => {
+    p.fetched.push(String(u));
+    const body = { my_orders: [{ transaction_id: 22942401831, title: "Nike sandals boy size 10", status: "Payment successful",
+                                 status_text: "Awaiting shipment", buyer: { login: "janedoe", real_name: "Jane Doe" },
+                                 shipping_address: { line1: "12 Main St" }, tracking_code: "9400111899223344556677",
+                                 buyerEmail: "jane@example.com", message: "hi, Jane here",
+                                 price: { amount: "5.0", currency_code: "USD" }, date: "2026-10-07T04:55:28Z" }] };
+    return Promise.resolve({ ok: true, status: 200, headers: { get: () => "application/json; charset=utf-8" },
+                             json: async () => body });
+  };
+  return p;
+}
+
+for (const site of ["depop", "vinted"]) {
+  test(`${site}: the sold orders are read — scrubbed, nothing clicked, no picture, no action re-requested (WO38)`,
+       async () => {
+    const p = ordersPage(site);
+    await run(p, { job_id: `${site}-orders`, site, mode: "orders", orders_url: ORDERS_URL[site] });
+    await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
+    const result = plain(p.events().find((e) => e.event === "result"));
+    assert.ok(result, JSON.stringify(plain(p.events())));
+    assert.deepEqual(plain(p.w.clicks), []);                                   // nothing on the page was touched
+    assert.equal(p.sent.filter((m) => m.type === "screenshot").length, 0);    // an order page is never pictured
+    assert.deepEqual(p.fetched, [ORDERS_API[site]]);                          // only the read, once; never an action
+    const read = result.resources.find((r) => r.json);
+    const order = read.json.my_orders[0];
+    assert.equal(order.title, "Nike sandals boy size 10");
+    assert.equal(order.status_text, "Awaiting shipment");
+    assert.equal(order.transaction_id, 22942401831);
+    assert.equal(order.price.amount, "5.0");
+    for (const k of ["buyer", "shipping_address", "tracking_code", "buyerEmail", "message"]) assert.equal(order[k], "<scrubbed>");
+    assert.ok(result.status_texts.includes("Awaiting shipment") && result.status_texts.includes("Delivered"));
+    assert.ok(result.testids.includes("order-row"));
+    const all = JSON.stringify(p.sent);
+    for (const secret of BUYER) assert.ok(!all.includes(secret), `${secret} left the page`);
+  });
+}

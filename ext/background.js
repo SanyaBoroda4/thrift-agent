@@ -405,6 +405,7 @@ async function fetchPhotos(urls) {
 
 function urlFor(job, site) {
   if (job.mode === "cover") return job.edit_url;                     // WO37: the listing's edit page
+  if (job.mode === "orders") return job.orders_url;                  // WO38: the sold orders, read only
   if (["verify", "delist", "probe", "practice"].includes(job.mode)) return job.listing_url;
   if (job.mode === "find") return site.shop_url.replace("{shop}", encodeURIComponent(job.shop || ""));
   return site.sell_url;
@@ -434,7 +435,7 @@ async function startJob(job) {
   try {
     const photos = job.mode === "dry_run" || job.mode === "publish" ? await fetchPhotos(job.photos || []) : [];
     const url = urlFor(job, site);
-    const where = await siteWindow(job.site);
+    const where = await siteWindow(job.mode === "orders" ? "orders" : job.site);   // WO38: the "Orders" window
     const tab = await chrome.tabs.create({ url, active: true, windowId: where.windowId });
     let j = await ours();
     if (!j) {                                      // ended meanwhile: the tab it opened goes too
@@ -581,7 +582,7 @@ let lastCapture = 0;
 async function shoot(msg, tab) {
   await restore();
   const j = (msg.job_id && byId(msg.job_id)) || (tab && byTab(tab.id));
-  if (!j) return;
+  if (!j || j.mode === "orders") return;          // WO38: an order page is never pictured (buyer names, addresses)
   let png_b64 = null;
   let error = null;
   for (let attempt = 0; attempt < 3 && !png_b64; attempt++) {

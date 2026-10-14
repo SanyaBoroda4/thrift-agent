@@ -271,6 +271,7 @@
   // The visible tab as the background worker captures it, with the page's HTML beside it (the evidence the selectors
   // are recorded from, like the Playwright posters' failed/shots/*.html).
   T.screenshot = async (label) => {
+    if (T.noShots) return;                         // WO38: an order page is never pictured (buyer names, addresses)
     const html = (document.documentElement?.outerHTML || "").slice(0, 3_000_000);
     try { await chrome.runtime.sendMessage({ type: "screenshot", label, html, url: location.href }); } catch (e) { /* best effort */ }
   };
@@ -315,6 +316,147 @@
     }
   };
 
+  // ---- WO38: the sold orders, READ ONLY. Nothing on the page is clicked, typed or submitted; no picture and no HTML of
+  // an order page ever leaves it (buyer names, addresses, tracking numbers): what leaves is scrubbed here first.
+  // A key is cut into its words (camelCase and snake_case alike); a value under a word of DENY is "<scrubbed>" (its
+  // whole subtree), a string is kept only under a word of SAFE (masked: @handles, e-mail addresses, long numbers).
+  const DENY_WORDS = new Set(("buyer buyers seller sellers user users username usernames login email emails mail phone "
+    + "address addresses street city zip zipcode postal postcode recipient recipients name names firstname lastname "
+    + "fullname nickname tracking carrier photo photos avatar avatars picture pictures image images thumb thumbnail "
+    + "thumbnails message messages body note notes comment comments feedback review reviews token tokens secret "
+    + "password signature lat lng latitude longitude location geo ip").split(" "));
+  const SAFE_WORDS = new Set(("id ids uuid status state statuses title price amount currency total subtotal fee fees "
+    + "earning earnings payout date time at created updated paid sold shipped sent delivered completed cancelled "
+    + "canceled refunded returned type kind count size brand sku slug url path href code transaction order item items "
+    + "listing product variant quantity condition category val value step stage phase display text label").split(" "));
+  const wordsOf = (key) => String(key).replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  T.mask = (text) => String(text).replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, "<email>").replace(/@[\w.-]+/g, "@<user>")
+    .replace(/\d{15,}/g, "<long number>");
+  T.scrub = (obj, key = "", depth = 0, maxList = 8) => {
+    const words = key ? wordsOf(key) : [];
+    const flag = /^(is|has|can)$/.test(words[0] || "") || /^(count|at|date)$/.test(words[words.length - 1] || "");
+    if (words.some((w) => DENY_WORDS.has(w)) && !flag) {
+      if (words.includes("label") && !words.some((w) => ["url", "pdf", "file", "link", "download"].includes(w))) {
+        /* a label's state is a status ("label_printed"); its file is the buyer's address: scrubbed below */
+      } else {
+        return obj === null || obj === undefined || obj === "" ? obj : "<scrubbed>";
+      }
+    }
+    if (words.includes("label") && words.some((w) => ["url", "pdf", "file", "link", "download"].includes(w))) {
+      return obj === null || obj === undefined || obj === "" ? obj : "<scrubbed>";
+    }
+    if (depth > 12) return "<deep>";
+    if (Array.isArray(obj)) {
+      const out = obj.slice(0, maxList).map((v) => T.scrub(v, key, depth + 1, maxList));
+      return obj.length > maxList ? [...out, `<${obj.length - maxList} more>`] : out;
+    }
+    if (obj && typeof obj === "object") {
+      const out = {};
+      for (const [k, v] of Object.entries(obj)) out[k] = T.scrub(v, k, depth + 1, maxList);
+      return out;
+    }
+    if (typeof obj === "string") return words.some((w) => SAFE_WORDS.has(w)) ? T.mask(obj).slice(0, 120) : "<str>";
+    return obj;
+  };
+  // The short texts a page shows an order is at ("Awaiting shipment", "Delivered", "Order complete") — kept only when
+  // EVERY word is one of these (or a number, a price, a date): a person's name never passes.
+  const ORDER_VOCAB = new Set(("a an the to be is was has have been on in out of for by at its it your you this that "
+    + "and or not yet no all new view details more order orders ordered sold sale sales item items paid payment "
+    + "received pending processing awaiting await waiting ship shipped shipping shipment sent send parcel package "
+    + "label labels printed print generated ready transit delivered delivery deliver arrived complete completed "
+    + "completion cancelled canceled cancel cancellation returned return returns refund refunded dispute disputed "
+    + "issue reported open opened closed status tracking track way dropped off picked up confirm confirmed accept "
+    + "accepted rate rated rating left day days hour hours minute minutes ago today tomorrow yesterday overdue late "
+    + "buyer seller mark marked as expected estimated date due jan feb mar apr may jun jul aug sep sept oct nov dec "
+    + "january february march april june july august september october november december mon tue wed thu fri sat "
+    + "sun am pm est edt").split(" "));
+  T.statusTexts = (texts, limit = 40) => {
+    const out = [];
+    for (const raw of texts) {
+      const t = String(raw || "").replace(/\s+/g, " ").trim();
+      if (!t || t.length > limit || out.includes(t)) continue;
+      const words = t.toLowerCase().split(/[\s,·•|()]+/).filter(Boolean);
+      // a number is a price, a date, a count — 10 characters at most: a tracking number never passes
+      const ok = words.every((w) => ORDER_VOCAB.has(w.replace(/[.:!?]+$/, "")) || /^[#$]?\d[\d,.:/-]{0,9}$/.test(w));
+      if (ok && words.some((w) => !/^[#$]?\d/.test(w))) out.push(t);
+    }
+    return out;
+  };
+  // A request the page made that is safe to make again: a read of the site itself — never an action, an event, a
+  // conversation or a label.
+  const ACTION = /(?:^|[/_.?=&-])(mark|accept|decline|cancel|confirm|rate|rating|ratings|feedback|message|messages|conversation|conversations|inbox|offer|offers|label|labels|print|download|event|events|track|tracking|log|logs|metric|metrics|analytics|collect|beacon|pixel|consent|refresh|token|oauth|auth|login|logout|session|sessions|report|reports|ship|shipment)(?:$|[/_.?=&-])/i;
+  T.readable = (url) => {
+    try {
+      const u = new URL(url, location.href);
+      const host = location.hostname.split(".").slice(-2).join(".");
+      return /^https:$/.test(u.protocol) && (u.hostname === host || u.hostname.endsWith(`.${host}`))
+        && !ACTION.test(u.pathname + u.search);
+    } catch (e) {
+      return false;
+    }
+  };
+  const pathShape = (url) => {
+    try {
+      const u = new URL(url, location.href);
+      const q = [...u.searchParams.keys()].map((k) => `${k}=${T.mask(u.searchParams.get(k)).slice(0, 24)}`).join("&");
+      return `${u.hostname}${u.pathname.replace(/\d{6,}/g, "<n>")}${q ? `?${q}` : ""}`;
+    } catch (e) {
+      return "<bad url>";
+    }
+  };
+  // WO38 §1, the diagnostic: what the sold-orders page is made of — the JSON it loaded (each request read again, GET,
+  // with the page's own cookies, scrubbed), the JSON it carries (Next.js data, JSON-LD), the status words it shows, its
+  // data-testid names and the shapes of its links. Nothing else.
+  T.orders = async (job) => {
+    await T.until(() => document.readyState === "complete" || null, 15000);
+    await T.quiet(1500, 12000);
+    const seen = new Set();
+    const resources = [];
+    const entries = performance.getEntriesByType("resource")
+      .filter((e) => ["fetch", "xmlhttprequest"].includes(e.initiatorType)).map((e) => e.name);
+    for (const url of entries) {
+      const shape = pathShape(url);
+      if (seen.has(shape)) continue;
+      seen.add(shape);
+      const entry = { url: shape };
+      if (!T.readable(url) || resources.filter((r) => r.json !== undefined).length >= 12) {
+        entry.read = false;
+        resources.push(entry);
+        continue;
+      }
+      try {
+        const r = await fetch(url, { credentials: "include", headers: { Accept: "application/json" } });
+        entry.http = r.status;
+        entry.type = (r.headers.get("content-type") || "").split(";")[0];
+        if (r.ok && /json/.test(entry.type)) entry.json = T.scrub(await r.json());
+      } catch (e) {
+        entry.error = String(e && e.message ? e.message : e).slice(0, 120);
+      }
+      resources.push(entry);
+    }
+    const documents = [];
+    for (const s of T.$$("script#__NEXT_DATA__, script[type='application/json'], script[type='application/ld+json']")) {
+      try {
+        documents.push({ id: s.id || null, type: s.type, json: T.scrub(JSON.parse(s.textContent || "null")) });
+      } catch (e) {
+        documents.push({ id: s.id || null, type: s.type, error: "not JSON" });
+      }
+      if (documents.length >= 6) break;
+    }
+    const leaves = [...document.querySelectorAll("body *")].filter((n) => !n.childElementCount && !n.closest("script, style"))
+      .map((n) => n.textContent);
+    const testids = [...new Set(T.$$("[data-testid]").map((n) => n.getAttribute("data-testid")))].slice(0, 300);
+    const links = {};
+    for (const a of T.$$("a[href]")) {
+      const shape = pathShape(a.href).replace(/^[^/]*/, "");
+      links[shape] = (links[shape] || 0) + 1;
+    }
+    T.emit({ event: "result", job_id: job.job_id, url: pathShape(location.href), title: T.mask(document.title),
+             resources, documents, status_texts: T.statusTexts(leaves), testids,
+             links: Object.fromEntries(Object.entries(links).sort((a, b) => b[1] - a[1]).slice(0, 60)) });
+  };
+
   // ---- one job on this page (the background worker sends it once the page is up)
   const STOP = ["login", "block", "captcha", "verify"];
   let go = null;
@@ -326,9 +468,10 @@
     const st = { job_id: job.job_id, failed: [], picked: {}, shown: {}, guesses: [], notes: [], left: {},
                  strict: job.mode === "publish" };
     T.jobId = job.job_id;
+    T.noShots = job.mode === "orders";
     const fail = (stage, kind, message) => T.emit({ event: "error", job_id: job.job_id, stage, page: kind, message });
     if (T.off.has(job.job_id)) return fail("cancelled", "unknown", "called off by the bridge");
-    const page = await T.settled(job.site, job.mode === "find" ? 4000 : 15000);
+    const page = await T.settled(job.site, job.mode === "find" || job.mode === "orders" ? 4000 : 15000);
     if (job.mode === "check_login") {
       return page === "form" ? T.emit({ event: "result", job_id: job.job_id, page }) : fail("check_login", kindOf(page), `${page} page`);
     }
@@ -337,6 +480,7 @@
       return fail(job.mode === "after_publish" ? "after_publish" : "open", page, `${page} page`);
     }
     if (job.mode === "find") return site.find(job, st);
+    if (job.mode === "orders") return T.orders(job, st);           // WO38: read only — nothing is clicked
     if (job.mode === "after_publish" && page === "landing") {   // WO33: Vinted's member page; WO35: Depop's success page
       const did = site.landed ? await site.landed(job, st) : "nothing to answer";
       await T.screenshot("landing");

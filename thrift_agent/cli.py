@@ -1098,6 +1098,29 @@ def cover_fix(items: list[str] = typer.Argument(..., help="the items whose live 
             print(f"{escape(iid)} {escape(line)}")
 
 
+@app.command("orders")
+def orders_cmd(probe: bool = typer.Option(False, "--probe", help="WO38 §1: each site's sold orders read and saved, "
+                                                                 "scrubbed of buyer data"),
+               marketplace: list[str] = typer.Option(None, "--marketplace", help="poshmark | depop | vinted (repeat)")
+               ) -> None:
+    """WO38: the sites' sold orders, READ ONLY — nothing on their pages is clicked. --probe, the diagnostic: each site's
+    sold-orders page read (Depop and Vinted in the Thrift Chrome's "Orders" window, Poshmark in a page of its own), the
+    JSON it loaded read again and scrubbed (no buyer names, addresses or tracking numbers), saved to
+    <control>/orders_probe/<site>.json. The poster stopped; with Poshmark in the GUI session:
+    bash deploy/gui_once.sh orders --probe."""
+    from thrift_agent import orders
+    s = settings()
+    if not s.is_prod:
+        raise typer.BadParameter("the orders are read on the Mac only (machine_role: prod)")
+    if not probe:
+        raise typer.BadParameter("--probe is the only action for now")
+    sites = list(marketplace or []) or ["poshmark", "depop", "vinted"]
+    if bad := [m for m in sites if m not in orders.SITES]:
+        raise typer.BadParameter(f"unknown marketplace {bad[0]}")
+    for mp, r in asyncio.run(orders.probe(s, sites)).items():
+        print(f"{mp}: {escape(orders.probe_line(r))}")
+
+
 @app.command()
 def relist(item_id: str, marketplace: str = typer.Option(None, "--marketplace", help="poshmark | depop | vinted")) -> None:
     """Undo our take-down of an item where the site allows it (Poshmark: For Sale again). The owner's command — never
