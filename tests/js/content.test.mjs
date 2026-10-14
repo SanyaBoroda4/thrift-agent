@@ -1195,3 +1195,35 @@ for (const site of ["depop", "vinted"]) {
     for (const secret of BUYER) assert.ok(!all.includes(secret), `${secret} left the page`);
   });
 }
+
+for (const site of ["depop", "vinted"]) {
+  test(`${site}: probe 2 reads only the site's own JSON it is given, the rows as drawn, our titles only (WO38)`,
+       async () => {
+    const p = ordersPage(site);
+    p.d.cookie = "access_token=tok123";
+    const calls = [];
+    const inner = p.w.fetch;
+    p.w.fetch = (u, init) => { calls.push({ u: String(u), auth: init?.headers?.Authorization || null }); return inner(u, init); };
+    const own = site === "depop" ? "https://webapi.depop.com/presentation/api/v1/receipts/?role=seller&limit=12"
+      : "https://www.vinted.com/api/v2/my_orders?type=sold&status=all&page=1&per_page=20";
+    await run(p, { job_id: `${site}-orders2`, site, mode: "orders", orders_url: ORDERS_URL[site],
+                   candidates: [own, "https://evil.example.com/steal"], known: ["Nike Sandals Boy size 10"] });
+    await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
+    const result = plain(p.events().find((e) => e.event === "result"));
+    assert.ok(result, JSON.stringify(plain(p.events())));
+    assert.deepEqual(plain(p.w.clicks), []);
+    assert.deepEqual(calls.map((c) => c.u), [own]);                      // the page's other requests are not repeated
+    // Depop's API host takes the page's own token, as its page does; Vinted's own address needs none
+    assert.equal(calls[0].auth, site === "depop" ? "Bearer tok123" : null);
+    assert.equal(result.candidates[0].http, 200);
+    assert.equal(result.candidates[0].json.my_orders[0].buyer, "<scrubbed>");
+    assert.match(result.candidates[1].error, /another site/);
+    assert.equal(result.rows.length, 2);
+    assert.equal(result.rows[0].title, "Nike sandals boy size 10");          // ours: kept
+    assert.equal(result.rows[1].title, "<other>");                           // not one we know: never leaves the page
+    assert.deepEqual(result.rows[0].hrefs[0], "/transactions/<n>");
+    assert.ok(result.rows[0].status_texts.includes("Awaiting shipment"));
+    const all = JSON.stringify(p.sent);
+    for (const secret of [...BUYER, "tok123"]) assert.ok(!all.includes(secret), `${secret} left the page`);
+  });
+}

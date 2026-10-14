@@ -405,6 +405,13 @@
       return "<bad url>";
     }
   };
+  // Two titles with most of their words in common (case and punctuation aside): a row shows ours, maybe cut.
+  T.sameWords = (a, b, share = 0.6) => {
+    const words = (x) => new Set(String(x || "").toLowerCase().match(/[a-z0-9]+/g) || []);
+    const wa = words(a), wb = words(b);
+    const both = [...wa].filter((w) => wb.has(w)).length;
+    return wa.size > 0 && wb.size > 0 && both >= 2 && both >= share * Math.min(wa.size, wb.size);
+  };
   // WO38 §1, the diagnostic: what the sold-orders page is made of — the JSON it loaded (each request read again, GET,
   // with the page's own cookies, scrubbed), the JSON it carries (Next.js data, JSON-LD), the status words it shows, its
   // data-testid names and the shapes of its links. Nothing else.
@@ -420,7 +427,7 @@
       if (seen.has(shape)) continue;
       seen.add(shape);
       const entry = { url: shape };
-      if (!T.readable(url) || resources.filter((r) => r.json !== undefined).length >= 12) {
+      if (job.candidates || !T.readable(url) || resources.filter((r) => r.json !== undefined).length >= 12) {
         entry.read = false;
         resources.push(entry);
         continue;
@@ -452,8 +459,54 @@
       const shape = pathShape(a.href).replace(/^[^/]*/, "");
       links[shape] = (links[shape] || 0) + 1;
     }
+    // Probe 2: the addresses the job names (the site's own JSON of the orders), each read once with GET — on this
+    // site only; Depop's API host wants the page's own sign-in token, which stays in this page (never sent anywhere
+    // but to that host, never reported).
+    const candidates = [];
+    for (const url of (job.candidates || []).slice(0, 4)) {
+      const entry = { url: pathShape(url) };
+      try {
+        const u = new URL(url, location.href);
+        const host = location.hostname.split(".").slice(-2).join(".");
+        if (u.protocol !== "https:" || !(u.hostname === host || u.hostname.endsWith(`.${host}`))) throw new Error("another site");
+        const headers = { Accept: "application/json" };
+        const token = (document.cookie.match(/(?:^|;\s*)access_token=([^;]+)/) || [])[1];
+        if (u.hostname !== location.hostname && token) headers.Authorization = `Bearer ${decodeURIComponent(token)}`;
+        entry.token = u.hostname !== location.hostname ? !!token : null;
+        const r = await fetch(u.href, { credentials: "include", headers });
+        entry.http = r.status;
+        entry.type = (r.headers.get("content-type") || "").split(";")[0];
+        if (r.ok && /json/.test(entry.type)) entry.json = T.scrub(await r.json(), "", 0, 12);
+      } catch (e) {
+        entry.error = String(e && e.message ? e.message : e).slice(0, 120);
+      }
+      candidates.push(entry);
+    }
+    // The order rows as drawn: an element that shows an order's status word, up to the nearest one with a link —
+    // its links (long numbers masked), its status words, and its longest short text (the title; kept by the Mac only
+    // when it is one of our titles).
+    const STATUS_LEAF = /^(to ship|awaiting shipment|in transit|shipped|delivered|completed|order complete|order completed|canceled|cancelled|order cancelled|package delivered\.?|order shipped and on its way!?|processing|returned|refunded)$/i;
+    const rows = [];
+    const seenRows = new Set();
+    for (const leaf of [...document.querySelectorAll("body *")].filter((n) => !n.childElementCount
+           && STATUS_LEAF.test((n.textContent || "").trim()) && !n.closest("nav, header, [role=tablist], [role=tab], button"))) {
+      let row = leaf.parentElement;
+      while (row && row !== document.body && !row.querySelector("a[href]") && !row.closest("a[href]")) row = row.parentElement;
+      if (row && row.closest("a[href]")) row = row.closest("a[href]");
+      if (!row || row === document.body || seenRows.has(row)) continue;
+      seenRows.add(row);
+      const texts = [...row.querySelectorAll("*")].filter((n) => !n.childElementCount).map((n) => (n.textContent || "").trim())
+        .filter(Boolean);
+      const hrefs = [...new Set([row, ...row.querySelectorAll("a[href]")].filter((a) => a.href)
+        .map((a) => pathShape(a.href).replace(/^[^/]*/, "")))];
+      // the row's title only when it is one of ours (job.known): any other text could be a person's name
+      const title = texts.find((x) => x.length <= 120 && (job.known || []).some((k) => T.sameWords(x, k))) || "";
+      rows.push({ hrefs, status_texts: T.statusTexts(texts), title: title ? T.mask(title) : "<other>",
+                  tag: row.tagName.toLowerCase(), testid: row.getAttribute("data-testid") || null });
+      if (rows.length >= 15) break;
+    }
     T.emit({ event: "result", job_id: job.job_id, url: pathShape(location.href), title: T.mask(document.title),
-             resources, documents, status_texts: T.statusTexts(leaves), testids,
+             resources, documents, status_texts: T.statusTexts(leaves), testids, candidates, rows,
              links: Object.fromEntries(Object.entries(links).sort((a, b) => b[1] - a[1]).slice(0, 60)) });
   };
 

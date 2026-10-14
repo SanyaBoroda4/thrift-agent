@@ -72,7 +72,10 @@ def test_probe_line_says_what_was_read_or_why_not():
         "✗ login login page"
     line = orders.probe_line({"site": "vinted", "resources": [{"url": "a", "json": {}}, {"url": "b", "read": False}],
                               "status_texts": ["Completed"]})
-    assert line == "2 requests (1 JSON read); statuses: Completed"
+    assert line == "2 requests (1 JSON read); 0 order rows; own JSON: none asked; statuses: Completed"
+    line = orders.probe_line({"site": "depop", "resources": [], "rows": [{}],
+                              "candidates": [{"url": "webapi.depop.com/receipts", "http": 200}], "status_texts": []})
+    assert line == "0 requests (0 JSON read); 1 order rows; own JSON: webapi.depop.com/receipts → 200; statuses: "
     line = orders.probe_line({"site": "poshmark", "pages": {"sales": {"rows": [1, 2], "status_texts": ["Sold"]}},
                               "orders": [{}]})
     assert line == "2 order rows, 1 order pages read; statuses: Sold"
@@ -87,3 +90,29 @@ def test_the_extension_reads_orders_in_their_own_window_and_never_pictures_them(
     common = (root / "content" / "common.js").read_text(encoding="utf-8")
     assert "if (T.noShots) return;" in common
     assert 'if (job.mode === "orders") return T.orders(job, st);' in common
+
+
+def test_a_probe_keeps_an_address_by_its_shape_and_a_title_only_when_it_is_ours():
+    assert orders.shape("https://poshmark.com/vm-rest/users/123456789/orders?max_id=9&count=20") == \
+        "poshmark.com/vm-rest/users/<n>/orders?max_id&count"
+    assert orders.same_words("Nike sandals boy size 10", "Nike Sandals Boy size 10")
+    assert orders.same_words("Ralph Lauren Pastel Floral Maxi…", "Ralph Lauren Pastel Floral Maxi Dress size 4")
+    assert not orders.same_words("Jane Doe", "Nike sandals boy size 10")
+    assert not orders.same_words("Doe", "Jane Doe")                    # one shared word is never enough
+
+
+def test_probe_extension_drops_a_row_title_that_is_not_ours():
+    import asyncio
+
+    class FakePoster:
+        name = "vinted"
+
+        async def _job(self, mode, payload, timeout):
+            assert mode == "orders" and payload["candidates"] == orders.CANDIDATES["vinted"]
+            assert payload["known"] == ["Nike sandals boy size 10"]
+            return {"event": "result", "rows": [{"title": "Nike sandals boy size 10"}, {"title": "Jane Doe"}],
+                    "secret_field": "never kept"}
+
+    out = asyncio.run(orders.probe_extension(FakePoster(), orders.URLS["vinted"], known=["Nike sandals boy size 10"]))
+    assert [r["title"] for r in out["rows"]] == ["Nike sandals boy size 10", "<other>"]
+    assert "secret_field" not in out
