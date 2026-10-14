@@ -15,39 +15,46 @@
   const S = () => T.selectors.depop.steps;
 
   // WO38: Depop's sold list as drawn — one row per receipt (its link /sellinghub/sold-items/<id>/), the status word it
-  // shows and when it sold ("20 days ago"); the row's other texts (the buyer's name) never leave the page.
+  // shows and when it sold ("20 days ago"); the row's other texts (the buyer's name) never leave the page. The status
+  // sits beside the link, not in it (live 2026-10-14): the row is the nearest element holding the link and a status.
   const SOLD_WORD = /^(to ship|in transit|shipped|delivered|completed|canceled|cancelled|refunded)$/i;
+  const receiptOf = (a) => ((a.getAttribute("href") || "").match(/\/sellinghub\/sold-items\/([^/?#]+)\/?/) || [])[1];
+  const leavesOf = (el) => [...el.querySelectorAll("*")].filter((n) => !n.childElementCount)
+    .map((n) => (n.textContent || "").trim()).filter(Boolean);
   const soldRows = () => {
     const out = [];
     const seen = new Set();
     for (const a of T.$$("a[href*='/sellinghub/sold-items/']")) {
-      const m = (a.getAttribute("href") || "").match(/\/sellinghub\/sold-items\/([^/?#]+)\/?/);
-      if (!m || seen.has(m[1])) continue;
-      seen.add(m[1]);
-      const leaves = [...a.querySelectorAll("*")].filter((n) => !n.childElementCount)
-        .map((n) => (n.textContent || "").trim()).filter(Boolean);
-      out.push({ order_id: m[1], status_text: leaves.find((t) => SOLD_WORD.test(t)) || null,
+      const id = receiptOf(a);
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      let row = a;                 // up to the element that holds this receipt's link and a status word, but no other's
+      while (row.parentElement && row !== document.body && !leavesOf(row).some((t) => SOLD_WORD.test(t))) {
+        const up = row.parentElement;
+        if (T.$$("a[href*='/sellinghub/sold-items/']", up).some((x) => receiptOf(x) && receiptOf(x) !== id)) break;
+        row = up;
+      }
+      const leaves = leavesOf(row);
+      out.push({ order_id: id, status_text: leaves.find((t) => SOLD_WORD.test(t)) || null,
                  sold_ago: leaves.find((t) => /\bago$|^yesterday$|^just now$/i.test(t)) || null });
     }
     return out;
   };
-  // Depop's receipts JSON in our fields, when it is a list of receipts with an id and a status (its shape isn't
-  // recorded yet: anything else is [] and the list as drawn is read instead).
+  // Depop's receipts JSON in our fields (its shape, live 2026-10-14: {"objects": [{purchase_id — the id in the list's
+  // /sellinghub/sold-items/<id>/ —, status "delivered_pending_feedback", sold_timestamp, items_amount, line_items[{
+  // product_id}], parcels[{parcel_status "DELIVERED", shipped_at}], buyer, shipping_address, …}]}): the order's id,
+  // its two status words, when it sold and shipped, the price, the product — never the buyer or the address.
   const receiptsOf = (data) => {
-    const list = Array.isArray(data) ? data : [data?.receipts, data?.objects, data?.data, data?.items]
+    const list = Array.isArray(data) ? data : [data?.objects, data?.receipts, data?.data, data?.items]
       .find((x) => Array.isArray(x)) || [];
-    const statusOf = (r) => Object.entries(r).find(([k, v]) => /status|state/i.test(k) && typeof v === "string")?.[1];
-    const firstOf = (r, keys) => keys.map((k) => r[k]).find((v) => v !== undefined && v !== null && v !== "");
-    return list.filter((r) => r && typeof r === "object" && (r.id || r.receiptId) && statusOf(r)).map((r) => {
-      const product = r.product || (Array.isArray(r.products) ? r.products[0] : null)
-        || (Array.isArray(r.items) ? r.items[0] : null) || {};
-      const price = firstOf(r, ["price", "total", "totalPrice", "amount"]);
-      return { order_id: String(r.id || r.receiptId), status_text: String(statusOf(r)).slice(0, 80),
-               sold_at: firstOf(r, ["soldTime", "sold_time", "soldAt", "sold_at", "createdAt", "created_at", "date"]) || null,
-               price: price && typeof price === "object" ? String(price.amount ?? price.value ?? "") || null
-                 : price != null ? String(price) : null,
-               listing_url: product.slug ? `https://www.depop.com/products/${product.slug}/` : null,
-               title: null };
+    return list.filter((r) => r && typeof r === "object" && (r.purchase_id || r.id)).map((r) => {
+      const parcel = (Array.isArray(r.parcels) && r.parcels[0]) || {};
+      const line = (Array.isArray(r.line_items) && r.line_items[0]) || {};
+      const words = [r.status, parcel.parcel_status].filter((x) => typeof x === "string" && x);
+      return { order_id: String(r.purchase_id || r.id), status_text: words.join(" / ").slice(0, 80) || null,
+               sold_at: r.sold_timestamp || null, price: r.items_amount != null ? String(r.items_amount) : null,
+               shipped_at: parcel.shipped_at || null,
+               listing_id: line.product_id != null ? String(line.product_id) : null, title: null };
     });
   };
   // WO35: the SKUs a page shows (the seller's /manage/ page: "SKU: <our item id>") — our item ids anywhere in its text or

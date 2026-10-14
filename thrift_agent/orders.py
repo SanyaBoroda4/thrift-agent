@@ -305,6 +305,14 @@ POSHMARK_STATUS = {"awaiting shipment": "to_ship", "shipped": "shipped", "in tra
 POSHMARK_UNIT = {"shipped": "shipped", "delivered": "delivered", "received": "completed"}
 DEPOP_STATUS = {"to ship": "to_ship", "in transit": "shipped", "shipped": "shipped", "delivered": "delivered",
                 "completed": "completed", "canceled": "cancelled", "cancelled": "cancelled", "refunded": "returned"}
+# Depop's receipts JSON: its status and its parcel's, "delivered_pending_feedback / DELIVERED" (live 2026-10-14) —
+# read by their words, the strongest first
+DEPOP_CODES = ((re.compile(r"\bcancel"), "cancelled"), (re.compile(r"\brefund|\breturn"), "returned"),
+               (re.compile(r"\bcomplete|\bfeedback (left|given|received)\b"), "completed"),
+               (re.compile(r"\bdelivered\b"), "delivered"),
+               (re.compile(r"\bshipped\b|\bin transit\b|\bdispatched\b|\bout for delivery\b"), "shipped"),
+               (re.compile(r"\bawaiting\b|\bto ship\b|\bnot shipped\b|\bpending shipment\b|\blabel created\b|"
+                           r"\bpre transit\b|\bpaid\b"), "to_ship"))
 VINTED_STATUS = ((re.compile(r"\bcompleted\b|\baccepted the item\b"), "completed"),
                  (re.compile(r"\bdelivered\b"), "delivered"),
                  (re.compile(r"\bshipped\b|\bon its way\b|\bin transit\b"), "shipped"),
@@ -321,6 +329,12 @@ class Stopped(Exception):
         self.page = page
 
 
+class Found(list):
+    """A reader's orders, with where they came from (the extension: "json" | "page", and its note) for the log."""
+    source: str | None = None
+    note: str | None = None
+
+
 class Yielded(Exception):
     """A posting job of the same site came while the sweep was reading: it goes first, the sweep comes back later."""
 
@@ -331,7 +345,7 @@ def status_of(site: str, text: str | None) -> str | None:
     if site == "poshmark":
         return POSHMARK_STATUS.get(words)
     if site == "depop":
-        return DEPOP_STATUS.get(words)
+        return DEPOP_STATUS.get(words) or next((ours for pattern, ours in DEPOP_CODES if pattern.search(words)), None)
     return next((ours for pattern, ours in VINTED_STATUS if pattern.search(words)), None)
 
 
@@ -405,7 +419,8 @@ async def sweep(s: Settings, db, site: str, read, now: datetime | None = None) -
         for order in orders:
             counts[order["status"]] = counts.get(order["status"], 0) + 1
         db.log(None, "orders_swept", {"site": site, "orders": len(orders), "statuses": counts, "sent": sent,
-                                      "seconds": round(time.monotonic() - t0, 1)})
+                                      "seconds": round(time.monotonic() - t0, 1),
+                                      "source": getattr(found, "source", None), "note": getattr(found, "note", None)})
         return {"site": site, "status": "swept", "orders": len(orders), "statuses": counts, "sent": sent}
     finally:
         SWEEP_LOCK.release()
@@ -522,12 +537,13 @@ async def read_extension(poster, site: str, timeout: float = 120.0) -> list[dict
         if ev.get("page") in STOP_PAGES:
             raise Stopped(ev["page"])
         raise RuntimeError(f"{ev.get('stage') or 'orders'}: {ev.get('message')}")
-    out = []
+    out = Found()
+    out.source, out.note = ev.get("source"), (ev.get("note") or "")[:300] or None
     for row in (ev.get("orders") or [])[:100]:
         if not isinstance(row, dict):
             continue
         order = {k: row.get(k) for k in ("order_id", "title", "price", "sold_at", "status_text", "listing_id",
-                                         "listing_url")}
+                                         "listing_url", "shipped_at", "delivered_at", "completed_at")}
         order["order_id"] = str(order["order_id"] or "").strip()[:64] or None
         order["price"] = _number(order["price"])
         if not order["sold_at"] and row.get("sold_ago"):

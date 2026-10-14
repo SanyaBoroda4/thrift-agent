@@ -1231,11 +1231,12 @@ for (const site of ["depop", "vinted"]) {
 // ---------------------------------------------------------------- WO38 §2: the sweep's readers, read only
 
 function soldPage(site, fixture = {}) {
+  // Depop as drawn live (2026-10-14): the receipt's link holds the picture and the buyer; the status sits beside it
   const row = site === "depop"
-    ? `<a href="/sellinghub/sold-items/915093750/"><div><span>Jane Doe</span><span>@janedoe</span>
-         <span>Sold on</span><span>20 days ago</span><span>Shipped</span></div></a>
-       <a href="/sellinghub/sold-items/915093751/"><div><span>Bob</span><span>To ship</span><span>2 days ago</span>
-         <button id="label" type="button">Print label</button></div></a>`
+    ? `<div class="row"><a href="/sellinghub/sold-items/915093750/"><span>Jane Doe</span><span>@janedoe</span></a>
+         <div><span>Sold on</span><span>20 days ago</span></div><span>Shipped</span></div>
+       <div class="row"><a href="/sellinghub/sold-items/915093751/"><span>Bob</span></a><span>To ship</span>
+         <span>2 days ago</span><button id="label" type="button">Print label</button></div>`
     : `<a data-testid="my-orders-item" href="/inbox/01a114b7"><span data-testid="my-orders-item--title">Nike sandals
          boy size 10</span><span>Package delivered.</span></a>`;
   const html = `<!doctype html><html><head><title>Sold</title></head><body><main>
@@ -1289,18 +1290,22 @@ test("depop: the sweep reads Depop's receipts with the page's token, never its c
   const p = soldPage("depop");
   p.d.cookie = "access_token=tok123";
   const json = "https://webapi.depop.com/presentation/api/v1/receipts/?role=seller&limit=24";
-  p.answer[json] = { status: 200, body: { receipts: [
-    { id: 915093750, status: "SHIPPED", soldTime: "2026-09-23T21:33:00Z", price: { amount: "30.00" },
-      product: { slug: "tetianasorokina-madewell-sweater", id: 1 }, buyer: { username: "janedoe", name: "Jane Doe" },
-      address: { line1: "12 Main St" }, tracking: { number: "9400111899223344556677" } }] } };
+  p.answer[json] = { status: 200, body: { objects: [            // the shape Depop answered live (2026-10-14)
+    { purchase_id: 475978927001, transaction_id: 336479001, buyer: { username: "janedoe", name: "Jane Doe" },
+      status: "delivered_pending_feedback", sold_timestamp: "2026-09-23T21:32:51.360803Z", currency: "GBP",
+      items_amount: "30.00", buyer_amount: "35.00",
+      line_items: [{ id: 336479001, product_id: 915093750, description: "Madewell sweater", picture_url: "x" }],
+      shipping_address: { line1: "12 Main St" },
+      parcels: [{ parcel_status: "DELIVERED", tracking: "9400111899223344556677", provider_name: "USPS",
+                  shipped_at: "2026-09-25T19:16:02.000Z" }] }], page_info: { has_more: false } } };
   await run(p, { job_id: "depop-sweep", site: "depop", mode: "orders", orders_url: ORDERS_URL.depop, sweep: true });
   await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
   const result = plain(p.events().find((e) => e.event === "result"));
   assert.ok(result, JSON.stringify(plain(p.events())));
   assert.equal(result.source, "json");
-  assert.deepEqual(result.orders, [{ order_id: "915093750", status_text: "SHIPPED", sold_at: "2026-09-23T21:33:00Z",
-                                     price: "30.00", listing_url: "https://www.depop.com/products/tetianasorokina-madewell-sweater/",
-                                     title: null }]);
+  assert.deepEqual(result.orders, [{ order_id: "475978927001", status_text: "delivered_pending_feedback / DELIVERED",
+                                     sold_at: "2026-09-23T21:32:51.360803Z", price: "30.00",
+                                     shipped_at: "2026-09-25T19:16:02.000Z", listing_id: "915093750", title: null }]);
   assert.deepEqual(p.calls.map((c) => [c.u, c.credentials, c.auth]), [[json, "omit", "Bearer tok123"]]);
   assert.deepEqual(plain(p.w.clicks), []);
   const all = JSON.stringify(p.sent);

@@ -53,6 +53,9 @@ def quiet(monkeypatch):
     ("vinted", "The order was cancelled.", "cancelled"),
     ("depop", "To ship", "to_ship"), ("depop", "In transit", "shipped"), ("depop", "Shipped", "shipped"),
     ("depop", "Completed", "completed"), ("depop", "Canceled", "cancelled"), ("depop", "TO_SHIP", "to_ship"),
+    ("depop", "delivered_pending_feedback / DELIVERED", "delivered"), ("depop", "shipped / IN_TRANSIT", "shipped"),
+    ("depop", "paid / PRE_TRANSIT", "to_ship"), ("depop", "completed / DELIVERED", "completed"),
+    ("depop", "cancelled", "cancelled"),
     ("vinted", "Send the item by Oct 14", None), ("poshmark", "Processing", None), ("depop", "Sold on", None)])
 def test_every_status_word_maps_to_ours(site, words, ours):
     assert orders.status_of(site, words) == ours

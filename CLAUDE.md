@@ -1123,10 +1123,13 @@ dashboard follow what the sites show.
     know: …").
   - **Depop:** /sellinghub/sold-items/ loads `webapi.depop.com/presentation/api/v1/receipts/?role=seller` with the
     page's own sign-in token (Authorization: Bearer, from its access_token cookie) — read the same way and without
-    cookies (with them the browser refused it); the token never leaves the page. Else the list as drawn: each
-    `a[href=/sellinghub/sold-items/<receipt id>/]`, its status word (To ship | In transit | Shipped | Completed |
-    Canceled) and "20 days ago". Depop's emails carry no order id: an order is the one open Depop sale sold within 3
-    days, then its receipt id for good.
+    cookies (with them the browser refused it; without: 200, live 2026-10-14); the token never leaves the page. Its
+    shape: `objects[]` — purchase_id (the id in the list's /sellinghub/sold-items/<id>/), status
+    ("delivered_pending_feedback"), sold_timestamp, items_amount, line_items[].product_id, parcels[].parcel_status
+    ("DELIVERED") and shipped_at — both status words read together (`orders.DEPOP_CODES`). Else the list as drawn:
+    each receipt's link and, BESIDE it in its row, the status word (To ship | In transit | Shipped | Completed |
+    Canceled) and "20 days ago". Depop's emails carry no order id: an order is the one Depop sale without one sold
+    within 3 days (the first sweep tied the Madewell sale that way), then its purchase id for good.
 - **The sweep (§2, `orders.py`, `parallel._sweep`):** each of the poster's site workers, between its own listings — on
   an idle turn, or inside the pause after a listing when ≥ 60 s of it is left (`orders.BUDGET`): a posting or take-down
   job of the same site always goes first (Poshmark's read also steps aside between its loads, `Yielded`) and no
