@@ -1,0 +1,28 @@
+{
+ "data": {
+  "sales_summary": [
+   {"id": "6ac431effa146f6457260001", "user_id": "<scrubbed>", "seller_id": "<scrubbed>",
+    "state": "seller_confirm_initiated", "is_bundle": false, "title": "Lacoste Tee White size M",
+    "total_price_amount": {"val": "35.0", "currency_code": "USD", "currency_symbol": "$"},
+    "picture_url": "<scrubbed>", "inventory_booked_at": "2026-10-12T16:25:38-07:00", "shipping_address": "<scrubbed>",
+    "buyer": "<scrubbed>", "seller": "<scrubbed>", "seller_earning_amount": "<scrubbed>",
+    "display_status": "Awaiting Shipment", "shipping_label_download_url": "<scrubbed>"},
+   {"id": "6ac431effa146f6457260002", "title": "Naked Wardrobe Catsuit size S",
+    "total_price_amount": {"val": "50.0", "currency_code": "USD"}, "inventory_booked_at": "2026-10-05T16:25:38-07:00",
+    "buyer": "<scrubbed>", "shipping_address": "<scrubbed>", "display_status": "In Transit"},
+   {"id": "6ac431effa146f6457260003", "title": "Ralph Lauren Maxi Dress size 4",
+    "total_price_amount": {"val": "70.0", "currency_code": "USD"}, "inventory_booked_at": "2026-10-04T19:55:18-07:00",
+    "buyer": "<scrubbed>", "display_status": "Delivered"},
+   {"id": "6ac431effa146f6457260004", "title": "Nike Kids Sneakers size 12",
+    "total_price_amount": {"val": "22.0", "currency_code": "USD"}, "inventory_booked_at": "2026-09-26T06:39:45-07:00",
+    "buyer": "<scrubbed>", "display_status": "Order Complete"},
+   {"id": "6ac431effa146f6457260005", "title": "UGG Slippers size 11",
+    "total_price_amount": {"val": "35.0", "currency_code": "USD"}, "inventory_booked_at": "2026-09-07T06:51:01-07:00",
+    "buyer": "<scrubbed>", "display_status": "Order Cancelled"},
+   {"id": "6ac431effa146f6457260006", "title": "Old Order From May",
+    "total_price_amount": {"val": "20.0", "currency_code": "USD"}, "inventory_booked_at": "2026-05-25T06:51:01-07:00",
+    "buyer": "<scrubbed>", "display_status": "Order Complete"}
+  ]
+ },
+ "meta": {"count": 100, "next_max_id": "1704678293.383"}
+}

@@ -12,6 +12,7 @@ The routes (every one needs the function key; Azure checks it before this code r
   GET  /tasks?sites=depop,vinted                                                 take-downs for the Mac (leased)
   POST /tasks/{id}          {result: done|not_found|failed, error, evidence, manual}
   POST /mac-event           {"kind": "shipped" | "sold_found" | "not_for_sale", …}
+  POST /orders              {"marketplace", "swept_at", "orders": [...]}         a site's sold orders (WO38)
   GET  /sales?state=open|unmatched|all
   POST /sales/{id}/match    {"item_id"}
   POST /test-message        {"chat": "ops" | "group"}
@@ -30,7 +31,7 @@ import threading
 from collections.abc import Callable
 from datetime import datetime
 
-from . import core, dashboard, util
+from . import core, dashboard, orders, util
 from .db import Database
 from .schema import migrate
 from .util import ApiError, BadRequest
@@ -100,6 +101,10 @@ def _mac_event(db, body, query, params, now):
     return 200, core.mac_event(db, body, now)
 
 
+def _orders(db, body, query, params, now):
+    return 200, orders.report(db, body, now)
+
+
 def _sales(db, body, query, params, now):
     return 200, {"sales": core.sales_list(db, _param(query, "state") or "open")}
 
@@ -136,6 +141,7 @@ ROUTES: tuple[Route, ...] = (
     ("GET", re.compile(r"/tasks"), _tasks, True),
     ("POST", re.compile(r"/tasks/(?P<task_id>[^/]+)"), _task_result, True),
     ("POST", re.compile(r"/mac-event"), _mac_event, True),
+    ("POST", re.compile(r"/orders"), _orders, True),
     ("GET", re.compile(r"/sales"), _sales, True),
     ("POST", re.compile(r"/sales/(?P<sale_id>[^/]+)/match"), _match, True),
     ("POST", re.compile(r"/test-message"), _test_message, False),

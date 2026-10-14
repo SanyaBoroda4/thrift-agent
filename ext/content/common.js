@@ -417,6 +417,16 @@
   // data-testid names and the shapes of its links. Nothing else.
   T.orders = async (job) => {
     await T.until(() => document.readyState === "complete" || null, 15000);
+    if (job.sweep) {                     // WO38 §2: the site's own reader (vinted.js / depop.js `orders`), our fields only
+      try {
+        const found = await T.sites[job.site].orders(job);
+        return T.emit({ event: "result", job_id: job.job_id, orders: found.orders, source: found.source,
+                        note: found.note || null });
+      } catch (e) {
+        return T.emit({ event: "error", job_id: job.job_id, stage: "orders", page: "unknown",
+                        message: String(e && e.message ? e.message : e).slice(0, 300) });
+      }
+    }
     await T.quiet(1500, 12000);
     const seen = new Set();
     const resources = [];

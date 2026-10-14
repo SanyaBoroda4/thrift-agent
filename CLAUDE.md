@@ -1097,23 +1097,64 @@ Telegram token is read from the Mac's .env, never printed). The same code runs o
   month, awaiting shipment with the nearest ship-by, unmatched), a table newest first with each site's status and
   links, filters All / Active / Sold / To ship; no buyer data; inline CSS/JS only (a CSP), light and dark.
 
-## The sites' sold orders, read only (WO38, 2026-10-14 — in progress)
-None of the three sites emails the seller when an order ships: the shipping state lives only on each site, so the
-reminders, the overdue line and the dashboard's "to ship" must follow what the sites themselves show.
+## The sites' sold orders, read only (WO38, 2026-10-14)
+None of the three sites emails the seller when an order ships (Poshmark's "Thank you for shipping" aside): the shipping
+state lives on each site. The poster reads each site's sold orders itself, and the API's reminders, overdue line and
+dashboard follow what the sites show.
 - **Read only, always:** nothing on an order page is clicked, typed or submitted (no ship, label, mark, accept, decline,
   rate, offer or message control); no buyer is ever written to; no label is downloaded. **Never stored:** buyer names,
-  addresses, tracking numbers — what leaves an order page is scrubbed in the page first (`ext/content/common.js`
-  `T.scrub`, the same rules as `orders.scrub`: a key cut into its words, a value under a DENY word "<scrubbed>", a
-  string kept only under a SAFE word, @handles / e-mails / long numbers masked), and an order page is never pictured
-  (`T.noShots`; background.js `shoot` refuses an orders job).
-- **§1, the diagnostic** (`thrift orders --probe [--marketplace m]`, the poster stopped; Poshmark in the GUI session:
-  `bash deploy/gui_once.sh orders --probe`): Depop's /sellinghub/sold-items/ and Vinted's /my_orders?order_type=sold
-  through the extension's `orders` job, in the Thrift Chrome's own **"Orders" window** (`siteWindow("orders")`, its
-  idle page says so) — the JSON the page loaded read again (GET, same site, never an action / event / conversation /
-  label address: `T.readable`), the JSON it carries, its status words (`T.statusTexts`: every word an order word, a
-  number of ≤ 10 characters — never a name or a tracking number), its data-testids and link shapes; Poshmark's
-  /order/sales and /news/order in a NEW page of its own browser (never the poster's page) and the first orders' own
-  pages as JSON (`$_order_details.order`). Saved scrubbed to `<control>/orders_probe/<site>.json`.
+  addresses, tracking numbers — only order id, status, the site's status words, title, price, dates and the listing /
+  SKU leave a page (`orders.SEND`); an order page is never pictured (`T.noShots`; background.js `shoot` refuses an
+  orders job). The §1 probe scrubbed what it kept in the page (`T.scrub` / `orders.scrub`: a key cut into its words, a
+  value under a DENY word "<scrubbed>", a string kept only under a SAFE word; a row's title only when it is ours).
+- **What each site gives (§1, the probes of 2026-10-14, `thrift orders --probe`):**
+  - **Poshmark:** /order/sales opens /seller-hub/sales, whose page loads its own JSON `GET /vm-rest/users/<seller>/
+    orders/sales?request=…` → `data.sales_summary[]`: id (the sale email's order id), title, total_price_amount.val,
+    inventory_booked_at, display_status (Awaiting Shipment | Shipped | In Transit | Delivered | Order Complete | Order
+    Cancelled) — taken from the page's own answer (a response listener: nothing asked again). Each open order's own
+    page (`$_order_details.order`, ≤ 4, same-origin GET) adds line_items[].sku (our item id) / product_id,
+    inventory_units[].status (shipped | delivered | received) and shipped_on / delivered_on / received_at.
+    **`/news/order` is never opened:** its page marks the order notifications as seen (`last_viewed_notification`).
+  - **Vinted:** /my_orders?order_type=sold is drawn by its server; its own JSON `GET /api/v2/my_orders?type=sold&
+    status=all&page=1&per_page=20` (same origin) → my_orders[]: transaction_id (the label email's order id), title,
+    price.amount, date, status — a sentence: "Order shipped and on its way!", "Package delivered.", "Order completed
+    successfully. The buyer accepted the item.", a cancellation. Its "to ship" sentence isn't recorded yet: an unknown
+    sentence leaves the order as it is and is told once in the private chat ("🔎 Vinted shows an order status I don't
+    know: …").
+  - **Depop:** /sellinghub/sold-items/ loads `webapi.depop.com/presentation/api/v1/receipts/?role=seller` with the
+    page's own sign-in token (Authorization: Bearer, from its access_token cookie) — read the same way and without
+    cookies (with them the browser refused it); the token never leaves the page. Else the list as drawn: each
+    `a[href=/sellinghub/sold-items/<receipt id>/]`, its status word (To ship | In transit | Shipped | Completed |
+    Canceled) and "20 days ago". Depop's emails carry no order id: an order is the one open Depop sale sold within 3
+    days, then its receipt id for good.
+- **The sweep (§2, `orders.py`, `parallel._sweep`):** each of the poster's site workers, between its own listings — on
+  an idle turn, or inside the pause after a listing when ≥ 60 s of it is left (`orders.BUDGET`): a posting or take-down
+  job of the same site always goes first (Poshmark's read also steps aside between its loads, `Yielded`) and no
+  listing waits for it (measured in `tests/test_wo38_sweep.py`). One site at a time (`SWEEP_LOCK`); never with PAUSE,
+  the lid closed or the site's extension away. Due: from 08:00 the day's first, then every 6 hours while the Mac is
+  open (and so on a wake when the last is older). Depop / Vinted by the extension's `orders` job (`sweep: true`,
+  vinted.js / depop.js `orders`) in the Thrift Chrome's own **"Orders" window** (`siteWindow("orders")`); Poshmark in
+  a new page of its browser. A login / CAPTCHA / block / check page stops that site's sweep for the day with ONE private
+  line ("⏸ Can't read <Site>'s orders today — …"); a failure is tried again after 30 min. The orders go to the API
+  (`POST /orders`; its outbox while it doesn't answer). kv `orders_swept` / `orders_stopped` / `orders_failed`; events
+  `orders_swept` / `orders_failed` / `orders_stopped`; `thrift status` shows each site's last sweep; `thrift orders
+  --sweep [--marketplace m]` reads now (the poster stopped; Poshmark in the GUI session: `bash deploy/gui_once.sh
+  orders --sweep`).
+- **The API (`api/thrift_api/orders.py`):** each order kept in `orders` (site, order id, sale, item, status, the site's
+  words, the first time each status was seen); the same events the emails give, keyed by the order id
+  (`mac:order:<site>:<order>:<KIND>`, so once each): SHIPPED / DELIVERED / COMPLETED recorded **quietly** (no message),
+  CANCELLED said as the email's is. A sale is found by the order id, then our SKU / the listing, then the title (sold
+  within 3 days), then Depop's one open sale. An order our records lack (its email missed) is recorded once
+  (`mac:order:<site>:<order>`) — the usual path: take-downs elsewhere, one 💰 line — when sold in the last 45 days and
+  not cancelled, and, if sold before going live, still on its way (finished history is left alone).
+- **Reminders (§3, `timers.reminders`):** none for a sale its site shows shipped / delivered / completed (or cancelled,
+  returned). Overdue = `📦 Overdue: <title> (<Site>) — ship today` in the GROUP, once (kind `overdue_site`), only when
+  the site — read after the ship-by day ended — still shows it to ship; a sale on a swept site that no order was tied
+  to, or on a site never swept, keeps the old ops line. Her `shipped <words>` reply still overrides.
+- **Dashboard (§4):** the "Shipping" column — To ship / Shipped · day / Delivered / Completed (the furthest of our
+  records and the site's, `core.shipping`) — and "Orders read on the sites: Poshmark … · Depop … · Vinted …" under
+  it. The phone's link uses a key scoped to the dashboard function only (key `phone` on `get_dashboard`): the host-wide
+  `dashboard` key also opens the write routes.
 
 ## Brands, dropdowns, the read-back (WO36 — the Alo listing, 2026-10-12)
 The live miss: the label read "alo"; the copy's title said "Alo Yoga" but the brand field stayed "Alo"; Poshmark offered

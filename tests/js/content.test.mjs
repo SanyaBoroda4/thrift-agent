@@ -1227,3 +1227,110 @@ for (const site of ["depop", "vinted"]) {
     for (const secret of [...BUYER, "tok123"]) assert.ok(!all.includes(secret), `${secret} left the page`);
   });
 }
+
+// ---------------------------------------------------------------- WO38 §2: the sweep's readers, read only
+
+function soldPage(site, fixture = {}) {
+  const row = site === "depop"
+    ? `<a href="/sellinghub/sold-items/915093750/"><div><span>Jane Doe</span><span>@janedoe</span>
+         <span>Sold on</span><span>20 days ago</span><span>Shipped</span></div></a>
+       <a href="/sellinghub/sold-items/915093751/"><div><span>Bob</span><span>To ship</span><span>2 days ago</span>
+         <button id="label" type="button">Print label</button></div></a>`
+    : `<a data-testid="my-orders-item" href="/inbox/01a114b7"><span data-testid="my-orders-item--title">Nike sandals
+         boy size 10</span><span>Package delivered.</span></a>`;
+  const html = `<!doctype html><html><head><title>Sold</title></head><body><main>
+    <nav><a href="/sellinghub/sold-items/">All</a><span>To ship</span><span>Completed</span></nav>
+    ${row}
+    <button id="ship" type="button">Mark as shipped</button><button id="msg" type="button">Message buyer</button>
+    </main><script>
+      window.clicks = [];
+      for (const kind of ["click", "pointerdown", "mousedown", "keydown", "submit"]) {
+        document.addEventListener(kind, (e) => window.clicks.push(kind + ":" + (e.target.id || e.target.tagName)), true);
+      }
+    </script></body></html>`;
+  const p = page(site, html, ORDERS_URL[site], fixture);
+  p.calls = [];
+  p.answer = {};
+  p.w.fetch = (u, init) => {
+    p.calls.push({ u: String(u), credentials: init?.credentials, auth: init?.headers?.Authorization || null });
+    const a = p.answer[String(u)];
+    if (!a) return Promise.reject(new TypeError("Failed to fetch"));
+    return Promise.resolve({ ok: a.status === 200, status: a.status, headers: { get: () => "application/json" },
+                             json: async () => a.body });
+  };
+  return p;
+}
+
+test("vinted: the sweep reads Vinted's own JSON of the sold orders — our fields only, nothing clicked (WO38)",
+     async () => {
+  const p = soldPage("vinted");
+  const json = "https://www.vinted.com/api/v2/my_orders?type=sold&status=all&page=1&per_page=20";
+  p.answer[json] = { status: 200, body: { my_orders: [
+    { transaction_id: 22942401001, conversation_id: "01a1", title: "Nike sandals boy size 10",
+      price: { amount: "5.00", currency_code: "USD" }, status: "Package delivered.", date: "2026-10-07T04:55:13Z",
+      transaction_user_status: "completed", buyer: { login: "janedoe", real_name: "Jane Doe" },
+      shipping_address: { line1: "12 Main St" }, tracking_code: "9400111899223344556677" }] } };
+  await run(p, { job_id: "vinted-sweep", site: "vinted", mode: "orders", orders_url: ORDERS_URL.vinted, sweep: true });
+  await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
+  const result = plain(p.events().find((e) => e.event === "result"));
+  assert.ok(result, JSON.stringify(plain(p.events())));
+  assert.deepEqual(result.orders, [{ order_id: "22942401001", title: "Nike sandals boy size 10", price: "5.00",
+                                     sold_at: "2026-10-07T04:55:13Z", status_text: "Package delivered." }]);
+  assert.equal(result.source, "json");
+  assert.deepEqual(p.calls.map((c) => [c.u, c.credentials]), [[json, "include"]]);
+  assert.deepEqual(plain(p.w.clicks), []);
+  assert.equal(p.sent.filter((m) => m.type === "screenshot").length, 0);
+  const all = JSON.stringify(p.sent);
+  for (const secret of BUYER) assert.ok(!all.includes(secret), `${secret} left the page`);
+});
+
+test("depop: the sweep reads Depop's receipts with the page's token, never its cookies — our fields only (WO38)",
+     async () => {
+  const p = soldPage("depop");
+  p.d.cookie = "access_token=tok123";
+  const json = "https://webapi.depop.com/presentation/api/v1/receipts/?role=seller&limit=24";
+  p.answer[json] = { status: 200, body: { receipts: [
+    { id: 915093750, status: "SHIPPED", soldTime: "2026-09-23T21:33:00Z", price: { amount: "30.00" },
+      product: { slug: "tetianasorokina-madewell-sweater", id: 1 }, buyer: { username: "janedoe", name: "Jane Doe" },
+      address: { line1: "12 Main St" }, tracking: { number: "9400111899223344556677" } }] } };
+  await run(p, { job_id: "depop-sweep", site: "depop", mode: "orders", orders_url: ORDERS_URL.depop, sweep: true });
+  await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
+  const result = plain(p.events().find((e) => e.event === "result"));
+  assert.ok(result, JSON.stringify(plain(p.events())));
+  assert.equal(result.source, "json");
+  assert.deepEqual(result.orders, [{ order_id: "915093750", status_text: "SHIPPED", sold_at: "2026-09-23T21:33:00Z",
+                                     price: "30.00", listing_url: "https://www.depop.com/products/tetianasorokina-madewell-sweater/",
+                                     title: null }]);
+  assert.deepEqual(p.calls.map((c) => [c.u, c.credentials, c.auth]), [[json, "omit", "Bearer tok123"]]);
+  assert.deepEqual(plain(p.w.clicks), []);
+  const all = JSON.stringify(p.sent);
+  for (const secret of [...BUYER, "tok123"]) assert.ok(!all.includes(secret), `${secret} left the page`);
+});
+
+test("depop: receipts refused → the list as drawn: each receipt's id and status word, never a name (WO38)", async () => {
+  const p = soldPage("depop");
+  p.d.cookie = "access_token=tok123";                    // the API host answers nothing (p.answer is empty)
+  await run(p, { job_id: "depop-sweep2", site: "depop", mode: "orders", orders_url: ORDERS_URL.depop, sweep: true });
+  await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
+  const result = plain(p.events().find((e) => e.event === "result"));
+  assert.ok(result, JSON.stringify(plain(p.events())));
+  assert.equal(result.source, "page");
+  assert.deepEqual(result.orders, [{ order_id: "915093750", status_text: "Shipped", sold_ago: "20 days ago" },
+                                   { order_id: "915093751", status_text: "To ship", sold_ago: "2 days ago" }]);
+  assert.match(result.note, /receipts JSON/);
+  assert.deepEqual(plain(p.w.clicks), []);
+  const all = JSON.stringify(p.sent);
+  for (const secret of ["Jane Doe", "janedoe", "Bob", "tok123"]) assert.ok(!all.includes(secret), `${secret} left the page`);
+});
+
+test("a sweep whose site answers an error ends with the error, nothing clicked (WO38)", async () => {
+  const p = soldPage("vinted");
+  const json = "https://www.vinted.com/api/v2/my_orders?type=sold&status=all&page=1&per_page=20";
+  p.answer[json] = { status: 500, body: {} };
+  await run(p, { job_id: "vinted-sweep-err", site: "vinted", mode: "orders", orders_url: ORDERS_URL.vinted, sweep: true });
+  await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
+  const error = plain(p.events().find((e) => e.event === "error"));
+  assert.equal(error.stage, "orders");
+  assert.match(error.message, /answered 500/);
+  assert.deepEqual(plain(p.w.clicks), []);
+});

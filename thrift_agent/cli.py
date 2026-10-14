@@ -775,6 +775,11 @@ def _status_sales(db) -> None:
     gmail = beats.get("gmail") if isinstance(beats.get("gmail"), str) else (beats.get("gmail") or {}).get("last_seen")
     print(f"sales API: reachable · mode {h.get('mode')} · open sales {h.get('open_sales', '?')} · take-downs pending "
           f"here {pending} · Gmail's last heartbeat {gmail or 'never'}")
+    from thrift_agent import orders
+    swept = orders.last_sweeps(db)
+    print("orders read on the sites (WO38): " + " · ".join(
+        f"{orders.LABEL[mp]} {swept[mp][:16].replace('T', ' ') + ' UTC' if mp in swept else 'never'}"
+        for mp in orders.SITES))
 
 
 @app.command()
@@ -1101,6 +1106,8 @@ def cover_fix(items: list[str] = typer.Argument(..., help="the items whose live 
 @app.command("orders")
 def orders_cmd(probe: bool = typer.Option(False, "--probe", help="WO38 §1: each site's sold orders read and saved, "
                                                                  "scrubbed of buyer data"),
+               sweep: bool = typer.Option(False, "--sweep", help="WO38 §2: each site's orders read now and sent to the "
+                                                                 "API (the poster stopped)"),
                marketplace: list[str] = typer.Option(None, "--marketplace", help="poshmark | depop | vinted (repeat)")
                ) -> None:
     """WO38: the sites' sold orders, READ ONLY — nothing on their pages is clicked. --probe, the diagnostic: each site's
@@ -1112,13 +1119,17 @@ def orders_cmd(probe: bool = typer.Option(False, "--probe", help="WO38 §1: each
     s = settings()
     if not s.is_prod:
         raise typer.BadParameter("the orders are read on the Mac only (machine_role: prod)")
-    if not probe:
-        raise typer.BadParameter("--probe is the only action for now")
+    if probe == sweep:
+        raise typer.BadParameter("--probe or --sweep")
     sites = list(marketplace or []) or ["poshmark", "depop", "vinted"]
     if bad := [m for m in sites if m not in orders.SITES]:
         raise typer.BadParameter(f"unknown marketplace {bad[0]}")
-    for mp, r in asyncio.run(orders.probe(s, sites)).items():
-        print(f"{mp}: {escape(orders.probe_line(r))}")
+    if probe:
+        for mp, r in asyncio.run(orders.probe(s, sites)).items():
+            print(f"{mp}: {escape(orders.probe_line(r))}")
+        return
+    for r in asyncio.run(orders.sweep_now(s, _db(), sites)):
+        print(escape(orders.sweep_line(r)))
 
 
 @app.command()

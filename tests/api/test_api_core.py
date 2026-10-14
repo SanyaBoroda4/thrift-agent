@@ -636,7 +636,8 @@ def test_the_dashboard_snapshot_renders(db, live):
     assert data["unmatched"] == 1 and data["generated_at"] == "2026-10-08T15:00:00+00:00"
     assert by_id[ITEM]["listings"]["depop"] == {"status": "posted", "url": URLS["depop"]}
     assert by_id[ITEM]["sale"] == {"marketplace": "poshmark", "sold_at": "2026-10-08T14:05:00+00:00", "price": 35.0,
-                                   "ship_by": "2026-10-15", "shipped_at": None, "status": "delisting"}
+                                   "ship_by": "2026-10-15", "shipped_at": None, "status": "delisting",
+                                   "shipping": "to_ship"}
     assert by_id[ZARA]["sale"] is None
     assert sale(db, first["sale_id"])["status"] == "delisting"
     page = dashboard.render(data, now=NOW)

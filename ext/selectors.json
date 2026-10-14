@@ -311,7 +311,12 @@
         "seen": "2026-10-12, WO37's read-only probe of the UGG Chestnut's edit page in the Thrift Chrome (nothing clicked): one Save [data-testid=upload-form-save-button], disabled until something changes"
       }
     },
-    "edit_url": "https://www.vinted.com/items/{id}/edit"
+    "edit_url": "https://www.vinted.com/items/{id}/edit",
+    "orders": {
+      "url": "https://www.vinted.com/my_orders?order_type=sold",
+      "json": "/api/v2/my_orders?type=sold&status=all&page=1&per_page=20",
+      "seen": "2026-10-14 WO38 probe 2: 200 — my_orders[]: transaction_id, conversation_id, title, price.amount, date, status (a sentence); the page itself is drawn by the server"
+    }
   },
   "depop": {
     "sell_url": "https://www.depop.com/products/create/",
@@ -573,6 +578,11 @@
         "seen": "2026-10-12, WO37's read-only probe of the UGG Chestnut's edit page in the Thrift Chrome (nothing clicked): one visible submit button 'Save changes' (and a hidden one), Cancel beside it"
       }
     },
-    "edit_url": "https://www.depop.com/products/edit/{slug}/"
+    "edit_url": "https://www.depop.com/products/edit/{slug}/",
+    "orders": {
+      "url": "https://www.depop.com/sellinghub/sold-items/",
+      "json": "https://webapi.depop.com/presentation/api/v1/receipts/?role=seller&limit=24",
+      "seen": "2026-10-14 WO38 probes: the page calls receipts with its sign-in token; read with cookies the browser refused it (read without them since); the list: a[href=/sellinghub/sold-items/<id>/] with its status word"
+    }
   }
 }

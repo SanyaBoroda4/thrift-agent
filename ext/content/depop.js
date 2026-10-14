@@ -13,6 +13,43 @@
 (function () {
   const T = globalThis.Thrift;
   const S = () => T.selectors.depop.steps;
+
+  // WO38: Depop's sold list as drawn — one row per receipt (its link /sellinghub/sold-items/<id>/), the status word it
+  // shows and when it sold ("20 days ago"); the row's other texts (the buyer's name) never leave the page.
+  const SOLD_WORD = /^(to ship|in transit|shipped|delivered|completed|canceled|cancelled|refunded)$/i;
+  const soldRows = () => {
+    const out = [];
+    const seen = new Set();
+    for (const a of T.$$("a[href*='/sellinghub/sold-items/']")) {
+      const m = (a.getAttribute("href") || "").match(/\/sellinghub\/sold-items\/([^/?#]+)\/?/);
+      if (!m || seen.has(m[1])) continue;
+      seen.add(m[1]);
+      const leaves = [...a.querySelectorAll("*")].filter((n) => !n.childElementCount)
+        .map((n) => (n.textContent || "").trim()).filter(Boolean);
+      out.push({ order_id: m[1], status_text: leaves.find((t) => SOLD_WORD.test(t)) || null,
+                 sold_ago: leaves.find((t) => /\bago$|^yesterday$|^just now$/i.test(t)) || null });
+    }
+    return out;
+  };
+  // Depop's receipts JSON in our fields, when it is a list of receipts with an id and a status (its shape isn't
+  // recorded yet: anything else is [] and the list as drawn is read instead).
+  const receiptsOf = (data) => {
+    const list = Array.isArray(data) ? data : [data?.receipts, data?.objects, data?.data, data?.items]
+      .find((x) => Array.isArray(x)) || [];
+    const statusOf = (r) => Object.entries(r).find(([k, v]) => /status|state/i.test(k) && typeof v === "string")?.[1];
+    const firstOf = (r, keys) => keys.map((k) => r[k]).find((v) => v !== undefined && v !== null && v !== "");
+    return list.filter((r) => r && typeof r === "object" && (r.id || r.receiptId) && statusOf(r)).map((r) => {
+      const product = r.product || (Array.isArray(r.products) ? r.products[0] : null)
+        || (Array.isArray(r.items) ? r.items[0] : null) || {};
+      const price = firstOf(r, ["price", "total", "totalPrice", "amount"]);
+      return { order_id: String(r.id || r.receiptId), status_text: String(statusOf(r)).slice(0, 80),
+               sold_at: firstOf(r, ["soldTime", "sold_time", "soldAt", "sold_at", "createdAt", "created_at", "date"]) || null,
+               price: price && typeof price === "object" ? String(price.amount ?? price.value ?? "") || null
+                 : price != null ? String(price) : null,
+               listing_url: product.slug ? `https://www.depop.com/products/${product.slug}/` : null,
+               title: null };
+    });
+  };
   // WO35: the SKUs a page shows (the seller's /manage/ page: "SKU: <our item id>") — our item ids anywhere in its text or
   // its inputs, so the driver can tell our listing by its SKU.
   const skusShown = () => {
@@ -635,6 +672,34 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
       await T.screenshot("probe");
       T.emit({ event: "result", job_id: job.job_id, probe: true, found: !!button, url: location.href,
                text: button ? (button.getAttribute("aria-label") || button.textContent).replace(/\s+/g, " ").trim() : null });
+    },
+
+    // WO38: the sold orders, read only — Depop's receipts JSON when its API host answers (with the page's own sign-in
+    // token, which never leaves this page), else the list as drawn: each receipt's id (its link) and its status word.
+    // Only our fields leave the page (never the buyer: the receipt's other fields stay here).
+    async orders(job) {
+      const token = (document.cookie.match(/(?:^|;\s*)access_token=([^;]+)/) || [])[1];
+      let note = token ? null : "no sign-in token on the page";
+      if (token) {
+        try {
+          const url = T.selectors.depop.orders?.json
+            || "https://webapi.depop.com/presentation/api/v1/receipts/?role=seller&limit=24";
+          const r = await fetch(url, { credentials: "omit", headers: { Accept: "application/json",
+                                                                       Authorization: `Bearer ${decodeURIComponent(token)}` } });
+          note = `receipts JSON ${r.status}`;
+          if (r.ok) {
+            const data = await r.json();
+            const list = receiptsOf(data);
+            if (list.length) return { source: "json", orders: list, note };
+            note += ` — its shape: ${JSON.stringify(T.scrub(data, "", 0, 2)).slice(0, 1500)}`;
+          }
+        } catch (e) {
+          note = `receipts JSON: ${String(e && e.message ? e.message : e).slice(0, 80)}`;
+        }
+      }
+      await T.until(() => soldRows().length > 0 || null, 15000);
+      await T.quiet(800, 5000);
+      return { source: "page", orders: soldRows(), note };
     },
 
     async find(job, st) {

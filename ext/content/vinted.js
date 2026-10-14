@@ -430,6 +430,22 @@
                text: button ? button.textContent.replace(/\s+/g, " ").trim() : null });
     },
 
+    // WO38: the sold orders from Vinted's own JSON (same origin, the page's cookies), read only — each order's
+    // transaction id, title, price, date and status sentence; nothing about the buyer leaves the page.
+    async orders(job) {
+      const path = String(T.selectors.vinted.orders?.json || "/api/v2/my_orders?type=sold&status=all&page=1&per_page=20");
+      const r = await fetch(new URL(path, location.origin).href, { credentials: "include",
+                                                                   headers: { Accept: "application/json" } });
+      if (!r.ok) throw new Error(`Vinted's sold orders answered ${r.status}`);
+      const data = await r.json();
+      const orders = (data.my_orders || []).filter((o) => o && o.transaction_id).map((o) => ({
+        order_id: String(o.transaction_id), title: String(o.title || "").slice(0, 200) || null,
+        price: o.price && o.price.amount != null ? String(o.price.amount) : null, sold_at: o.date || null,
+        status_text: String(o.status || "").slice(0, 120) || null,
+      }));
+      return { source: "json", orders };
+    },
+
     async find(job, st) {
       // WO35: Vinted's own JSON of the seller's newest items (same origin, from the member page): each listing's exact
       // title and address — the confirmation after an upload. The tiles below only when the JSON can't be read.

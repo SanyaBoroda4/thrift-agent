@@ -41,6 +41,16 @@ BLOCK = ("<html><head><title>403 Forbidden</title></head><body><h1>Sorry, not au
          "You were blocked.</p></body></html>")
 CAPTCHA = ("<html><head><title>Depop</title></head><body><div id='px-captcha'></div><p>Press &amp; Hold to confirm "
            "you are a human</p></body></html>")
+# WO38: Vinted's sold orders — the page (with the controls the sweep must never press) and its own JSON
+SOLD = ("<html><head><title>My orders | Vinted</title></head><body><main><div data-testid='my-orders-list'>"
+        "<a data-testid='my-orders-item' href='/inbox/01a1'><span data-testid='my-orders-item--title'>Nike sandals boy "
+        "size 10</span><span>Package delivered.</span></a>"
+        "<button type='button' onclick=\"fetch('/api/ship-click')\">Mark as shipped</button>"
+        "<button type='button' onclick=\"fetch('/api/label-click')\">Print label</button>"
+        "<button type='button' onclick=\"fetch('/api/message-click')\">Message buyer</button></div></main></body></html>")
+MY_ORDERS = {"my_orders": [{"transaction_id": 22942401001, "conversation_id": "01a1", "title": "Nike sandals boy size 10",
+                            "price": {"amount": "5.00", "currency_code": "USD"}, "status": "Package delivered.",
+                            "date": "2026-10-07T04:55:13Z", "buyer": {"login": "janedoe"}}]}
 
 
 class Site:
@@ -73,9 +83,13 @@ class Site:
         path = re.sub(r"^https://www\.(vinted|depop)\.com", "", url).split("?")[0]
         site = "vinted" if "vinted.com" in url else "depop"
         if path in ("/api/upload-click", "/api/post-click", "/api/later-click", "/api/list-another-click",
-                    "/api/bump-click"):
+                    "/api/bump-click", "/api/ship-click", "/api/label-click", "/api/message-click"):
             self.clicks.append(path)
             return await route.fulfill(status=200, body="{}", content_type="application/json")
+        if site == "vinted" and path == "/my_orders":                     # WO38: the sold orders
+            return await route.fulfill(status=200, body=SOLD, content_type="text/html")
+        if site == "vinted" and path == "/api/v2/my_orders":
+            return await route.fulfill(status=200, body=json.dumps(MY_ORDERS), content_type="application/json")
         if site == "vinted" and re.match(r"^/member/\d+/?$", path):      # WO33: where Upload lands, the shop
             return await route.fulfill(status=200, body=member_page("promo_shown=true" in url), content_type="text/html")
         if re.match(r"^/items/\d+", path) or (re.match(r"^/products/[a-z0-9-]+/?$", path) and "create" not in path):
@@ -607,3 +621,34 @@ def test_two_sites_fill_at_once_each_in_its_own_window(tmp_path):
     assert "priceAmount__input" in Path(do.screenshot).with_suffix(".html").read_text(encoding="utf-8")
     assert took < v.fill_seconds + d.fill_seconds + 12, (took, v.fill_seconds, d.fill_seconds)   # side by side
     assert site.clicks == []
+
+
+def test_the_order_sweep_waits_for_the_sites_listing_reads_in_its_own_window_and_presses_nothing(tmp_path):
+    """WO38: an order read submitted while a Vinted listing is being filled starts only once that listing is done (one
+    job per site: the listing first), in the Thrift Chrome's own "Orders" window — never the listing's — and presses
+    nothing on the orders page (its ship, label and message buttons count every press)."""
+    from thrift_agent import orders
+    site = Site()
+
+    async def go():
+        b, pw, ctx, sw = await session(tmp_path, site)
+        try:
+            assert await connected(b)
+            v = poster("vinted", b, tmp_path)
+            posting = asyncio.ensure_future(v.post(None, RENDER, "publish", True, tmp_path / "shots"))   # a dry run
+            await asyncio.sleep(0.5)
+            read = await orders.read_extension(v, "vinted")
+            read_done = time.monotonic()
+            out = await posting
+            windows = await sw.evaluate("async () => (await chrome.storage.session.get('windows')).windows")
+            return out, read, read_done, v, windows
+        finally:
+            await close(b, pw, ctx)
+    out, read, read_done, v, windows = asyncio.run(go())
+    assert out.status == "dryrun", (out.error, out.diff)
+    assert [(o["order_id"], o["status"], o["price"]) for o in read] == [("22942401001", "delivered", 5.0)]
+    assert windows["orders"]["windowId"] != windows["vinted"]["windowId"]           # its own window
+    assert site.clicks == []                                                      # nothing pressed, anywhere
+    order_pages = [u for u in site.urls if "/my_orders" in u]
+    form_pages = [i for i, u in enumerate(site.urls) if u.endswith("/items/new")]
+    assert order_pages and form_pages and site.urls.index(order_pages[0]) > form_pages[0]   # the listing went first

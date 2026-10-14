@@ -1,0 +1,22 @@
+{
+ "my_orders": [
+  {"conversation_id": "01a114b7-0000-0000-0000-000000000001", "transaction_id": 22942401001,
+   "title": "Nike sandals boy size 10", "price": {"amount": "5.00", "currency_code": "USD"},
+   "status": "Package delivered.", "date": "2026-10-07T04:55:13Z", "photo": null, "photo_url": "<scrubbed>",
+   "transaction_user_status": "<scrubbed>"},
+  {"conversation_id": "01a10423-0000-0000-0000-000000000002", "transaction_id": 22845581002,
+   "title": "Sparkling boots size 6", "price": {"amount": "3.00", "currency_code": "USD"},
+   "status": "Order shipped and on its way!", "date": "2026-10-03T23:39:53Z", "photo": null,
+   "photo_url": "<scrubbed>", "transaction_user_status": "<scrubbed>"},
+  {"conversation_id": "01a10706-0000-0000-0000-000000000003", "transaction_id": 22859497003,
+   "title": "Lacoste T-shirt size 4", "price": {"amount": "5.00", "currency_code": "USD"},
+   "status": "Order completed successfully. The buyer accepted the item.", "date": "2026-10-04T13:08:20Z",
+   "photo": null, "photo_url": "<scrubbed>", "transaction_user_status": "<scrubbed>"},
+  {"conversation_id": "01a0cbfb-0000-0000-0000-000000000004", "transaction_id": 22533303004,
+   "title": "Zara backpack", "price": {"amount": "12.00", "currency_code": "USD"},
+   "status": "The order was cancelled.", "date": "2026-09-23T01:58:06Z", "photo": null,
+   "photo_url": "<scrubbed>", "transaction_user_status": "<scrubbed>"}
+ ],
+ "pagination": {"page": 1, "per_page": 20, "current_page": 1, "total_entries": 4, "total_pages": 1},
+ "order_details_enabled": false
+}

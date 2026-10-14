@@ -499,3 +499,32 @@ def test_the_running_poster_asks_for_take_downs_for_its_sites_at_once(tmp_path, 
     asyncio.run(parallel.run_parallel(s, db, ps, dry=False, stage="form", opener=fake_open, until_idle=True))
     assert len(turns) >= 6 and set(turns) == {"poshmark", "depop", "vinted"}
     assert [q for _, p, _, q in api.calls if p == "/tasks"] == [{"sites": "poshmark,depop,vinted"}]
+
+
+def test_a_call_the_api_refuses_for_good_never_holds_the_outbox(tmp_path, api, monkeypatch):
+    """WO38: the outbox keeps its order while the API is away — but a call it ANSWERS with a refusal (a route it doesn't
+    have yet: 404) is dropped with an event, so the calls after it still go; a key refused (401) holds it as before."""
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    refuse = {"/orders": 404}
+    inner = api.handler
+
+    def handler(request):
+        if request.url.path in refuse:
+            api.calls.append((request.method, request.url.path, None, {}))
+            return httpx.Response(refuse[request.url.path], json={"error": "no such path"})
+        return inner(request)
+    monkeypatch.setattr(sales, "api", lambda: sales.Api("https://thrift-api.example", "mac-key",
+                                                         client=httpx.Client(transport=httpx.MockTransport(handler))))
+    sales.queue(db, "/orders", {"marketplace": "vinted", "orders": []})
+    sales.queue(db, "/mac-event", {"kind": "shipped", "words": "jcrew"})
+    assert sales.flush(db, sales.api()) == 2
+    assert api.paths() == ["/orders", "/mac-event"] and not db.conn.execute("SELECT * FROM api_outbox").fetchall()
+    assert db.conn.execute("SELECT detail FROM events WHERE kind = 'api_refused'").fetchone()[0] == \
+        '{"path": "/orders", "status": 404}'
+    refuse["/orders"] = 401
+    sales.queue(db, "/orders", {"marketplace": "vinted", "orders": []})
+    sales.queue(db, "/mac-event", {"kind": "shipped", "words": "jcrew"})
+    with pytest.raises(sales.ApiError):
+        sales.flush(db, sales.api())
+    assert [r[0] for r in db.conn.execute("SELECT path FROM api_outbox ORDER BY id")] == ["/orders", "/mac-event"]

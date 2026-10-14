@@ -268,8 +268,8 @@ def test_awaiting_shipment_counts_open_sales_and_shows_the_nearest_ship_by():
     got = rows(page)
     assert {iid: got[iid]["cells"]["Ship by"] for iid in ("i_mon", "i_fri", "i_undated", "i_shipped")} == {
         "i_mon": "Mon Oct 12", "i_fri": "Fri Oct 9", "i_undated": "—", "i_shipped": "Mon Oct 5"}   # shipped: not late
-    assert got["i_shipped"]["cells"]["Shipped"] == "✓ Sun Oct 4"
-    assert got["i_fri"]["cells"]["Shipped"] == "—"
+    assert got["i_shipped"]["cells"]["Shipping"] == "✓ Sun Oct 4"
+    assert got["i_fri"]["cells"]["Shipping"] == "—"
     assert got["i_cancelled"]["cells"]["Sold"] == "Poshmark · Mon Oct 5 cancelled"
     assert got["i_double"]["cells"]["Sold"] == "Poshmark · Mon Oct 5 double sale"
     late = Page(render({"items": [item("i_late", sale=sale(ship_by="2026-10-06"))]}, now=NOW))
@@ -311,11 +311,11 @@ def test_rows_newest_first_with_prices_and_local_days():
         "i_sold": ("Lacoste Tee White size M", "$35"), "i_new": ("(untitled)", "—"),
         "i_old": ("Lacoste Tee White size M", "$1,250"), "i_last_year": ("Lacoste Tee White size M", "$35"),
         "i_undated": ("Lacoste Tee White size M", "$35")}
-    assert [got["i_sold"]["cells"][column] for column in ("Sold", "Ship by", "Shipped")] == [
+    assert [got["i_sold"]["cells"][column] for column in ("Sold", "Ship by", "Shipping")] == [
         "Poshmark · Tue Oct 6", "Fri Oct 9", "✓ Thu Oct 8"]
-    assert [got["i_last_year"]["cells"][column] for column in ("Sold", "Shipped")] == [
+    assert [got["i_last_year"]["cells"][column] for column in ("Sold", "Shipping")] == [
         "Poshmark · Thu Oct 9, 2025", "✓ Fri Oct 10, 2025"]
-    assert [got["i_old"]["cells"][column] for column in (*SITES, "Sold", "Ship by", "Shipped")] == ["—"] * 6
+    assert [got["i_old"]["cells"][column] for column in (*SITES, "Sold", "Ship by", "Shipping")] == ["—"] * 6
 
 
 def test_footer_says_when_the_data_was_made_in_local_time():

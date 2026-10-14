@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from thrift_agent import catalogs, crosslist, daily, notify, power, sales
+from thrift_agent import catalogs, crosslist, daily, notify, orders, power, sales
 from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
 from thrift_agent.post import runner
@@ -208,11 +208,16 @@ async def _poshmark_worker(s, poster, dry, stage, halt, state, opener, takedowns
             except Exception as e:  # noqa: BLE001 — a worker never dies of one bad turn
                 notify.say(f"❌ Poshmark worker: {type(e).__name__}: {e}")
                 worked = False
+            gap = next_gap(s["schedule"]) if worked else IDLE
+            started = time.monotonic()
             if not worked:
                 awake.hold(False)
-                await _rest(halt, IDLE)
-            elif not halt.is_set():
-                await _rest(halt, next_gap(s["schedule"]))
+            if not halt.is_set():
+                # WO38: the sold orders read between listings — on an idle turn or inside this pause, never longer
+                waiting = functools.partial(_posh_waiting, s, db, dry)
+                await _sweep(s, db, "poshmark",
+                             lambda: orders.read_poshmark(ctx, yield_to=waiting), gap if worked else None)
+                await _rest(halt, gap - (time.monotonic() - started))
     finally:
         awake.hold(False)
         state.idle("poshmark")
@@ -288,7 +293,13 @@ async def _cross_worker(s, db, ps, mp, dry, stop, state, awake, takedowns) -> No
             notify.say(f"❌ {crosslist.LABEL[mp]} worker: {type(e).__name__}: {e}")
             state.set(mp, None)
             worked = False
-        await _rest(stop, crosslist.listing_gap(s, mp) if worked else IDLE)   # Depop / Vinted: 30–90 s (the owner)
+        gap = crosslist.listing_gap(s, mp) if worked else IDLE                # Depop / Vinted: 30–90 s (the owner)
+        started = time.monotonic()
+        if not stop.is_set() and hasattr(ps[mp], "_job"):
+            # WO38: the sold orders read between listings (the extension's "orders" job, its own window)
+            await _sweep(s, db, mp, functools.partial(orders.read_extension, ps[mp], mp), gap if worked else None,
+                         ps[mp])
+        await _rest(stop, gap - (time.monotonic() - started))
 
 
 async def _cross_turn(s, db, ps, mp, dry, state, awake, takedowns) -> bool:
@@ -318,6 +329,24 @@ async def _cross_turn(s, db, ps, mp, dry, state, awake, takedowns) -> bool:
         state.set(mp, None)
     maybe_announce(s, db, iid)
     return True
+
+
+# ---------------------------------------------------------------- WO38: the sold orders, between listings
+
+async def _sweep(s, db, site: str, read, gap: float | None, poster=None) -> None:
+    """The site's order sweep when due (orders.maybe_sweep: on an idle turn, or inside a pause after a listing that
+    leaves room for it) — never the worker's end."""
+    try:
+        await orders.maybe_sweep(s, db, site, read, gap, poster)
+    except Exception as e:  # noqa: BLE001 — logged; the sweep comes back next time
+        db.log(None, "orders_failed", {"site": site, "error": f"{type(e).__name__}: {e}"[:300]})
+
+
+def _posh_waiting(s, db, dry) -> bool:
+    """A Poshmark take-down or listing that could start now: the sweep steps aside for it."""
+    hour_ago, midnight = windows(tz=s["schedule"]["timezone"])
+    ok, _ = can_post(s, db.listed_since(hour_ago, "poshmark"), db.listed_since(midnight, "poshmark"))
+    return bool(sales.pending(db, "poshmark")) or (ok and runner.next_job(s, db, ["poshmark"], dry) is not None)
 
 
 # ---------------------------------------------------------------- shared duties

@@ -41,7 +41,16 @@ MAX_ATTEMPTS = 3                     # a take-down that failed this often is the
 
 
 class ApiError(Exception):
-    """The API couldn't be reached or refused the call."""
+    """The API couldn't be reached or refused the call (`status`: its HTTP status, None when it didn't answer)."""
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
+    @property
+    def refused(self) -> bool:
+        """The API answered and will never take this call as it is (a 4xx but a key, timeout or rate refusal)."""
+        return self.status is not None and 400 <= self.status < 500 and self.status not in (401, 403, 408, 429)
 
 
 class Api:
@@ -62,7 +71,7 @@ class Api:
         except httpx.HTTPError as e:
             raise ApiError(f"{method} {path}: {type(e).__name__}") from None
         if r.status_code >= 300:
-            raise ApiError(f"{method} {path}: HTTP {r.status_code}")
+            raise ApiError(f"{method} {path}: HTTP {r.status_code}", r.status_code)
         try:
             return r.json() if r.content else {}
         except ValueError:
@@ -176,10 +185,17 @@ def queue(db: DB, path: str, body: dict) -> None:
 
 
 def flush(db: DB, client: Api) -> int:
-    """The outbox, oldest first; the first that fails stops it (order kept). Returns how many went."""
+    """The outbox, oldest first; the first that fails stops it (order kept). Returns how many went. WO38: a call the
+    API refuses for good (`ApiError.refused`, e.g. a route it doesn't have yet) is dropped with an event — kept, it would
+    hold every call after it forever."""
     sent = 0
     for row in db.conn.execute("SELECT id, path, body FROM api_outbox ORDER BY id").fetchall():
-        client.post(row["path"], json.loads(row["body"]))
+        try:
+            client.post(row["path"], json.loads(row["body"]))
+        except ApiError as e:
+            if not e.refused:
+                raise
+            db.log(None, "api_refused", {"path": row["path"], "status": e.status})
         db.conn.execute("DELETE FROM api_outbox WHERE id=?", (row["id"],))
         sent += 1
     return sent

@@ -7,8 +7,10 @@ The snapshot. Only these keys are read, so nothing else a record carries (the bu
 
     {"items": [{"id", "title", "price", "created_at",
                 "listings": {"poshmark" | "depop" | "vinted": {"status", "url"}},      # a site may be missing
-                "sale": None | {"marketplace", "sold_at", "price", "ship_by", "shipped_at", "status"}}],
+                "sale": None | {"marketplace", "sold_at", "price", "ship_by", "shipped_at", "status",
+                                "shipping"}}],                    # WO38: to_ship | shipped | delivered | completed …
      "unmatched": int,                                                             # sales that matched no item
+     "swept": {"poshmark" | "depop" | "vinted": "ISO-8601"},          # WO38: when each site's orders were last read
      "generated_at": "ISO-8601"}
 
 Every value is escaped; only absolute http(s) URLs become links. Times without an offset are UTC; everything is shown in
@@ -53,7 +55,10 @@ LEGEND = (("✓", "ok", "live (tap to open)"), ("⏳", "wait", "queued"), ("✗"
           ("↓", "dim", "delisted"), ("💰", "sold", "sold"), ("·", "dim", "draft / dry run"), NOT_LISTED)
 FILTERS = (("all", "All"), ("active", "Active"), ("sold", "Sold"), ("toship", "To ship"))
 COLUMNS = (("t", "Item"), ("p", "Price"), *(("s", name) for _, name in SITES),
-           ("d", "Sold"), ("d", "Ship by"), ("d", "Shipped"))
+           ("d", "Sold"), ("d", "Ship by"), ("d", "Shipping"))
+# WO38: where a sale is, as the site itself last showed it (the order sweep) or our records say
+SHIPPING = {"to_ship": ("To ship", "late"), "shipped": ("Shipped", "ok"), "delivered": ("Delivered", "ok"),
+            "completed": ("Completed", "ok"), "returned": ("Returned", "warn"), "cancelled": ("Cancelled", "dim")}
 
 STYLE = """
 :root {
@@ -211,7 +216,7 @@ def render(data: dict, now: datetime | None = None, tz: str = "America/New_York"
         _cards(items, _count(data.get("unmatched")), zone, local_now),
         _filters(),
         _table(items, zone, today),
-        _footer(data.get("generated_at"), zone, today),
+        _footer(data.get("generated_at"), zone, today, data.get("swept")),
         "</main>",
         f"<script>{SCRIPT}</script>",
         "</body>",
@@ -232,8 +237,10 @@ def _item(raw: dict) -> dict:
             sites[key] = {"status": _norm(entry.get("status")), "url": entry.get("url")}
     sale = raw.get("sale")
     if isinstance(sale, dict):
-        sale = {key: sale.get(key) for key in ("marketplace", "sold_at", "price", "ship_by", "shipped_at", "status")}
+        sale = {key: sale.get(key) for key in ("marketplace", "sold_at", "price", "ship_by", "shipped_at", "status",
+                                               "shipping")}
         sale["status"] = _norm(sale["status"])
+        sale["shipping"] = _norm(sale["shipping"]) if _norm(sale["shipping"]) in SHIPPING else None
     else:
         sale = None
     return {"id": raw.get("id"), "title": raw.get("title"), "price": raw.get("price"),
@@ -246,8 +253,9 @@ def _is_sold(sale: dict | None) -> bool:
 
 
 def _to_ship(sale: dict | None) -> bool:
-    """An open sale: not cancelled, double_sale or done, and not shipped yet."""
-    return sale is not None and sale["status"] not in CLOSED and _blank(sale["shipped_at"])
+    """An open sale: not cancelled, double_sale or done, not shipped yet — and (WO38) its site doesn't show it left."""
+    return (sale is not None and sale["status"] not in CLOSED and _blank(sale["shipped_at"])
+            and sale.get("shipping") in (None, "to_ship"))
 
 
 def _is_active(item: dict) -> bool:
@@ -337,7 +345,7 @@ def _row(item: dict, zone: tzinfo, today: date) -> str:
         *(_td("s", name, _site(item["sites"].get(key), name)) for key, name in SITES),
         _td("d sale", "Sold", _sold_cell(sale, zone, today)),
         _td("d", "Ship by", _ship_by_cell(sale, zone, today)),
-        _td("d", "Shipped", _shipped_cell(sale, zone, today)),
+        _td("d", "Shipping", _shipping_cell(sale, zone, today)),
     )
     return f"<tr{attrs}>{''.join(cells)}</tr>"
 
@@ -389,15 +397,26 @@ def _ship_by_cell(sale: dict | None, zone: tzinfo, today: date) -> str:
     return f'<span class="late">{text} · late</span>' if _to_ship(sale) and day < today else text
 
 
-def _shipped_cell(sale: dict | None, zone: tzinfo, today: date) -> str:
-    if sale is None or _blank(sale["shipped_at"]):
+def _shipping_cell(sale: dict | None, zone: tzinfo, today: date) -> str:
+    """WO38: where the sale is — To ship / Shipped (with the day we recorded it) / Delivered / Completed — as its site
+    last showed it or our records say; a sale without a shipping state as before: ✓ and the day it shipped."""
+    if sale is None:
         return DASH
-    day = _local_day(sale["shipped_at"], zone)
+    state = sale.get("shipping")
+    day = None if _blank(sale["shipped_at"]) else _local_day(sale["shipped_at"], zone)
+    if state in SHIPPING:
+        if state == "to_ship" and sale["status"] in CLOSED:
+            return DASH
+        words, cls = SHIPPING[state]
+        when = f' <span class="sep">·</span> {_day_html(day, today)}' if day and state == "shipped" else ""
+        return f'<span class="{cls}">{words}</span>{when}'
+    if day is None:
+        return DASH
     tick = '<span class="ok">✓</span>'
-    return f"{tick} {_day_html(day, today)}" if day else tick
+    return f"{tick} {_day_html(day, today)}"
 
 
-def _footer(generated_at: object, zone: tzinfo, today: date) -> str:
+def _footer(generated_at: object, zone: tzinfo, today: date, swept: object = None) -> str:
     when = _when(generated_at)
     if isinstance(when, datetime):
         local = when.astimezone(zone)
@@ -408,7 +427,17 @@ def _footer(generated_at: object, zone: tzinfo, today: date) -> str:
         stamp = DASH
     legend = "".join(f'<li><span class="st {cls}" aria-hidden="true">{icon}</span> {words}</li>'
                      for icon, cls, words in LEGEND)
+    swept = swept if isinstance(swept, dict) else {}
+    read = []
+    for key, name in SITES:                          # WO38: when each site's orders were last read by the Mac
+        moment = _when(swept.get(key))
+        if isinstance(moment, datetime):
+            local = moment.astimezone(zone)
+            read.append(f"{name} {_day(local.date(), today)}, {_clock(local)}")
+        else:
+            read.append(f"{name} {DASH}")
     return (f'<footer><p id="updated">Updated {_esc(stamp)}</p>'
+            f'<p id="swept">Orders read on the sites: {_esc(" · ".join(read))}</p>'
             f'<ul class="legend" aria-label="What the icons mean">{legend}</ul></footer>')
 
 

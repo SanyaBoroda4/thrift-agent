@@ -44,6 +44,13 @@ TABLES = (
     """CREATE TABLE IF NOT EXISTS samples (
         message_id TEXT PRIMARY KEY, marketplace TEXT, subject TEXT, received_at TEXT, text TEXT)""",
     """CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)""",
+    # WO38: each site's sold orders as the Mac's sweep read them — never a buyer's name, address or tracking number;
+    # status to_ship | shipped | delivered | completed | cancelled | returned, seen_json {status: first seen at}
+    """CREATE TABLE IF NOT EXISTS orders (
+        marketplace TEXT NOT NULL, order_id TEXT NOT NULL, sale_id TEXT, item_id TEXT, title TEXT,
+        price DOUBLE PRECISION, sold_at TEXT, status TEXT NOT NULL, status_text TEXT, seen_json TEXT,
+        last_seen TEXT NOT NULL, first_seen TEXT NOT NULL,
+        PRIMARY KEY (marketplace, order_id))""",
 )
 
 INDEXES = (
@@ -56,6 +63,7 @@ INDEXES = (
     "CREATE INDEX IF NOT EXISTS ix_delist_tasks_status ON delist_tasks (status, marketplace)",
     "CREATE INDEX IF NOT EXISTS ix_delist_tasks_item ON delist_tasks (item_id, marketplace)",
     "CREATE UNIQUE INDEX IF NOT EXISTS ux_delist_tasks_sale_site ON delist_tasks (sale_id, marketplace)",
+    "CREATE INDEX IF NOT EXISTS ix_orders_sale ON orders (sale_id)",
 )
 
 

@@ -26,6 +26,8 @@ COLUMNS = {
     "heartbeats": ["source", "last_seen", "info"],
     "samples": ["message_id", "marketplace", "subject", "received_at", "text"],
     "settings": ["key", "value"],
+    "orders": ["marketplace", "order_id", "sale_id", "item_id", "title", "price", "sold_at", "status", "status_text",
+               "seen_json", "last_seen", "first_seen"],
 }
 
 

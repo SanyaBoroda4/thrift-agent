@@ -41,6 +41,7 @@ SALE_LISTS = {"open": "s.shipped_at IS NULL AND s.status NOT IN ('cancelled', 'd
 # the sales a follow-up email can be about, when it doesn't name its order
 FOLLOWUP_OPEN = {"SHIPPED": "s.shipped_at IS NULL AND s.status NOT IN ('cancelled', 'done', 'merged')",
                  "DELIVERED": "s.status NOT IN ('cancelled', 'done', 'merged')",
+                 "COMPLETED": "s.status NOT IN ('cancelled', 'done', 'merged')",
                  "CANCELLED": "s.status NOT IN ('cancelled', 'done', 'merged')"}
 # Vinted mails one sale twice — "You sold an item" (no transaction id), its shipping label minutes later (the id)
 SAME_SALE_WINDOW = timedelta(days=3)
@@ -469,21 +470,30 @@ def _followup(db: Database, kind: str, mp: str, parsed: dict, subject: str | Non
         if handling in ACTING:
             out.ops(f"No sale found for a {kind.lower()} email on {site} ({why}): {subject or '(no subject)'}")
         return {"status": "unmatched", "reason": why}
-    title = _title(db, sale["item_id"], sale["title_seen"], sale["listing_id"])
-    at = iso(received)
-    changed = False
-    if kind == "SHIPPED":
-        changed = bool(db.execute("UPDATE sales SET shipped_at = ? WHERE id = ? AND shipped_at IS NULL", (at, sale["id"])))
-        if changed and handling in ACTING:
-            out.ops(f"Shipped: {title} ({site}).")
-    elif kind == "DELIVERED":
-        changed = bool(db.execute("UPDATE sales SET delivered_at = COALESCE(delivered_at, ?), "
-                                  "shipped_at = COALESCE(shipped_at, ?), status = 'done' "
-                                  "WHERE id = ? AND status NOT IN ('cancelled', 'done')", (at, at, sale["id"])))
-    elif sale["status"] != "cancelled":
-        _cancel(db, sale, title, handling, out)
-        changed = True
+    changed = apply_followup(db, sale, kind, received, handling, out, quiet=bool(parsed.get("quiet")))
     return {"status": "matched", "sale_id": sale["id"], "changed": changed}
+
+
+def apply_followup(db: Database, sale: dict, kind: str, at: datetime, handling: str, out: Outbox,
+                   quiet: bool = False) -> bool:
+    """SHIPPED / DELIVERED / COMPLETED / CANCELLED on this sale; True when it changed anything. WO38: a status the site
+    itself shows (`quiet`) is recorded without a word — shipped, delivered and completed; a cancellation is said as an
+    email's is. COMPLETED (the buyer accepted it, the order is done) closes the sale like DELIVERED."""
+    title = _title(db, sale["item_id"], sale["title_seen"], sale["listing_id"])
+    when = iso(at)
+    if kind == "SHIPPED":
+        changed = bool(db.execute("UPDATE sales SET shipped_at = ? WHERE id = ? AND shipped_at IS NULL", (when, sale["id"])))
+        if changed and handling in ACTING and not quiet:
+            out.ops(f"Shipped: {title} ({site_name(sale['marketplace'])}).")
+        return changed
+    if kind in ("DELIVERED", "COMPLETED"):
+        return bool(db.execute("UPDATE sales SET delivered_at = COALESCE(delivered_at, ?), "
+                               "shipped_at = COALESCE(shipped_at, ?), status = 'done' "
+                               "WHERE id = ? AND status NOT IN ('cancelled', 'done')", (when, when, sale["id"])))
+    if sale["status"] != "cancelled":
+        _cancel(db, sale, title, handling, out)
+        return True
+    return False
 
 
 def _find_sale(db: Database, kind: str, mp: str, parsed: dict) -> tuple[dict | None, str]:
@@ -963,15 +973,37 @@ def dashboard_data(db: Database, now: datetime | None = None) -> dict:
             items[row["item_id"]]["listings"][row["marketplace"]] = {"status": row["status"], "url": row["url"]}
     rank = {"cancelled": 0, "double_sale": 1}
     chosen: dict[str, tuple] = {}
-    for row in db.query("SELECT item_id, marketplace, sold_at, price, ship_by, shipped_at, status FROM sales "
-                        "WHERE item_id IS NOT NULL AND status <> 'merged'"):
+    for row in db.query("SELECT s.item_id, s.marketplace, s.sold_at, s.price, s.ship_by, s.shipped_at, s.delivered_at, "
+                        "s.status, o.status AS site_status FROM sales s LEFT JOIN orders o ON o.sale_id = s.id "
+                        "WHERE s.item_id IS NOT NULL AND s.status <> 'merged'"):
         key = (rank.get(row["status"], 2), row["sold_at"] or "")
         if row["item_id"] in items and (row["item_id"] not in chosen or key > chosen[row["item_id"]][0]):
             chosen[row["item_id"]] = (key, row)
     for item_id, (_, row) in chosen.items():
-        items[item_id]["sale"] = {k: row[k] for k in ("marketplace", "sold_at", "price", "ship_by", "shipped_at", "status")}
+        items[item_id]["sale"] = {**{k: row[k] for k in ("marketplace", "sold_at", "price", "ship_by", "shipped_at",
+                                                          "status")},
+                                  "shipping": shipping(row["status"], row["shipped_at"], row["delivered_at"],
+                                                       row["site_status"])}
     unmatched = int(db.one("SELECT COUNT(*) AS n FROM sales WHERE status = 'unmatched'")["n"])
-    return {"items": list(items.values()), "unmatched": unmatched, "generated_at": iso(now)}
+    swept = {row["source"].split(":", 1)[1]: row["last_seen"]
+             for row in db.query("SELECT source, last_seen FROM heartbeats WHERE source LIKE 'orders:%'")}
+    return {"items": list(items.values()), "unmatched": unmatched, "swept": swept, "generated_at": iso(now)}
+
+
+SHIPPING = ("to_ship", "shipped", "delivered", "completed")
+
+
+def shipping(status: str | None, shipped_at: str | None, delivered_at: str | None, site_status: str | None) -> str:
+    """Where a sale is (WO38): to_ship | shipped | delivered | completed | cancelled | returned — the furthest of our
+    records (her own "shipped" reply included) and what its site last showed."""
+    if status == "cancelled" or site_status == "cancelled":
+        return "cancelled"
+    if site_status == "returned":
+        return "returned"
+    ours = "delivered" if delivered_at else "shipped" if shipped_at else "to_ship"
+    if site_status in SHIPPING:
+        return max(ours, site_status, key=SHIPPING.index)
+    return ours
 
 
 def test_message(chat: str = "ops", now: datetime | None = None, mode: str | None = None) -> dict:

@@ -63,6 +63,11 @@ def post_mac_event(req: func.HttpRequest) -> func.HttpResponse:
     return _respond(req, "/mac-event")
 
 
+@app.route(route="orders", methods=["POST"], auth_level=FUNCTION)
+def post_orders(req: func.HttpRequest) -> func.HttpResponse:
+    return _respond(req, "/orders")
+
+
 @app.route(route="sales", methods=["GET"], auth_level=FUNCTION)
 def get_sales(req: func.HttpRequest) -> func.HttpResponse:
     return _respond(req, "/sales")

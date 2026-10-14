@@ -1,8 +1,9 @@
 """The two timers (WO33).
 
 `every_15_min`: the shipping reminders (deadlines.reminders_due, from 09:00 local — "📦 Ship tomorrow" and "📦 Due
-today" to the group, an overdue sale to the ops chat — each recorded in `reminders` before it is sent, so never twice,
-and none once a sale is shipped); the Gmail reader's heartbeat (silent 30 minutes → ONE "Gmail reader stopped" to the
+today" to the group; overdue, WO38: "📦 Overdue: … — ship today" in the group when the site itself, read after the
+ship-by day, still shows it unshipped, else the ops line — each recorded in `reminders` before it is sent, so never
+twice, and none once a sale is shipped or its site shows it on its way); the Gmail reader's heartbeat (silent 30 minutes → ONE "Gmail reader stopped" to the
 ops chat per episode, "✓ Gmail reader back" when it beats again); the failed emails tried again (3 attempts in all).
 In off mode it does nothing.
 
@@ -12,7 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from . import core, deadlines, util
+from . import core, deadlines, orders, util
 from .db import Database
 from .util import iso, parse_time, site_name
 
@@ -35,22 +36,31 @@ def every_15_min(db: Database, now: datetime | None = None, mode: str | None = N
 
 
 def reminders(db: Database, now: datetime, mode: str) -> list[list[str]]:
-    """The reminders due now, [sale id, kind] each, recorded and then sent."""
-    rows = db.query("SELECT s.id, s.marketplace, s.ship_by, s.shipped_at, s.status, s.title_seen, i.title AS item_title "
-                    "FROM sales s LEFT JOIN items i ON i.id = s.item_id WHERE s.shipped_at IS NULL "
+    """The reminders due now, [sale id, kind] each, recorded and then sent. WO38: a sale its site shows on its way
+    (shipped, delivered, completed — the order sweep) gets none; on a site the sweep reads, "overdue" is the site's own
+    word: "📦 Overdue: <title> (<Site>) — ship today" in the group, once, only when the site — read after the ship-by
+    day ended — still shows it waiting to ship (a sale the sweep never tied to an order keeps the ops line)."""
+    rows = db.query("SELECT s.id, s.marketplace, s.ship_by, s.shipped_at, s.status, s.title_seen, i.title AS item_title, "
+                    "o.status AS site_status, o.last_seen AS site_seen "
+                    "FROM sales s LEFT JOIN items i ON i.id = s.item_id LEFT JOIN orders o ON o.sale_id = s.id "
+                    "WHERE s.shipped_at IS NULL "
                     "AND s.ship_by IS NOT NULL AND s.status NOT IN ('cancelled', 'double_sale', 'done', 'merged') "
                     "ORDER BY s.ship_by, s.sold_at, s.id")
     sent = {(row["sale_id"], row["kind"]) for row in db.query("SELECT sale_id, kind FROM reminders")}
+    swept = orders.swept(db)
     due = deadlines.reminders_due(now, rows, sent)
     by_id = {row["id"]: row for row in rows}
     out = core.Outbox(now, mode)
     done = []
     with db.tx():
         for sale_id, kind in due:
-            if not db.execute("INSERT INTO reminders (sale_id, kind, sent_at) VALUES (?, ?, ?) "
-                              "ON CONFLICT (sale_id, kind) DO NOTHING", (sale_id, kind, iso(now))):
-                continue                              # another run sent it
             row = by_id[sale_id]
+            if row["site_status"] in LEFT_ON_SITE:
+                continue                              # the site shows it on its way (or not to be shipped): nothing
+            if kind == "overdue" and row["marketplace"] in swept and row["site_status"] is not None:
+                continue                              # the site's own reading decides (below)
+            if not _record(db, sale_id, kind, now):
+                continue                              # another run sent it
             title, site = row["item_title"] or row["title_seen"] or "an item", site_name(row["marketplace"])
             day = deadlines.fmt_day(core.day_of(row["ship_by"]))
             if kind == "day_before":
@@ -60,8 +70,41 @@ def reminders(db: Database, now: datetime, mode: str) -> list[list[str]]:
             else:
                 out.ops(f"⏰ Overdue: {title} ({site}) — ship-by was {day} and no shipment is recorded ({sale_id}).")
             done.append([sale_id, kind])
+        for row in rows:
+            if (row["id"], SITE_OVERDUE) in sent or not site_overdue(row, swept, now):
+                continue
+            if not _record(db, row["id"], SITE_OVERDUE, now):
+                continue
+            title, site = row["item_title"] or row["title_seen"] or "an item", site_name(row["marketplace"])
+            out.group(f"📦 Overdue: {title} ({site}) — ship today")
+            done.append([row["id"], SITE_OVERDUE])
     out.flush()
     return done
+
+
+SITE_OVERDUE = "overdue_site"
+LEFT_ON_SITE = ("shipped", "delivered", "completed", "cancelled", "returned")
+
+
+def _record(db: Database, sale_id: str, kind: str, now: datetime) -> bool:
+    return bool(db.execute("INSERT INTO reminders (sale_id, kind, sent_at) VALUES (?, ?, ?) "
+                           "ON CONFLICT (sale_id, kind) DO NOTHING", (sale_id, kind, iso(now))))
+
+
+def site_overdue(row: dict, swept: dict, now: datetime, at: str = "09:00") -> bool:
+    """The ship-by day is over and the site, read after it ended, still shows the order waiting to ship (from `at`
+    local time, as the other reminders)."""
+    if row["marketplace"] not in swept or row["site_status"] != "to_ship" or not row["ship_by"] or row["shipped_at"]:
+        return False
+    local_now = deadlines.local(now)
+    if local_now.time() < deadlines._hm(at):
+        return False
+    ship_by = core.day_of(row["ship_by"])
+    if local_now.date() <= ship_by:
+        return False
+    seen = parse_time(row["site_seen"])
+    day_over = datetime.combine(ship_by + timedelta(days=1), datetime.min.time(), tzinfo=local_now.tzinfo)
+    return seen is not None and deadlines.local(seen) >= day_over
 
 
 def gmail_watch(db: Database, now: datetime, mode: str) -> str:
