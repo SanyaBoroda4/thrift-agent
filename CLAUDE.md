@@ -1153,7 +1153,8 @@ dashboard follow what the sites show.
   to, or on a site never swept, keeps the old ops line. Her `shipped <words>` reply still overrides.
 - **Dashboard (§4):** the "Shipping" column — To ship / Shipped · day / Delivered / Completed (the furthest of our
   records and the site's, `core.shipping`) — and "Orders read on the sites: Poshmark … · Depop … · Vinted …" under
-  it. The phone's link uses a key scoped to the dashboard function only (key `phone` on `get_dashboard`): the host-wide
+  it; a sale of something listed by hand (none of our items) is a row of its own, so every sale shows and "to ship"
+  counts it. The phone's link uses a key scoped to the dashboard function only (key `phone` on `get_dashboard`): the host-wide
   `dashboard` key also opens the write routes.
 
 ## Brands, dropdowns, the read-back (WO36 — the Alo listing, 2026-10-12)

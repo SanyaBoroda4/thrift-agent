@@ -964,7 +964,9 @@ def health(db: Database, now: datetime | None = None, mode: str | None = None) -
 
 def dashboard_data(db: Database, now: datetime | None = None) -> dict:
     """The snapshot dashboard.render reads: every item with its listings and its sale (the one that stands — a cancelled
-    or a double sale only when there is no other), the number of unmatched sales, the time."""
+    or a double sale only when there is no other), the number of unmatched sales, the time. WO38: a sale that is none
+    of our items (something listed by hand) is a row of its own too — its title as the site gave it, no listings — so
+    every sale's shipping state shows and "to ship" counts it."""
     now = _clock(now)
     items = {row["id"]: {**row, "listings": {}, "sale": None}
              for row in db.query("SELECT id, title, price, created_at FROM items ORDER BY created_at, id")}
@@ -984,6 +986,16 @@ def dashboard_data(db: Database, now: datetime | None = None) -> dict:
                                                           "status")},
                                   "shipping": shipping(row["status"], row["shipped_at"], row["delivered_at"],
                                                        row["site_status"])}
+    for row in db.query("SELECT s.id, s.title_seen, s.marketplace, s.sold_at, s.price, s.ship_by, s.shipped_at, "
+                        "s.delivered_at, s.status, o.status AS site_status FROM sales s "
+                        "LEFT JOIN orders o ON o.sale_id = s.id WHERE s.item_id IS NULL AND s.status <> 'merged' "
+                        "ORDER BY s.sold_at, s.id"):
+        items[f"sale:{row['id']}"] = {
+            "id": f"sale:{row['id']}", "title": row["title_seen"], "price": row["price"], "created_at": row["sold_at"],
+            "listings": {}, "sale": {**{k: row[k] for k in ("marketplace", "sold_at", "price", "ship_by", "shipped_at",
+                                                             "status")},
+                                     "shipping": shipping(row["status"], row["shipped_at"], row["delivered_at"],
+                                                          row["site_status"])}}
     unmatched = int(db.one("SELECT COUNT(*) AS n FROM sales WHERE status = 'unmatched'")["n"])
     swept = {row["source"].split(":", 1)[1]: row["last_seen"]
              for row in db.query("SELECT source, last_seen FROM heartbeats WHERE source LIKE 'orders:%'")}

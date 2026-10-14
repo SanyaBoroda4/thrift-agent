@@ -641,7 +641,11 @@ def test_the_dashboard_snapshot_renders(db, live):
     assert by_id[ZARA]["sale"] is None
     assert sale(db, first["sale_id"])["status"] == "delisting"
     page = dashboard.render(data, now=NOW)
-    assert f'data-id="{ITEM}"' in page and 'id="c-unmatched">1<' in page and 'id="c-toship">1<' in page
+    assert f'data-id="{ITEM}"' in page and 'id="c-unmatched">1<' in page
+    # WO38: the Mystery Tee (none of our items) is a row of its own, and to ship like ours
+    mystery = next(i for i in data["items"] if i["title"] == "Mystery Tee")
+    assert mystery["listings"] == {} and mystery["sale"]["shipping"] == "to_ship"
+    assert 'id="c-toship">2<' in page and "Mystery Tee" in page
 
 
 def test_the_test_message(monkeypatch, sent):

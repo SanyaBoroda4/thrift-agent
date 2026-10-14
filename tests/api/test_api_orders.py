@@ -244,3 +244,19 @@ def test_an_order_that_could_be_one_of_two_sales_is_tied_to_none_and_records_not
     out = report(db, "depop", {"order_id": "77", "status": "shipped", "sold_at": "2026-10-05T18:00:00+00:00"})
     assert out["results"][0]["action"] == "left alone (it could be one of several sales)"
     assert db.one("SELECT COUNT(*) AS n FROM sales")["n"] == 2
+
+
+def test_a_sale_of_something_listed_by_hand_is_a_dashboard_row_with_its_shipping_state(db, live):
+    """WO38 §4: every sale's shipping state shows — the Vinted sandals she listed herself (none of our items) too, and
+    "to ship" counts it until the site shows it on its way."""
+    report(db, "vinted", {"order_id": "22942401001", "status": "to_ship", "title": "Nike sandals boy size 10",
+                          "price": 5, "sold_at": "2026-10-07T04:55:13+00:00"}, now=utc(2026, 10, 8, 12, 0))
+    data = core.dashboard_data(db, utc(2026, 10, 8, 13, 0))
+    row = next(i for i in data["items"] if i["title"] == "Nike sandals boy size 10")
+    assert row["listings"] == {} and row["sale"]["shipping"] == "to_ship" and row["sale"]["marketplace"] == "vinted"
+    status, page, _ = call(db, "GET", "/dashboard", now=utc(2026, 10, 8, 13, 0))
+    assert 'id="c-toship">1<' in page and "Nike sandals boy size 10" in page
+    report(db, "vinted", {"order_id": "22942401001", "status": "delivered", "title": "Nike sandals boy size 10",
+                          "sold_at": "2026-10-07T04:55:13+00:00"}, now=utc(2026, 10, 9, 12, 0))
+    status, page, _ = call(db, "GET", "/dashboard", now=utc(2026, 10, 9, 13, 0))
+    assert 'id="c-toship">0<' in page and "Delivered" in page
