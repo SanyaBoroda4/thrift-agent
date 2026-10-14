@@ -13,7 +13,9 @@ email's is. An order our records lack (its sale email was missed) is recorded on
 finished one from before going live (those are history, left alone); a cancelled one never.
 
 A sale is found by the order id, then the item (our SKU, the listing), then the title (and the sale within 3 days of
-the order), then — Depop, whose emails name no order — the one open sale on that site sold within 3 days."""
+the order), then — Depop, whose emails name no order — the one sale on that site without an order id sold within 3
+days (whatever its state: the delivered email may have closed it). When more than one could be it, the order is tied
+to none and nothing new is recorded: never a guess, never a second row of one sale."""
 from __future__ import annotations
 
 import json
@@ -78,8 +80,12 @@ def clean(entry: object) -> dict | None:
 def one(db: Database, mp: str, order: dict, seen_at: datetime, now: datetime, mode: str) -> dict:
     out = core.Outbox(now, mode)
     with db.tx():
-        sale = find_sale(db, mp, order)
+        sale, doubt = find_sale(db, mp, order)
         action = "linked"
+        if sale is None and doubt:
+            keep(db, mp, order, None, seen_at)
+            return {"order_id": order["order_id"], "status": order["status"], "sale_id": None,
+                    "action": "left alone (it could be one of several sales)"}
         if sale is None:
             if not qualifies(db, order, now):
                 keep(db, mp, order, None, seen_at)
@@ -98,19 +104,22 @@ def one(db: Database, mp: str, order: dict, seen_at: datetime, now: datetime, mo
             "action": f"{action}{', ' + changed if changed else ''}"}
 
 
-def find_sale(db: Database, mp: str, order: dict) -> dict | None:
-    """The sale this order is (see the module), never a guess between two."""
+def find_sale(db: Database, mp: str, order: dict) -> tuple[dict | None, bool]:
+    """(the sale this order is, False) — see the module; (None, True) when more than one could be it; (None, False)
+    when none is."""
     row = db.one("SELECT * FROM sales WHERE marketplace = ? AND order_id = ? AND status <> 'merged' "
                  "ORDER BY created_at LIMIT 1", (mp, order["order_id"]))
     if row:
-        return row
+        return row, False
     item = match.item_for_sku(db, order["sku"]) or match.item_for_listing(db, mp, order["listing_id"],
                                                                            order["listing_url"])
     if item:
         rows = [r for r in db.query("SELECT * FROM sales WHERE marketplace = ? AND item_id = ? AND status <> 'merged' "
                                     "ORDER BY sold_at DESC", (mp, item)) if _near(r, order) and _free(r, order)]
         if len(rows) == 1:
-            return rows[0]
+            return rows[0], False
+        if len(rows) > 1:
+            return None, True
     rows = [r for r in db.query("SELECT s.*, i.title AS item_title FROM sales s LEFT JOIN items i ON i.id = s.item_id "
                                 "WHERE s.marketplace = ? AND s.status <> 'merged'", (mp,))
             if _near(r, order) and _free(r, order)]
@@ -118,14 +127,17 @@ def find_sale(db: Database, mp: str, order: dict) -> dict | None:
         candidates = [(r["id"], text) for r in rows for text in (r["title_seen"], r["item_title"]) if text]
         sale_id, ambiguous = match.best(order["title"], candidates)
         if sale_id and not ambiguous:
-            return {k: v for k, v in next(r for r in rows if r["id"] == sale_id).items() if k != "item_title"}
+            return {k: v for k, v in next(r for r in rows if r["id"] == sale_id).items() if k != "item_title"}, False
         if ambiguous:
-            return None
-    # Depop's emails name no order: the one open sale on this site sold within NEAR of it
-    open_rows = [r for r in rows if r["status"] not in ("cancelled", "done") and r["order_id"] in (None, "")]
-    if mp == "depop" and len(open_rows) == 1 and order["sold_at"] is not None:
-        return {k: v for k, v in open_rows[0].items() if k != "item_title"}
-    return None
+            return None, True
+    # Depop's emails name no order: the one Depop sale without an order id sold within NEAR of it, whatever its state
+    if mp == "depop" and order["sold_at"] is not None:
+        loose = [r for r in rows if r["status"] != "cancelled" and r["order_id"] in (None, "")]
+        if len(loose) == 1:
+            return {k: v for k, v in loose[0].items() if k != "item_title"}, False
+        if len(loose) > 1:
+            return None, True
+    return None, False
 
 
 def _near(sale: dict, order: dict) -> bool:

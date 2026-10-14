@@ -215,3 +215,32 @@ def test_no_buyer_field_is_ever_kept(db, live):
     for secret in ("janeq_closet", "123 Secret Lane", "9400111"):
         assert secret not in dump
     assert set(orders.FIELDS) >= {"order_id", "status"} and not {"buyer", "address"} & set(orders.FIELDS)
+
+
+def test_a_depop_order_ties_to_its_closed_sale_and_never_records_it_twice(db, live, sent):
+    """The live Madewell case: Depop's delivered email had closed the sale (done, no order id); the sweep's receipt —
+    "Shipped", sold "20 days ago" — is that sale, not a new one."""
+    core.process_email(db, {**__import__("apitools").depop_sale(sku=None, date="2026-09-23T21:33:00.000Z"),
+                            "text": "Woohoo! You sold “Madewell striped "
+                            "sweater” for $30.00.\nView it: https://www.depop.com/products/shop-madewell/"},
+                       utc(2026, 9, 23, 21, 33))
+    sale = db.one("SELECT * FROM sales WHERE marketplace = 'depop'")
+    db.execute("UPDATE sales SET status = 'done', order_id = NULL, delivered_at = '2026-10-03T23:41:34+00:00', "
+               "shipped_at = '2026-10-03T23:41:34+00:00' WHERE id = ?", (sale["id"],))
+    sent.clear()
+    out = report(db, "depop", {"order_id": "915093750", "status": "shipped", "sold_at": "2026-09-24T12:00:00+00:00"},
+                 now=utc(2026, 10, 14, 9, 0))
+    assert out["results"][0]["sale_id"] == sale["id"] and out["results"][0]["action"].startswith("linked")
+    assert db.one("SELECT COUNT(*) AS n FROM sales WHERE marketplace = 'depop'")["n"] == 1
+    assert db.one("SELECT order_id FROM sales WHERE id = ?", (sale["id"],))["order_id"] == "915093750"
+    assert sent == []
+
+
+def test_an_order_that_could_be_one_of_two_sales_is_tied_to_none_and_records_nothing(db, live, sent):
+    for n, when in ((1, utc(2026, 10, 5, 12)), (2, utc(2026, 10, 6, 12))):
+        core.process_email(db, {**__import__("apitools").depop_sale(message_id=f"d{n}", sku=None),
+                                "text": f"Woohoo! You sold “Thing {n}” for $30.00."}, when)
+    db.execute("UPDATE sales SET order_id = NULL")
+    out = report(db, "depop", {"order_id": "77", "status": "shipped", "sold_at": "2026-10-05T18:00:00+00:00"})
+    assert out["results"][0]["action"] == "left alone (it could be one of several sales)"
+    assert db.one("SELECT COUNT(*) AS n FROM sales")["n"] == 2
