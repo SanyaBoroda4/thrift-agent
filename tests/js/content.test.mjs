@@ -183,6 +183,40 @@ test("Vinted: a publish waits for the go-ahead and clicks Upload exactly once", 
   assert.ok(p.events().some((e) => e.event === "step" && e.name === "submit" && e.clicked));
 });
 
+test("Vinted: a form kept after Upload is a refusal with every error it showed, even one that went away (WO39)", async () => {
+  // live 2026-10-16, the Sam Edelman twice: Upload left /items/new, nothing in sight at the bottom of the form
+  const p = page("vinted");
+  p.w.Thrift.sites.vinted.fill = async () => {};
+  const job = { ...VINTED_JOB, job_id: "vinted-kept", mode: "publish" };
+  const upload = p.d.querySelector("[data-testid='upload-form-save-button']");
+  let clicks = 0;
+  upload.addEventListener("click", () => {
+    clicks++;
+    setTimeout(() => {                                              // a snackbar at the top, gone a moment later
+      const bar = p.d.createElement("div");
+      bar.className = "web_ui__Snackbar__content";
+      bar.textContent = "Something went wrong. Please try again.";
+      p.d.body.prepend(bar);
+      setTimeout(() => bar.remove(), 30);
+      p.d.querySelector("[data-testid='title--input']").setAttribute("aria-invalid", "true");   // high up the form
+    }, 5);
+  });
+  const done = run(p, job);
+  await until(() => p.events().some((e) => e.event === "ready"));
+  p.tell({ type: "submit", job_id: job.job_id });
+  await done;
+  await new Promise((r) => setTimeout(r, 80));
+  await run(p, { ...job, mode: "after_publish" });                // the background's look minutes later: still the form
+  const end = plain(p.last());
+  assert.equal(end.event, "error");
+  assert.equal(end.stage, "after_publish");
+  assert.equal(end.page, "form");
+  assert.match(end.message, /^refused: .*Something went wrong\. Please try again\./);
+  assert.match(end.message, /: marked invalid/);
+  assert.equal(clicks, 1);                                          // never a second click
+  assert.ok(p.sent.some((m) => m.type === "screenshot" && m.label === "refused"));
+});
+
 test("Vinted: a cancelled publish never clicks", async () => {
   const p = page("vinted");
   const done = run(p, { ...VINTED_JOB, job_id: "vinted-3", mode: "publish" });

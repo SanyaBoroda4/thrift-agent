@@ -169,7 +169,7 @@ def test_a_whole_run_shows_the_group_only_the_card_and_posted(mac, tmp_path, mon
     assert said["group"] == []                                         # the group: the card and this, nothing else
     assert any(t.startswith("Poster started (LIVE)") for t in said["ops"])          # the ops chat: the rest
     status = [p["text"] for m, p in ops.calls if m in ("sendMessage", "editMessageText")]
-    assert status and status[-1] == "✓ All done — safe to close the Mac."          # the status message: ops
+    assert status and status[-1] == "💤 All done — you can close the Mac."          # the status message: ops
     assert not any(t.startswith(("Back online", "⏳", "Poster started")) for t in said["group"])
 
 

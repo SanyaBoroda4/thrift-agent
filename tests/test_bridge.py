@@ -628,6 +628,18 @@ def test_a_form_the_site_refused_is_looked_up_once_and_is_a_plain_failure(tmp_pa
     assert out.status == "posted" and out.url == "https://www.vinted.com/items/77"
 
 
+def test_still_the_sell_form_after_the_click_is_a_refusal_never_unconfirmed(tmp_path, selectors, quick):
+    """WO39, live 2026-10-16 (the Sam Edelman, twice): Upload left the tab on /items/new with no error in sight — that
+    is a refusal, said with what the form showed, one look at Vinted's data, ONE click; never "posted but unconfirmed"
+    (which had led to a second post by itself)."""
+    kept = SimpleNamespace(status="failed", clicked=True, url=None, page="form", guesses=[],
+                           error="not a listing page: https://www.vinted.com/items/new")
+    out, fake, _ = run(_with_fake([kept, wardrobe()], selectors_path=selectors(), shop="1234", tmp=tmp_path))
+    assert out.status == "failed" and not out.clicked and fake.clicks == 1
+    assert out.error == "Vinted refused the form: it kept the sell form (not a listing page: https://www.vinted.com/items/new)"
+    assert [j["mode"] for j in fake.jobs] == ["publish", "find"]
+
+
 DEPOP_SLUG = "https://www.depop.com/products/tetian3sorokina-tory-burch-red-ballet-2191/"
 
 

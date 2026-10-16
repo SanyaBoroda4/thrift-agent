@@ -348,19 +348,6 @@ def why_dry(s: Settings, force_dry: bool = False) -> str:
     return "dry-run: poster.autopublish_confirmed is off (poster.dry_run alone doesn't publish)"
 
 
-ALL_DONE_LINE = "✓ All done — safe to close the Mac."
-
-
-def posted_message(render: Render, out: Outcome, checks: list[str] = (), done: bool = False) -> str:
-    """The group's "Posted ✓ <title> — $35 · <url>" (WO29), plus " — check: brand set to 'J. Crew' (from 'J.Crew')"
-    when the poster had to guess (WO27) or the copy was flagged; the window's last listing (daily.all_done) adds
-    "✓ All done — safe to close the Mac." on a line of its own. Nothing else: the notes go to the ops chat."""
-    check = [*out.guesses, *(f"copy: {c}" for c in checks)]
-    text = f"Posted ✓ {render.title} — ${render.price} · {out.url or ''}" + (f" — check: {'; '.join(check)}"
-                                                                           if check else "")
-    return text + (f"\n{ALL_DONE_LINE}" if done else "")
-
-
 def unconfirmed_text(title: str, slept: bool, mp: str = "poshmark") -> str:
     """The ONE message for a listing that may be live (WO28 §3); a reply 'posted <url>' or 'retry' answers it."""
     site = crosslist.LABEL[mp]

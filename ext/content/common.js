@@ -555,6 +555,8 @@
     }
     if (job.mode === "verify" || job.mode === "after_publish") {
       if (page !== "listing") {
+        // WO39: still the sell form after the click is a refusal — with every error the form showed since it
+        if (job.mode === "after_publish" && page === "form") return T.refusal(fail);
         await T.screenshot(page);
         const shown = T.errorsShown();
         return fail(job.mode, page, `not a listing page: ${location.href}${shown.length ? ` (${shown.join(" | ")})` : ""}`);
@@ -617,19 +619,60 @@
         return fail("save", "form", String(e && e.message ? e.message : e).slice(0, 300));
       }
     } else {
+      T.watchAfterClick();                                            // WO39: from the click on, every error kept
       await site.submit(job, st);                                     // exactly one click; the page then navigates
     }
     // WO35: a form the site refused stays, with its error (live 2026-10-09: Depop "This field is required" under
-    // Brand; Vinted "Fill in brand to continue"): said at once, with the error — nothing was published.
+    // Brand; Vinted "Fill in brand to continue"): said at once, with the error — nothing was published. WO39: also a
+    // message that showed only for a moment (a snackbar), a field marked invalid anywhere on the form.
+    // An error still on the page says it at once; one that came and went (a snackbar) is said with the rest when the
+    // page is still the form minutes later (the after_publish check) — a page still uploading is never a refusal.
     const refused = await T.until(() => (T.classify(job.site) === "form" && T.errorsShown().length ? true : null), 8000);
     if (refused) {
       await T.settle(1500);
-      const shown = T.classify(job.site) === "form" ? T.errorsShown() : [];
-      if (shown.length) {
-        await T.screenshot("refused");
-        return fail("after_publish", "form", `refused: ${shown.join(" | ")}`);
-      }
+      if (T.classify(job.site) === "form" && T.errorsShown().length) return T.refusal(fail);
     }
+  };
+  // ---- WO39: a form the site refused (live 2026-10-16: Vinted kept the Sam Edelman's sell form twice, no error in
+  // sight at the bottom). From the click on, every error the page shows is kept — an alert, a snackbar or toast that
+  // goes away, a field marked aria-invalid anywhere on the form — and the site's own requests after the click with
+  // their HTTP status (the page's resource timing: nothing is asked again). Said as "refused: …" with all of it.
+  T.watchAfterClick = () => {
+    const seen = { t0: performance.now(), errors: [] };
+    T.afterClick = seen;
+    let queued = false;
+    const grab = () => {
+      queued = false;
+      for (const e of T.errorsShown(12)) if (!seen.errors.includes(e)) seen.errors.push(e);
+    };
+    try {
+      const mo = new MutationObserver(() => { if (!queued) { queued = true; Promise.resolve().then(grab); } });
+      mo.observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true,
+                                             attributeFilter: ["aria-invalid", "class", "hidden", "style"] });
+      setTimeout(() => mo.disconnect(), 240000);
+    } catch (e) { /* no observer: the errors on the page when asked are still read */ }
+  };
+  T.requestsAfterClick = () => {
+    const t0 = T.afterClick?.t0;
+    if (t0 == null || typeof performance?.getEntriesByType !== "function") return [];
+    return performance.getEntriesByType("resource")
+      .filter((e) => e.startTime >= t0 && ["fetch", "xmlhttprequest"].includes(e.initiatorType)
+              && /\/api\//.test(e.name))
+      .map((e) => { try { return `${new URL(e.name).pathname} ${e.responseStatus || "?"}`; } catch (x) { return null; } })
+      .filter(Boolean).slice(-6);
+  };
+  T.refusalErrors = () => {
+    const now = T.errorsShown(12);
+    return [...now, ...(T.afterClick?.errors || []).filter((e) => !now.includes(e))].slice(0, 6);
+  };
+  T.refusal = async (fail) => {
+    const errors = T.refusalErrors();
+    const first = T.firstError();                    // the picture shows the error, wherever it is on the form
+    if (first) first.scrollIntoView?.({ block: "center" }); else window.scrollTo?.(0, 0);
+    await T.screenshot("refused");
+    const asked = T.requestsAfterClick();
+    return fail("after_publish", "form", `refused: ${errors.length ? errors.join(" | ") : "no error shown on the form"}`
+                + (asked.length ? ` (its requests after the click: ${asked.join(", ")})` : ""));
   };
   // The errors a form shows: alerts and error texts that say something (an empty error wrapper — Depop's red icon —
   // is no message), with the field each belongs to when its label is known.
@@ -705,17 +748,37 @@
 
   // WO35: a listing's title as the site keeps it, the same as ours (spaces aside — the exact words, the exact case).
   T.sameTitle = (a, b) => String(a ?? "").replace(/\s+/g, " ").trim() === String(b ?? "").replace(/\s+/g, " ").trim();
-  T.errorsShown = () => {
+  // WO39: also a snackbar / toast / notification that says something, an error a test id names, and a field marked
+  // aria-invalid anywhere on the form (by its label: "Price: invalid"); never a badge (Vinted's "warning" badges).
+  const ERROR_SEL = ["[role='alert']", "[class*='error' i]", "[class*='validation' i]", "[class*='snackbar' i]",
+                     "[class*='toast' i]", "[data-testid*='error' i]", "[data-testid*='snackbar' i]",
+                     "[data-testid*='toast' i]"];   // never aria-live: dnd-kit's photo grid announces there
+  const labelOf = (el) => {
+    const id = el.getAttribute?.("id");
+    const byFor = id ? document.querySelector(`label[for='${CSS?.escape ? CSS.escape(id) : id}']`) : null;
+    const byAria = (el.getAttribute?.("aria-labelledby") || "").split(/\s+/).map((x) => x && document.getElementById(x))
+      .find(Boolean);
+    return (byFor || byAria || el.closest?.("label"))?.textContent?.replace(/\s+/g, " ").trim()
+      || el.getAttribute?.("name") || el.getAttribute?.("placeholder") || "a field";
+  };
+  T.errorEls = () => T.$$(ERROR_SEL).filter((e) => T.visible(e) && !/badge/i.test(e.className || ""));
+  T.errorsShown = (max = 3) => {
     const out = [];
-    for (const e of T.$$(["[role='alert']", "[class*='error' i]", "[class*='validation' i]"]).filter(T.visible)) {
+    for (const e of T.errorEls()) {
       const text = (e.textContent || "").replace(/\s+/g, " ").trim();
-      if (!text || text.length > 120 || out.some((o) => o.includes(text))) continue;
+      if (!text || text.length > 160 || out.some((o) => o.includes(text))) continue;
       const field = e.closest("[class*='field' i], [class*='input' i], label, li")
         ?.querySelector("label, [class*='title' i]")?.textContent?.replace(/\s+/g, " ").trim();
       out.push(field && field !== text && field.length < 40 ? `${field}: ${text}` : text);
     }
-    return out.slice(0, 3);
+    for (const e of T.$$(["[aria-invalid='true']"]).filter(T.visible)) {
+      const said = `${labelOf(e)}: marked invalid`;
+      if (!out.some((o) => o.startsWith(`${labelOf(e)}:`))) out.push(said);
+    }
+    return out.slice(0, max);
   };
+  T.firstError = () => T.errorEls().find((e) => (e.textContent || "").trim())
+    || T.$$(["[aria-invalid='true']"]).find(T.visible) || null;
   const kindOf = (page) => (STOP.includes(page) ? page : "unknown");
 
   // Once per page: the manifest injects this at document_idle, and the worker injects it again when the page doesn't

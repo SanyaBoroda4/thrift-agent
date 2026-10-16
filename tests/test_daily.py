@@ -290,7 +290,7 @@ TIMING = daily.Timing(batch=60, item=150, post=120, gap=240)
      "⏳ 2 listings still to publish, publishing now. Please don't close the Mac yet."),
     (daily.Work(0, 2, 0, 3, 0), daily.PosterNow(True, True), True, None,
      "⏳ Working — 5 items left, about 19 min. Please don't close the Mac yet."),   # 2x150 + 3x120 + 2x240 s
-    (daily.Work(0, 0, 0, 0, 0), daily.PosterNow(True, True), True, None, "✓ All done — safe to close the Mac."),
+    (daily.Work(0, 0, 0, 0, 0), daily.PosterNow(True, True), True, None, "💤 All done — you can close the Mac."),
     (daily.Work(0, 0, 2, 0, 0), daily.PosterNow(True, True), True, None,
      "✓ Safe to close — 2 cards are waiting for your answer in Telegram (answers within 24 h are kept)"),
     (daily.Work(0, 0, 0, 3, 0), daily.PosterNow(True, True), False, None,

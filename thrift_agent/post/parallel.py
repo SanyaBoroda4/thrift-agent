@@ -84,6 +84,7 @@ def feed(s: Settings, db: DB) -> list[str]:
     """WO33: an approved item goes to every site at once — its Depop and Vinted rows are queued as soon as Poshmark's
     would publish (ready, the owner's price — WO33: never held by the gate), not after Poshmark is live. Returns the
     items fed."""
+    from thrift_agent import pipeline
     cross = crosslist.enabled(s)
     if not cross:
         return []
@@ -95,6 +96,8 @@ def feed(s: Settings, db: DB) -> list[str]:
         render = (loads(it["renders"]) or {}).get("poshmark")
         if not render or not runner.approved(it, render):
             continue
+        if pipeline.settle_twin(s, db, it["id"]) and (db.item(it["id"]) or {"status": ""})["status"] != "ready":
+            continue                                   # WO39: priced before the rule (set_price applies it now)
         missing = [mp for mp in cross if db.listing(it["id"], mp) is None]
         if missing and crosslist.queue(s, db, it["id"], missing, why="approved"):
             fed.append(it["id"])

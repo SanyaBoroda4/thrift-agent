@@ -34,6 +34,7 @@ EXT_LINK = "ext_link"                  # kv: {"connected", "at"}: the poster's v
 MAX_ATTEMPTS = 3                       # a failure before the publish button: retried next window, up to this many
 UNCONFIRMED = "unconfirmed publish: "
 SKIPPED = "skipped: "
+REFUSED = " refused the form: "      # WO39: "Vinted refused the form: …" — the site kept its sell form after the click
 MISMATCH = "Mismatch: "                 # WO36 §4: the form read back other than planned — the listing waits
 # The group's one plain line when a marketplace stops for the window, by what the site showed (WO32).
 ALERTS = {"login": "{site} needs you to log in on the Mac.",
@@ -175,6 +176,8 @@ def new_window(s: Settings, db: DB) -> bool:
                                f"({','.join('?' * len(CROSS))})", CROSS).fetchall():
         if (row["error"] or "").startswith(UNCONFIRMED):
             continue                                    # it may be live: settled by the site's data (WO35 §4)
+        if refused(row["error"]):
+            continue                                    # WO39: never the same form again by itself — her 'retry'
         iid, mp = row["item_id"], row["marketplace"]
         # WO36 §4: a form that read back other than planned waits (nothing was published) — the ops chat said why;
         # it never turns into the group's "⏭ … wasn't listed"
@@ -294,6 +297,8 @@ def record(s: Settings, db: DB, iid: str, mp: str, title: str, out, fields: dict
     progress = f"\n{' · '.join(lines)}" if lines else ""
     if out.status == "failed" and out.clicked and not out.url:
         unconfirmed_wait(db, iid, mp, out.screenshot)     # WO35 §4: no question — the site's own data settles it
+    elif out.status == "failed" and refused(error):
+        say_refused(db, iid, mp, title, error, shot)
     elif out.status == "failed":
         row = db.listing(iid, mp)
         if (error or "").startswith(MISMATCH):          # WO36 §4: nothing published; it waits, the group hears nothing
@@ -312,6 +317,37 @@ def record(s: Settings, db: DB, iid: str, mp: str, title: str, out, fields: dict
                                f"{fields_summary(fields)}{progress}{note}")
     elif out.status == "posted" and (worth := noteworthy(out.note)):
         notify.ops_photo(shot, f"{LABEL[mp]} posted ({iid}) {out.url}: {worth}")
+
+
+def refused(error: str | None) -> bool:
+    """WO39: the site kept its sell form after the one click (its own data agreeing nothing was published)."""
+    return REFUSED in (error or "")
+
+
+def refused_text(title: str, mp: str, error: str) -> str:
+    said = error.split(REFUSED, 1)[1] if REFUSED in error else error
+    return (f"⛔ {title}: {LABEL.get(mp, mp)} refused the form — {said}. Nothing was published (its own data agrees). "
+            f"Reply 'retry' to post it again.")
+
+
+def say_refused(db: DB, iid: str, mp: str, title: str, error: str, shot: Path | None = None) -> None:
+    """WO39: a refused form, ONE private line with the site's exact error (and the picture of the form), reply-able:
+    'retry' puts it back in line. Never posted again by itself — the same form would only be refused again."""
+    from thrift_agent import approve
+    from thrift_agent.config import settings
+    text = refused_text(title, mp, error)
+    if shot is not None and Path(shot).is_file():
+        notify.ops_photo(Path(shot), f"⛔ {LABEL.get(mp, mp)} — the form after the click: {title}")
+    bot = approve.ops_bot_for(settings())
+    if bot is None:
+        notify.say(text)
+        return
+    try:
+        mid = bot.send_message(text)
+    except Exception as e:  # noqa: BLE001 — the ops chat away: logged; `thrift retry` still works
+        db.log(iid, "error", f"refused message: {type(e).__name__}: {e}")
+        return
+    db.add_outbox(bot.chat_id, mid, "refused", unconfirmed_ref(iid, mp), text=text)
 
 
 # ---------------------------------------------------------------- an unconfirmed publish (WO35 §4)
@@ -398,17 +434,39 @@ def announced(db: DB, iid: str) -> set[str]:
     return done
 
 
-def done_line(state: list[str] | None) -> str | None:
-    """The card's last line (WO34): "💤 All done — you can close the Mac." when nothing is left on any site; "💤 Done for
-    now — you can close the Mac. Vinted catches up next time." when a stopped site still has listings; None while
-    there is work."""
+def _joined(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def done_line(state: list[str] | None, waits: dict[str, list[str]] | None = None) -> str | None:
+    """The card's last line (WO34): "💤 All done — you can close the Mac." when nothing is left on any site and nothing
+    waits for the owner; "💤 Done for now — you can close the Mac. Vinted catches up next time." when a stopped site
+    still has listings; WO39: "💤 Done for now — waiting for a size: Alo Yoga Sports Bralette Mauve Taupe." when an
+    item waits for her reply (a size, a 'retry'); None while there is work."""
     if state is None:
         return None
-    if not state:
+    said = [f"waiting for {what}: {_joined(names[:3])}{f' (+{len(names) - 3} more)' if len(names) > 3 else ''}"
+            for what, names in (waits or {}).items() if names]
+    if not state and not said:
         return ALL_DONE_LINE
+    head = "💤 Done for now — " + ("; ".join(said) + "." if said else "you can close the Mac.")
+    if not state:
+        return head
     names = [LABEL.get(mp, mp) for mp in state]
-    joined = names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
-    return f"💤 Done for now — you can close the Mac. {joined} catch{'es' if len(names) == 1 else ''} up next time."
+    return f"{head} {_joined(names)} catch{'es' if len(names) == 1 else ''} up next time."
+
+
+def item_name(db: DB, iid: str, limit: int = 40) -> str:
+    """The item's title cut at a word near `limit` characters (WO39: "Alo Yoga Sports Bralette Mauve Taupe") — long
+    enough to tell two look-alikes apart, as on their cards."""
+    it = db.item(iid)
+    title = (((loads(it["renders"]) or {}).get("poshmark") or {}).get("title") if it else None) or iid
+    words, out = title.split(), ""
+    for w in words:
+        if out and len(out) + 1 + len(w) > limit:
+            break
+        out = f"{out} {w}".strip()
+    return out or title[:limit]
 
 
 def card_text(s: Settings, db: DB, iid: str, last: str | None = None) -> str:
@@ -506,25 +564,7 @@ def _carry_done(s: Settings, db: DB, iid: str | None) -> None:
     if carrier:
         db.kv_set(CARRIER, carrier)
         if iid is None:                                  # only the line may have changed: the carrier's card again
-            _card(s, db, carrier, card_text(s, db, carrier, done_line(daily.done_state(s, db))), edit=True)
-
-
-def posted_line(s: Settings, db: DB, iid: str, mps: list[str], done: bool = False) -> str:
-    """ "Posted ✓ <title> — $X · Poshmark <url> · Depop <url> · Vinted <url>" (+ " — check: …"; + "✓ All done …")."""
-    it = db.item(iid)
-    render = ((loads(it["renders"]) or {}).get("poshmark") or {}) if it else {}
-    rows = {r["marketplace"]: r for r in db.listings_for(iid)}
-    price = (rows.get(mps[0]) or {})["price"] if mps and rows.get(mps[0]) and rows[mps[0]]["price"] else \
-        (it["owner_price"] if it else None) or render.get("price")
-    checks = []
-    for mp in mps:
-        f = loads(rows[mp]["fields_json"]) or {}
-        for c in [*(f.get("guesses") or []), *(f"copy: {x}" for x in (f.get("checks") or []))]:
-            checks.append(c if mp == "poshmark" else f"{LABEL[mp]}: {c}")
-    parts = " · ".join(f"{LABEL[mp]} {rows[mp]['url'] or ''}".rstrip() for mp in mps)
-    text = f"Posted ✓ {render.get('title') or iid} — ${price} · {parts}"
-    text += f" — check: {'; '.join(checks)}" if checks else ""
-    return text + (f"\n{ALL_DONE_LINE}" if done else "")
+            _card(s, db, carrier, card_text(s, db, carrier, daily.done_text(s, db)), edit=True)
 
 
 def unconfirmed(db: DB, iid: str) -> list[str]:
@@ -596,7 +636,7 @@ def announce(s: Settings | None, db: DB, iid: str) -> str | None:
     has_card = db.conn.execute("SELECT 1 FROM outbox WHERE kind='posted' AND ref=? LIMIT 1", (iid,)).fetchone()
     if seen and has_card and s is not None:            # WO34: its card is out — the new link in place, no new message
         carrier = db.kv_get(CARRIER) == iid
-        text = card_text(s, db, iid, done_line(daily.done_state(s, db)) if carrier else None)
+        text = card_text(s, db, iid, daily.done_text(s, db) if carrier else None)
         _card(s, db, iid, text, edit=True)
         db.log(iid, "posted_announced", {"mps": mps, "to": "edit"})
         _say_checks(db, iid, mps)
@@ -611,7 +651,7 @@ def announce(s: Settings | None, db: DB, iid: str) -> str | None:
     if s is not None and not settled(s, db, iid):
         return None
     state = daily.done_state(s, db) if s is not None and not _line_due(s, db, iid) else None
-    text = card_text(s, db, iid, done_line(state))
+    text = card_text(s, db, iid, done_line(state, daily.owner_waits(s, db)) if state is not None else None)
     db.log(iid, "posted_announced", {"mps": mps})
     _card(s, db, iid, text, edit=False)
     _say_checks(db, iid, mps)

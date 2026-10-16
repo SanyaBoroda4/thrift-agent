@@ -189,6 +189,8 @@ def next_step(s: Settings, db: DB, iid: str) -> str:
     if live:
         return f"it's already live on {' and '.join(live)} — a change there is made in the app"
     status = it["status"]
+    if status == "ready" and it["owner_price"] and needs_size(it):     # WO39: nothing goes up without a size
+        return "it goes up once you reply 'size …' to its card"
     if status == "ready" and it["owner_price"]:
         return f"it goes up {when_posting(s)} on {_sites(s)}"
     if status == "new":
@@ -567,6 +569,20 @@ def size_words(render: dict, facts: dict) -> str | None:
     return choice.button
 
 
+def needs_size(it) -> bool:
+    """WO37/WO39: the item has no size at all (none read, none answered) — no site lists it until her reply 'size …'
+    to its card. The card's ⚠️ line, the price's answer and the 💤 line all say so."""
+    if it is None:
+        return False
+    facts, renders, gate = loads(it["facts"]) or {}, loads(it["renders"]) or {}, loads(it["gate"]) or {}
+    posh = renders.get("poshmark") or next(iter(renders.values()), None) or {}
+    guessed = [n for n in [*(gate.get("info") or []), *(gate.get("notes") or [])] if n.startswith(SIZE_NOTE)]
+    return not size_words(posh, facts) and bool(guessed)
+
+
+NEEDS_SIZE = "needs a size: reply 'size …' to this card"
+
+
 def item_caption(iid: str, it) -> tuple[str, int | None]:
     """(caption, suggested price) for the item's price card, in Poshmark's words (WO20): the title, the size as
     Poshmark's size menu shows it, the condition as Poshmark's label (NWT / Like New / Good), a warning that needs a
@@ -861,6 +877,8 @@ def _route_ops(s: Settings, db: DB, update: dict) -> str:
         row = db.outbox_lookup(msg["chat"]["id"], reply["message_id"])
         if row is not None and row["kind"] == "unconfirmed":
             return _reply_unconfirmed(s, db, bot, row["ref"], text, mid)
+        if row is not None and row["kind"] in ("refused", "skipped"):     # WO39: a refused form — 'retry'
+            return _reply_skipped(s, db, bot, row["ref"], text, mid, kind=row["kind"])
     m = UNMATCHED_LINE.search(quoted)
     if m is None or not text:
         bot.send_message("Replies here act on an 'Unmatched sale' message (reply with words from the item's title) or "
@@ -980,7 +998,7 @@ def _route_message(s: Settings, db: DB, bot: Bot, msg: dict) -> str:
     return f"ignored: unknown outbox kind {kind}"
 
 
-def _reply_skipped(s: Settings, db: DB, bot: Bot, ref: str, text: str, mid: int | None) -> str:
+def _reply_skipped(s: Settings, db: DB, bot: Bot, ref: str, text: str, mid: int | None, kind: str = "skipped") -> str:
     """A listing the poster skipped (WO33: a reply settles it, never a command): 'retry' puts it back in line."""
     from thrift_agent import crosslist
     iid, mp = crosslist.split_ref(ref)
@@ -993,8 +1011,8 @@ def _reply_skipped(s: Settings, db: DB, bot: Bot, ref: str, text: str, mid: int 
     except ValueError as e:
         _tell(bot, mid, str(e))
         return f"skipped {iid}: retry rejected: {e}"
-    _ack(db, bot, "skipped", ref, "✓ retry — back in line")
-    db.outbox_resolve("skipped", ref)
+    _ack(db, bot, kind, ref, "✓ retry — back in line")
+    db.outbox_resolve(kind, ref)
     bot.send_message(f"✓ Retry — it goes back in line on {site}, {when_posting(s)}", reply_to=mid)
     return f"skipped {iid}: retry on {mp}"
 
@@ -1085,6 +1103,10 @@ def _typed(s: Settings, db: DB, bot: Bot, text: str, mid: int | None) -> str:
             return f"typed {text!r}: no price card open"
         return _correction(s, db, bot, row["ref"], text, None, mid) or "ignored"
     amount = plain_price(text)
+    if amount is None and size_reply(text) is not None and SIZE_SAID.match(text or ""):
+        # WO39: "size S" typed on its own — which card? never guessed (two bras in a row): she replies to the card
+        bot.send_message("Which item? Reply 'size …' to its card (swipe the card to reply)", reply_to=mid)
+        return f"typed {text!r}: a size needs a reply to its card"
     if amount is None:
         return "ignored: not a reply to the bot"
     row = open_message(db)
@@ -1115,7 +1137,8 @@ def _set_price(s: Settings, db: DB, bot: Bot, iid: str, amount: int, reply_to: i
             _tell(bot, reply_to, f"${amount} recorded{HELD_HINT}")
     else:
         db.outbox_resolve("item", iid)
-        _ack(db, bot, "item", iid, f"✓ ${amount} — queued")     # WO29: no "✓ $X — N left" message
+        # WO29: no "✓ $X — N left" message; WO39: an item with no size isn't queued anywhere — said on the button
+        _ack(db, bot, "item", iid, f"✓ ${amount} — {NEEDS_SIZE}" if needs_size(db.item(iid)) else f"✓ ${amount} — queued")
     if not (status in OWNER_WAITING and (loads(db.item(iid)["gate"]) or {}).get("hold")):
         _confirm(s, db, bot, reply_to, iid, f"${amount}")          # WO33: a reply always gets its answer
     return f"price {iid}: ${amount} ({status})"

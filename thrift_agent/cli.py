@@ -1144,6 +1144,35 @@ def relist(item_id: str, marketplace: str = typer.Option(None, "--marketplace", 
         print(escape(line))
 
 
+@app.command()
+def twins(apply: bool = typer.Option(False, "--apply", help="retire / skip as the rule says (else: only list)")) -> None:
+    """WO39: priced items flagged "looks like item X" — the same garment shared twice. Lists each pair and what the rule
+    does (X not live anywhere: X retired; X live on a site: this item skipped there); --apply does it (once per item,
+    one private line each) and brings the done line on the newest group card up to date."""
+    from thrift_agent import crosslist
+    s, db = settings(), _db()
+    found = 0
+    for it in db.conn.execute("SELECT * FROM items WHERE owner_price IS NOT NULL AND status NOT IN ('dropped') "
+                              "ORDER BY created_at").fetchall():
+        tid = pipeline.twin_of(it)
+        tw = db.item(tid) if tid else None
+        if tw is None or tw["status"] == "dropped":
+            continue
+        if db.conn.execute("SELECT 1 FROM events WHERE ref=? AND kind='twin_settled'", (it["id"],)).fetchone():
+            continue
+        found += 1
+        live = [r["marketplace"] for r in db.listings_for(tid) if r["status"] in ("posted", "posting")
+                or pipeline.unconfirmed_publish(r)]
+        plan = f"skip {it['id']} on {', '.join(live)}" if live else f"retire {tid}"
+        done = pipeline.settle_twin(s, db, it["id"]) if apply else None
+        print(escape(f"{it['id']} ({it['status']}) looks like {tid} ({tw['status']}): {done or plan}"))
+    if not found:
+        print("no priced item with an unsettled twin")
+    if apply:
+        crosslist._carry_done(s, db, None)
+        print(escape(f"💤 line now: {daily.done_text(s, db)}"))
+
+
 @app.command("sync")
 def sync_cmd(push: bool = typer.Option(True, "--push/--no-push", help="send the changes now"),
              all_: bool = typer.Option(False, "--all", help="every item and listing again, not only the changed ones")

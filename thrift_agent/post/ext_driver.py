@@ -149,6 +149,15 @@ def cover_moved(before: list, after: list, photo: int) -> bool:
     return 0 < photo < len(before) and after == [before[photo], *before[:photo], *before[photo + 1:]]
 
 
+def refusal_text(message) -> str:
+    """What the site's form said after the click (WO39): the extension's "refused: …" without its prefix; "not a
+    listing page: …" from an older extension becomes "it kept the sell form"."""
+    m = str(message or "")
+    if m.startswith("refused: "):
+        return m[len("refused: "):]
+    return f"it kept the sell form ({m})" if m else "it kept the sell form"
+
+
 class ExtensionPoster(Poster):
     driver = "extension"
 
@@ -442,7 +451,9 @@ class ExtensionPoster(Poster):
                 self._live_check(ev.get("live"), r)
             return self._confirmed(address, clicked_at, after, ev.get("how") or "the page after the click")
         why = f"{ev.get('page') or 'unknown'} page: {ev.get('message') or ev.get('url') or ''}"
-        refused = ev.get("page") == "form" and str(ev.get("message") or "").startswith("refused:")
+        # WO39: still the sell form after the click is a refusal, never "posted but unconfirmed" (live 2026-10-16: the
+        # Sam Edelman twice on Vinted) — the extension says it with every error the form showed since the click
+        refused = ev.get("page") == "form" and ev.get("stage") == "after_publish"
         self._say("looking for the new listing by its address")
         url, looked = await self.confirm_by_address(r, until=clicked_at + (0.0 if refused else CONFIRM_FOR))
         self.notes.append(f"after the click: {why}; looked up: {json.dumps(looked, default=str)[:300]}")
@@ -450,7 +461,7 @@ class ExtensionPoster(Poster):
             return self._confirmed(url, clicked_at, after, looked.get("how") or "the site's own data")
         if refused and "error" not in looked:          # the site said no, and its own data agrees: nothing published
             return Outcome("failed", screenshot=after, note=_joined(self.notes), guesses=list(self.guesses),
-                           error=f"{self.site} refused the form: {str(ev.get('message'))[len('refused: '):]}")
+                           error=f"{self.site} refused the form: {refusal_text(ev.get('message'))}")
         return Outcome("failed", screenshot=after, clicked=True, note=_joined(self.notes), guesses=list(self.guesses),
                        error=f"after the click no listing page ({why}); not found by its address in "
                              f"{CONFIRM_FOR / 60:.0f} min — checked again later")

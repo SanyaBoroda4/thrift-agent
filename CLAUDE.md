@@ -1097,6 +1097,31 @@ Telegram token is read from the Mac's .env, never printed). The same code runs o
   month, awaiting shipment with the nearest ship-by, unmatched), a table newest first with each site's status and
   links, filters All / Active / Sold / To ship; no buyer data; inline CSS/JS only (a CSP), light and dark.
 
+## Oct 16: twins, sizes, a refused form (WO39, 2026-10-16)
+Three shares; two of them were the Oct 12 Alo bras' very photos again (IMG_1293–1298 — the Oct 13 "-late" items
+i_261013_71458e / i_261013_b325a8, priced, waiting for a size). The brown bralette got $25 but no size reply; the
+Sam Edelman's Vinted form was kept twice after Upload with nothing on the page, the third identical form went live.
+- **The same item is never listed twice** (`pipeline.settle_twin`, from `set_price`; `parallel.feed` as a backstop;
+  `thrift twins [--apply]` for items priced before): a card flagged "looks like item X" that gets its price — X not
+  live anywhere: X `dropped`, its rows skipped "shared again as …", its card closed, a late reply to it refused
+  (`DROPPED_SAID`); X live on a site (posted, posting, an unconfirmed publish): this item's row there `skipped:
+  already live as X` (her size later never requeues it). One private ♻️ line; once (event `twin_settled`).
+- **A size reply applies to the card it answers only**; "size S" typed without a reply is answered "Which item? Reply
+  'size …' to its card", never guessed. A price on a card with no size: "✓ $25 — needs a size: reply 'size …' to this
+  card" (never "queued"), `next_step` "it goes up once you reply 'size …' to its card" (`approve.needs_size`).
+- **The 💤 line names what waits for her** (`daily.owner_waits`: items priced but skipped everywhere for no size;
+  listings waiting for her 'retry' — refused, skipped, unconfirmed): "💤 Done for now — waiting for a size: Alo Yoga
+  Sports Bralette Mauve Taupe." (`crosslist.done_line(state, waits)`, `daily.done_text`, names `crosslist.item_name`);
+  "💤 All done — you can close the Mac." only when nothing waits; the ops status message says the same. The old "✓ All
+  done — safe to close the Mac." (the status message, and two dead one-liners) is gone.
+- **A refused form** (extension + driver): from the click on, every error is kept — alerts, snackbars / toasts that go
+  away, `aria-invalid` fields anywhere (by their label), the site's own `/api/` requests after the click with their HTTP
+  status (resource timing) — `T.watchAfterClick`, `T.refusal`; still the sell form at the after-publish look = "refused:
+  …" (`common.js`), and the driver takes ANY after-publish "form" page as a refusal (one look at the site's data; found →
+  posted). The row `failed` "Vinted refused the form: …", ONE reply-able private line "⛔ … refused the form — <error>.
+  Nothing was published (its own data agrees). Reply 'retry' to post it again." (outbox kind `refused`, `_route_ops`);
+  never requeued by a new window (`crosslist.refused`) — the same form is never posted again by itself.
+
 ## The sites' sold orders, read only (WO38, 2026-10-14)
 None of the three sites emails the seller when an order ships (Poshmark's "Thank you for shipping" aside): the shipping
 state lives on each site. The poster reads each site's sold orders itself, and the API's reminders, overdue line and

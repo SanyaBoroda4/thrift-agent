@@ -4,8 +4,8 @@ On worker start and on every wake: the same catch-up as a restart — the inbox 
 a message sent twice, WO37) — and ONE line, "Back online — …", when there is work. During the
 window, ONE status message per window is kept up to date by editing it: "⏳ Working …, please don't close the Mac
 yet" while items are processed or listings published, "✓ Safe to close …" once only the owner's answers (or the listing
-hours) are left, "✓ All done — safe to close the Mac." when nothing is. Nothing is said while the lid is closed (the
-Mac's short maintenance wakes at night). The estimate uses the real timings of the last runs.
+hours) are left, "💤 All done — you can close the Mac." when nothing is (WO39: nor waits for her reply). Nothing is
+said while the lid is closed (the Mac's short maintenance wakes at night). The estimate uses the real timings of the last runs.
 
 WO29 (a quiet group): "Back online" and the status message go to the OPS chat (the owner's private chat; `thrift
 status` shows the message too). The group's only "safe to close" is the line the last "Posted ✓" of a window carries
@@ -33,7 +33,7 @@ SESSION_KEY = "daily_session"      # kv: when the current window began (worker s
 STATUS_KEY = "daily_status"        # kv: {"session", "message_id", "text", "worked"} — the window's status message
 DEFAULT_S = {"batch": 60.0, "item": 120.0, "post": 180.0}   # until the event log has real timings
 LAST_N = 20                        # the timings are the medians of this many latest runs
-ALL_DONE = "✓ All done — safe to close the Mac."
+ALL_DONE = "💤 All done — you can close the Mac."   # WO39: the group card's words (WO34) — the old ✓ wording is gone
 DONT_CLOSE = "Please don't close the Mac yet."
 
 
@@ -54,6 +54,7 @@ class Work:
     cards: int             # questions waiting for the owner's answer
     to_publish: int        # approved listings the poster will publish
     held: int              # approved listings that need the owner first (never published by the loop)
+    waits: tuple = ()      # WO39: (what, names) the owner's reply is waited for — a size, a 'retry'
 
     @property
     def busy(self) -> bool:
@@ -83,7 +84,45 @@ def work(s: Settings, db: DB) -> Work:
     return Work(new_shares=sum(1 for kind, _ in q if kind == approve.NEW_BATCH),
                 processing=sum(1 for kind, _ in q if kind == approve.NEW_ITEM),
                 cards=sum(1 for kind, _ in q if kind not in (approve.NEW_BATCH, approve.NEW_ITEM)),
-                to_publish=len(publishable), held=len(held - publishable))
+                to_publish=len(publishable), held=len(held - publishable),
+                waits=tuple((what, tuple(names)) for what, names in owner_waits(s, db).items() if names))
+
+
+SIZE_WAIT = "a size"
+RETRY_WAIT = "your 'retry'"
+
+
+def owner_waits(s: Settings, db: DB) -> dict[str, list[str]]:
+    """WO39: what waits for the owner's reply although the Mac has nothing to do — items priced but listed nowhere for
+    want of a size (every site skipped "no size on the item"), and listings that wait for her 'retry' (a refused form,
+    a skipped listing, an unconfirmed publish she was asked about). Names as on the cards. The 💤 line says them; "All
+    done" only when this is empty."""
+    from thrift_agent import crosslist
+    sizes, retries = [], []
+    for (iid,) in db.conn.execute(
+            "SELECT DISTINCT l.item_id FROM listings l JOIN items i ON i.id=l.item_id WHERE l.status='skipped' AND "
+            "l.error LIKE ? AND i.status NOT IN ('dropped', 'posted', 'posting') AND NOT EXISTS (SELECT 1 FROM "
+            "listings p WHERE p.item_id=l.item_id AND p.status IN ('posted', 'posting')) ORDER BY i.created_at",
+            (f"%{crosslist.NO_SIZE}%",)).fetchall():
+        sizes.append(crosslist.item_name(db, iid))
+    for row in db.conn.execute(
+            "SELECT o.ref FROM outbox o WHERE o.kind IN ('skipped', 'unconfirmed', 'refused') AND o.resolved_at IS "
+            "NULL ORDER BY o.sent_at").fetchall():
+        iid, mp = crosslist.split_ref(row["ref"])
+        it, lst = db.item(iid), db.listing(iid, mp)
+        if it is None or it["status"] == "dropped" or (lst is not None and lst["status"] in ("posted", "posting")):
+            continue
+        name = crosslist.item_name(db, iid)
+        if name not in retries:
+            retries.append(name)
+    return {SIZE_WAIT: sizes, RETRY_WAIT: retries}
+
+
+def done_text(s: Settings, db: DB) -> str | None:
+    """The 💤 line for the newest group card (crosslist.done_line): None while there is work."""
+    from thrift_agent import crosslist
+    state = done_state(s, db)
+    return crosslist.done_line(state, owner_waits(s, db)) if state is not None else None
 
 
 # ---------- how long things take (the last runs) ----------
@@ -201,13 +240,14 @@ def status_text(w: Work, p: PosterNow, t: Timing, hours_open: bool, block: str |
     if w.cards:
         parts.append(f"{_n(w.cards, 'card is', 'cards are')} waiting for your answer in Telegram "
                      "(answers within 24 h are kept)")
+    for what, names in w.waits:                         # WO39: never "All done" while her reply is waited for
+        parts.append(f"waiting for {what}: {', '.join(names[:3])}{f' (+{len(names) - 3} more)' if len(names) > 3 else ''}")
     return f"✓ Safe to close — {'; '.join(parts)}" if parts else ALL_DONE
 
 
 def all_done(s: Settings, db: DB) -> bool:
     """Nothing left in this window (WO29): nothing being processed, no listing to publish (or being published), no
-    card waiting for an answer, none held for a look. The "Posted ✓" that leaves it so carries "✓ All done — safe to
-    close the Mac."."""
+    card waiting for an answer, none held for a look. The card that leaves it so carries the 💤 line (done_text)."""
     w = work(s, db)
     if db.conn.execute("SELECT 1 FROM takedowns WHERE status='pending' LIMIT 1").fetchone():
         return False                                   # WO33: a take-down still to do (a sale elsewhere)

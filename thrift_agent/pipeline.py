@@ -29,6 +29,7 @@ ANSWERABLE = ("needs_info", "ready", "failed", "new", "awaiting_price", "needs_o
               "awaiting_condition")
 REQUEUEABLE = ("failed", "dryrun", "skipped")           # listing statuses `thrift requeue` may send back to the queue
 PARKED = "needs owner: "                                # error of a row the poster parked with a question
+DROPPED_SAID = "This one was shared again (or dropped) — it won't be listed; its newest card is the one to answer"
 PRICEABLE = ("awaiting_price", "needs_info", "ready", "needs_owner")   # item statuses an owner price may be set on
 MANIFEST = "photos.json"                                # per item: which photos are the seller's own vs retail screenshots
 NOT_A_DUPLICATE = re.compile(r"different item|not a duplicate", re.I)   # owner's reply that clears the re-share hold
@@ -1367,6 +1368,8 @@ def _answerable(db: DB, iid: str, what: str):
         raise ValueError(f"unknown item {iid}")
     if why := reached_site(db, it):
         raise ValueError(f"item {iid} is already on the marketplace ({', '.join(why)}) — change its {what} there")
+    if it["status"] == "dropped":
+        raise ValueError(DROPPED_SAID)
     if it["status"] not in PRICEABLE or not it["facts"] or not it["renders"]:
         raise ValueError(f"item {iid} is {it['status']} — its {what} can't be changed now")
     return it
@@ -1503,7 +1506,8 @@ def set_size(s: Settings, db: DB, iid: str, size: str) -> str:
         # back in line (live: the Clarks — Depop and Vinted skipped "no size", Poshmark's Next showed "Required");
         # an unconfirmed publish never (invariant 4)
         for row in db.conn.execute("SELECT marketplace FROM listings WHERE item_id=? AND status IN ('skipped', "
-                                   "'failed') AND COALESCE(error, '') NOT LIKE 'unconfirmed%'", (iid,)).fetchall():
+                                   "'failed') AND COALESCE(error, '') NOT LIKE 'unconfirmed%' AND COALESCE(error, '') "
+                                   "NOT LIKE ?", (iid, f"skipped: {TWIN_LIVE}%")).fetchall():   # WO39: its twin
             db.upsert_listing(iid, row["marketplace"], status="queued", error=None)
     return status
 
@@ -1637,7 +1641,8 @@ def requeue(s: Settings, db: DB, iid: str, marketplace: str | None = None) -> li
                              f"may be live; check the closet, then `thrift mark-posted {iid} {r['marketplace']} <url>` "
                              f"(it is there) or `thrift retry {iid}` (it is not)")
     cross_only = all(r["marketplace"] != "poshmark" for r in rows)     # Depop / Vinted rows (WO30)
-    if cross_only and (db.listing(iid, "poshmark") or {"status": ""})["status"] != "posted":
+    if cross_only and (db.listing(iid, "poshmark") or {"status": ""})["status"] != "posted" and \
+            not (it["status"] == "ready" and it["owner_price"]):      # WO33: approved items post everywhere at once
         raise ValueError(f"item {iid} isn't live on Poshmark: Depop and Vinted follow Poshmark")
     if not cross_only and it["status"] not in ("ready", "drafted", "needs_owner"):
         raise ValueError(f"item {iid} is {it['status']}, not ready — reply to its card with the fix first")
@@ -1660,6 +1665,8 @@ def set_price(s: Settings, db: DB, iid: str, amount: int) -> str:
     it = db.item(iid)
     if it is None:
         raise ValueError(f"unknown item {iid}")
+    if it["status"] == "dropped":
+        raise ValueError(DROPPED_SAID)
     if it["status"] == "awaiting_condition":
         raise ValueError("first its condition: brand new or worn? — tap NWT, Like New or Good on its message")
     if it["status"] not in PRICEABLE:
@@ -1681,7 +1688,71 @@ def set_price(s: Settings, db: DB, iid: str, amount: int) -> str:
     with db.tx():
         db.set_item(iid, owner_price=amount, price=pr, renders=renders, status=status)
         db.log(iid, "price_set", {"amount": amount, "status": status})
+    settle_twin(s, db, iid)
     return status
+
+
+TWIN = re.compile(r"^looks like item (i_[0-9a-z_]+)")
+TWIN_LIVE = "already live as "                  # WO39: a new item's row skipped because its twin is live there
+
+
+def twin_of(it) -> str | None:
+    """The earlier item a new card was flagged as ("looks like item X …", duplicate_check), or None."""
+    for q in [*((loads(it["gate"]) or {}).get("questions") or []), *((loads(it["gate"]) or {}).get("reasons") or [])]:
+        if m := TWIN.match(q or ""):
+            return m[1]
+    return None
+
+
+def _title(it) -> str:
+    return (((loads(it["renders"]) or {}).get("poshmark") or {}).get("title") if it else None) or (it["id"] if it else "")
+
+
+def settle_twin(s: Settings, db: DB, iid: str) -> str | None:
+    """WO39 (the owner: the same item is never listed twice). A card flagged "looks like item X" got its price — the
+    owner's "list it" — so X and this item are one garment:
+    - X not live anywhere: X is retired (status `dropped`, its rows still to come skipped, its card closed), so a
+      later reply to X's card can't post it;
+    - X live on a site (posted, being posted, or an unconfirmed publish that may be live): this item doesn't post on
+      that site (its row skipped "already live as X").
+    One private line either way; once per item (event `twin_settled`). Returns what was done, or None."""
+    it = db.item(iid)
+    if it is None or not it["owner_price"] or it["status"] == "dropped":
+        return None
+    tid = twin_of(it)
+    tw = db.item(tid) if tid else None
+    if tw is None or tw["status"] == "dropped" or tid == iid:
+        return None
+    if db.conn.execute("SELECT 1 FROM events WHERE ref=? AND kind='twin_settled'", (iid,)).fetchone():
+        return None
+    live = {r["marketplace"]: r for r in db.listings_for(tid)
+            if r["status"] in ("posted", "posting") or unconfirmed_publish(r)}
+    title, ttitle = _title(it), _title(tw)
+    if not live and tw["status"] not in REDO_KEEP:
+        with db.tx():
+            db.set_item(tid, status="dropped")
+            for r in db.listings_for(tid):
+                if r["status"] in ("queued", "dryrun", "failed", "skipped") and not r["url"]:
+                    db.upsert_listing(tid, r["marketplace"], status="skipped", error=f"skipped: shared again as {iid}")
+            db.conn.execute("UPDATE outbox SET resolved_at=? WHERE (ref=? OR ref LIKE ?) AND resolved_at IS NULL",
+                            (now(), tid, f"{tid}:%"))
+            db.log(tid, "dropped", {"twin": iid, "why": "shared again; the new card got its price"})
+            db.log(iid, "twin_settled", {"twin": tid, "retired": True})
+        notify.say(f"♻️ {title}: the same item was shared before (“{ttitle}”) — that earlier card is retired, "
+                   f"this one is the one listed")
+        return f"retired {tid}"
+    sites = sorted(live, key=lambda mp: ("poshmark", "depop", "vinted").index(mp) if mp in
+                   ("poshmark", "depop", "vinted") else 9)
+    with db.tx():
+        for mp in sites:
+            row = db.listing(iid, mp)
+            if row is not None and (row["status"] in ("posted", "posting") or row["url"] or unconfirmed_publish(row)):
+                continue
+            db.upsert_listing(iid, mp, status="skipped", error=f"skipped: {TWIN_LIVE}{tid}")
+        db.log(iid, "twin_settled", {"twin": tid, "live": sites})
+    names = " and ".join(m.capitalize() for m in sites)
+    notify.say(f"♻️ {title}: the same item is already live on {names} (“{ttitle}”) — not listed there again")
+    return f"blocked on {', '.join(sites)}"
 
 
 def set_kids_gender(s: Settings, db: DB, iid: str, choice: str) -> str:
