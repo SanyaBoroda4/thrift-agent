@@ -80,9 +80,19 @@ def _scan_inbox(s, db) -> int:
     through one. Processing of the items already split goes on either way. iCloud still downloading a share
     (EDEADLK, WO29) is quieter still: retried, and only the ops chat hears if it lasts 10 minutes."""
     alerts.scan_started(db)
+    n, lost = 0, []
     try:
-        n = sum(1 for folder in pipeline.ready_folders(s, db) if pipeline.register(s, db, folder))
+        for folder in pipeline.ready_folders(s, db):
+            taken = pipeline.take_share(s, db, folder)       # WO42: ready, partial (a private line) or lost
+            if taken is None:
+                continue
+            if taken[0] == "lost":
+                lost.append((folder, taken[1]))
+            else:
+                n += 1
+        pipeline.say_lost(s, db, lost)                        # ONE group line for the shares lost in this look
     except OSError as e:
+        alerts.beat(db)                                       # the watcher ran, whatever iCloud answered
         if alerts.icloud_busy(e):
             alerts.busy(db, "the inbox", f"{type(e).__name__}: {e}")
             return 0
@@ -218,6 +228,8 @@ def _telegram_iteration(s, db, bot, state: dict) -> None:
     _safe_pump(s, db)
     if started := alerts.scan_stuck(db):                   # the main thread waits on macOS's permission prompt
         alerts.inbox_trouble(db, f"inbox scan stuck since {started}", since=started)
+    if (why := alerts.watcher_stalled(db)) and power.lid_closed() is not True:   # WO42: the watcher's heartbeat
+        alerts.restart_watcher(db, why)                    # one private line, then launchd starts the worker again
     if time.monotonic() - state.get("last_resend", 0) >= RESEND_CHECK_SECONDS:
         state["last_resend"] = time.monotonic()
         try:

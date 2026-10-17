@@ -45,11 +45,12 @@ ICLOUD_MESSAGE = "Waiting for iCloud to finish downloading the photos…"
 
 
 def ready_folders(s: Settings, db: DB | None = None) -> list[Path]:
-    """Folders the Shortcut finished writing: marker present, every file really downloaded, quiet for a bit.
+    """Folders to take now (`take_share` decides how): the Shortcut's marker present with the photos it counted,
+    quiet for a bit — or, WO42, a share past its deadline (`share_state`: partial after 15 minutes, lost after 30).
 
     A share whose files are still in iCloud only (the old .Name.icloud placeholders, or current macOS's dataless
-    files) is asked for (`brctl download`, the folder and each such file) and waits; with `db`, ONE line goes out if
-    that lasts more than ICLOUD_TELL_AFTER (WO28 §4), per share."""
+    files) is pulled (`pull_from_icloud`: `brctl download` and a read through the File Provider, with back-off) and
+    waits; with `db`, ONE line goes out if that lasts more than ICLOUD_TELL_AFTER (WO28 §4), per share."""
     inbox, marker, settle = s.path("inbox"), s["inbox"]["done_marker"], s["inbox"]["settle_seconds"]
     if not inbox.exists():
         return []
@@ -57,22 +58,39 @@ def ready_folders(s: Settings, db: DB | None = None) -> list[Path]:
     for d in sorted(p for p in inbox.iterdir() if p.is_dir() and not p.name.startswith(".")):
         pending = prep.icloud_placeholders(d)
         if pending:
-            if platform.system() == "Darwin":
-                for target in [d, *(p for p in pending if not p.name.endswith(".icloud"))]:
-                    subprocess.run(["brctl", "download", str(target)], check=False, capture_output=True)
+            pull_from_icloud(db, d, pending)
             waiting[str(d)] = len(pending)
             continue
-        marks = [f for f in d.iterdir() if f.name == marker or f.stem == marker]   # "_done" or "_done.txt"
-        if not marks:
-            continue
-        if share_complete(s, d, marks[0], settle):
+        if share_state(s, d, marker_of(d, marker), settle) != "wait":
             out.append(d)
     if db is not None:
         _icloud_wait(db, waiting)
     return out
 
 
-EMPTY_SHARE_WAIT = 30 * 60        # WO37: a share whose photos haven't come yet — waited for this long before "no photos"
+def marker_of(d: Path, marker: str) -> Path | None:
+    """The Shortcut's end mark in the folder ("_done" or "_done.txt"), or None while it hasn't come."""
+    marks = [f for f in d.iterdir() if f.name == marker or f.stem == marker]
+    return marks[0] if marks else None
+
+
+EMPTY_SHARE_WAIT = 30 * 60        # WO37/WO42: a share with no camera photo this long after it appeared is lost: ONE group
+#                                   line ("share it again"), the folder archived with a note
+PARTIAL_AFTER = 15 * 60           # WO42: a share short of its count, or without its end mark, this long after it appeared
+#                                   is taken with the camera photos that came (a private line says how many)
+STALE_SHARE = 2 * 3600            # WO42: a share lost this long ago is told in the private chat, not the group (old news)
+MEDIA_EXT = {".mov", ".mp4", ".m4v", ".dng", ".avi", ".3gp", ".gif"}   # a Live Photo's video, a video, a raw: they count
+#                                   toward the Shortcut's "done N" (it counts what she shared), never as a photo
+PULL = "icloud_pull"              # kv: {folder: {"n": asks so far, "next": epoch}} — the cloud-only files asked for
+PULL_BACKOFF = (15, 30, 60, 120, 300)   # seconds between asks, per folder
+LOST_SAID = "share_lost_said"     # kv: {folder: when} — its "📭 share again" line went out (once, ever)
+LOST_LINE = "📭 Your share from {when} didn't come through — please share it again."
+LOST_LINES = "📭 Your shares from {when} didn't come through — please share them again."
+PARTIAL_LINE = ("📸 {have} of {want} photos of your {when} share arrived — the card is made from those; the rest are "
+                "told if they come.")
+PARTIAL_NO_MARK = ("📸 Only {have} photos of your {when} share arrived and the Shortcut's end mark never came — the card "
+                   "is made from those; the rest are told if they come.")
+LOST_NOTE = "_thrift_note.txt"
 
 
 def arrived(p: Path) -> float:
@@ -80,6 +98,163 @@ def arrived(p: Path) -> float:
     phone (live 2026-10-12: photos dated Oct 9, so a share always looked "quiet for a while")."""
     st = p.stat()
     return max(st.st_ctime, getattr(st, "st_birthtime", 0) or 0)
+
+
+def appeared(p: Path) -> float:
+    """When the folder first appeared on this Mac (its birth time; the change time where the OS keeps none) — the
+    share's clock for WO42's deadlines. A folder's ctime moves with every file that lands in it, so it is not this."""
+    st = p.stat()
+    return getattr(st, "st_birthtime", 0) or st.st_ctime
+
+
+def share_time(d: Path) -> str:
+    """"3:18 PM": the Shortcut's own time from the folder's name (2026-10-17_151834), else when it appeared here."""
+    m = re.search(r"_(\d{2})(\d{2})(\d{2})?$", d.name)
+    if m:
+        hour, minute = int(m[1]), int(m[2])
+    else:
+        t = datetime.fromtimestamp(appeared(d))
+        hour, minute = t.hour, t.minute
+    return f"{hour % 12 or 12}:{minute:02d} {'AM' if hour < 12 else 'PM'}"
+
+
+def camera_photos(photos: list[Path]) -> list[Path]:
+    """The seller's own photos among these (not retail screenshots): what a card can be made from."""
+    return [p for p in photos if prep.photo_kind(p) == "own"]
+
+
+def share_state(s: Settings, d: Path, marker: Path | None, settle: float, now: float | None = None) -> str:
+    """What to do with a share folder now (WO42), from what is in it and how long it has been here:
+    - "ready": the end mark is here and at least `inbox.min_wait_seconds` old, nothing came for `settle` seconds, and
+      the files cover the mark's count ("done 4": photos plus their companions — a Live Photo's video, a video, a raw —
+      since the Shortcut counts what she shared, not what the Mac can list);
+    - "partial": PARTIAL_AFTER after it appeared, quiet, short of the count or without the mark, with at least one
+      camera photo — taken with those (`take_share` says so in the private chat);
+    - "lost": EMPTY_SHARE_WAIT after it appeared with no camera photo at all (nothing, or only screenshots) — ONE group
+      line asks for the share again, the folder goes to the archive with a note;
+    - "wait": anything else."""
+    now = time.time() if now is None else now
+    files = [f for f in d.iterdir() if not f.name.startswith(".") and f.name != LOST_NOTE]
+    photos = [f for f in files if prep.is_photo(f)]
+    media = [f for f in files if f.is_file() and f.suffix.lower() in MEDIA_EXT]
+    age = now - appeared(d)
+    quiet = now - max((arrived(f) for f in files), default=appeared(d)) >= settle
+    if marker is not None and quiet and photos and now - arrived(marker) >= float(s.get("inbox.min_wait_seconds", 90) or 0):
+        want = expected_photos(marker)
+        if want is None or len(photos) + len(media) >= want:
+            return "ready"
+    if age < PARTIAL_AFTER:
+        return "wait"
+    own = camera_photos(photos)
+    if own and quiet:
+        return "partial"
+    if not own and age >= EMPTY_SHARE_WAIT:
+        return "lost"
+    return "wait"
+
+
+def pull_from_icloud(db: DB | None, folder: Path, pending: list[Path]) -> bool:
+    """WO42: ask iCloud for a share's cloud-only files instead of waiting for them — `brctl download` on the folder and
+    each file, and on every third ask a read of each file's first byte through the File Provider (what makes macOS
+    fetch a dataless file), in a subprocess with a timeout so the worker never hangs on it. Back-off per folder
+    (PULL_BACKOFF, kept in kv `icloud_pull`; without a db, every look asks). Mac only. True when it asked."""
+    if platform.system() != "Darwin":
+        return False
+    state = (loads(db.kv_get(PULL)) or {}) if db is not None else {}
+    st = state.get(str(folder)) or {"n": 0, "next": 0}
+    now = time.time()
+    if now < float(st.get("next") or 0):
+        return False
+    files = [p for p in pending if not p.name.endswith(".icloud")]
+    for target in [folder, *files]:
+        subprocess.run(["brctl", "download", str(target)], check=False, capture_output=True)
+    if st["n"] % 3 == 2:
+        for p in files:
+            try:
+                subprocess.run(["head", "-c", "1", str(p)], check=False, capture_output=True, timeout=20)
+            except subprocess.TimeoutExpired:
+                pass
+    if db is not None:
+        state = {k: v for k, v in state.items() if Path(k).is_dir()}
+        state[str(folder)] = {"n": st["n"] + 1, "next": now + PULL_BACKOFF[min(st["n"], len(PULL_BACKOFF) - 1)]}
+        db.kv_set(PULL, json.dumps(state))
+    return True
+
+
+def take_share(s: Settings, db: DB, folder: Path) -> tuple[str, float] | None:
+    """A folder `ready_folders` handed over (WO42): registered as a batch when it is ready or partial (the partial one
+    with ONE private line saying how many photos came), or lost — recorded as a failed batch, a note written into it,
+    archived (never deleted: photos that land in it later are taken as a new share by `late_photos`). Returns (state,
+    when it appeared) or None when nothing was done (already known, or not ready after all)."""
+    marker = marker_of(folder, s["inbox"]["done_marker"])
+    state = share_state(s, folder, marker, s["inbox"]["settle_seconds"])
+    when = appeared(folder)
+    if state == "lost":
+        return (state, when) if lose_share(s, db, folder) else None
+    if state == "wait":
+        return None
+    photos = [p for p in folder.iterdir() if prep.is_photo(p)]
+    bid = register(s, db, folder)
+    if bid is None:
+        return None
+    if state == "partial":
+        want = expected_photos(marker) if marker is not None else None
+        text = (PARTIAL_LINE.format(have=len(photos), want=want, when=share_time(folder)) if want
+                else PARTIAL_NO_MARK.format(have=len(photos), when=share_time(folder)))
+        db.log(bid, "share_partial", {"folder": folder.name, "photos": len(photos), "want": want,
+                                      "marker": marker is not None})
+        notify.say(text)
+    return state, when
+
+
+def lose_share(s: Settings, db: DB, folder: Path) -> str | None:
+    """A share whose photos never came (WO42): the failed batch (so `late_photos` watches its archive folder), the
+    note, the archive. The group line is `say_lost`'s, one for all the folders of a look."""
+    bid = db.add_batch(str(folder), 0)
+    if bid is None:
+        return None
+    db.set_batch(bid, status="failed", reasons=["no photos arrived"])
+    db.log(bid, "batch_failed", {"folder": folder.name, "reason": "no photos arrived",
+                                 "appeared": datetime.fromtimestamp(appeared(folder), timezone.utc)
+                                 .isoformat(timespec="seconds"),
+                                 "names": sorted(p.name for p in folder.iterdir() if prep.is_photo(p))})   # what
+    #                                 was here (a screenshot): only photos that come AFTER this are "late" (late_photos)
+    try:
+        (folder / LOST_NOTE).write_text(
+            f"No photos reached the Mac within 30 minutes of this share ({share_time(folder)}). The owner was asked to "
+            f"share it again. Photos that land in this folder later are taken as a new share.\n", encoding="utf-8")
+    except OSError:
+        pass
+    archive_share(s, db, bid, folder)
+    return bid
+
+
+def say_lost(s: Settings, db: DB, lost: list[tuple[Path, float]]) -> list[str]:
+    """ONE group line for the shares lost in this look — "📭 Your share from 3:18 PM didn't come through — please share
+    it again." (several: "Your shares from 3:18 PM and 3:19 PM …") — never repeated for a folder (kv `share_lost_said`).
+    A share that appeared STALE_SHARE or longer ago (the Mac was closed meanwhile, or the code is new) is old news for
+    the group: the same line goes to the private chat instead. Returns the lines sent."""
+    said = loads(db.kv_get(LOST_SAID)) or {}
+    now = time.time()
+    fresh, stale = [], []
+    for folder, when in lost:
+        if folder.name in said:
+            continue
+        (stale if now - when >= STALE_SHARE else fresh).append(folder)
+        said[folder.name] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    out = []
+    for group, folders in ((True, fresh), (False, stale)):
+        if not folders:
+            continue
+        times = list(dict.fromkeys(share_time(f) for f in folders))
+        when = " and ".join(times)
+        text = LOST_LINE.format(when=when) if len(times) == 1 and len(folders) == 1 else LOST_LINES.format(when=when)
+        (notify.group if group else notify.say)(text)
+        db.log(None, "share_lost_said", {"folders": [f.name for f in folders], "group": group})
+        out.append(text)
+    if lost:
+        db.kv_set(LOST_SAID, json.dumps(said))
+    return out
 
 
 def expected_photos(marker: Path) -> int | None:
@@ -95,18 +270,8 @@ def share_complete(s: Settings, d: Path, marker: Path, settle: float) -> bool:
     """Is this share whole? WO37 (live 2026-10-12: the iPhone's `_done` came before its photos — two shares taken with
     no photos, two with only their small label shots): nothing has come into the folder for `settle` seconds (arrival
     on this Mac, not the photos' dates), the marker itself is at least `inbox.min_wait_seconds` old, and — when the
-    marker carries a count — that many photos are here. A share with no photo at all waits up to 30 minutes."""
-    now = time.time()
-    files = list(d.iterdir())
-    photos = [f for f in files if prep.is_photo(f)]
-    newest = max((arrived(f) for f in files), default=0)          # each file's arrival: a new one is fresh
-    since_marker = now - arrived(marker)
-    if now - newest < settle or since_marker < float(s.get("inbox.min_wait_seconds", 90) or 0):
-        return False
-    want = expected_photos(marker)
-    if want is not None and len(photos) < want:
-        return since_marker >= EMPTY_SHARE_WAIT          # the count never came: take what is here, said in register
-    return bool(photos) or since_marker >= EMPTY_SHARE_WAIT
+    marker carries a count — that many files are here. WO42: the deadlines are `share_state`'s ("partial", "lost")."""
+    return share_state(s, d, marker, settle) == "ready"
 
 
 def late_photos(s: Settings, db: DB) -> list[str]:
@@ -164,7 +329,7 @@ def registered_names(db: DB, bid: str) -> set[str] | None:
     """The photo files a share's items were made from (WO37): the ones its preparation read (`batch_prepped` — live,
     the Zadig boots: registered with 5, prepared with 7), else the ones it was registered with; None for a share from
     before they were recorded."""
-    for kind in ("batch_prepped", "batch_registered"):
+    for kind in ("batch_prepped", "batch_registered", "batch_failed"):   # batch_failed: a lost share's files (WO42)
         for e in db.conn.execute("SELECT detail FROM events WHERE ref=? AND kind=? ORDER BY rowid DESC LIMIT 1",
                                  (bid, kind)):
             names = (loads(e["detail"]) or {}).get("names")

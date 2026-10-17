@@ -1159,6 +1159,50 @@ live on Poshmark and Vinted overnight with no word to anyone. Three causes, all 
   listing is still posted handed to the Mac once more, `takedown_reopened:<task>`). Live mode only; a read never starts
   the live clock.
 
+## Shares that end in a card or a clear message (WO42, 2026-10-17)
+Live: a share at 3:18 PM whose 11 photos never reached iCloud — the folder and its 7-byte `_done.txt` came within two
+seconds, no photo ever (iCloud's own log: three pushes, one tiny document, nothing else; `brctl status` caught up); two
+more runs of the Shortcut made two empty folders with no `_done`. The worker waited WO37's 30 minutes, said one technical
+line in the private chat ("batch …: no usable photos") and the group heard nothing for four hours; the markerless
+folders were skipped on every tick, forever. Since Oct 12, 4 of 23 shares never became a card and 11 came short or late.
+- **Pull, don't wait** (`pipeline.pull_from_icloud`): a share's cloud-only files (`.icloud` placeholders, dataless
+  files) are asked for — `brctl download` on the folder and each file, and on every third ask the file's first byte read
+  through the File Provider (what makes macOS fetch it; a subprocess with a 20 s timeout, never on the worker's thread)
+  — with back-off per folder (15 s, 30 s, 1, 2, 5 min; kv `icloud_pull`).
+- **The count is what she shared** (`share_state`): the Shortcut's `done N` is matched against the photos PLUS their
+  companions (a Live Photo's .mov, a video, a raw — `MEDIA_EXT`), never waited on for a number the Mac can't reach.
+- **A deadline, never silence** (`share_state` / `take_share`, from when the folder appeared on the Mac — its birth
+  time, `appeared`): ready → the card as before (the mark here and `inbox.min_wait_seconds` old, quiet for
+  `settle_seconds`, the count covered); **15 minutes** (`PARTIAL_AFTER`) short of the count or without the mark, with at
+  least one camera photo (`camera_photos`: not a retail screenshot — the stand-in for "a label or front shot", the
+  model's roles come only after) → taken with those, ONE private line "📸 3 of 4 photos of your 3:18 PM share arrived —
+  the card is made from those; the rest are told if they come." (event `share_partial`); **30 minutes**
+  (`EMPTY_SHARE_WAIT`) with no camera photo (nothing, or only screenshots) → lost: a failed batch ("no photos arrived",
+  its files in the event so only later photos count as late), a `_thrift_note.txt` written into the folder, the folder
+  archived — never deleted; photos that land in it later are taken as a new share by `late_photos`, as before — and
+  ONE group line she can act on: "📭 Your share from 3:18 PM didn't come through — please share it again." (the
+  Shortcut's own time from the folder's name; several lost in one look → "Your shares from 3:19 PM and 3:20 PM …";
+  kv `share_lost_said`, never repeated). A share lost 2 hours or more ago (`STALE_SHARE`: the Mac was closed meanwhile)
+  is old news for the group: the same line goes to the private chat. Empty and leftover folders are shares too: taken
+  through the same deadlines, so they never sit in the inbox or block the next share.
+- **The watcher's heartbeat** (`alerts.beat`, kv `worker_inbox_beat`: every look at the inbox, whatever iCloud
+  answered): the Telegram thread restarts the worker (`alerts.restart_watcher`: one private line an hour at most, event
+  `watcher_restarted`, `os._exit(3)` — launchd's KeepAlive starts it again) when no look finished for 15 minutes
+  (`WATCH_STALL`) and nothing was processed either (no `worked` event), or a look started 15 minutes ago never came
+  back — with the lid open only, and never in the process's first 15 minutes (`alerts.STARTED`: the beat is the last
+  run's until the first look).
+- **The Mac asleep or closed in the daytime** (`timers.mac_watch`, the API's 15-minute timer): its heartbeat (every 15
+  minutes while open, and on a wake) missing for 2 hours between 08:00 and 23:00 local → ONE private line per outage,
+  "The Mac has been offline since Sat Oct 17, 2:10 PM EDT — shares and posting wait until it's open." (settings
+  `mac_down_since`, cleared by the next beat; nothing at night — said in the morning if it is still silent; nothing when
+  it is back).
+- **The phone side:** the Shortcut saves the photos and `_done` into the same folder, one folder per run (the Oct 16
+  shares, each with its photos and `done N`); today's three folders are three runs. The Mac can't make the phone
+  upload: the owner checks Low Power Mode, iCloud Drive's cellular data, the phone's iCloud storage, and that the
+  Shortcut's "Save" steps really write to the same Posh/inbox subpath (report `reports/2026-10-17_45_wo42-shares.md` §4).
+- Tests: `tests/test_wo42.py`, `tests/api/test_api_wo42.py`; the WO37 share test's "30 minutes, no photo" case is now
+  `share_state == "lost"`.
+
 ## Automatic price drops (WO41, 2026-10-17)
 The owner's rule: 30 days after an item is live on ALL its sites, if it hasn't sold, 10% off on every site; 30 days
 after that, 10% again; then never again. `thrift_agent/pricedrop.py`; settings `price_drop.enabled` (true),

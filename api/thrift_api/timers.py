@@ -32,7 +32,42 @@ def every_15_min(db: Database, now: datetime | None = None, mode: str | None = N
     if mode == "live":
         core.go_live(db, now)                         # a live call like any request: starts the live clock if needed
     return {"mode": mode, "reminders": reminders(db, now, mode), "gmail": gmail_watch(db, now, mode),
+            "mac": mac_watch(db, now, mode),
             "retried": retry_failed(db, now, mode), "late_takedowns": core.say_late_takedowns(db, now, mode)}
+
+
+MAC_SILENCE = timedelta(hours=2)
+MAC_DOWN = "mac_down_since"              # settings: the outage, while it lasts
+MAC_HOURS = (8, 23)                      # local hours in which the silence is told
+
+
+def mac_watch(db: Database, now: datetime, mode: str) -> str:
+    """WO42: the Mac's heartbeat (every 15 minutes while it is open, and on every wake) missing for MAC_SILENCE
+    between 08:00 and 23:00 local → ONE private line per outage, "The Mac has been offline since 2:10 PM — shares and
+    posting wait until it's open."; nothing at night (said in the morning if it is still silent), nothing when it is
+    back. "ok" | "offline" (said, or already said) | "night" (silent, not said) | "back" | "never"."""
+    beat = db.one("SELECT last_seen FROM heartbeats WHERE source = 'mac'")
+    if beat is None:
+        return "never"
+    seen = parse_time(beat["last_seen"])
+    silent = seen is None or now - seen > MAC_SILENCE
+    down = core.setting(db, MAC_DOWN)
+    if not silent:
+        if down:
+            core.drop_setting(db, MAC_DOWN)
+            return "back"
+        return "ok"
+    if down:
+        return "offline"
+    if not (MAC_HOURS[0] <= deadlines.local(now).hour < MAC_HOURS[1]):
+        return "night"
+    out = core.Outbox(now, mode)
+    with db.tx():
+        core.put_setting(db, MAC_DOWN, beat["last_seen"])
+        since = core.local_text(seen) if seen else "it last spoke"
+        out.ops(f"The Mac has been offline since {since} — shares and posting wait until it's open.")
+    out.flush()
+    return "offline"
 
 
 def reminders(db: Database, now: datetime, mode: str) -> list[list[str]]:

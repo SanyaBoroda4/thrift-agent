@@ -260,9 +260,12 @@ def test_a_share_is_whole_only_once_its_photos_are_here(tmp_path, monkeypatch):
     for p in d.glob("IMG_*"):
         p.unlink()
     monkeypatch.setattr(pipeline, "arrived", lambda p: clock["now"] - 600)
+    monkeypatch.setattr(pipeline, "appeared", lambda p: clock["now"] - 600)
     assert not pipeline.share_complete(s, d, marker, 60)                         # no photo, 10 min: still waiting
     monkeypatch.setattr(pipeline, "arrived", lambda p: clock["now"] - 31 * 60)
-    assert pipeline.share_complete(s, d, marker, 60)                             # 30 min: taken (and said)
+    monkeypatch.setattr(pipeline, "appeared", lambda p: clock["now"] - 31 * 60)
+    assert not pipeline.share_complete(s, d, marker, 60)                         # 30 min, no photo: never "whole"
+    assert pipeline.share_state(s, d, marker, 60) == "lost"                      # WO42: lost — the group line, archived
 
 
 def test_photos_that_come_after_an_empty_share_send_it_again(env, monkeypatch):
@@ -291,6 +294,8 @@ def test_photos_that_come_after_an_item_was_made_are_told_once(env, monkeypatch)
     archived.mkdir(parents=True)
     for i in (1300, 1301):
         Image.new("RGB", (30, 40)).save(archived / f"IMG_{i}.jpeg")
+    order = {"IMG_1300.jpeg": 1, "IMG_1301.jpeg": 2, "IMG_1299.jpeg": 3}      # the arrival order (ctimes can tie)
+    monkeypatch.setattr(pipeline, "arrived", lambda p: order.get(p.name, 0))
     bid = db.add_batch(str(s.path("inbox") / "2026-10-12_205814"), 2)
     db.set_batch(bid, status="split")
     db.log(bid, "archived", {"dest": str(archived)})

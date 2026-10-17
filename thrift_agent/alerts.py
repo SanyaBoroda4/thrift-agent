@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import errno
 import json
+import os
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -33,6 +34,10 @@ SCAN_DONE = "worker_inbox_scan"              # kv: when it last finished one (th
 INBOX_DOWN = "inbox_unreadable_since"        # kv: since when the inbox can't be read
 INBOX_TOLD = "inbox_unreadable_told"         # kv: "1" once the owner was told
 SENT = "worker_alerts"                       # kv: {error signature: when it was last sent}
+WATCH_BEAT = "worker_inbox_beat"             # kv: the watcher's heartbeat — every look at the inbox, whatever it found (WO42)
+WATCH_STALL = 15 * 60                        # seconds without a look (and without processing) before the worker restarts
+WATCH_RESTART_SAID = "watcher_restart_said"  # kv: when the restart was last told (at most once an hour)
+STARTED = datetime.now(timezone.utc)         # this process's start: no stall is judged in its first WATCH_STALL
 
 _IDS = re.compile(r"\b[ib]_\d{6}_[0-9a-f]{6}\b")
 
@@ -125,6 +130,42 @@ def scan_started(db: DB) -> None:
 
 def scan_done(db: DB) -> None:
     db.kv_set(SCAN_DONE, _stamp())
+    beat(db)
+
+
+def beat(db: DB) -> None:
+    """The inbox watcher's heartbeat (WO42): the worker's look at the inbox ran, whatever it found or iCloud said."""
+    db.kv_set(WATCH_BEAT, _stamp())
+
+
+def watcher_stalled(db: DB, now: datetime | None = None) -> str | None:
+    """WO42: why the inbox watcher looks stalled — a look that started WATCH_STALL ago and never finished, or no look
+    for WATCH_STALL while nothing is being processed either (no `worked` event in that time) — else None. Never in the
+    first WATCH_STALL of this process (the beat is the last run's until the main thread's first look). The caller
+    checks the lid: with it closed the worker starts nothing, by design."""
+    now = now or _now()
+    if (now - STARTED).total_seconds() < WATCH_STALL:
+        return None
+    started, last = db.kv_get(SCAN_STARTED), db.kv_get(WATCH_BEAT) or db.kv_get(SCAN_DONE)
+    if started and (not last or last < started) and (now - datetime.fromisoformat(started)).total_seconds() >= WATCH_STALL:
+        return f"a look at the inbox started at {started} never finished"
+    if last and (now - datetime.fromisoformat(last)).total_seconds() >= WATCH_STALL:
+        row = db.conn.execute("SELECT max(ts) FROM events WHERE kind='worked'").fetchone()
+        worked = row[0] if row else None
+        if not worked or (now - datetime.fromisoformat(worked)).total_seconds() >= WATCH_STALL:
+            return f"no look at the inbox since {last}"
+    return None
+
+
+def restart_watcher(db: DB, why: str, leave=None) -> None:
+    """WO42: ONE private line (at most one an hour), the event, and the process ended with status 3 — launchd starts
+    the worker again (KeepAlive). `os._exit`, not SystemExit: the main thread may be the one that hangs."""
+    db.log(None, "watcher_restarted", why)
+    said = db.kv_get(WATCH_RESTART_SAID)
+    if not said or _age(said) >= 3600:
+        db.kv_set(WATCH_RESTART_SAID, _stamp())
+        notify.say(f"⚠️ The inbox watcher stalled ({why}) — restarting the worker. Shares are taken again in a minute.")
+    (leave or os._exit)(3)
 
 
 def scan_stuck(db: DB) -> str | None:
