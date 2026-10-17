@@ -394,8 +394,11 @@ def _fresh(db: DB, rid: str):
 
 
 def _fields(listing) -> dict:
+    """The fields the listing was posted with (Depop's blank ones are filled from them), its item id as the SKU (the
+    evidence is named by it)."""
     from thrift_agent.db import loads
-    return loads(listing["fields_json"]) or {} if listing["fields_json"] else {}
+    fields = (loads(listing["fields_json"]) or {}) if listing["fields_json"] else {}
+    return {**fields, "sku": fields.get("sku") or listing["item_id"]}
 
 
 # ---------------------------------------------------------------- the group's line, once a day
