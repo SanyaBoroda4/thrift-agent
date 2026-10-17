@@ -357,9 +357,10 @@ def _drops_card(items: list[dict], zone: tzinfo, now: datetime) -> str:
         if day is not None and (day - today).days <= 7 and _is_active(item):
             due.append((day, item))
     due.sort(key=lambda x: x[0])
-    lines = "".join(f'<p class="sub">{_esc(_title(item["title"]))} — {_esc(_day(day, today))}</p>' for day, item in due[:8])
+    lines = "".join(f'<p class="sub">{_esc(_title(item["title"]))} — {_esc(_day(day, today))}</p>'
+                    for day, item in due[:8]) or '<p class="sub">none</p>'
     return (f'<div class="card" id="c-drops"><h2>Drops due this week</h2><p class="num">{len(due)}</p>'
-            f'{lines or "<p class=\"sub\">none</p>"}</div>')
+            f"{lines}</div>")
 
 
 def _drops_line(item: dict, zone: tzinfo, today: date) -> str:
