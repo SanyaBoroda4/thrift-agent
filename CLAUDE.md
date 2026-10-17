@@ -1159,6 +1159,52 @@ live on Poshmark and Vinted overnight with no word to anyone. Three causes, all 
   listing is still posted handed to the Mac once more, `takedown_reopened:<task>`). Live mode only; a read never starts
   the live clock.
 
+## Automatic price drops (WO41, 2026-10-17)
+The owner's rule: 30 days after an item is live on ALL its sites, if it hasn't sold, 10% off on every site; 30 days
+after that, 10% again; then never again. `thrift_agent/pricedrop.py`; settings `price_drop.enabled` (true),
+`price_drop.floor` (off).
+- **The clock** (`pricedrop.clock`, `items.all_live_at`): the last site's posted_at (hand-listed rows by their recorded
+  date; a backfilled item from when it reached all three); a site that never goes live (failed, skipped, a dry run) →
+  7 days after the first live site. Stage 1 when `all_live_at` + 30 days passed, stage 2 when stage 1 + 30 days
+  (`items.drop_stage` 0/1/2, `last_drop_at`, `next_drop_at`; never a third). A site posted again after a drop was made
+  there (a relist) → a new clock (stage 0). `pricedrop.plan` (the poster's housekeeping, every 10 min) keeps them and
+  makes one `price_changes` row per live site when a stage falls due.
+- **Who drops** (`why_not`): item `posted`; no listing sold / delisted (Hidden, Not For Sale); no take-down for it ever;
+  not the owner's 'no drop'. On the site, read right before the change (`read_price`): Poshmark's public page for sale
+  (`crosslist.poshmark_page`), Vinted's own JSON of the seller's items by the listing's id (not reserved, hidden,
+  closed or a draft — `vinted.js wardrobeItem`), Depop's listing JSON-LD (not SoldOut).
+- **The price** (`dropped`): per site from that site's live price (her hand changes count), whole dollars rounded down
+  from 90% ($25 → $22, $40 → $36, $95 → $85, $110 → $99, $20 → $18): every cut ≥ 10% (Poshmark tells the likers). Under
+  the floor or the site's minimum (`SITE_MIN`: Poshmark $3, Depop / Vinted $1) → that site skipped for the stage, never
+  a smaller cut. Nothing else on the listing changes.
+- **Doing it** (`run_one` from each site worker when it has no take-down and no listing — `parallel.price_drop`; inside
+  the posting hours, LIVE poster, never with PAUSE, the lid closed or the site stopped): Poshmark (`PoshmarkPoster.
+  set_price`): the edit page's Listing Price (its dialog: the listing price only; Smart Sell must be off), read back,
+  Update → the Share Listing panel's List This Item for THIS edit (WO40) once, the public page read until it shows the
+  new price. Depop / Vinted (`ExtensionPoster.set_price`, the extension's "price" job on the edit page — `T.priceSet`):
+  the page's price must be the one read (else nothing typed: `mismatch`, read again next turn); Depop's fields its edit
+  page left blank (category, size, brand, condition, colours — the Tory loafers, 2026-10-13) filled from the listing's
+  `fields_json` first (`depop.js refill`); the price typed, read back, Save once; then the site's own data read. Right
+  before the Save `go()` asks GET /tasks once more: a sale that arrived meanwhile stops it (row `skipped`); `sales.
+  skip_sold` calls off an item's open drops.
+- **One Save, never two blind:** `saving` at the go-ahead; the site showing the new price → `done`; not yet →
+  `unconfirmed`, read again 5 min later (the new price → done; lower than the old → she changed it by hand → done; the
+  old price → one failed attempt, the next window — never saved again in the same turn). A failure is retried 6 hours
+  later; 3 → ONE private line "Price drop on <Site> failed for <title>: $X → $Y. Please change it by hand."
+- **The group** (`announce`, housekeeping): ONE line a day once nothing is left to try now — "🔻 Prices down 10% today:
+  Levi's 501 Cutoff Shorts $25 → $22 · Zara Mini Skirt $25 → $22 (last drop)." (the card's short name; sites at
+  different prices listed per site); nothing on a day without drops (kv `price_drop_said`).
+- **Controls:** a reply `no drop` to any of the item's messages (its card, its ✅ line) → `items.no_drop`, open drops
+  called off, answered at once (`approve._reply_no_drop`); `thrift price-drop --list | --skip <item> | --dry-run <item>
+  (the edit pages filled, never saved; screenshots in failed/shots, a line to the ops chat) | --now <item>` — the dry run
+  and --now are made by the running poster.
+- **Records:** `price_changes` (item, site, stage auto_1 | auto_2 | dry, old / new price, pct, status pending | saving |
+  done | unconfirmed | failed | skipped, attempts, error, evidence, due / retry / done / announced at; dry rows never
+  synced), `listings.price_live` / `price_read_at`; all synced to thrift-api (`/sync` takes `price_changes`; the API's
+  schema adds the columns where missing — `schema.COLUMNS`). A sale keeps how many drops its item had (`sales.drops`,
+  set when its take-downs are made); its price is the sale's. The dashboard: per item "live since … · N days · drop Oct 30
+  $25 → $22 · next drop …", the price now (the lowest live site price), and a "Drops due this week" card.
+
 ## The sites' sold orders, read only (WO38, 2026-10-14)
 None of the three sites emails the seller when an order ships (Poshmark's "Thank you for shipping" aside): the shipping
 state lives on each site. The poster reads each site's sold orders itself, and the API's reminders, overdue line and

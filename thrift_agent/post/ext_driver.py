@@ -48,6 +48,16 @@ AUTOPUBLISH_NEEDS = frozenset({"submit", "after_publish"})  # the unattended loo
 # WO33: Vinted's Hide; Depop's DELETE (the owner's decision, 2026-10-08: its page offers no Mark as sold)
 DELIST_NEEDS = {"vinted": frozenset({"hide"}), "depop": frozenset({"delete_button", "delete_dialog", "delete_confirm"})}
 STOP_PAGES = ("login", "block", "captcha", "verify")
+
+
+def money(value) -> float | None:
+    """WO41: a price as a site gives it — 25, "25.0", "$25.00", {"amount": "25.0"} — as a number; None when none."""
+    if isinstance(value, dict):
+        value = value.get("amount")
+    if isinstance(value, (int, float)):
+        return float(value)
+    m = re.search(r"\d+(?:\.\d+)?", str(value or "").replace(",", ""))
+    return float(m[0]) if m else None
 WHAT = {"login": "not logged in in the Thrift Chrome", "block": "the site turned the Thrift Chrome away (block page)",
         "captcha": "a CAPTCHA is shown in the Thrift Chrome", "verify": "the site asks for a check (verification)"}
 AFTER_CLICK_MIN = 200.0     # after the go-ahead the job gets at least this long to land (the extension waits 3 min)
@@ -631,6 +641,133 @@ class ExtensionPoster(Poster):
             return {**out, "ok": True}
         return {**out, "ok": False, "error": f"after Save the listing's first photo is {first or 'not shown'}, not the "
                                              f"one moved ({moved})"}
+
+    # ---- WO41: a price drop on the listing's edit page
+
+    async def read_price(self, ctx, url: str) -> dict:
+        """The listing's price as the site's own data shows it: Vinted — its JSON of the seller's items (the listing by
+        its id: the price, and whether it is reserved, hidden or closed); Depop — the listing page's JSON-LD (the price,
+        sold out or not). {"price"} | {"unavailable": why, "price"} | {"error"}; a login / CAPTCHA page stops the site."""
+        if not await self.wait_connected():
+            raise PosterError(f"{self.site}: the Thrift Chrome extension isn't connected")
+        if self.name == "vinted":
+            m = re.search(r"/items/(\d+)", url or "")
+            shop = self.shop or self.learned_shop or ""
+            if m is None or not shop:
+                return {"error": "no Vinted item id or member page to read"}
+            ev = await self._job("find", {"shop": shop, "wardrobe": True, "item_id": m[1]}, 180)
+            if ev.get("event") == "error":
+                if ev.get("page") in STOP_PAGES:
+                    raise self._stop(ev)
+                return {"error": str(ev.get("message") or "the wardrobe couldn't be read")}
+            item = ev.get("item")
+            if not isinstance(item, dict):
+                return {"error": "the listing isn't in Vinted's data of the seller's items"}
+            price = money(item.get("price"))
+            for flag, why in (("is_reserved", "reserved"), ("is_hidden", "hidden"), ("is_closed", "sold or closed"),
+                              ("is_draft", "a draft")):
+                if item.get(flag):
+                    return {"unavailable": why, "price": price}
+            return {"price": price} if price is not None else {"error": "no price in Vinted's data"}
+        address = self.listing_address(url)
+        if address is None:
+            return {"error": f"not a {self.name} listing address: {url}"}
+        ev = await self._job("verify", {"listing_url": address}, 180)
+        if ev.get("event") == "error":
+            if ev.get("page") in STOP_PAGES:
+                raise self._stop(ev)
+            return {"error": str(ev.get("message") or "the listing page couldn't be read")}
+        live = ev.get("live") or {}
+        price = money(live.get("price"))
+        if "soldout" in str(live.get("availability") or "").lower().replace(" ", ""):
+            return {"unavailable": "sold", "price": price}
+        return {"price": price} if price is not None else {"error": "no price on the listing page"}
+
+    async def set_price(self, ctx, url: str, old: float, new: float, dry: bool = False, shots: Path | None = None,
+                        go=None, fields: dict | None = None) -> dict:
+        """The listing's price from `old` to `new` on its edit page (the extension's "price" job): the page's price must
+        read `old` (else nothing is typed: {"mismatch"}); Depop's fields the edit page left blank (category, size, brand,
+        condition, colours — live 2026-10-13, the Tory loafers) are filled from the listing's own fields first; the
+        price typed and read back; then — never in a dry run, and only when `go()` says yes — Save pressed ONCE. Then
+        the site's own data is read for the new price. {"ok", "saved", "live_price", "mismatch", "refilled", "error",
+        "shot"}."""
+        edit = self.edit_url(url)
+        if edit is None:
+            return {"ok": False, "saved": False, "error": f"not a {self.site} listing address: {url}"}
+        if not await self.wait_connected():
+            raise PosterError(f"{self.site}: the Thrift Chrome extension isn't connected")
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        iid = (fields or {}).get("sku") or "listing"
+        self.shot = (shots or Path(".")) / f"{iid}-{self.name}-{stamp}-price{'-dry' if dry else ''}.png"
+        number = int(new) if float(new).is_integer() else new
+        bridge = self._bridge()
+        job = bridge.submit(self.name, "price", {"fields": fields or {}, "copy": {}, "price": number, "photos": [],
+                                                 "listing_url": url, "edit_url": edit, "expect": old, "dry": dry},
+                            shot=self.shot)
+        job.listener = self._listen
+        try:
+            out = await self._price(bridge, job, url, old, new, dry, go)
+        finally:
+            if not job.done:
+                bridge.drop(job)
+                try:
+                    await bridge.settle(job, 5.0)
+                except BaseException:  # noqa: BLE001
+                    pass
+        return out
+
+    async def _price(self, bridge: bridge_mod.Bridge, job: bridge_mod.Job, url: str, old: float, new: float,
+                     dry: bool, go) -> dict:
+        try:
+            ev = await self._await(job, ("ready", "result", "error"), job.created + bridge_mod.JOB_TIMEOUT)
+        except TimeoutError:
+            return {"ok": False, "saved": False, "error": "the edit page wasn't done in time: nothing saved"}
+        if ev.get("event") == "error":
+            if ev.get("page") in STOP_PAGES:
+                raise self._stop(ev)
+            return {"ok": False, "saved": False, "shot": self._kept(job, "form"),
+                    "error": f"{ev.get('stage') or 'edit'}: {ev.get('message')}"}
+        seen = ev.get("seen") or {}
+        out = {"ok": False, "saved": False, "shot": self._kept(job, "form"), "refilled": seen.get("refilled") or [],
+               "price_before": money(seen.get("price_before")), "notes": ev.get("notes") or []}
+
+        def cancel() -> None:
+            if ev.get("event") == "ready":
+                bridge.command(job, "cancel")
+        if seen.get("mismatch") or out["price_before"] is None or float(out["price_before"]) != float(old):
+            cancel()
+            return {**out, "mismatch": out["price_before"]}
+        typed = money(seen.get("price"))
+        if typed is None or float(typed) != float(new):
+            cancel()
+            return {**out, "error": f"the price reads {seen.get('price')!r} after typing {new}: nothing saved"}
+        if dry or ev.get("event") == "result":
+            cancel()
+            return {**out, "ok": bool(dry)}
+        if (n := seen.get("submit_buttons")) != 1:
+            cancel()
+            return {**out, "error": f"the edit page's Save differs from the recording ({n} found): nothing saved"}
+        if go is not None and not go():
+            cancel()
+            return {**out, "error": "stopped before Save"}
+        self._say("go-ahead sent: Save once")
+        bridge.command(job, "submit")
+        out["saved"] = True
+        try:
+            ev = await job.wait(("result", "error"), AFTER_CLICK_MIN)
+        except (TimeoutError, asyncio.TimeoutError):
+            ev = {"event": "error", "message": "no listing page after Save"}
+        out["shot"] = self._kept(job, "after-publish", "refused", "form") or out["shot"]
+        if ev.get("event") == "error" and str(ev.get("message") or "").startswith("refused:"):
+            out["error"] = f"{self.site} refused the change ({ev['message'][len('refused: '):]})"
+        # the site's own data decides, whatever the page after Save showed (a refusal is read too: never assumed)
+        read = await self.read_price(None, url)
+        out["live_price"] = read.get("price")
+        out["ok"] = out["live_price"] is not None and float(out["live_price"]) == float(new)
+        if (not out["ok"] and out.get("error") and out["live_price"] is not None
+                and float(out["live_price"]) == float(old)):
+            out["saved"] = False                    # refused, and the site still shows the old price: nothing saved
+        return out
 
     async def wait_connected(self, timeout: float = CONNECT_WAIT) -> bool:
         end = time.monotonic() + timeout

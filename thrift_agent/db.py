@@ -63,6 +63,18 @@ CREATE TABLE IF NOT EXISTS takedowns (
   id TEXT PRIMARY KEY, item_id TEXT NOT NULL, marketplace TEXT NOT NULL, listing_url TEXT, title TEXT,
   status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, error TEXT, fetched_at TEXT NOT NULL, done_at TEXT
 );
+CREATE TABLE IF NOT EXISTS price_changes (
+  id TEXT PRIMARY KEY, item_id TEXT NOT NULL, marketplace TEXT NOT NULL, stage TEXT NOT NULL,
+  old_price REAL, new_price REAL, pct REAL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, error TEXT,
+  evidence TEXT, dry INTEGER NOT NULL DEFAULT 0, due_at TEXT, retry_at TEXT, done_at TEXT, announced_at TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS api_dirty_price_ins AFTER INSERT ON price_changes WHEN NEW.dry = 0 BEGIN
+  INSERT OR REPLACE INTO api_dirty VALUES ('price_change', NEW.id, strftime('%Y-%m-%dT%H:%M:%f', 'now'));
+END;
+CREATE TRIGGER IF NOT EXISTS api_dirty_price_upd AFTER UPDATE ON price_changes WHEN NEW.dry = 0 BEGIN
+  INSERT OR REPLACE INTO api_dirty VALUES ('price_change', NEW.id, strftime('%Y-%m-%dT%H:%M:%f', 'now'));
+END;
 """
 
 # batch: new → needs_confirm → split | failed
@@ -78,6 +90,9 @@ CREATE TABLE IF NOT EXISTS takedowns (
 #        whoever made it), emptied by sales.push once the API took them; api_outbox: the other calls to the API
 #        (task results, the owner's 'shipped' replies) kept while it is out of reach and replayed in order;
 #        takedowns: the take-downs the API handed to this Mac (a sale elsewhere), done by the poster's site workers.
+# price_changes (WO41): one row per item, site and drop stage (auto_1 | auto_2; `dry` rows are the owner's dry runs,
+#        never synced): pending → saving (the moment before the one Save) → done | unconfirmed (saved, the site's data
+#        not yet showing it: read again before anything else) | failed (3 attempts: the owner is asked) | skipped.
 # outbox: every Telegram message the agent sent that expects a reply (kind batch | condition | kids | item | owner_q),
 #        so a reply or a button press can be mapped back to its batch/item. At most one is open at a time (WO20,
 #        approve.pump); the dev print is recorded under chat 'dev'. kv holds the getUpdates offset, the queue's
@@ -91,7 +106,14 @@ MIGRATIONS = {"items": {"cover_hash": "TEXT", "owner_price": "INTEGER", "owner_c
                         "owner_category": "TEXT",        # WO25: {"department", "category", "subcategory"} the owner picked
                         "owner_title": "TEXT",           # WO27: the owner's exact title (`thrift edit --title`)
                         "owner_sizes": "TEXT",           # WO33: [{"piece", "size"}] a set's pieces, the owner's
-                        "owner_size": "TEXT"}}           # WO33: the owner's size for the item ("size S" replied)
+                        "owner_size": "TEXT",            # WO33: the owner's size for the item ("size S" replied)
+                        "all_live_at": "TEXT",           # WO41: the price-drop clock — live on every site since
+                        "drop_stage": "INTEGER",         # WO41: 0, 1, 2 — drops made (never a third)
+                        "last_drop_at": "TEXT",          # WO41: when the last stage started
+                        "next_drop_at": "TEXT",          # WO41: when the next stage is due (none after the second)
+                        "no_drop": "TEXT"},              # WO41: the owner's 'no drop' (when she said it)
+              "listings": {"price_live": "REAL",         # WO41: the price last read on the site itself
+                           "price_read_at": "TEXT"}}
 
 
 def now() -> str:

@@ -51,7 +51,20 @@ TABLES = (
         price DOUBLE PRECISION, sold_at TEXT, status TEXT NOT NULL, status_text TEXT, seen_json TEXT,
         last_seen TEXT NOT NULL, first_seen TEXT NOT NULL,
         PRIMARY KEY (marketplace, order_id))""",
+    # WO41: the Mac's price drops (one row per item, site and stage auto_1 | auto_2), mirrored by /sync
+    """CREATE TABLE IF NOT EXISTS price_changes (
+        id TEXT PRIMARY KEY, item_id TEXT NOT NULL, marketplace TEXT NOT NULL, stage TEXT,
+        old_price DOUBLE PRECISION, new_price DOUBLE PRECISION, pct DOUBLE PRECISION, status TEXT, attempts INTEGER,
+        error TEXT, due_at TEXT, done_at TEXT, created_at TEXT, updated_at TEXT)""",
 )
+
+# Columns added after a table was first made (WO41), added where missing: Postgres by ADD COLUMN IF NOT EXISTS,
+# SQLite by its table_info (it has no IF NOT EXISTS there).
+COLUMNS = {
+    "items": {"all_live_at": "TEXT", "drop_stage": "INTEGER", "next_drop_at": "TEXT", "no_drop": "TEXT"},
+    "listings": {"price_live": "DOUBLE PRECISION", "price_read_at": "TEXT"},
+    "sales": {"drops": "INTEGER"},              # WO41: the item's price drops made before it sold
+}
 
 INDEXES = (
     "CREATE INDEX IF NOT EXISTS ix_listings_marketplace ON listings (marketplace, status)",
@@ -64,6 +77,7 @@ INDEXES = (
     "CREATE INDEX IF NOT EXISTS ix_delist_tasks_item ON delist_tasks (item_id, marketplace)",
     "CREATE UNIQUE INDEX IF NOT EXISTS ux_delist_tasks_sale_site ON delist_tasks (sale_id, marketplace)",
     "CREATE INDEX IF NOT EXISTS ix_orders_sale ON orders (sale_id)",
+    "CREATE INDEX IF NOT EXISTS ix_price_changes_item ON price_changes (item_id, marketplace)",
 )
 
 
@@ -72,7 +86,18 @@ def migrate(db: Database) -> None:
     with db.tx():
         if db.kind == "postgres":
             db.execute(f"SELECT pg_advisory_xact_lock({MIGRATION_LOCK})")
-        for statement in (*TABLES, *INDEXES):
+        for statement in TABLES:
+            db.execute(statement)
+        for table, columns in COLUMNS.items():
+            if db.kind == "postgres":
+                for column, kind in columns.items():
+                    db.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {kind}")
+                continue
+            have = {row["name"] for row in db.query(f"PRAGMA table_info({table})")}
+            for column, kind in columns.items():
+                if column not in have:
+                    db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+        for statement in INDEXES:
             db.execute(statement)
         db.execute("INSERT INTO settings (key, value) VALUES ('schema_version', ?) "
                    "ON CONFLICT (key) DO UPDATE SET value = excluded.value", (str(VERSION),))

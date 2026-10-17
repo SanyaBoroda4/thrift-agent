@@ -1103,6 +1103,52 @@ def cover_fix(items: list[str] = typer.Argument(..., help="the items whose live 
             print(f"{escape(iid)} {escape(line)}")
 
 
+@app.command("price-drop")
+def price_drop_cmd(list_: bool = typer.Option(False, "--list", help="each live item's drops: done, next, why none"),
+                   skip: str = typer.Option(None, "--skip", help="this item never drops (the twin of 'no drop')"),
+                   dry_run: str = typer.Option(None, "--dry-run", help="the item's next price filled in on each "
+                                                                       "site's edit page, never saved"),
+                   now: str = typer.Option(None, "--now", help="the item's next drop made now")) -> None:
+    """WO41: automatic price drops — 10% on every site 30 days after an item is live on all of them, 10% again 30 days
+    later, then never again. --dry-run and --now are done by the running poster (its next idle turn on each site)."""
+    from thrift_agent import pricedrop
+    s, db = settings(), _db()
+    if sum(map(bool, (list_, skip, dry_run, now))) != 1:
+        raise typer.BadParameter("one of --list, --skip <item>, --dry-run <item>, --now <item>")
+    if list_:
+        pricedrop.plan(db)
+        for line in pricedrop.listing_text(db) or ["no live item"]:
+            print(escape(line))
+        return
+    iid = skip or dry_run or now
+    if db.item(iid) is None:
+        raise typer.BadParameter(f"unknown item {iid}")
+    name = crosslist_name(db, iid)
+    if skip:
+        n = pricedrop.exclude(db, iid)
+        db.log(iid, "price_drop_excluded", {"by": "cli"})
+        notify.say(f"✓ No price drops for {name}" + (" (the drop under way called off)" if n else ""))
+        print(escape(f"{iid}: no price drops" + (f" ({n} open called off)" if n else "")))
+        return
+    if not s.is_prod:
+        raise typer.BadParameter("price drops are made on the Mac only (machine_role: prod)")
+    if dry_run:
+        sites = pricedrop.dry_rows(db, dry_run)
+        print(escape(f"{iid}: dry run queued for {', '.join(sites) or 'no live site'} — the running poster fills "
+                     "each edit page (nothing saved); the screenshots go to failed/shots, a line to the ops chat"))
+        return
+    if why := pricedrop.why_not(db, db.item(iid)):
+        raise typer.BadParameter(f"{iid} gets no drop: {why}")
+    started = pricedrop.plan(db, item=iid, force=True)
+    print(escape(f"{iid}: " + (f"{started[0].split(':')[1]} started — the running poster makes it on each site"
+                               if started else "no stage to start (two drops made already)")))
+
+
+def crosslist_name(db, iid: str) -> str:
+    from thrift_agent import crosslist
+    return crosslist.item_name(db, iid)
+
+
 @app.command("orders")
 def orders_cmd(probe: bool = typer.Option(False, "--probe", help="WO38 §1: each site's sold orders read and saved, "
                                                                  "scrubbed of buyer data"),

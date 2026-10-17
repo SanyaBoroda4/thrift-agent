@@ -48,8 +48,14 @@ SAME_SALE_WINDOW = timedelta(days=3)
 # tasks made together come out in the sites' order: Poshmark, Depop, Vinted
 SITE_SORT = "CASE {0}marketplace WHEN 'poshmark' THEN 0 WHEN 'depop' THEN 1 WHEN 'vinted' THEN 2 ELSE 3 END"
 TASK_ORDER = f"created_at, {SITE_SORT.format('')}, id"
-ITEM_COLUMNS = ("title", "brand", "size", "price", "created_at")
-LISTING_COLUMNS = ("status", "url", "listing_id", "sku", "price", "posted_at")
+ITEM_COLUMNS = ("title", "brand", "size", "price", "created_at",
+                "all_live_at", "drop_stage", "next_drop_at", "no_drop")              # WO41: the price-drop clock
+LISTING_COLUMNS = ("status", "url", "listing_id", "sku", "price", "posted_at", "price_live", "price_read_at")
+PRICE_COLUMNS = ("item_id", "marketplace", "stage", "old_price", "new_price", "pct", "status", "attempts", "error",
+                 "due_at", "done_at", "created_at")                                   # WO41: the Mac's price drops
+NUMBERS = ("price", "price_live", "old_price", "new_price", "pct")
+INTEGERS = ("drop_stage", "attempts")
+TIMES = ("created_at", "posted_at", "all_live_at", "next_drop_at", "no_drop", "price_read_at", "due_at", "done_at")
 
 
 class Outbox:
@@ -447,6 +453,9 @@ def _create_tasks(db: Database, sale_id: str | None, item_id: str, mp: str, now:
         if db.one(f"SELECT id FROM delist_tasks WHERE marketplace = ? AND ((sale_id IS NOT NULL AND sale_id = ?) "
                   f"OR (item_id = ? AND status IN ({marks}))) LIMIT 1", (row["marketplace"], sale_id, item_id, *skip)):
             continue
+        if sale_id:                                # WO41: how many price drops the item had when it sold (once)
+            db.execute("UPDATE sales SET drops = (SELECT drop_stage FROM items WHERE id = ?) WHERE id = ? "
+                       "AND drops IS NULL", (item_id, sale_id))
         task_id = util.new_id("t_")
         db.execute("INSERT INTO delist_tasks (id, sale_id, item_id, marketplace, listing_url, status, attempts, created_at) "
                    "VALUES (?, ?, ?, ?, ?, 'pending', 0, ?)", (task_id, sale_id, item_id, row["marketplace"], row["url"],
@@ -696,8 +705,9 @@ def sync(db: Database, body: dict, now: datetime | None = None) -> dict:
     if not isinstance(body, dict):
         raise BadRequest("the body must be a JSON object")
     items, listings = body.get("items") or [], body.get("listings") or []
-    if not isinstance(items, list) or not isinstance(listings, list):
-        raise BadRequest("items and listings must be lists")
+    changes = body.get("price_changes") or []                     # WO41
+    if not isinstance(items, list) or not isinstance(listings, list) or not isinstance(changes, list):
+        raise BadRequest("items, listings and price_changes must be lists")
     counts = {"items": dict.fromkeys(("inserted", "updated", "unchanged"), 0),
               "listings": dict.fromkeys(("inserted", "updated", "unchanged"), 0)}
     with db.tx():
@@ -713,6 +723,13 @@ def sync(db: Database, body: dict, now: datetime | None = None) -> dict:
                 raise BadRequest("every listing needs an item_id and a marketplace")
             counts["listings"][_upsert(db, "listings", {"item_id": item_id, "marketplace": marketplace}, raw,
                                        LISTING_COLUMNS, now)] += 1
+        if changes:
+            counts["price_changes"] = dict.fromkeys(("inserted", "updated", "unchanged"), 0)
+        for raw in changes:
+            change_id = _text(raw.get("id")).strip() if isinstance(raw, dict) else ""
+            if not change_id or not _text(raw.get("item_id")).strip():
+                raise BadRequest("every price change needs an id and an item_id")
+            counts["price_changes"][_upsert(db, "price_changes", {"id": change_id}, raw, PRICE_COLUMNS, now)] += 1
         # WO40: a listing that reaches the mirror after its item sold (posted, or posted again) gets its take-down
         for item_id in sorted({_text(r.get("item_id")).strip() for r in listings
                                if _text(r.get("status")).strip().lower() == "posted"}):
@@ -737,9 +754,14 @@ def _upsert(db: Database, table: str, key: dict, raw: dict, columns: tuple, now:
 
 
 def _column(column: str, value: object) -> object:
-    if column == "price":
+    if column in NUMBERS:
         return util.number(value)
-    if column in ("created_at", "posted_at"):
+    if column in INTEGERS:
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+    if column in TIMES:
         moment = parse_time(value)
         return iso(moment) if moment else None
     if value is None:
@@ -1080,11 +1102,21 @@ def dashboard_data(db: Database, now: datetime | None = None) -> dict:
     of our items (something listed by hand) is a row of its own too — its title as the site gave it, no listings — so
     every sale's shipping state shows and "to ship" counts it."""
     now = _clock(now)
-    items = {row["id"]: {**row, "listings": {}, "sale": None}
-             for row in db.query("SELECT id, title, price, created_at FROM items ORDER BY created_at, id")}
-    for row in db.query("SELECT item_id, marketplace, status, url FROM listings"):
+    items = {row["id"]: {**{k: row[k] for k in ("id", "title", "price", "created_at")}, "listings": {}, "sale": None,
+                         "drops": _drops(row, now)}
+             for row in db.query("SELECT id, title, price, created_at, all_live_at, drop_stage, next_drop_at, no_drop "
+                                 "FROM items ORDER BY created_at, id")}
+    for row in db.query("SELECT item_id, marketplace, status, url, price_live FROM listings"):
         if row["item_id"] in items:
             items[row["item_id"]]["listings"][row["marketplace"]] = {"status": row["status"], "url": row["url"]}
+            if row["status"] == "posted" and row["price_live"] is not None:     # WO41: the price on the site now
+                drops = items[row["item_id"]]["drops"]
+                drops["price_now"] = min(drops.get("price_now") or row["price_live"], row["price_live"])
+    for row in db.query("SELECT item_id, marketplace, old_price, new_price, done_at FROM price_changes "
+                        "WHERE status = 'done' ORDER BY done_at"):
+        if row["item_id"] in items:
+            items[row["item_id"]]["drops"]["done"].append(
+                {k: row[k] for k in ("marketplace", "old_price", "new_price", "done_at")})
     rank = {"cancelled": 0, "double_sale": 1}
     chosen: dict[str, tuple] = {}
     for row in db.query("SELECT s.item_id, s.marketplace, s.sold_at, s.price, s.ship_by, s.shipped_at, s.delivered_at, "
@@ -1117,6 +1149,16 @@ def dashboard_data(db: Database, now: datetime | None = None) -> dict:
             items[entry["item_id"]]["still_listed"] = [site_name(m) for m in entry["sites"]]
     return {"items": list(items.values()), "unmatched": unmatched, "swept": swept, "generated_at": iso(now),
             "late_takedowns": [{**e, "line": late_line(e)} for e in late]}
+
+
+def _drops(row: dict, now: datetime) -> dict:
+    """WO41: an item's price drops for the dashboard — live on all its sites since, days live, the stage, the next
+    drop (none after the second, or with the owner's 'no drop'); the drops made are added from price_changes."""
+    since = parse_time(row.get("all_live_at"))
+    nxt = parse_time(row.get("next_drop_at")) if not row.get("no_drop") else None
+    return {"live_since": iso(since) if since else None, "days_live": (now - since).days if since else None,
+            "stage": int(row.get("drop_stage") or 0), "next_drop_at": iso(nxt) if nxt else None,
+            "no_drop": bool(row.get("no_drop")), "done": [], "price_now": None}
 
 
 SHIPPING = ("to_ship", "shipped", "delivered", "completed")

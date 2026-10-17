@@ -13,6 +13,8 @@ Depop and Vinted at the same time — about the slowest site's minute, not the s
 - Unchanged: one click per publish, 'posting' at the go-ahead (extension) / before the form (Poshmark), never retried
   blind, the shop check, 3 attempts then skipped.
 - The group's line for an item goes out once all its sites are settled (crosslist.announce, under one lock).
+- WO41: a worker with no take-down and no listing to do makes its site's next due price drop (pricedrop.run_one); the
+  housekeeping starts the stages that fell due and sends the day's ONE "🔻 Prices down" line once they're done.
 `poster.parallel: false` keeps the sequential loop (runner.run's own)."""
 from __future__ import annotations
 
@@ -25,7 +27,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from thrift_agent import catalogs, crosslist, daily, notify, orders, power, sales
+from thrift_agent import catalogs, crosslist, daily, notify, orders, power, pricedrop, sales
 from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
 from thrift_agent.post import runner
@@ -34,6 +36,7 @@ from thrift_agent.scheduler import can_post, next_gap, windows
 
 IDLE = 20.0            # a worker with nothing to do looks again after this many seconds
 HOUSEKEEPING = 15.0    # the shared duties (heartbeat, feeding the cross rows, requests) run this often
+PLAN_EVERY = 600.0     # WO41: the price-drop stages that fell due are looked for this often
 ANNOUNCE_LOCK = threading.Lock()
 
 
@@ -72,6 +75,16 @@ async def takedowns(site: str, poster, db: DB, ctx, sites: list[str] | None = No
     calls on 2026-10-09 — and the API's log hit its 0.1 GB daily cap), then one done."""
     sales.fetch_tasks(db, sites or [site])
     return await sales.run_takedown(site, poster, db, ctx, ready=delist_ready, shots=shots)
+
+
+async def price_drop(s: Settings, db: DB, site: str, poster, ctx, sites: list[str], dry: bool) -> bool:
+    """WO41: the site's next due price drop, on a turn with no take-down and no listing to do. A login / CAPTCHA page
+    stops the site for the window, as a listing's would. True when it worked on one."""
+    try:
+        return await pricedrop.run_one(s, db, site, poster, ctx, sites, dry=dry)
+    except AccountBlocked as e:
+        crosslist.block(db, site, str(e), e.page)
+        return True
 
 
 def maybe_announce(s: Settings, db: DB, iid: str) -> str | None:
@@ -249,6 +262,8 @@ async def _poshmark_turn(s, db, ps, ctx, dry, stage, state, awake, failures, mar
     if job is not None and runner._paused(db):
         job = None
     if job is None:
+        if await price_drop(s, db, "poshmark", ps["poshmark"], ctx, marketplaces, dry):
+            return True
         state.idle("poshmark")
         return False
     iid, mp, render, mode = job
@@ -323,6 +338,8 @@ async def _cross_turn(s, db, ps, mp, dry, state, awake, takedowns) -> bool:
         return False
     job = crosslist.next_job(s, db, mps=[mp])
     if job is None:
+        if await price_drop(s, db, mp, poster, None, list(ps), dry):
+            return True
         state.idle(mp)
         return False
     iid = job[0]
@@ -358,6 +375,7 @@ def _posh_waiting(s, db, dry) -> bool:
 
 async def _housekeeping(s, db, ps, cross, dry, stop, state, sites, until_idle) -> None:
     beat_live = not dry
+    planned = None
     while not stop.is_set():
         try:
             daily.poster_beat(db, pid=os.getpid(), live=beat_live, busy=state.first_busy(), next_at=None,
@@ -373,6 +391,11 @@ async def _housekeeping(s, db, ps, cross, dry, stop, state, sites, until_idle) -
                 await runner.serve_requests(s, db, {mp: ps[mp] for mp in cross}, None)
             for iid in crosslist.waiting_lines(db):          # a line held by a site that was away: due now?
                 maybe_announce(s, db, iid)
+            if not dry and s.get("price_drop.enabled", True):  # WO41: the stages that fell due; the day's one line
+                if planned is None or time.monotonic() - planned >= PLAN_EVERY:
+                    pricedrop.plan(db)
+                    planned = time.monotonic()
+                pricedrop.announce(s, db)
             if until_idle and state.all_idle(sites) and _nothing_left(s, db, sites, dry):
                 stop.set()
                 return
@@ -383,6 +406,8 @@ async def _housekeeping(s, db, ps, cross, dry, stop, state, sites, until_idle) -
 
 def _nothing_left(s, db, sites, dry) -> bool:
     """No row any worker could still take now (the test runs' end): a site stopped for the window takes none."""
+    if not dry and any(pricedrop.due_rows(db, m) and pricedrop.may_drop(s, db, m, dry) for m in sites):
+        return False
     if ("poshmark" in sites and not crosslist.blocked(db, "poshmark")
             and runner.next_job(s, db, ["poshmark"], dry) is not None):
         return False

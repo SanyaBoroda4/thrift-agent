@@ -113,6 +113,8 @@ class FakeExtension:
         self.connected = asyncio.Event()
         self.task: asyncio.Task | None = None
         self.writer = None
+        self.price_on: dict[str, float] = {}            # WO41: each site's listing price as the site shows it
+        self.state: dict[str, str] = {}                 # WO41: a Vinted listing "reserved" / "hidden"
 
     def start(self) -> asyncio.Task:
         if self.task is None:
@@ -199,11 +201,61 @@ class FakeExtension:
                    live={"first_photo": after[0].replace("/P2.jpg", "/P0.jpg"), "photos": n})
         await writer.drain()
 
+    async def price(self, writer, job: dict, commands: asyncio.Queue) -> None:
+        """WO41: the edit page's price — it reads the site's price (`price_on`; a different one than the job expects:
+        nothing typed); an Outcome note "blank": Depop's category and brand were blank and are filled; "refused": the
+        Save is refused (the price stays); "stale": saved, but the site keeps showing the old price."""
+        jid, site = job["job_id"], job["site"]
+        res = self.next_result(site) if (self.results or site in self.sites) else Outcome("posted")
+        before = self.price_on.setdefault(site, float(job["expect"]))
+        mismatch = float(before) != float(job["expect"])
+        seen = {"price_before": f"{before:g}", "price": None if mismatch else str(job["price"]), "mismatch": mismatch,
+                "refilled": ["category", "brand"] if res.note == "blank" else [], "submit_buttons": 1}
+        if job.get("dry"):
+            self.event(writer, event="result", job_id=jid, dry_run=True, seen=seen, failed=[], guesses=[], notes=[])
+            await writer.drain()
+            return
+        self.event(writer, event="ready", job_id=jid, seen=seen, failed=[], guesses=[], notes=[])
+        await writer.drain()
+        cmd = await asyncio.wait_for(commands.get(), 30)
+        if cmd["type"] != "submit":
+            self.event(writer, event="error", job_id=jid, stage="cancelled", page="form", message="cancelled")
+            await writer.drain()
+            return
+        self.clicks += 1
+        self.clicked.append((site, "price"))
+        if res.note == "refused":
+            self.event(writer, event="error", job_id=jid, stage="after_publish", page="form",
+                       message="refused: Category: This field is required")
+            await writer.drain()
+            return
+        if res.note != "stale":
+            self.price_on[site] = float(job["price"])
+        self.event(writer, event="result", job_id=jid, url=job.get("listing_url"), live={"photos": 1})
+        await writer.drain()
+
     async def answer(self, writer, job: dict, commands: asyncio.Queue) -> None:
         self.jobs.append(job)
         jid, mode, site = job["job_id"], job["mode"], job["site"]
         if mode == "cover":                             # WO37: a live listing's cover, on its edit page
             await self.cover(writer, job, commands)
+            return
+        if mode == "price":                             # WO41: a price drop, on its edit page
+            await self.price(writer, job, commands)
+            return
+        if mode == "find" and job.get("item_id"):      # WO41: one Vinted listing in its own JSON, by its id
+            price = self.price_on.get(site)
+            item = None if price is None else {"id": job["item_id"], "price": {"amount": f"{price:.1f}"},
+                                               "is_reserved": self.state.get(site) == "reserved",
+                                               "is_hidden": self.state.get(site) == "hidden"}
+            self.event(writer, event="result", job_id=jid, item=item, source="wardrobe")
+            await writer.drain()
+            return
+        if mode == "verify" and site in self.price_on:  # WO41: Depop's listing page, its JSON-LD price
+            self.event(writer, event="result", job_id=jid, url=job.get("listing_url"),
+                       live={"price": f"${self.price_on[site]:.2f}", "photos": 1,
+                             "availability": "SoldOut" if self.state.get(site) == "sold" else "InStock"})
+            await writer.drain()
             return
         if mode in ("find", "verify", "check_login", "delist"):
             res = self.next_result(site) if (self.results or site in self.sites) else Outcome("posted")

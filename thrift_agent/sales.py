@@ -141,7 +141,19 @@ def item_doc(db: DB, iid: str) -> dict | None:
     render = (loads(it["renders"]) or {}).get("poshmark") or {}
     return {"id": iid, "title": render.get("title"), "brand": render.get("brand"), "size": render.get("size"),
             "price": it["owner_price"] or render.get("price"), "created_at": it["created_at"],
-            "updated_at": it["updated_at"]}
+            "updated_at": it["updated_at"],
+            # WO41: the price-drop clock and stage
+            "all_live_at": it["all_live_at"], "drop_stage": it["drop_stage"] or 0, "next_drop_at": it["next_drop_at"],
+            "no_drop": it["no_drop"]}
+
+
+def price_doc(db: DB, rid: str) -> dict | None:
+    """WO41: one price change (never a dry run) as /sync takes it."""
+    row = db.conn.execute("SELECT * FROM price_changes WHERE id=? AND dry=0", (rid,)).fetchone()
+    if row is None:
+        return None
+    return {k: row[k] for k in ("id", "item_id", "marketplace", "stage", "old_price", "new_price", "pct", "status",
+                                "attempts", "error", "due_at", "done_at", "created_at", "updated_at")}
 
 
 def listing_doc(db: DB, iid: str, mp: str) -> dict | None:
@@ -150,7 +162,8 @@ def listing_doc(db: DB, iid: str, mp: str) -> dict | None:
         return None
     return {"item_id": iid, "marketplace": mp, "status": row["status"], "url": row["url"],
             "listing_id": row["listing_id"], "sku": iid if mp == "depop" else None, "price": row["price"],
-            "posted_at": row["posted_at"], "updated_at": row["updated_at"]}
+            "posted_at": row["posted_at"], "updated_at": row["updated_at"],
+            "price_live": row["price_live"], "price_read_at": row["price_read_at"]}           # WO41
 
 
 def push(db: DB, client: Api) -> int:
@@ -162,18 +175,22 @@ def push(db: DB, client: Api) -> int:
                                (BATCH,)).fetchall()
         if not rows:
             return sent
-        items, listings = [], []
+        items, listings, changes = [], [], []
         for kind, key, _ in rows:
             if kind == "item":
                 doc = item_doc(db, key)
                 if doc:
                     items.append(doc)
+            elif kind == "price_change":                 # WO41
+                doc = price_doc(db, key)
+                if doc:
+                    changes.append(doc)
             else:
                 iid, _, mp = key.partition("|")
                 doc = listing_doc(db, iid, mp)
                 if doc:
                     listings.append(doc)
-        client.post("/sync", {"items": items, "listings": listings})
+        client.post("/sync", {"items": items, "listings": listings, **({"price_changes": changes} if changes else {})})
         with db.tx() as c:
             for kind, key, changed_at in rows:
                 c.execute("DELETE FROM api_dirty WHERE kind=? AND key=? AND changed_at=?", (kind, key, changed_at))
@@ -318,7 +335,10 @@ def pending(db: DB, site: str | None = None) -> list:
 
 
 def skip_sold(db: DB, iid: str) -> list[str]:
-    """The item sold: its rows still queued anywhere are skipped (sold) — never listed after the sale (WO33 A1)."""
+    """The item sold: its rows still queued anywhere are skipped (sold) — never listed after the sale (WO33 A1) —
+    and its price drops not yet saved are called off (WO41)."""
+    from thrift_agent import pricedrop
+    pricedrop.cancel(db, iid, "sold")
     skipped = []
     for row in db.listings_for(iid):
         if row["status"] == "queued":

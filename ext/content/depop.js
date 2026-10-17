@@ -545,6 +545,42 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
       }, { limit: 60000 });                                 // the checks, a size read again, the page left to settle
     },
 
+    // WO41: the edit page's fields it left blank (live 2026-10-13: the Tory loafers' category, brand, condition and
+    // colour came up empty and Save was refused) filled from the listing's own fields — only the blank ones, nothing
+    // that shows a value is touched.
+    async refill(job, st) {
+      const f = job.fields || {};
+      const ids = S().combo.ids;
+      const of = (cid) => document.getElementById(cid)?.value || "";
+      st.refilled = [];
+      await T.quiet(600, 4000);
+      if (f.category && !of(ids.category)) {
+        await T.step("category", st, async () =>
+          choose(st, ids.category, f.category, { typed: f.category.split(" > ").pop(), category: true }));
+        st.refilled.push("category");
+      }
+      if (f.size && document.getElementById(ids.size) && !of(ids.size)) {
+        await T.step("size", st, async () => size(st, f.size));
+        st.refilled.push("size");
+      }
+      if (document.getElementById(ids.brand) && !of(ids.brand)) {
+        await T.step("brand", st, async () => (f.brand ? brand(st, f.brand, f.brand_typed, T.brandNames(f))
+          : brandOther(st, null)), { limit: 60000 });
+        st.refilled.push("brand");
+      }
+      if (f.condition && !of(ids.condition)) {
+        await T.step("condition", st, async () => choose(st, ids.condition, f.condition));
+        st.refilled.push("condition");
+      }
+      if ((f.colors || []).length && document.getElementById(ids.colour) && !T.chipsOf(ids.colour).length) {
+        for (const c of f.colors.slice(0, 2)) {
+          await T.step(ids.colour, st, async () => choose(st, ids.colour, c, { optional: true }));
+        }
+        st.refilled.push("colour");
+      }
+      if (st.refilled.length) st.notes.push(`blank on the edit page, filled from the listing: ${st.refilled.join(", ")}`);
+    },
+
     // The form as it is: the single-selects' values, the multi-selects' chips (the category's input shows its leaf
     // name: our path when it is that name, chosen under the department heading).
     readBack(job, st) {

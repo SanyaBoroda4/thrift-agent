@@ -590,20 +590,23 @@
     const t0 = performance.now();
     try {
       if (job.mode === "cover") await T.coverFirst(job, st);          // WO37: the right photo first, nothing else
+      else if (job.mode === "price") await T.priceSet(job, st);       // WO41: the price, nothing else
       else await site.fill(job, (photos || []).map(T.fileOf), st);
     } catch (e) {
       await T.screenshot("form");
       return fail(st.failed.length ? st.failed[0].split(":")[0] : "fill", "form",
                   String(e && e.message ? e.message : e).slice(0, 300));
     }
-    const seen = job.mode === "cover" ? T.coverSeen(job, st) : site.readBack(job, st);
-    seen.submit_buttons = (job.mode === "cover" ? T.saveButtons(job.site) : site.submitButtons()).length;
+    const edit = job.mode === "cover" || job.mode === "price";
+    const seen = job.mode === "cover" ? T.coverSeen(job, st) : job.mode === "price" ? T.priceSeen(job, st)
+      : site.readBack(job, st);
+    seen.submit_buttons = (edit ? T.saveButtons(job.site) : site.submitButtons()).length;
     seen.fill_ms = Math.round(performance.now() - t0);
     T.emit({ event: "step", job_id: job.job_id, name: "submit_seen", ok: seen.submit_buttons === 1,
              detail: `${seen.submit_buttons} button(s)` });
     await T.screenshot("form");
     const report = { job_id: job.job_id, seen, failed: st.failed, guesses: st.guesses, notes: st.notes, shown: st.shown };
-    if (job.mode === "dry_run" || (job.mode === "cover" && job.dry)) {
+    if (job.mode === "dry_run" || (edit && job.dry)) {
       return T.emit({ event: "result", dry_run: true, ...report });   // a cover dry run: moved on the page, never saved
     }
     if (T.off.has(job.job_id)) return fail("cancelled", "form", "called off by the bridge");
@@ -611,7 +614,7 @@
     const ok = await new Promise((resolve) => { go = resolve; });     // the bridge's go-ahead, after its diff
     go = null;
     if (!ok) return fail("cancelled", "form", "cancelled");
-    if (job.mode === "cover") {
+    if (edit) {
       try {
         await T.saveEdit(job, st);                                    // exactly one click on Save
       } catch (e) {
@@ -745,6 +748,32 @@
     st.notes.push("Save pressed once");
     await T.click(save);
   };
+
+  // ---- WO41: a price drop on the listing's edit page — the price field read (it must be the price the bridge read
+  // on the site: else nothing is typed), Depop's fields its edit page left blank filled from the listing's own (live
+  // 2026-10-13: the Tory loafers' edit page came up without category, brand, condition and colour, and Save was
+  // refused), then the new price typed and read back. Nothing else on the listing is touched.
+  T.money = (v) => {
+    const m = String(v ?? "").replace(/,/g, "").match(/\d+(?:\.\d+)?/);
+    return m ? Number(m[0]) : null;
+  };
+  T.priceSet = async (job, st) => {
+    const box = await T.need(T.selectors[job.site].steps.price.selectors, "price");
+    await T.until(() => (T.money(box.value) != null ? true : null), 10000);
+    st.priceBefore = box.value;
+    if (job.expect != null && T.money(box.value) !== Number(job.expect)) {
+      st.priceMismatch = true;
+      st.notes.push(`the edit page shows ${box.value}, not ${job.expect}: nothing typed`);
+      return;
+    }
+    const site = T.sites[job.site];
+    if (site.refill) await site.refill(job, st);
+    await T.step("price", st, async () => T.type(box, String(job.price)));
+    await T.settle(300);
+    st.priceAfter = box.value;
+  };
+  T.priceSeen = (job, st) => ({ price_before: st.priceBefore ?? null, price: st.priceAfter ?? null,
+                                mismatch: !!st.priceMismatch, refilled: st.refilled || [] });
 
   // WO35: a listing's title as the site keeps it, the same as ours (spaces aside — the exact words, the exact case).
   T.sameTitle = (a, b) => String(a ?? "").replace(/\s+/g, " ").trim() === String(b ?? "").replace(/\s+/g, " ").trim();

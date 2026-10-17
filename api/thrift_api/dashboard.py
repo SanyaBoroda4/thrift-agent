@@ -9,7 +9,9 @@ The snapshot. Only these keys are read, so nothing else a record carries (the bu
                 "listings": {"poshmark" | "depop" | "vinted": {"status", "url"}},      # a site may be missing
                 "sale": None | {"marketplace", "sold_at", "price", "ship_by", "shipped_at", "status",
                                 "shipping"},                      # WO38: to_ship | shipped | delivered | completed …
-                "still_listed": ["Poshmark", …]}],     # WO40: sold, still listed there 2 h after the sale (absent: none)
+                "still_listed": ["Poshmark", …],     # WO40: sold, still listed there 2 h after the sale (absent: none)
+                "drops": {"live_since", "days_live", "stage", "next_drop_at", "no_drop", "price_now",     # WO41
+                          "done": [{"marketplace", "old_price", "new_price", "done_at"}]}}],
      "unmatched": int,                                                             # sales that matched no item
      "swept": {"poshmark" | "depop" | "vinted": "ISO-8601"},          # WO38: when each site's orders were last read
      "generated_at": "ISO-8601"}
@@ -247,7 +249,21 @@ def _item(raw: dict) -> dict:
     still = raw.get("still_listed")
     still = [str(s) for s in still if isinstance(s, str)][:3] if isinstance(still, list) else []
     return {"id": raw.get("id"), "title": raw.get("title"), "price": raw.get("price"),
-            "created_at": raw.get("created_at"), "sites": sites, "sale": sale, "still_listed": still}
+            "created_at": raw.get("created_at"), "sites": sites, "sale": sale, "still_listed": still,
+            "drops": _drops(raw.get("drops"))}
+
+
+def _drops(raw) -> dict | None:
+    """WO41: the item's price drops, only the keys the page shows."""
+    if not isinstance(raw, dict):
+        return None
+    done = [{k: d.get(k) for k in ("marketplace", "old_price", "new_price", "done_at")}
+            for d in raw.get("done") or [] if isinstance(d, dict)][:6]
+    stage = raw.get("stage")
+    days = raw.get("days_live")
+    return {"live_since": raw.get("live_since"), "days_live": days if isinstance(days, int) else None,
+            "stage": stage if isinstance(stage, int) else 0, "next_drop_at": raw.get("next_drop_at"),
+            "no_drop": raw.get("no_drop") is True, "price_now": _number(raw.get("price_now")), "done": done}
 
 
 def _is_sold(sale: dict | None) -> bool:
@@ -315,6 +331,7 @@ def _cards(items: list[dict], unmatched: int, zone: tzinfo, now: datetime) -> st
         f'<div class="card{" alert" if unmatched else ""}"><h2>Unmatched sales</h2>',
         f'<p class="num" id="c-unmatched">{unmatched}</p><p class="sub">matched no item</p></div>',
         _still_card(items),
+        _drops_card(items, zone, now),
         "</section>",
     ))
 
@@ -328,6 +345,49 @@ def _still_card(items: list[dict]) -> str:
                     for item in still)
     return (f'<div class="card alert" id="c-still"><h2>Sold, still listed</h2><p class="num">{len(still)}</p>'
             f"{lines}<p class=\"sub\">mark it sold there</p></div>")
+
+
+def _drops_card(items: list[dict], zone: tzinfo, now: datetime) -> str:
+    """WO41: the price drops due in the next 7 days (live, not sold), the soonest first."""
+    today = now.date()
+    due = []
+    for item in items:
+        drops = item.get("drops") or {}
+        day = _local_day(drops.get("next_drop_at"), zone) if drops.get("next_drop_at") else None
+        if day is not None and (day - today).days <= 7 and _is_active(item):
+            due.append((day, item))
+    due.sort(key=lambda x: x[0])
+    lines = "".join(f'<p class="sub">{_esc(_title(item["title"]))} — {_esc(_day(day, today))}</p>' for day, item in due[:8])
+    return (f'<div class="card" id="c-drops"><h2>Drops due this week</h2><p class="num">{len(due)}</p>'
+            f'{lines or "<p class=\"sub\">none</p>"}</div>')
+
+
+def _drops_line(item: dict, zone: tzinfo, today: date) -> str:
+    """WO41: under the item's title — live since (days), the drops made (day, old → new), the next drop's day."""
+    drops = item.get("drops")
+    if not drops or not drops.get("live_since") or not _is_active(item) and not drops["done"]:
+        return ""
+    bits = []
+    since = _local_day(drops["live_since"], zone)
+    if since is not None:
+        bits.append(f"live since {_day(since, today)}" + (f" · {drops['days_live']} days" if drops["days_live"]
+                                                          is not None else ""))
+    seen = set()
+    for d in drops["done"]:
+        day = _local_day(d.get("done_at"), zone)
+        key = (day, d.get("old_price"), d.get("new_price"))
+        if key in seen:
+            continue
+        seen.add(key)
+        bits.append(f"drop {_day(day, today) if day else ''} {_money(d.get('old_price'))} → {_money(d.get('new_price'))}")
+    nxt = _local_day(drops.get("next_drop_at"), zone) if drops.get("next_drop_at") else None
+    if drops.get("no_drop"):
+        bits.append("no drops (owner)")
+    elif nxt is not None and _is_active(item):
+        bits.append(f"next drop {_day(nxt, today)}")
+    elif drops["stage"] >= 2:
+        bits.append("no more drops")
+    return f' <span class="note dim">{_esc(" · ".join(bits))}</span>' if bits else ""
 
 
 def _filters() -> str:
@@ -357,8 +417,8 @@ def _row(item: dict, zone: tzinfo, today: date) -> str:
     cells = (
         _td("t", "Item", _esc(_title(item["title"])) + (
             f' <span class="warn still">⚠️ still listed on {_esc(", ".join(item["still_listed"]))}</span>'
-            if item.get("still_listed") else "")),
-        _td("p", "Price", _esc(_money(item["price"]))),
+            if item.get("still_listed") else "") + _drops_line(item, zone, today)),
+        _td("p", "Price", _esc(_money((item.get("drops") or {}).get("price_now") or item["price"]))),
         *(_td("s", name, _site(item["sites"].get(key), name)) for key, name in SITES),
         _td("d sale", "Sold", _sold_cell(sale, zone, today)),
         _td("d", "Ship by", _ship_by_cell(sale, zone, today)),

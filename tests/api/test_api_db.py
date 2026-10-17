@@ -14,12 +14,14 @@ from thrift_api.db import Database, postgres_sql, require_tls, sqlite_path
 from thrift_api.schema import migrate
 
 COLUMNS = {
-    "items": ["id", "title", "brand", "size", "price", "created_at", "updated_at"],
-    "listings": ["item_id", "marketplace", "status", "url", "listing_id", "sku", "price", "posted_at", "updated_at"],
+    "items": ["id", "title", "brand", "size", "price", "created_at", "updated_at",
+              "all_live_at", "drop_stage", "next_drop_at", "no_drop"],                               # WO41
+    "listings": ["item_id", "marketplace", "status", "url", "listing_id", "sku", "price", "posted_at", "updated_at",
+                 "price_live", "price_read_at"],                                                     # WO41
     "email_events": ["message_id", "thread_id", "marketplace", "kind", "subject", "received_at", "parsed_json",
                      "raw_text", "status", "attempts", "created_at"],
     "sales": ["id", "marketplace", "item_id", "listing_id", "title_seen", "price", "order_id", "sold_at", "ship_by",
-              "ship_by_source", "shipped_at", "delivered_at", "status", "message_id", "created_at"],
+              "ship_by_source", "shipped_at", "delivered_at", "status", "message_id", "created_at", "drops"],
     "delist_tasks": ["id", "sale_id", "item_id", "marketplace", "listing_url", "status", "attempts", "last_error",
                      "evidence", "lease_until", "created_at", "done_at"],
     "reminders": ["sale_id", "kind", "sent_at"],
@@ -28,6 +30,8 @@ COLUMNS = {
     "settings": ["key", "value"],
     "orders": ["marketplace", "order_id", "sale_id", "item_id", "title", "price", "sold_at", "status", "status_text",
                "seen_json", "last_seen", "first_seen"],
+    "price_changes": ["id", "item_id", "marketplace", "stage", "old_price", "new_price", "pct", "status", "attempts",
+                      "error", "due_at", "done_at", "created_at", "updated_at"],                     # WO41
 }
 
 

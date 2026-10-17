@@ -1008,6 +1008,8 @@ def _route_message(s: Settings, db: DB, bot: Bot, msg: dict) -> str:
     if row is None:
         return "ignored: not a reply to the bot"
     kind, ref = row["kind"], row["ref"]
+    if kind not in ("batch", "regroup") and _no_drop_reply(text):
+        return _reply_no_drop(db, bot, ref, mid)
     if kind == "batch":
         return _reply_batch(s, db, bot, ref, text, mid)
     if kind == "regroup":
@@ -1035,6 +1037,25 @@ def _route_message(s: Settings, db: DB, bot: Bot, msg: dict) -> str:
     if kind == "skipped":
         return _reply_skipped(s, db, bot, ref, text, mid)
     return f"ignored: unknown outbox kind {kind}"
+
+
+def _no_drop_reply(text: str) -> bool:
+    from thrift_agent import pricedrop
+    return bool(pricedrop.NO_DROP.match(text or ""))
+
+
+def _reply_no_drop(db: DB, bot: Bot, ref: str, mid: int | None) -> str:
+    """WO41: 'no drop' replied to an item's card (or any message of the item): its price never drops automatically."""
+    from thrift_agent import crosslist, pricedrop
+    iid = crosslist.split_ref(ref)[0]
+    if db.item(iid) is None:
+        bot.send_message("I can't tell which item that is — reply 'no drop' to the item's own card", reply_to=mid)
+        return f"no drop: unknown item {ref}"
+    called_off = pricedrop.exclude(db, iid)
+    bot.send_message(f"✓ No price drops for {crosslist.item_name(db, iid)} — its price stays as it is"
+                     + (" (the drop under way is called off)" if called_off else ""), reply_to=mid)
+    db.log(iid, "price_drop_excluded", {"by": "reply"})
+    return f"no drop {iid}"
 
 
 def _reply_skipped(s: Settings, db: DB, bot: Bot, ref: str, text: str, mid: int | None, kind: str = "skipped") -> str:

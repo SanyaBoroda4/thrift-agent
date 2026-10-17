@@ -1164,3 +1164,92 @@ def test_a_replacement_that_doesnt_take_is_never_saved(chrome, posh, photos, mon
     out, site = cover_fix(chrome, posh, photos, monkeypatch, dry=False, **variant)
     assert not out["ok"] and not out["saved"] and site.updates == 0, out
     assert "nothing saved" in out["error"]
+
+
+# ---------------------------------------------------------------- WO41: a price drop on the edit page
+
+EDIT_PRICE = """<html><body><h1>Edit Listing</h1>
+<div class="listing-editor__price-text-container"><span>Listing Price</span></div>
+<input type="text" data-vv-name="listingPrice" aria-label="form__text" readonly value="$%(price)s">
+<div data-test="modal-container" class="modal listing-price-suggestion-modal" id="price-modal" style="display:none">
+  <input id="listing-price-modal-listing-price-input" aria-label="Listing Price" type="text" value="%(price)s">
+  <label><input type="checkbox" data-test="toggle-input" id="smart-sell" %(smart)s></label>
+  <input id="listing-price-modal-original-price-input" type="text" value="120">
+  <button type="button" onclick="done()">Done</button>
+</div>
+<a data-et-name="delete" onclick="fetch('/api/delete')">Delete Listing</a>
+<button data-et-name="update" onclick="update()">Update</button>
+<div data-test="modal-container" id="share" hidden><div>‹ Back</div><h2>Share Listing</h2>
+  <button data-et-name="list" data-et-prop-flow_type="edit" data-et-prop-listing_id="%(lid)s"
+          onclick="save()">List This Item</button>
+</div>
+<script>
+  const box = document.querySelector('[data-vv-name=listingPrice]');
+  box.addEventListener('click', () => { document.getElementById('price-modal').style.display = 'block'; });
+  function done() {
+    box.value = '$' + document.getElementById('listing-price-modal-listing-price-input').value.trim();
+    document.getElementById('price-modal').style.display = 'none';
+  }
+  function save() {
+    fetch('/api/price?value=' + encodeURIComponent(box.value.replace('$', ''))).then(() => { location.href = '/listing/x'; });
+  }
+  function update() { document.getElementById('share').hidden = false; }
+</script></body></html>"""
+
+
+class PriceSite:
+    """The edit page with its price (WO41); every save recorded — the public listing then shows it."""
+
+    def __init__(self, price: int = 25, smart: bool = False):
+        self.price, self.smart, self.saves = price, smart, []
+
+    async def handle(self, route):
+        from urllib.parse import parse_qs, urlparse
+        url = route.request.url
+        path = urlparse(url).path
+        if not url.startswith(BASE + "/"):
+            await route.abort()
+        elif path == f"/edit-listing/{LISTING_ID}":
+            body = EDIT_PRICE % {"price": self.price, "lid": LISTING_ID, "smart": "checked" if self.smart else ""}
+            await route.fulfill(status=200, content_type="text/html; charset=utf-8", body=body)
+        elif path == "/api/price":
+            self.saves.append(parse_qs(urlparse(url).query)["value"][0])
+            self.price = int(self.saves[-1])
+            await route.fulfill(status=204, body="")
+        else:
+            await route.fulfill(status=200, content_type="text/html", body="<html><body>listing</body></html>")
+
+
+@pytest.fixture
+def price_site(monkeypatch):
+    site = PriceSite()
+    monkeypatch.setattr(poshmark, "PUBLIC_PAGE", lambda url: (True, site.price))
+    monkeypatch.setattr(poshmark, "PUBLIC_CHECK_S", 0.3)
+    monkeypatch.setattr(poshmark, "PUBLIC_EVERY_S", 0.1)
+    return site
+
+
+def test_wo41_a_price_drop_types_the_new_price_and_saves_once(chrome, posh, tmp_path, price_site):
+    out = run(chrome, price_site, lambda ctx: posh.set_price(ctx, URL, 25, 22, shots=tmp_path))
+    assert out["ok"] and out["saved"] and out["live_price"] == 22, out
+    assert price_site.saves == ["22"]                                  # List This Item once — the edit's save
+    assert out["save"] == "List This Item pressed"
+
+
+def test_wo41_a_dry_run_fills_the_price_and_saves_nothing(chrome, posh, tmp_path, price_site):
+    out = run(chrome, price_site, lambda ctx: posh.set_price(ctx, URL, 25, 22, dry=True, shots=tmp_path))
+    assert out["ok"] and not out["saved"] and out["price_typed"] == 22 and price_site.saves == []
+    assert posh.shot.with_suffix(".png").exists()
+
+
+def test_wo41_another_price_on_the_page_or_smart_sell_on_is_never_saved(chrome, posh, tmp_path, price_site):
+    price_site.price = 30                                              # she changed it since it was read
+    out = run(chrome, price_site, lambda ctx: posh.set_price(ctx, URL, 25, 22, shots=tmp_path))
+    assert out["mismatch"] == 30 and price_site.saves == []
+    price_site.price, price_site.smart = 25, True
+    out = run(chrome, price_site, lambda ctx: posh.set_price(ctx, URL, 25, 22, shots=tmp_path))
+    assert "Smart Sell is on" in out["error"] and price_site.saves == []
+    price_site.smart = False
+    out = run(chrome, price_site, lambda ctx: posh.set_price(ctx, URL, 25, 22, shots=tmp_path, go=lambda: False))
+    assert out["error"] == "stopped before Save" and price_site.saves == []
+

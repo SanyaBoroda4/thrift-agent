@@ -132,6 +132,10 @@ crosslist:
   refresh_days: 7          # the catalogs re-read from the logged-in sites this often, in the daily window (Playwright
                            # driver only: on the extension driver the poster profile never visits the site, WO32)
 
+price_drop:                # WO41: 10% off on every site 30 days after an item is live on all of them, 10% again 30
+  enabled: true            #   days later, then never again (the owner, 2026-10-17)
+  floor: null              # e.g. 15: a site whose new price would be under it is skipped for that drop (off by default)
+
 bridge:                    # WO32: the extension's link to the poster, on 127.0.0.1:8765 (fixed: ext/background.js has it)
   token_file: ~/thrift/var/ext_token   # made by deploy/mac_setup.sh; pasted once into the extension's options
 

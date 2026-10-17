@@ -73,6 +73,28 @@
     }
   }
 
+  // WO41: ONE of the seller's listings in Vinted's own JSON, by its id (the price drop reads its price and whether
+  // it is reserved / hidden / closed): the wardrobe's pages, newest first, until it shows (5 pages of 96 at most).
+  async function wardrobeItem(member, id) {
+    const base = String(S().wardrobe?.url || "/api/v2/wardrobe/{member}/items?order=newest_first&per_page=40&page=1")
+      .replace("{member}", encodeURIComponent(member)).replace(/per_page=\d+/, "per_page=96");
+    for (let n = 1; n <= 5; n++) {
+      const r = await fetch(new URL(base.replace(/page=\d+$/, `page=${n}`), location.origin).href,
+                            { credentials: "include", headers: { Accept: "application/json" } });
+      if (!r.ok) throw new Error(`Vinted's data answered HTTP ${r.status}`);
+      const data = await r.json();
+      const items = data.items || [];
+      const x = items.find((i) => String(i?.id) === String(id));
+      if (x) {
+        return { id: String(x.id), title: String(x.title || ""), price: x.price ?? null,
+                 is_reserved: !!x.is_reserved, is_hidden: !!x.is_hidden, is_closed: !!x.is_closed,
+                 is_draft: !!x.is_draft };
+      }
+      if (items.length < 96) return null;
+    }
+    return null;
+  }
+
   async function pick(st, name, value, { optional = false } = {}) {
     const input = await open(name);
     let shown;
@@ -473,6 +495,17 @@
       // WO35: Vinted's own JSON of the seller's newest items (same origin, from the member page): each listing's exact
       // title and address — the confirmation after an upload. The tiles below only when the JSON can't be read.
       const member = (location.pathname.match(/\/member\/(\d+)/) || [])[1] || job.shop;
+      if (job.item_id) {                                // WO41: one listing's price and state, by its id
+        if (!member) return T.emit({ event: "error", job_id: job.job_id, stage: "find", page: "unknown",
+                                     message: "no member page to read Vinted's data from" });
+        try {
+          const item = await wardrobeItem(member, job.item_id);
+          return T.emit({ event: "result", job_id: job.job_id, item, source: "wardrobe", url: location.href });
+        } catch (e) {
+          return T.emit({ event: "error", job_id: job.job_id, stage: "find", page: "unknown",
+                          message: String(e && e.message ? e.message : e).slice(0, 200) });
+        }
+      }
       const items = member ? await wardrobe(member) : [];
       if (items.length) return T.emit({ event: "result", job_id: job.job_id, listings: items, source: "wardrobe",
                                         url: location.href });

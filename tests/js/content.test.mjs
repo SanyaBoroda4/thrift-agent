@@ -1425,3 +1425,69 @@ test("a sweep whose site answers an error ends with the error, nothing clicked (
   assert.match(error.message, /answered 500/);
   assert.deepEqual(plain(p.w.clicks), []);
 });
+
+// ---------------------------------------------------------------- WO41: a price drop on the listing's edit page
+
+// The edit pages as the stand-in forms with the listing's values in them: Depop's (its Save "Save changes"), Vinted's
+// (its Save the form's one save button) — the price field holding the live price.
+function priceEdit(site, { price = "25.00", blank = false } = {}) {
+  let html = read(FIXTURES[site]);
+  if (site === "depop") {
+    html = html.replace('step="any" min="0" value="0.00"', `step="any" min="0" value="${price}"`)
+      .replace(">Post</button>", ">Save changes</button>");
+  } else {
+    html = html.replace('type="text" name="price">', `type="text" name="price" value="${price}">`)
+      .replace(">Upload</button>", ">Save</button>").replace('class="hidden-until-category" id="details"', 'id="details"');
+  }
+  const p = page(site, html, EDIT[site], site === "depop" ? { ...DEPOP_FIX, ai: false } : {});
+  if (site === "depop" && !blank) {               // the listing's own values, as the edit page shows them
+    for (const [id, v] of [["group-input", "Pants"], ["brand-input", "J. Crew"], ["condition-input", "Like new"]]) {
+      p.d.getElementById(id).value = v;
+    }
+  }
+  return p;
+}
+const priceJob = (site, extra = {}) => ({ job_id: `${site}-price`, site, mode: "price", price: 22, expect: 25,
+                                          edit_url: EDIT[site], listing_url: null,
+                                          fields: site === "depop" ? DEPOP_JOB.fields : {}, ...extra });
+
+for (const site of ["depop", "vinted"]) {
+  test(`${site}: a price drop types the new price, nothing else, and saves once on the go-ahead (WO41)`, async () => {
+    const p = priceEdit(site);
+    const box = p.d.querySelector(site === "depop" ? "[data-testid='priceAmount__input']"
+      : "[data-testid='price-input--input']");
+    const done = run(p, priceJob(site));
+    await until(() => p.events().some((e) => e.event === "ready" || e.event === "error"));
+    const ready = plain(p.events().find((e) => e.event === "ready"));
+    assert.ok(ready, JSON.stringify(p.last()));
+    assert.equal(ready.seen.price_before, "25.00");
+    assert.equal(ready.seen.price, "22");
+    assert.equal(ready.seen.mismatch, false);
+    assert.equal(ready.seen.submit_buttons, 1);
+    assert.equal(box.value, "22");
+    p.tell({ type: "submit", job_id: `${site}-price` });
+    await done;
+    assert.ok(p.events().some((e) => e.event === "step" && e.name === "price"));
+  });
+
+  test(`${site}: an edit page showing another price is never typed into (WO41)`, async () => {
+    const p = priceEdit(site, { price: "30.00" });
+    await run(p, priceJob(site, { dry: true }));
+    const r = plain(p.last());
+    assert.equal(r.event, "result", JSON.stringify(r));
+    assert.equal(r.seen.mismatch, true);
+    assert.equal(r.seen.price, null);
+  });
+}
+
+test("depop: the fields its edit page left blank are filled from the listing before the price (WO41)", async () => {
+  const p = priceEdit("depop", { blank: true });
+  await run(p, priceJob("depop", { dry: true }));
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.deepEqual(r.seen.refilled, ["category", "size", "brand", "condition", "colour"]);
+  assert.equal(p.d.getElementById("group-input").value, "Pants");
+  assert.equal(p.d.getElementById("condition-input").value, "Like new");
+  assert.equal(r.seen.price, "22");
+});
+

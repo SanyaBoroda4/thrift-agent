@@ -295,6 +295,21 @@ def _poshmark_live(url: str) -> bool | None:
 PUBLIC_STATE = _poshmark_live
 
 
+def _poshmark_page(url: str) -> tuple[bool | None, int | None]:
+    """WO41: (for sale, its price today) from the public listing (crosslist.poshmark_page), behind a name tests replace."""
+    from thrift_agent.crosslist import poshmark_page
+    return poshmark_page(url)
+
+
+PUBLIC_PAGE = _poshmark_page
+
+
+def _money(text: str | None) -> float | None:
+    """WO41: a price field's text as a number ("$25", "25.00" → 25.0); None when it holds none."""
+    m = re.search(r"\d+(?:\.\d+)?", (text or "").replace(",", ""))
+    return float(m[0]) if m else None
+
+
 def _poshmark_cover(url: str) -> str | None:
     from thrift_agent.crosslist import poshmark_cover
     return poshmark_cover(url)
@@ -1311,6 +1326,89 @@ class PoshmarkPoster(Poster):
             # WO33 D3: the public listing confirms it — not for sale after a take-down, for sale after a relist; an
             # unreadable public page is taken as done (the evidence shows it) rather than pressing Update again.
             return state is None or state == available
+        finally:
+            await page.close()
+
+    async def read_price(self, ctx: BrowserContext | None, url: str) -> dict:
+        """WO41: the listing's price as Poshmark shows it publicly — {"price"} or {"unavailable"} or {"error"}."""
+        state, price = await asyncio.to_thread(PUBLIC_PAGE, url)
+        if state is False:
+            return {"unavailable": "Not For Sale, sold or gone", "price": price}
+        if state is None or price is None:
+            return {"error": "the public listing couldn't be read"}
+        return {"price": price}
+
+    async def set_price(self, ctx: BrowserContext, url: str, old: float, new: float, dry: bool = False,
+                        shots: Path | None = None, go=None, fields: dict | None = None) -> dict:
+        """WO41: the listing's price from `old` to `new` on its edit page — the Listing Price field (its dialog when it
+        opens one: the listing price only; Smart Sell must be off, never toggled), read back, then Update and the Share
+        Listing panel's List This Item for THIS edit (WO40), pressed once — never in a dry run, and only when `go()`
+        says yes (a sale that arrived meanwhile stops it). Then the public listing is read until it shows `new`.
+        {"ok", "saved", "live_price", "mismatch", "error", "shot"}."""
+        m = SEL["listing_url"].search(urlparse(url or "").path)
+        if m is None:
+            raise PosterError(f"not a Poshmark listing address: {url!r}")
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.shot = (shots or Path(".")) / f"{m['id']}-poshmark-{stamp}-price{'-dry' if dry else ''}.png"
+        out: dict = {"ok": False, "saved": False, "shot": str(self.shot)}
+        page = await ctx.new_page()
+        try:
+            resp = await page.goto(SEL["edit_url"].format(base=self.base_url, id=m["id"]))
+            await page.wait_for_load_state("domcontentloaded")
+            if resp is not None and resp.status == 404:
+                return {**out, "error": "the edit page is gone (404)"}
+            box = SEL["listing_price"](page).first
+            try:
+                await box.wait_for(state="visible", timeout=UPDATE_TIMEOUT_MS)
+            except PlaywrightTimeout:
+                await keep_evidence(page, self.shot, {"url": url, "found": False})
+                return {**out, "error": "no Listing Price field on the edit page"}
+            before = _money(await box.input_value())
+            out["price_before"] = before
+            if before is None or float(before) != float(old):
+                await keep_evidence(page, self.shot, {"url": url, "price_before": before, "expected": old})
+                return {**out, "mismatch": before}
+            await box.click()
+            dialog = SEL["price_dialog"](page)
+            try:
+                await dialog.wait_for(state="visible", timeout=MENU_TIMEOUT_MS)
+            except PlaywrightTimeout:
+                dialog = None                         # no dialog on this page: the field itself
+            if dialog is not None:
+                await _type(SEL["dialog_listing_price"](page), str(int(new) if float(new).is_integer() else new))
+                smart_sell = SEL["dialog_smart_sell"](dialog)
+                if await smart_sell.count() == 1 and await smart_sell.is_checked():
+                    await keep_evidence(page, self.shot, {"url": url, "smart_sell": "on"})
+                    return {**out, "error": "Smart Sell is on in the Listing Price dialog: nothing saved"}
+                out["dialog"] = re.sub(r"\s+", " ", await dialog.inner_text())[:400]
+                await SEL["dialog_done"](dialog).click()
+                await dialog.wait_for(state="hidden", timeout=MENU_TIMEOUT_MS)
+            else:
+                await box.fill(str(int(new) if float(new).is_integer() else new))
+            await settle(page)
+            after = _money(await box.input_value())
+            out["price_typed"] = after
+            await keep_evidence(page, self.shot, {"url": url, "price_before": before, "price_typed": after,
+                                                  "dry": dry, "dialog": out.get("dialog")})
+            if after is None or float(after) != float(new):
+                return {**out, "error": f"the Listing Price reads {after} after typing {new}: nothing saved"}
+            if dry:
+                return {**out, "ok": True}           # filled in, never saved: the page is closed as it is
+            if go is not None and not go():
+                return {**out, "error": "stopped before Save"}
+            await SEL["update_listing"](page).first.click()
+            out["saved"] = True
+            out["save"] = await self._save_edit(page, m["id"])
+            end = time.monotonic() + PUBLIC_CHECK_S * 3
+            while True:
+                state, price = await asyncio.to_thread(PUBLIC_PAGE, url)
+                if price is not None and float(price) == float(new) or time.monotonic() >= end:
+                    break
+                await asyncio.sleep(PUBLIC_EVERY_S)
+            out["live_price"] = price
+            await keep_evidence(page, self.shot.with_name(self.shot.stem + "-after.png"),
+                                {"url": url, "save": out["save"], "public_price": price, "public_for_sale": state})
+            return {**out, "ok": price is not None and float(price) == float(new)}
         finally:
             await page.close()
 
