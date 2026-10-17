@@ -258,7 +258,8 @@ def test_three_failures_ask_the_owner_once(s, db, said, monkeypatch):
         drop_all(s, db, {"depop": depop}, when)
     row = rows(db, iid)[("depop", "auto_1")]
     assert row["status"] == "failed" and row["attempts"] == 3
-    assert said.ops == ["Price drop on Depop failed for Tory Burch Red Ballet Flats size 7.5: $25 → $22. Please change it by hand."]
+    assert said.ops == ["Price drop on Depop failed for Tory Burch Red Ballet Flats size 7.5: $25 → $22. "
+                        "Please change it by hand."]
 
 
 def test_a_price_she_changed_by_hand_counts_as_done(s, db, said, monkeypatch):
