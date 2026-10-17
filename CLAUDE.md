@@ -1131,6 +1131,34 @@ Sam Edelman's Vinted form was kept twice after Upload with nothing on the page, 
   card whose earlier twin is retired already** is answered `TWIN_KEPT` and the item stays (live 2026-10-17: the reply
   came three minutes after the retirement and both brown bralettes were dropped; the owner brought the new one back).
 
+## Take-downs that happen (WO40, 2026-10-17)
+The UGG Chestnut sold on Depop (2026-10-16 15:34 UTC), was matched at once and both take-downs were made — and it stayed
+live on Poshmark and Vinted overnight with no word to anyone. Three causes, all fixed:
+- **Poshmark's edit page saves with List This Item, not Update** (as WO37 had seen for the cover): Update only slides up
+  the Share Listing panel. `set_availability` → `_save_edit` presses that panel's List This Item once, only when it is
+  THIS edit's (`SEL["edit_save"]`: `data-et-prop-flow_type="edit"` and the listing's id), then the public page decides.
+  The stand-in edit page (`tests/test_poshmark_form.py`) now behaves like the live one.
+- **Vinted's Hide is waited for** (15 s; it had been read the instant the page script started: "no Hide button"), and a
+  take-down whose page reloads (`/session-refresh`) is handed to the new page — with `pressed` once Hide was clicked,
+  then never clicked again (the page only says whether it took). "Unhide" on the page = hidden already. Depop's delete
+  is never handed again after a reload.
+- **The API counts the attempts; the Mac waits for its next lease.** The API takes a failure only for a task it leased
+  (`running`); the Mac had retried three times on one lease, so the API counted one, the Mac marked its row `failed`
+  for good, and the API re-leased it every 10 minutes, never reaching the third failure that asks the owner. Now a
+  failure is `waiting` on the Mac until GET /tasks hands it out again (then `pending`, the API's attempt count); three
+  leased failures → "Couldn't take … down on <Site> — please mark it sold there." in the group.
+- Take-downs run on a site stopped for the window by **posting failures** (`crosslist.account_blocked`: only a login /
+  CAPTCHA / block / check page holds them — a take-down meeting one stops the site, the usual plain line, no attempt
+  counted). Their evidence goes to `failed/shots/` (it had landed in the repo folder).
+- **The API's own safety net** (`core.late_takedowns`, the 15-minute timer): a live sale 2 hours old whose item is
+  still up elsewhere (a take-down not done, or a site the mirror shows posted with none) → ONE group line, "⚠️ <title>
+  sold on <Site> but is still listed on <Sites> — please mark it sold there." (settings `takedown_late:<sale>`), and the
+  dashboard's "Sold, still listed" card and a row flag until it's down.
+- **Every path makes the missing take-down** (`core.ensure_takedowns`): a listing the sync brings after its item sold;
+  the order sweep (a sold order on a site → every other posted site taken down; a take-down left to the owner whose
+  listing is still posted handed to the Mac once more, `takedown_reopened:<task>`). Live mode only; a read never starts
+  the live clock.
+
 ## The sites' sold orders, read only (WO38, 2026-10-14)
 None of the three sites emails the seller when an order ships (Poshmark's "Thank you for shipping" aside): the shipping
 state lives on each site. The poster reads each site's sold orders itself, and the API's reminders, overdue line and

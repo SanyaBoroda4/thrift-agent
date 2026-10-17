@@ -59,18 +59,19 @@ def delist_ready(site: str, poster) -> str | None:
 
 
 def may_take_down(s: Settings, db: DB, site: str) -> bool:
-    """Take-downs run in any hour — they keep a sold item from selling twice — but never with the owner's PAUSE (the
-    brake for everything that touches a site), the lid closed (a maintenance wake would cut one off half-way), or the
-    site stopped for the window (it would only meet the same wall; it waits for the next window)."""
-    return not s.flag_set("PAUSE") and power.lid_closed() is not True and not crosslist.blocked(db, site)
+    """Take-downs run in any hour — they keep a sold item from selling twice — and before any listing, but never with
+    the owner's PAUSE (the brake for everything that touches a site), the lid closed (a maintenance wake would cut one
+    off half-way), or the site stopped for the window by a login / CAPTCHA / block / check page (it would only meet
+    the same wall). WO40: a site stopped for posting failures (three in a row) still takes down what sold."""
+    return not s.flag_set("PAUSE") and power.lid_closed() is not True and not crosslist.account_blocked(db, site)
 
 
-async def takedowns(site: str, poster, db: DB, ctx, sites: list[str] | None = None) -> bool:
+async def takedowns(site: str, poster, db: DB, ctx, sites: list[str] | None = None, shots: Path | None = None) -> bool:
     """The site's take-downs before its next listing (WO33 Part D): the API asked for every poster site at once, at
     most every `sales.TASKS_EVERY` (WO35: each worker had asked on each idle turn — three workers every 20 s, ~5,600
     calls on 2026-10-09 — and the API's log hit its 0.1 GB daily cap), then one done."""
     sales.fetch_tasks(db, sites or [site])
-    return await sales.run_takedown(site, poster, db, ctx, ready=delist_ready)
+    return await sales.run_takedown(site, poster, db, ctx, ready=delist_ready, shots=shots)
 
 
 def maybe_announce(s: Settings, db: DB, iid: str) -> str | None:
@@ -148,7 +149,7 @@ async def run_parallel(s: Settings, db: DB, ps: dict, *, dry: bool, stage: str, 
     cross = [mp for mp in ps if mp in crosslist.CROSS]
     sites = [*(["poshmark"] if "poshmark" in ps else []), *cross]
     if takedowns is None and sales.api() is not None:     # the API is set up (.env): the sales' take-downs too
-        takedowns = functools.partial(globals()["takedowns"], sites=sites)
+        takedowns = functools.partial(globals()["takedowns"], sites=sites, shots=shots_dir(s))
     bridge, watch = await runner.open_bridge(s, db, ps)
     started = f"Poster started ({f'DRY-RUN, {stage} stage' if dry else 'LIVE'}) — {', '.join(ps)} · parallel"
     notify.say(f"{started} · {datetime.now():%H:%M}" + (f"\n{runner.why_dry(s, force_dry)}" if dry and s.is_prod else ""))
@@ -313,7 +314,8 @@ async def _cross_turn(s, db, ps, mp, dry, state, awake, takedowns) -> bool:
         return True
     # WO35 §4: an unconfirmed publish looked for again by the site's own data (quiet; any hour, never with the lid
     # closed or the site stopped)
-    if reachable and may_take_down(s, db, mp) and await runner.recheck_unconfirmed(s, db, ps, mp):
+    if (reachable and may_take_down(s, db, mp) and not crosslist.blocked(db, mp)
+            and await runner.recheck_unconfirmed(s, db, ps, mp)):
         return True
     hours_ok, _ = can_post(s, 0, 0)
     if dry or not reachable or not hours_ok or crosslist.blocked(db, mp) or runner._paused(db):

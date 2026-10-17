@@ -68,7 +68,7 @@ async def run_pending(s: Settings, db: DB, sites: list[str] | None = None) -> li
         for mp in todo:
             while sales.pending(db, mp):
                 before = {r["id"] for r in sales.pending(db, mp)}
-                if not await parallel.takedowns(mp, ps[mp], db, ctx):
+                if not await parallel.takedowns(mp, ps[mp], db, ctx, shots=s.path("failed") / "shots"):
                     break
                 for r in db.conn.execute(f"SELECT * FROM takedowns WHERE id IN ({','.join('?' * len(before))})",
                                          tuple(before)).fetchall():

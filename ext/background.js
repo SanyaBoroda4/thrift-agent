@@ -503,10 +503,11 @@ async function afterClickTimeout(jobId) {
 
 // A job's page navigated while it was being filled (a session refresh, a reload): its script — and the job with it —
 // is gone. Before the go-ahead nothing can have been published: the job is handed to the new page (twice at most),
-// except a form already waiting for the owner's POST (never filled again behind them: ended, nothing published) and a
-// take-down (its clicks are never repeated).
+// except a form already waiting for the owner's POST (never filled again behind them: ended, nothing published). A
+// Vinted take-down's (WO40 — the UGG's died on Vinted's /session-refresh; Depop's delete never) is handed again, with
+// `pressed` when its Hide was already clicked: then the new page only says whether it took (a click never repeated).
 async function onNavigatedMidJob(j) {
-  if (j.readyAt || j.mode === "delist" || (j.reloads || 0) >= 2) {
+  if (j.readyAt || (j.mode === "delist" && j.site !== "vinted") || (j.reloads || 0) >= 2) {
     const why = j.readyAt ? "the page reloaded while it waited for POST — nothing was published"
       : j.mode === "delist" ? "the page reloaded during the take-down" : "the page keeps reloading";
     return finish({ event: "error", job_id: j.job_id, stage: "reloaded", page: "unknown", message: why });
@@ -517,9 +518,11 @@ async function onNavigatedMidJob(j) {
   try {
     const sel = await selectors();
     const tab = await landed(j.tabId, urlFor(j.job, sel[j.site]), OPEN_MS, j);
-    await send({ event: "progress", job_id: j.job_id, what: `the page reloaded (${pathOf(tab.url)}) — filling it again` });
+    await send({ event: "progress", job_id: j.job_id, what: `the page reloaded (${pathOf(tab.url)}) — ` +
+                 (j.mode === "delist" ? "the take-down handed to it again" : "filling it again") });
     const photos = j.job.mode === "dry_run" || j.job.mode === "publish" ? await fetchPhotos(j.job.photos || []) : [];
-    await toTab(j.tabId, { type: "job", job: j.job, selectors: sel, photos, pace: j.job.pace }, REACH_MS, j.site, j);
+    const job = j.mode === "delist" ? { ...j.job, pressed: !!j.pressed } : j.job;
+    await toTab(j.tabId, { type: "job", job, selectors: sel, photos, pace: j.job.pace }, REACH_MS, j.site, j);
     await restore();
     const now = byId(j.job_id);
     if (now) {
@@ -634,6 +637,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const ev = { ...msg };
       delete ev.type;
       if (ev.event === "result" || ev.event === "error") return finish(ev);
+      if (ev.event === "step" && ev.clicked) {             // WO40: a take-down's click, never repeated after a reload
+        await restore();
+        const j = byId(ev.job_id);
+        if (j && j.mode === "delist") {
+          j.pressed = true;
+          await remember();
+        }
+      }
       if (ev.event === "ready") {
         await restore();
         const j = byId(ev.job_id);

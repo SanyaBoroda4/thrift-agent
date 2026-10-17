@@ -394,8 +394,31 @@
     async delist(job, st) {
       // The listing this agent created: its Hide, and the confirmation if one shows. Never Delete (WO32 §4).
       const re = new RegExp(S().hide.text, "i");
-      const hide = T.$$(S().hide.selectors).find((b) => T.visible(b) && re.test(T.norm(b.textContent)));
+      const findHide = () => T.$$(S().hide.selectors).find((b) => T.visible(b) && re.test(T.norm(b.textContent)));
+      // WO40 (the UGG, 2026-10-16: "no Hide button" twice): the seller's buttons are drawn after the page script
+      // starts — waited for, never read once. A Hide already pressed before a reload (job.pressed) is never pressed
+      // again: its page only says whether it took.
+      const unhide = () => T.$$("button").find((b) => T.visible(b) && /^unhide$/i.test(T.norm(b.textContent)));
+      const hide = await T.until(() => findHide() || unhide(), 15000);
+      if (hide && !findHide()) {
+        await T.screenshot("delisted");
+        return T.emit({ event: "result", job_id: job.job_id, delisted: true, hidden_already: true, url: location.href });
+      }
+      if (job.pressed) {
+        await T.screenshot("delisted");
+        if (hide) {
+          return T.emit({ event: "error", job_id: job.job_id, stage: "hide", page: "listing",
+                          message: "Hide pressed, the page reloaded, and it still offers Hide: not hidden" });
+        }
+        // Hidden only when it is still our listing's seller page (its Edit listing there) without Hide
+        if (!T.$$("[data-testid='item-edit-button']").some((b) => T.visible(b))) {
+          return T.emit({ event: "error", job_id: job.job_id, stage: "hide", page: "listing",
+                          message: "Hide pressed, the page reloaded, and it isn't the listing's own page" });
+        }
+        return T.emit({ event: "result", job_id: job.job_id, delisted: true, url: location.href });
+      }
       if (!hide) {
+        await T.screenshot("no-hide");
         return T.emit({ event: "error", job_id: job.job_id, stage: "hide", page: "form", message: "no Hide button" });
       }
       T.emit({ event: "step", job_id: job.job_id, name: "hide", ok: true, clicked: true });

@@ -8,7 +8,8 @@ The snapshot. Only these keys are read, so nothing else a record carries (the bu
     {"items": [{"id", "title", "price", "created_at",
                 "listings": {"poshmark" | "depop" | "vinted": {"status", "url"}},      # a site may be missing
                 "sale": None | {"marketplace", "sold_at", "price", "ship_by", "shipped_at", "status",
-                                "shipping"}}],                    # WO38: to_ship | shipped | delivered | completed …
+                                "shipping"},                      # WO38: to_ship | shipped | delivered | completed …
+                "still_listed": ["Poshmark", …]}],     # WO40: sold, still listed there 2 h after the sale (absent: none)
      "unmatched": int,                                                             # sales that matched no item
      "swept": {"poshmark" | "depop" | "vinted": "ISO-8601"},          # WO38: when each site's orders were last read
      "generated_at": "ISO-8601"}
@@ -243,8 +244,10 @@ def _item(raw: dict) -> dict:
         sale["shipping"] = _norm(sale["shipping"]) if _norm(sale["shipping"]) in SHIPPING else None
     else:
         sale = None
+    still = raw.get("still_listed")
+    still = [str(s) for s in still if isinstance(s, str)][:3] if isinstance(still, list) else []
     return {"id": raw.get("id"), "title": raw.get("title"), "price": raw.get("price"),
-            "created_at": raw.get("created_at"), "sites": sites, "sale": sale}
+            "created_at": raw.get("created_at"), "sites": sites, "sale": sale, "still_listed": still}
 
 
 def _is_sold(sale: dict | None) -> bool:
@@ -311,8 +314,20 @@ def _cards(items: list[dict], unmatched: int, zone: tzinfo, now: datetime) -> st
         f'<p class="num" id="c-toship">{to_ship}</p><p class="sub">{ship}</p></div>',
         f'<div class="card{" alert" if unmatched else ""}"><h2>Unmatched sales</h2>',
         f'<p class="num" id="c-unmatched">{unmatched}</p><p class="sub">matched no item</p></div>',
+        _still_card(items),
         "</section>",
     ))
+
+
+def _still_card(items: list[dict]) -> str:
+    """WO40: sold items still listed elsewhere 2 hours after the sale — shown until they're down."""
+    still = [item for item in items if item.get("still_listed")]
+    if not still:
+        return ""
+    lines = "".join(f'<p class="sub warn">{_esc(_title(item["title"]))} — {_esc(", ".join(item["still_listed"]))}</p>'
+                    for item in still)
+    return (f'<div class="card alert" id="c-still"><h2>Sold, still listed</h2><p class="num">{len(still)}</p>'
+            f"{lines}<p class=\"sub\">mark it sold there</p></div>")
 
 
 def _filters() -> str:
@@ -340,7 +355,9 @@ def _row(item: dict, zone: tzinfo, today: date) -> str:
     if item["id"] not in (None, ""):
         attrs = f' data-id="{_esc(item["id"])}"' + attrs
     cells = (
-        _td("t", "Item", _esc(_title(item["title"]))),
+        _td("t", "Item", _esc(_title(item["title"])) + (
+            f' <span class="warn still">⚠️ still listed on {_esc(", ".join(item["still_listed"]))}</span>'
+            if item.get("still_listed") else "")),
         _td("p", "Price", _esc(_money(item["price"]))),
         *(_td("s", name, _site(item["sites"].get(key), name)) for key, name in SITES),
         _td("d sale", "Sold", _sold_cell(sale, zone, today)),

@@ -925,6 +925,58 @@ for (const site of ["vinted"]) {               // Depop's take-down is a delete 
   });
 }
 
+// ---------------------------------------------------------------- WO40: the UGG's Vinted take-down
+// Live 2026-10-16: "no Hide button" (read the moment the page script started) and "the page reloaded during the
+// take-down" (Vinted's /session-refresh). Hide is waited for; a job handed again after a reload with `pressed` never
+// presses again — the page only says whether it took; an "Unhide" page is hidden already.
+const vintedSeller = (buttons) => `<html><head><title>UGG</title></head><body><h1>UGG Slippers</h1>
+  <button data-testid="item-edit-button">Edit listing</button>${buttons}
+  <script>window.clicks = [];</script></body></html>`;
+
+test("vinted (WO40): a Hide drawn late is waited for and pressed once", async () => {
+  const p = page("vinted", listingPage("vinted").replace('<button id="control" data-testid="item-hide-button">Hide</button>', ""),
+                 LISTING_PAGES.vinted.url);
+  p.w.Thrift.timeoutScale = 1;                                   // the real wait (15 s); Hide comes after 1.5 s
+  setTimeout(() => {
+    const b = p.d.createElement("button");
+    b.id = "control";
+    b.setAttribute("data-testid", "item-hide-button");
+    b.textContent = "Hide";
+    b.addEventListener("click", () => { p.w.clicks.push("control"); b.remove(); });
+    p.d.body.appendChild(b);
+  }, 1500);
+  await run(p, { job_id: "vinted-delist-late", site: "vinted", mode: "delist", listing_url: LISTING_PAGES.vinted.url });
+  await until(() => p.events().some((e) => e.event === "result" || e.event === "error"), 15000);
+  assert.ok(p.events().some((e) => e.event === "result" && e.delisted), JSON.stringify(plain(p.events())));
+  assert.deepEqual(plain(p.w.clicks), ["control"]);
+});
+
+test("vinted (WO40): after a reload with Hide pressed, a page without Hide is done and nothing is pressed", async () => {
+  const p = page("vinted", vintedSeller(""), LISTING_PAGES.vinted.url);
+  p.w.Thrift.timeoutScale = 0.05;
+  await run(p, { job_id: "vinted-delist-pressed", site: "vinted", mode: "delist", pressed: true,
+                 listing_url: LISTING_PAGES.vinted.url });
+  await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
+  assert.ok(p.events().some((e) => e.event === "result" && e.delisted), JSON.stringify(plain(p.events())));
+});
+
+test("vinted (WO40): after a reload with Hide pressed, Hide still there is an error — never pressed twice", async () => {
+  const p = page("vinted", vintedSeller('<button data-testid="item-hide-button" onclick="window.clicks.push(1)">Hide</button>'),
+                 LISTING_PAGES.vinted.url);
+  await run(p, { job_id: "vinted-delist-pressed2", site: "vinted", mode: "delist", pressed: true,
+                 listing_url: LISTING_PAGES.vinted.url });
+  await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
+  assert.ok(p.events().some((e) => e.event === "error" && /still offers Hide/.test(e.message)));
+  assert.deepEqual(plain(p.w.clicks), []);
+});
+
+test("vinted (WO40): a listing that offers Unhide is hidden already", async () => {
+  const p = page("vinted", vintedSeller("<button>Unhide</button>"), LISTING_PAGES.vinted.url);
+  await run(p, { job_id: "vinted-delist-unhide", site: "vinted", mode: "delist", listing_url: LISTING_PAGES.vinted.url });
+  await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
+  assert.ok(p.events().some((e) => e.event === "result" && e.delisted && e.hidden_already));
+});
+
 // ---------------------------------------------------------------- WO33: Vinted's landing after Upload
 // Recorded from the first supervised publish: the member page (?promo_shown=true) with an "Item listed" dialog —
 // "List another" and "Later" — and the page's Bump buttons. Only Later is pressed; then the shop check takes over.

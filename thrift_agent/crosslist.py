@@ -197,6 +197,13 @@ def blocked(db: DB, mp: str) -> str | None:
     return b["reason"] if b and b.get("window") == window(db) else None
 
 
+def account_blocked(db: DB, mp: str) -> str | None:
+    """WO40: the site stopped for this window by what it SHOWED — a login, CAPTCHA, block or check page — not by our
+    own failures in a row (live 2026-10-16: Vinted refused a form twice; a take-down must still run there)."""
+    reason = blocked(db, mp)
+    return reason if reason and not reason.startswith("failures:") else None
+
+
 def block(db: DB, mp: str, reason: str, page: str | None = None) -> None:
     """Stop `mp` for this window (logged out, CAPTCHA, a verification wall, a block page, failures in a row): ONE plain
     line in the group for an account problem — what to do, by what the site showed (`page`) — the reason in the ops

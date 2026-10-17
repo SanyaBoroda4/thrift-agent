@@ -106,6 +106,8 @@ class Site:
             await self._html(route, FIXTURE.read_text(encoding="utf-8"))
         elif path.startswith("/edit-listing/"):                    # WO37: the edit page's photos
             await self._html(route, EDIT_FIXTURE.read_text(encoding="utf-8"))
+        elif path == "/api/update-pressed":
+            await route.fulfill(status=204, body="")
         elif path == "/api/update":
             self.updates += 1
             await route.fulfill(status=204, body="")
@@ -925,6 +927,11 @@ EDIT = """<html><body><h1>Edit Listing</h1>
 </div></section>
 <a data-et-name="delete" onclick="fetch('/api/delete')">Delete Listing</a>
 <button data-et-name="update" onclick="update()">Update</button>
+<div data-test="modal-container" id="share" hidden><div>‹ Back</div><h2>Share Listing</h2>
+  <span>Promote My Closet</span><span>OFF</span>
+  <button data-et-name="list" data-et-prop-flow_type="edit" data-et-prop-listing_id="%(lid)s"
+          onclick="save()">List This Item</button>
+</div>
 <script>
   let chosen = %(now_js)s;
   function pick(v) {
@@ -932,8 +939,13 @@ EDIT = """<html><body><h1>Edit Listing</h1>
     document.querySelector('[data-test=dropdown] span').textContent = v;
     document.getElementById('opts').hidden = true;
   }
-  function update() {
+  // WO40, as live (the UGG, 2026-10-16): Update only slides up the Share Listing panel; its List This Item saves.
+  function save() {
     fetch('/api/update?availability=' + encodeURIComponent(chosen)).then(() => { location.href = '/listing/x'; });
+  }
+  function update() {
+    fetch('/api/update-pressed');
+    if (%(panel)s) document.getElementById('share').hidden = false; else save();
   }
 </script></body></html>"""
 
@@ -941,8 +953,8 @@ EDIT = """<html><body><h1>Edit Listing</h1>
 class EditSite:
     """The listing's edit page (its Availability as it is now), Update recorded; any other id is a 404."""
 
-    def __init__(self, now: str = "For Sale"):
-        self.now, self.updates, self.urls = now, [], []
+    def __init__(self, now: str = "For Sale", panel: bool = True):
+        self.now, self.updates, self.urls, self.panel = now, [], [], panel
 
     async def handle(self, route):
         from urllib.parse import parse_qs, urlparse
@@ -952,8 +964,11 @@ class EditSite:
         if not url.startswith(BASE + "/"):
             await route.abort()
         elif path == f"/edit-listing/{LISTING_ID}":
-            body = EDIT % {"now": self.now, "now_js": repr(self.now)}
+            body = EDIT % {"now": self.now, "now_js": repr(self.now), "lid": LISTING_ID,
+                           "panel": "true" if self.panel else "false"}
             await route.fulfill(status=200, content_type="text/html; charset=utf-8", body=body)
+        elif path == "/api/update-pressed":
+            await route.fulfill(status=204, body="")
         elif path == "/api/update":
             self.updates.append(parse_qs(urlparse(url).query)["availability"][0])
             self.now = self.updates[-1]
@@ -1014,6 +1029,39 @@ def test_the_take_down_is_not_for_sale_and_the_relist_for_sale(chrome, posh, tmp
     assert site.updates == ["Not For Sale", "For Sale"]               # thrift relist: reversed, one Update each
     assert not [u for u in site.urls if "/api/delete" in u]              # Delete Listing never touched
     assert '"public": true' in posh.shot.with_suffix(".json").read_text(encoding="utf-8")
+
+
+def test_wo40_update_only_opens_the_panel_its_list_this_item_saves(chrome, posh, tmp_path, recorded, monkeypatch):
+    # The live miss (the UGG, 2026-10-16): Update slid up the Share Listing panel and nothing was saved — three times.
+    site = EditSite(panel=True)
+    monkeypatch.setattr(poshmark, "PUBLIC_STATE", public(site))
+    assert run(chrome, site, lambda ctx: posh.set_availability(ctx, URL, False, shots=tmp_path)) is True
+    assert site.updates == ["Not For Sale"] and site.now == "Not For Sale"   # List This Item pressed once
+    assert '"saved": "List This Item pressed"' in posh.shot.with_suffix(".json").read_text(encoding="utf-8")
+
+
+def test_wo40_a_panel_for_another_listing_is_never_pressed(chrome, posh, tmp_path, recorded, monkeypatch):
+    monkeypatch.setattr(poshmark, "UPDATE_TIMEOUT_MS", 800)
+    site = EditSite(panel=True)
+    orig = site.handle
+
+    async def other(route):
+        if route.request.url.endswith(f"/edit-listing/{LISTING_ID}"):
+            body = EDIT % {"now": site.now, "now_js": repr(site.now), "lid": "f" * 24, "panel": "true"}
+            await route.fulfill(status=200, content_type="text/html; charset=utf-8", body=body)
+        else:
+            await orig(route)
+    site.handle = other
+    monkeypatch.setattr(poshmark, "PUBLIC_STATE", public(site))
+    assert run(chrome, site, lambda ctx: posh.set_availability(ctx, URL, False, shots=tmp_path)) is False
+    assert site.updates == []
+
+
+def test_wo40_an_update_that_saves_by_itself_still_works(chrome, posh, tmp_path, recorded, monkeypatch):
+    site = EditSite(panel=False)
+    monkeypatch.setattr(poshmark, "PUBLIC_STATE", public(site))
+    assert run(chrome, site, lambda ctx: posh.set_availability(ctx, URL, False, shots=tmp_path)) is True
+    assert site.updates == ["Not For Sale"]
 
 
 def test_a_public_page_that_still_sells_it_is_a_failure(chrome, posh, tmp_path, recorded, monkeypatch):

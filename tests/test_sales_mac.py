@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from thrift_agent import approve, daily, notify, sales
+from thrift_agent import approve, crosslist, daily, notify, sales
 from thrift_agent.db import DB
 from thrift_agent.post import parallel
 
@@ -268,18 +268,41 @@ def test_an_unrecorded_control_is_never_tried_and_the_owner_is_asked(tmp_path, a
     assert result["result"] == "failed" and result["manual"] and "isn't recorded yet" in result["error"]
 
 
-def test_a_failing_take_down_is_tried_three_times_then_left_to_the_owner(tmp_path, api):
+def test_a_failing_take_down_waits_for_its_next_lease_and_the_api_counts(tmp_path, api):
+    """WO40 (the UGG, 2026-10-16): three quick tries on ONE lease — the API counted one, the Mac marked its row failed
+    for good, and the API re-leased it silently for a day. Now a failure waits for the API to hand the task out again,
+    and a task the API hands out is pending here whatever this Mac thought of it."""
     s = _settings(tmp_path)
     db = DB(s.path("db"))
     iid = _item(db)
     api.tasks = [_task(db, iid, "depop")]
     sales.fetch_tasks(db, ["depop"], force=True)
     taker = Taker(raises=RuntimeError("menu didn't open"))
-    for _ in range(3):
-        asyncio.run(sales.run_takedown("depop", taker, db, None))
-    assert db.conn.execute("SELECT status, attempts FROM takedowns").fetchone()[:] == ("failed", 3)
-    assert asyncio.run(sales.run_takedown("depop", taker, db, None)) is False          # not tried a fourth time
+    assert asyncio.run(sales.run_takedown("depop", taker, db, None)) is True
+    assert db.conn.execute("SELECT status FROM takedowns").fetchone()[0] == sales.WAITING
+    assert asyncio.run(sales.run_takedown("depop", taker, db, None)) is False          # never again on the same lease
+    for n in (1, 2):                                            # the API leases it again (its attempts so far)
+        api.tasks = [{**api.tasks[0], "attempts": n}]
+        sales.fetch_tasks(db, ["depop"], force=True)
+        assert db.conn.execute("SELECT status, attempts FROM takedowns").fetchone()[:] == ("pending", n)
+        assert asyncio.run(sales.run_takedown("depop", taker, db, None)) is True
     assert [b["result"] for _, p, b, _ in api.calls if p == "/tasks/t_depop_1"] == ["failed"] * 3
+    db.conn.execute("UPDATE takedowns SET status='failed'")     # a row an older version left 'failed' here
+    sales.fetch_tasks(db, ["depop"], force=True)                # ... the API still hands it out: tried again
+    assert db.conn.execute("SELECT status FROM takedowns").fetchone()[0] == "pending"
+
+
+def test_a_login_page_during_a_take_down_stops_the_site_and_is_no_attempt(tmp_path, api, said):
+    from thrift_agent.post.base import AccountBlocked
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid = _item(db)
+    api.tasks = [_task(db, iid, "vinted")]
+    sales.fetch_tasks(db, ["vinted"], force=True)
+    assert asyncio.run(sales.run_takedown("vinted", Taker(raises=AccountBlocked("Vinted: logged out", page="login")),
+                                          db, None)) is True
+    assert crosslist.account_blocked(db, "vinted")
+    assert not [p for _, p, _, _ in api.calls if p == "/tasks/t_vinted_1"]               # not counted as an attempt
 
 
 def test_a_listing_already_gone_is_not_found(tmp_path, api):
@@ -355,6 +378,9 @@ def test_take_downs_wait_for_the_brake_the_lid_and_a_stopped_site(tmp_path, monk
     assert parallel.may_take_down(s, db, "depop")
     crosslist.block(db, "depop", "Depop: not logged in")
     assert not parallel.may_take_down(s, db, "depop") and parallel.may_take_down(s, db, "vinted")
+    # WO40: a site stopped for posting failures (Vinted refused a form twice that day) still takes down what sold
+    crosslist.block(db, "vinted", "failures: 3 in a row: Vinted refused the form")
+    assert crosslist.blocked(db, "vinted") and parallel.may_take_down(s, db, "vinted")
     monkeypatch.setattr(parallel.power, "lid_closed", lambda: True)
     assert not parallel.may_take_down(s, db, "vinted")
     monkeypatch.setattr(parallel.power, "lid_closed", lambda: False)
@@ -491,9 +517,9 @@ def test_the_running_poster_asks_for_take_downs_for_its_sites_at_once(tmp_path, 
     turns = []
     real = sales.run_takedown
 
-    async def counted(site, poster, db, ctx, ready=None):
+    async def counted(site, poster, db, ctx, ready=None, shots=None):
         turns.append(site)
-        return await real(site, poster, db, ctx, ready=ready)
+        return await real(site, poster, db, ctx, ready=ready, shots=shots)
     monkeypatch.setattr(sales, "run_takedown", counted)
     ps = {"poshmark": Timed("poshmark", 0.0), "depop": Timed("depop", 0.0), "vinted": Timed("vinted", 0.0)}
     asyncio.run(parallel.run_parallel(s, db, ps, dry=False, stage="form", opener=fake_open, until_idle=True))

@@ -22,6 +22,8 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 
+from pathlib import Path
+
 import httpx
 
 from thrift_agent import notify
@@ -38,6 +40,7 @@ GOLIVE = "api_golive_checked"         # kv: the go_live_at the go-live check (D4
 BATCH = 200
 SOLD_SKIP = "skipped: sold"          # a queued row of an item that sold elsewhere (WO33 A1)
 MAX_ATTEMPTS = 3                     # a take-down that failed this often is the owner's (the group asks)
+WAITING = "waiting"                  # WO40: a take-down that failed, tried again only once the API hands it out again
 
 
 class ApiError(Exception):
@@ -282,7 +285,11 @@ def golive_check(db: DB, client: Api, go_live_at: str, live=None, pause: float =
 def fetch_tasks(db: DB, sites: list[str], force: bool = False) -> int:
     """The pending take-downs for these sites (GET /tasks leases them for 10 minutes), kept in `takedowns`. Asked at
     most every TASKS_EVERY seconds — one stamp for every caller, so the poster asks for all its sites at once —
-    unless `force` (the CLI's `thrift delist --run`). Returns how many came."""
+    unless `force` (the CLI's `thrift delist --run`). Returns how many came.
+
+    WO40: the API counts the attempts and decides when one is the owner's — a task it hands out is pending here again
+    whatever this Mac thought of it (live: the UGG's rows were 'failed' here after three quick tries the API had taken
+    as one, and the API, never reaching 3, re-leased them silently for a day)."""
     client = api()
     if client is None or not sites or not _claim(db, LAST_TASKS, TASKS_EVERY, force):
         return 0                                    # (the API down: asked again after TASKS_EVERY, never a storm)
@@ -298,7 +305,8 @@ def fetch_tasks(db: DB, sites: list[str], force: bool = False) -> int:
         db.conn.execute(
             "INSERT INTO takedowns (id, item_id, marketplace, listing_url, title, status, attempts, fetched_at) "
             "VALUES (?,?,?,?,?,'pending',?,?) ON CONFLICT(id) DO UPDATE SET status=CASE WHEN takedowns.status IN "
-            "('done','not_found','failed') THEN takedowns.status ELSE 'pending' END, fetched_at=excluded.fetched_at",
+            "('done','not_found','sold') THEN takedowns.status ELSE 'pending' END, attempts=excluded.attempts, "
+            "fetched_at=excluded.fetched_at",
             (t["id"], t["item_id"], t["marketplace"], t.get("listing_url"), t.get("title"), t.get("attempts") or 0,
              now()))
     return len(got)
@@ -323,16 +331,18 @@ def skip_sold(db: DB, iid: str) -> list[str]:
 
 def report(db: DB, task_id: str, result: str, error: str | None = None, evidence: str | None = None,
            manual: bool = False) -> None:
-    """A take-down's result to POST /tasks/{id} (through the outbox: nothing is lost while the API is away)."""
-    if result == "failed" and not manual:          # tried again, 3 attempts in all (the API counts them too)
-        db.conn.execute("UPDATE takedowns SET attempts=attempts+1, error=?, status=CASE WHEN attempts+1 >= ? THEN "
-                        "'failed' ELSE 'pending' END WHERE id=?", (error, MAX_ATTEMPTS, task_id))
+    """A take-down's result to POST /tasks/{id} (through the outbox: nothing is lost while the API is away). WO40: a
+    failure waits here until the API hands the task out again (its lease taken anew — the API counts only a failure
+    of a task it leased), never tried again at once on the same lease; the API's third failure asks the owner."""
+    if result == "failed" and not manual:
+        db.conn.execute("UPDATE takedowns SET attempts=attempts+1, error=?, status=? WHERE id=?",
+                        (error, WAITING, task_id))
     else:
         db.conn.execute("UPDATE takedowns SET status=?, error=?, done_at=? WHERE id=?", (result, error, now(), task_id))
     call(db, f"/tasks/{task_id}", {"result": result, "error": error, "evidence": evidence, "manual": manual})
 
 
-async def run_takedown(site: str, poster, db: DB, ctx, ready=None) -> bool:
+async def run_takedown(site: str, poster, db: DB, ctx, ready=None, shots: Path | None = None) -> bool:
     """One pending take-down of this site, before any new listing (the site's worker): the item's queued rows skipped,
     the reversible action, the listing marked delisted, the result to the API. `ready(site, poster)` → None when the
     site's control is recorded, else why not — then nothing is tried and the owner is asked to do it by hand. True
@@ -347,11 +357,22 @@ async def run_takedown(site: str, poster, db: DB, ctx, ready=None) -> bool:
     if why:
         report(db, t["id"], "failed", error=f"not done automatically: {why}", manual=True)
         return True
+    from thrift_agent import crosslist
+    from thrift_agent.post.base import AccountBlocked
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    if shots is not None:
+        shots.mkdir(parents=True, exist_ok=True)
     try:
         if site == "poshmark":
-            ok = await poster.set_availability(ctx, url, False)
+            ok = await poster.set_availability(ctx, url, False, shots=shots)
         else:
+            if shots is not None:                   # the job's pictures next to the poster's evidence (WO40)
+                poster.shot = shots / f"{iid}-{site}-{stamp}-takedown.png"
             ok = await poster.delist(url)
+    except AccountBlocked as e:                 # a login / CAPTCHA / block page: the site stops for the window (one
+        crosslist.block(db, site, str(e), e.page)   # plain group line); the take-down waits — not an attempt
+        db.conn.execute("UPDATE takedowns SET status=?, error=? WHERE id=?", (WAITING, str(e)[:300], t["id"]))
+        return True
     except Exception as e:  # noqa: BLE001 — a take-down never stops the worker; tried again (3 attempts in all)
         report(db, t["id"], "failed", error=f"{type(e).__name__}: {e}"[:300])
         return True

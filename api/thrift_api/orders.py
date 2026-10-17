@@ -99,6 +99,11 @@ def one(db: Database, mp: str, order: dict, seen_at: datetime, now: datetime, mo
             db.execute("UPDATE sales SET order_id = ? WHERE id = ?", (order["order_id"], sale["id"]))
         keep(db, mp, order, sale, seen_at)
         changed = transition(db, mp, order, sale, seen_at, now, mode, out)
+        if sale.get("item_id") and order["status"] != "cancelled":
+            # WO40: a sold order the site shows — the item must be down everywhere else: the take-downs it lacks made,
+            # one left to the owner handed to the Mac once more
+            if made := core.ensure_takedowns(db, sale["item_id"], now, mode, reopen=True):
+                changed = ", ".join(filter(None, [changed, "take-downs: " + ", ".join(t["marketplace"] for t in made)]))
     out.flush()
     return {"order_id": order["order_id"], "status": order["status"], "sale_id": sale["id"],
             "action": f"{action}{', ' + changed if changed else ''}"}

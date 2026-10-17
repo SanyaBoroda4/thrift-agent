@@ -17,11 +17,19 @@ def live(db, monkeypatch):
     core.put_setting(db, "go_live_at", "2026-10-01T00:00:00+00:00")
 
 
+def taken_down(db, sale_id: str) -> None:
+    """The sale's take-downs done (these tests are about the reminders; WO40's late line has its own)."""
+    db.execute("UPDATE delist_tasks SET status = 'done' WHERE sale_id = ?", (sale_id,))
+    db.execute("UPDATE listings SET status = 'delisted' WHERE status = 'posted' AND item_id = "
+               "(SELECT item_id FROM sales WHERE id = ?)", (sale_id,))
+
+
 def a_sale(db, ship_by: str = "2026-10-09") -> str:
     """The Lacoste tee sold on Poshmark, due on `ship_by` (a Friday by default)."""
     seed(db)
     out = core.process_email(db, posh_sale(), NOW)
     db.execute("UPDATE sales SET ship_by = ? WHERE id = ?", (ship_by, out["sale_id"]))
+    taken_down(db, out["sale_id"])
     return out["sale_id"]
 
 

@@ -237,6 +237,11 @@ SEL = {
         'a.dropdown__link[data-et-on-name="availability"][data-et-name="%s"]'
         % ("available" if text == "For Sale" else "not_for_sale")),
     "update_listing": lambda p: p.locator('button[data-et-name="update"]'),
+    # WO40, from the UGG take-down's evidence (2026-10-16, three attempts): Update does NOT save — it slides up the Share
+    # Listing panel (as WO37 saw for the cover); the edit is saved by that panel's List This Item, which on the edit
+    # page carries data-et-prop-flow_type="edit" and the listing's own id. Pressed once, only when both are this edit's.
+    "edit_save": lambda p, listing_id: SEL["share_panel"](p).locator(
+        'button[data-et-name="list"][data-et-prop-flow_type="edit"][data-et-prop-listing_id="%s"]' % listing_id),
     # WO37, recorded by the read-only probe of the UGG Chestnut's edit page (2026-10-12; its cover dialog opened, then
     # Cancel): the filled photo tiles (the cover first, .large), each with an overlay [data-et-name=edit_photo] shown on
     # hover ("Edit Covershot" / "Edit Photo"); the dialog [data-test=modal-container] with the photo
@@ -1300,18 +1305,36 @@ class PoshmarkPoster(Poster):
             await control.click()
             await SEL["availability_option"](page, "For Sale" if available else "Not For Sale").first.click()
             await SEL["update_listing"](page).first.click()
-            try:                                        # Update saves and leaves the edit page (as the form's List)
-                await page.wait_for_url(lambda u: "/edit-listing/" not in u, timeout=UPDATE_TIMEOUT_MS)
-                await page.wait_for_load_state("domcontentloaded")
-            except PlaywrightTimeout:
-                pass                                    # stayed: the public page below decides
+            saved = await self._save_edit(page, m["id"])
             state = await self._public_state(url, available)
-            await keep_evidence(page, self.shot, {"url": url, "available": available, "public": state})
+            await keep_evidence(page, self.shot, {"url": url, "available": available, "saved": saved, "public": state})
             # WO33 D3: the public listing confirms it — not for sale after a take-down, for sale after a relist; an
             # unreadable public page is taken as done (the evidence shows it) rather than pressing Update again.
             return state is None or state == available
         finally:
             await page.close()
+
+    async def _save_edit(self, page: Page, listing_id: str) -> str:
+        """After Update on the edit page (WO40): the Share Listing panel's List This Item for THIS edit (flow "edit",
+        this listing's id) pressed once — that is what saves; then the page leaving the edit page. A page that left by
+        itself (no panel) is taken as saved; the public listing decides either way. Returns what happened."""
+        button = SEL["edit_save"](page, listing_id).first
+        end = asyncio.get_running_loop().time() + UPDATE_TIMEOUT_MS / 1000
+        while True:
+            if "/edit-listing/" not in page.url:
+                return "left the edit page"
+            if await button.count() and await button.is_visible():
+                break
+            if asyncio.get_running_loop().time() > end:
+                return "no Share Listing panel for this edit"
+            await page.wait_for_timeout(POLL_MS)
+        await button.click()                            # once — never pressed again
+        try:
+            await page.wait_for_url(lambda u: "/edit-listing/" not in u, timeout=UPDATE_TIMEOUT_MS)
+            await page.wait_for_load_state("domcontentloaded")
+            return "List This Item pressed"
+        except PlaywrightTimeout:
+            return "List This Item pressed, the page stayed"
 
     async def set_cover(self, ctx: BrowserContext, url: str, cover: Path, swap: tuple[int, Path] | None,
                         dry: bool = False, shots: Path | None = None) -> dict:

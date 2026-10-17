@@ -31,10 +31,18 @@ def posh(status: str, **kw) -> dict:
             "title": "Lacoste Tee White size M", "price": 35, "sold_at": "2026-10-08T14:05:00+00:00", **kw}
 
 
+def taken_down(db, sale_id: str) -> None:
+    """The sale's take-downs done (these tests are about the reminders; WO40's late line has its own)."""
+    db.execute("UPDATE delist_tasks SET status = 'done' WHERE sale_id = ?", (sale_id,))
+    db.execute("UPDATE listings SET status = 'delisted' WHERE status = 'posted' AND item_id = "
+               "(SELECT item_id FROM sales WHERE id = ?)", (sale_id,))
+
+
 def a_posh_sale(db, ship_by: str = "2026-10-09") -> str:
     seed(db)
     sale_id = core.process_email(db, posh_sale(), NOW)["sale_id"]
     db.execute("UPDATE sales SET ship_by = ? WHERE id = ?", (ship_by, sale_id))
+    taken_down(db, sale_id)
     return sale_id
 
 

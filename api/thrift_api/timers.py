@@ -32,7 +32,7 @@ def every_15_min(db: Database, now: datetime | None = None, mode: str | None = N
     if mode == "live":
         core.go_live(db, now)                         # a live call like any request: starts the live clock if needed
     return {"mode": mode, "reminders": reminders(db, now, mode), "gmail": gmail_watch(db, now, mode),
-            "retried": retry_failed(db, now, mode)}
+            "retried": retry_failed(db, now, mode), "late_takedowns": core.say_late_takedowns(db, now, mode)}
 
 
 def reminders(db: Database, now: datetime, mode: str) -> list[list[str]]:

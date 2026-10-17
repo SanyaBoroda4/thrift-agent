@@ -455,6 +455,114 @@ def _create_tasks(db: Database, sale_id: str | None, item_id: str, mp: str, now:
     return tasks
 
 
+# WO40 — the UGG (sold on Depop 2026-10-16, still live on Poshmark and Vinted the next morning, nobody told): every
+# site where a sold item is still posted gets its take-down whenever we learn of it, and the API itself says when one
+# is late — without the Mac.
+STANDING = ("matched", "delisting", "done")      # a sale that stands: matched to an item, not cancelled / double / merged
+LATE_AFTER = timedelta(hours=2)
+LATE_SAID = "takedown_late:"                     # settings: + sale id, the late line said (once)
+REOPENED = "takedown_reopened:"                  # settings: + task id, a failed take-down handed out once more
+TAKEN_DOWN = ("done", "not_found", "sold")
+
+
+def _live_since(db: Database) -> str | None:
+    """go_live_at as stored — read only (go_live() would start the clock; a dashboard read never may)."""
+    when = parse_time(setting(db, "go_live_at"))
+    return iso(when) if when else None
+
+
+def _standing_sale(db: Database, item_id: str, now: datetime) -> dict | None:
+    """The item's first sale that stands and was handled live (sold since going live)."""
+    since = _live_since(db)
+    if since is None:
+        return None
+    marks = ", ".join("?" * len(STANDING))
+    return db.one(f"SELECT * FROM sales WHERE item_id = ? AND status IN ({marks}) AND sold_at >= ? "
+                  "ORDER BY sold_at, created_at LIMIT 1", (item_id, *STANDING, since))
+
+
+def ensure_takedowns(db: Database, item_id: str, now: datetime, mode: str, reopen: bool = False) -> list[dict]:
+    """WO40: the item sold (a standing live sale): every other site where our mirror shows it posted gets its
+    take-down — a listing the sync brought after the sale, a task never made. `reopen` (the order sweep): a take-down
+    left to the owner whose listing is still posted is handed to the Mac once more (once per task). Live mode only."""
+    if mode != "live" or not item_id:
+        return []
+    sale = _standing_sale(db, item_id, now)
+    if sale is None:
+        return []
+    tasks = _create_tasks(db, sale["id"], item_id, sale["marketplace"], now)
+    if reopen:
+        for task in db.query("SELECT t.id, t.marketplace FROM delist_tasks t JOIN listings l ON l.item_id = t.item_id "
+                             "AND l.marketplace = t.marketplace WHERE t.sale_id = ? AND t.status = 'failed' "
+                             "AND l.status = 'posted'", (sale["id"],)):
+            if setting(db, REOPENED + task["id"]):
+                continue
+            put_setting(db, REOPENED + task["id"], iso(now))
+            db.execute("UPDATE delist_tasks SET status = 'pending', attempts = 0, lease_until = NULL, done_at = NULL "
+                       "WHERE id = ?", (task["id"],))
+            tasks.append({"id": task["id"], "marketplace": task["marketplace"], "reopened": True})
+    if tasks and sale["status"] == "matched":
+        db.execute("UPDATE sales SET status = 'delisting' WHERE id = ?", (sale["id"],))
+    return tasks
+
+
+def late_takedowns(db: Database, now: datetime) -> list[dict]:
+    """The live sales 2 hours old or more whose item is still up somewhere: a take-down not done (pending, running,
+    failed), or a site our mirror shows posted with none. [{sale_id, item_id, title, sold_on, sites}] — the dashboard's
+    flag, and the 15-minute timer's one group line."""
+    marks = ", ".join("?" * len(STANDING))
+    done_marks = ", ".join("?" * len(TAKEN_DOWN))
+    late = []
+    since = _live_since(db)
+    if since is None:
+        return late
+    for sale in db.query(f"SELECT * FROM sales WHERE item_id IS NOT NULL AND status IN ({marks}) AND sold_at >= ? "
+                         "AND sold_at <= ? ORDER BY sold_at, id", (*STANDING, since, iso(now - LATE_AFTER))):
+        first = _standing_sale(db, sale["item_id"], now)
+        if first is None or first["id"] != sale["id"]:
+            continue                                    # a later sale of the same item: the first one speaks
+        open_tasks = {t["marketplace"] for t in db.query(
+            f"SELECT marketplace FROM delist_tasks WHERE sale_id = ? AND status NOT IN ({done_marks})",
+            (sale["id"], *TAKEN_DOWN))}
+        down = {t["marketplace"] for t in db.query(
+            f"SELECT marketplace FROM delist_tasks WHERE item_id = ? AND status IN ({done_marks})",
+            (sale["item_id"], *TAKEN_DOWN))}
+        posted = {r["marketplace"] for r in db.query(
+            "SELECT marketplace FROM listings WHERE item_id = ? AND marketplace <> ? AND status = 'posted'",
+            (sale["item_id"], sale["marketplace"]))}
+        sites = (open_tasks | posted) - down - {sale["marketplace"]}
+        if sites:
+            late.append({"sale_id": sale["id"], "item_id": sale["item_id"],
+                         "title": _title(db, sale["item_id"], sale["title_seen"], sale["listing_id"]),
+                         "sold_on": sale["marketplace"],
+                         "sites": sorted(sites, key=lambda m: util.SITE_ORDER.get(m, 99))})
+    return late
+
+
+def late_line(entry: dict) -> str:
+    sites = util.and_list([site_name(m) for m in entry["sites"]])
+    return (f"⚠️ {entry['title']} sold on {site_name(entry['sold_on'])} but is still listed on {sites} — please mark it "
+            "sold there.")
+
+
+def say_late_takedowns(db: Database, now: datetime | None = None, mode: str | None = None) -> list[str]:
+    """The 15-minute safety net (WO40): each late sale's line to the group, once (settings `takedown_late:<sale>`)."""
+    now, mode = _clock(now), mode or util.mode()
+    if mode != "live":
+        return []
+    out = Outbox(now, mode)
+    said = []
+    with db.tx():
+        for entry in late_takedowns(db, now):
+            if setting(db, LATE_SAID + entry["sale_id"]):
+                continue
+            put_setting(db, LATE_SAID + entry["sale_id"], iso(now))
+            out.group(late_line(entry))
+            said.append(entry["sale_id"])
+    out.flush()
+    return said
+
+
 def _sold_line(site: str, title: str, price: object, ship_day: date) -> str:
     amount = f" — {util.money(price)}" if util.number(price) is not None else ""
     return f"💰 Sold on {site}: {title}{amount}. Ship by {deadlines.fmt_day(ship_day)}."
@@ -605,6 +713,10 @@ def sync(db: Database, body: dict, now: datetime | None = None) -> dict:
                 raise BadRequest("every listing needs an item_id and a marketplace")
             counts["listings"][_upsert(db, "listings", {"item_id": item_id, "marketplace": marketplace}, raw,
                                        LISTING_COLUMNS, now)] += 1
+        # WO40: a listing that reaches the mirror after its item sold (posted, or posted again) gets its take-down
+        for item_id in sorted({_text(r.get("item_id")).strip() for r in listings
+                               if _text(r.get("status")).strip().lower() == "posted"}):
+            ensure_takedowns(db, item_id, now, util.mode())
     return counts
 
 
@@ -999,7 +1111,12 @@ def dashboard_data(db: Database, now: datetime | None = None) -> dict:
     unmatched = int(db.one("SELECT COUNT(*) AS n FROM sales WHERE status = 'unmatched'")["n"])
     swept = {row["source"].split(":", 1)[1]: row["last_seen"]
              for row in db.query("SELECT source, last_seen FROM heartbeats WHERE source LIKE 'orders:%'")}
-    return {"items": list(items.values()), "unmatched": unmatched, "swept": swept, "generated_at": iso(now)}
+    late = late_takedowns(db, now)
+    for entry in late:                                  # WO40: still listed elsewhere 2 h after the sale
+        if entry["item_id"] in items:
+            items[entry["item_id"]]["still_listed"] = [site_name(m) for m in entry["sites"]]
+    return {"items": list(items.values()), "unmatched": unmatched, "swept": swept, "generated_at": iso(now),
+            "late_takedowns": [{**e, "line": late_line(e)} for e in late]}
 
 
 SHIPPING = ("to_ship", "shipped", "delivered", "completed")
