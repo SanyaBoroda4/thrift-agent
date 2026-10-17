@@ -1127,7 +1127,9 @@ Sam Edelman's Vinted form was kept twice after Upload with nothing on the page, 
   absent → queued, one last look right before, posted ONCE more by itself; refused again → the ⛔ 'retry' line. A field
   error asks at once, as above. **An item waiting for a size** gets ONE group message, "Waiting for a size: <title> —
   reply 'size …' to this message" (`approve.ask_sizes`, from the worker's window tick; outbox kind `size`, `once` —
-  never repeated); a size replied to it is that item's (`_reply_size`), every site back in line.
+  never repeated); a size replied to it is that item's (`_reply_size`), every site back in line. **'same item' on a
+  card whose earlier twin is retired already** is answered `TWIN_KEPT` and the item stays (live 2026-10-17: the reply
+  came three minutes after the retirement and both brown bralettes were dropped; the owner brought the new one back).
 
 ## The sites' sold orders, read only (WO38, 2026-10-14)
 None of the three sites emails the seller when an order ships (Poshmark's "Thank you for shipping" aside): the shipping

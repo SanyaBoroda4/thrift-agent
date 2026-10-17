@@ -322,3 +322,20 @@ def test_an_item_waiting_for_a_size_gets_one_message_and_a_reply_to_it_sets_the_
     assert db.item(brown)["owner_size"] == "S"
     assert {r["status"] for r in db.listings_for(brown)} == {"queued"}         # every site back in line
     assert approve.ask_sizes(s, db) == 0
+
+
+def test_same_item_on_a_card_whose_twin_was_retired_keeps_it(env, tmp_path, facts, monkeypatch):
+    """Live 2026-10-17: 'same item' replied to the new card three minutes after its earlier twin was retired — both
+    were dropped and the bralette was listed nowhere. Now the reply is answered and the item stays."""
+    s, db, _ = env
+    bot = FakeBot()
+    monkeypatch.setattr(approve, "bot_for", lambda *_: bot)
+    old = _item(db, tmp_path, facts, OLD_BROWN, status="ready", name="old")
+    db.set_item(old, owner_price=25)
+    new = _item(db, tmp_path, facts, BROWN, twin=old, name="new")
+    db.add_outbox(str(CHAT), 454, "item", new, text="card")
+    pipeline.set_price(s, db, new, 25)
+    assert db.item(old)["status"] == "dropped"
+    _reply(db, s, bot, "same item", to=454)
+    assert db.item(new)["status"] == "ready"
+    assert bot.texts()[-1] == pipeline.TWIN_KEPT

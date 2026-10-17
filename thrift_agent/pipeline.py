@@ -1693,6 +1693,7 @@ def set_price(s: Settings, db: DB, iid: str, amount: int) -> str:
 
 
 TWIN = re.compile(r"^looks like item (i_[0-9a-z_]+)")
+TWIN_KEPT = "The earlier card was retired already — this one is the one that gets listed"
 TWIN_LIVE = "already live as "                  # WO39: a new item's row skipped because its twin is live there
 
 
@@ -2016,6 +2017,11 @@ def answer(s: Settings, db: DB, iid: str, note: str) -> str:
     gate = loads(it["gate"]) or {}
     twin = gate.get("hold") == "reshare" or any(q.startswith("looks like item") for q in gate.get("questions") or [])
     if twin and SAME_ITEM.search(note) and not NOT_A_DUPLICATE.search(note):     # WO37: a warning, no longer a hold
+        tw = db.item(twin_of(it) or "")
+        if tw is not None and tw["status"] == "dropped":
+            # WO39 (live 2026-10-17: "same item" three minutes after the earlier card was retired — both dropped, the
+            # bralette listed nowhere): the earlier one is gone already, so this one stays the one listed
+            raise ValueError(TWIN_KEPT)
         with db.tx():
             db.set_item(iid, note=merged, status="dropped")     # the same garment is already listed: never list it twice
             db.log(iid, "dropped", {"note": note})
