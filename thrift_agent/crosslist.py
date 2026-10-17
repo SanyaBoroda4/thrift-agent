@@ -298,7 +298,16 @@ def record(s: Settings, db: DB, iid: str, mp: str, title: str, out, fields: dict
     if out.status == "failed" and out.clicked and not out.url:
         unconfirmed_wait(db, iid, mp, out.screenshot)     # WO35 §4: no question — the site's own data settles it
     elif out.status == "failed" and refused(error):
-        say_refused(db, iid, mp, title, error, shot)
+        was = unconf_state(db, iid, mp) or {}
+        if silent_refusal(error) and was.get("stage") != "reposted":
+            # WO39 follow-up (the owner): no field error — Vinted's own data looked at in 10 minutes; still absent →
+            # posted once more by itself (one last look right before); only a second refusal asks for 'retry'
+            due = (datetime.now(timezone.utc) + timedelta(seconds=RECHECK_AFTER)).isoformat(timespec="seconds")
+            set_unconf(db, iid, mp, stage="wait", due=due, round=1, tries=0, shot=out.screenshot, refused=True)
+            db.log(iid, "refused_wait", {"mp": mp, "due": due, "error": error})
+        else:
+            set_unconf(db, iid, mp, stage=None)
+            say_refused(db, iid, mp, title, error, shot)
     elif out.status == "failed":
         row = db.listing(iid, mp)
         if (error or "").startswith(MISMATCH):          # WO36 §4: nothing published; it waits, the group hears nothing
@@ -322,6 +331,24 @@ def record(s: Settings, db: DB, iid: str, mp: str, title: str, out, fields: dict
 def refused(error: str | None) -> bool:
     """WO39: the site kept its sell form after the one click (its own data agreeing nothing was published)."""
     return REFUSED in (error or "")
+
+
+GENERIC_REFUSAL = re.compile(r"no error shown on the form|kept the sell form|went wrong|try again|an error occurred|"
+                             r"unexpected error", re.I)
+
+
+def silent_refusal(error: str | None) -> bool:
+    """WO39 follow-up: a refusal that names no field — nothing on the form, or only a generic "Something went wrong"
+    (live 2026-10-16: the Sam Edelman twice, the third identical form went live). Such a form is posted once more by
+    itself after the site's own data shows it absent; a field error ("Brand: Fill in brand to continue", a field marked
+    invalid) is the owner's to look at at once."""
+    if not refused(error):
+        return False
+    said = (error or "").split(REFUSED, 1)[1].split(" (its requests after the click", 1)[0]
+    if "marked invalid" in said:
+        return False
+    parts = [p.strip() for p in said.split(" | ") if p.strip()]
+    return bool(parts) and all(GENERIC_REFUSAL.search(p) for p in parts)
 
 
 def refused_text(title: str, mp: str, error: str) -> str:
@@ -391,9 +418,11 @@ def rechecks_due(db: DB, mp: str, now: datetime | None = None) -> list[str]:
     out = []
     for row in db.conn.execute("SELECT item_id, error FROM listings WHERE marketplace=? AND status='failed' AND "
                                "url IS NULL ORDER BY updated_at, rowid", (mp,)).fetchall():
-        if not (row["error"] or "").startswith(UNCONFIRMED):
-            continue
         st = states.get(f"{row['item_id']}:{mp}")
+        if refused(row["error"]) and st is not None and st.get("refused"):
+            pass                                        # WO39 follow-up: a silent refusal, looked at the same way
+        elif not (row["error"] or "").startswith(UNCONFIRMED):
+            continue
         if st is None:
             out.append(row["item_id"])
         elif st.get("stage") == "wait":

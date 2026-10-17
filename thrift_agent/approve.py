@@ -581,6 +581,43 @@ def needs_size(it) -> bool:
 
 
 NEEDS_SIZE = "needs a size: reply 'size …' to this card"
+SIZE_ASK = "Waiting for a size: {title} — reply 'size …' to this message"
+
+
+def ask_sizes(s: Settings, db: DB) -> int:
+    """WO39 follow-up (the owner): an item priced but waiting for a size gets ONE short message at the bottom of the
+    group — "Waiting for a size: <title> — reply 'size …' to this message" — so she never scrolls back to its card; a
+    size replied to it is that item's size. Once per item, never repeated (outbox kind `size`, `once`). Returns the
+    messages sent."""
+    from thrift_agent import daily
+    bot = bot_for(s)
+    if bot is None:
+        return 0
+    sent = 0
+    for iid in daily.size_waiting(db):
+        if sent_before(db, bot.chat_id, "size", iid) is not None:
+            continue
+        it = db.item(iid)
+        title = (((loads(it["renders"]) or {}).get("poshmark") or {}).get("title") if it else None) or iid
+        text = SIZE_ASK.format(title=title)
+        if once(db, bot, "size", iid, text, lambda t=text: bot.send_message(t)) is not None:
+            sent += 1
+    return sent
+
+
+def _reply_size(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int | None) -> str:
+    """A reply to "Waiting for a size: …" (WO39 follow-up): the size of THAT item ("size S", "S", "size 8.5", with a
+    price or not); anything else gets the hint."""
+    price, note = parse_reply(text)
+    size = size_reply(note if note is not None else text)
+    if size is None:
+        bot.send_message("Reply with the size, e.g. 'size S' or 'size 8.5'", reply_to=mid)
+        return f"size {iid}: unreadable reply {text!r}"
+    out = _set_size(s, db, bot, iid, size, price, mid)
+    it = db.item(iid)
+    if it is not None and it["owner_size"]:
+        db.outbox_resolve("size", iid)
+    return out
 
 
 def item_caption(iid: str, it) -> tuple[str, int | None]:
@@ -991,6 +1028,8 @@ def _route_message(s: Settings, db: DB, bot: Bot, msg: dict) -> str:
         return _set_kids(s, db, bot, ref, choice, mid)
     if kind == "category":
         return _reply_category(s, db, bot, ref, text, mid)
+    if kind == "size":
+        return _reply_size(s, db, bot, ref, text, mid)
     if kind == "unconfirmed":
         return _reply_unconfirmed(s, db, bot, ref, text, mid)
     if kind == "skipped":

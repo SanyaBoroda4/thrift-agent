@@ -1121,6 +1121,13 @@ Sam Edelman's Vinted form was kept twice after Upload with nothing on the page, 
   posted). The row `failed` "Vinted refused the form: …", ONE reply-able private line "⛔ … refused the form — <error>.
   Nothing was published (its own data agrees). Reply 'retry' to post it again." (outbox kind `refused`, `_route_ops`);
   never requeued by a new window (`crosslist.refused`) — the same form is never posted again by itself.
+- **Follow-ups (the owner, 2026-10-16):** a refusal that names no field (`crosslist.silent_refusal`: nothing on the
+  form, or only "Something went wrong" / "try again") says nothing at first; WO35's re-check takes it (kv
+  `unconfirmed_state` with `refused: true`, `rechecks_due`): 10 minutes later the site's own data — found → posted;
+  absent → queued, one last look right before, posted ONCE more by itself; refused again → the ⛔ 'retry' line. A field
+  error asks at once, as above. **An item waiting for a size** gets ONE group message, "Waiting for a size: <title> —
+  reply 'size …' to this message" (`approve.ask_sizes`, from the worker's window tick; outbox kind `size`, `once` —
+  never repeated); a size replied to it is that item's (`_reply_size`), every site back in line.
 
 ## The sites' sold orders, read only (WO38, 2026-10-14)
 None of the three sites emails the seller when an order ships (Poshmark's "Thank you for shipping" aside): the shipping

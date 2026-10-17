@@ -173,7 +173,7 @@ def test_a_price_on_a_card_with_no_size_never_says_queued(env, tmp_path, facts, 
 
 # ---------------------------------------------------------------- a refused form
 
-def test_a_refused_form_is_one_private_line_with_its_error_and_is_never_posted_again_by_itself(env, tmp_path, facts,
+def test_a_field_error_is_one_private_line_at_once_and_never_posted_again_by_itself(env, tmp_path, facts,
                                                                                                 monkeypatch):
     from types import SimpleNamespace
     s, db, said = env
@@ -185,12 +185,12 @@ def test_a_refused_form_is_one_private_line_with_its_error_and_is_never_posted_a
     db.set_item(iid, owner_price=25)
     db.upsert_listing(iid, "vinted", status="posting", attempts=1)
     out = SimpleNamespace(status="failed", url=None, clicked=False, guesses=[], screenshot=None, note=None,
-                          error="Vinted refused the form: Something went wrong. Please try again. (its requests after "
-                                "the click: /api/v2/item_upload/items 403)")
+                          error="Vinted refused the form: Brand: Fill in brand to continue (its requests after "
+                                "the click: /api/v2/item_upload/items 400)")
     crosslist.record(s, db, iid, "vinted", "Sam Edelman Daniella Snake Print Ankle Sandals size 8.5", out, {})
     assert ops.texts() == ["⛔ Sam Edelman Daniella Snake Print Ankle Sandals size 8.5: Vinted refused the form — "
-                           "Something went wrong. Please try again. (its requests after the click: "
-                           "/api/v2/item_upload/items 403). Nothing was published (its own data agrees). Reply 'retry' "
+                           "Brand: Fill in brand to continue (its requests after the click: "
+                           "/api/v2/item_upload/items 400). Nothing was published (its own data agrees). Reply 'retry' "
                            "to post it again."]
     assert tuple(db.conn.execute("SELECT kind, ref FROM outbox WHERE chat_id=?", (str(OPS),)).fetchone()) == \
         ("refused", f"{iid}:vinted")
@@ -238,3 +238,87 @@ def test_the_old_all_done_wording_is_gone_from_the_code():
     hits = [str(p.relative_to(ROOT)) for p in (ROOT / "thrift_agent").rglob("*.py")
             if f"All done — {old}" in p.read_text(encoding="utf-8")]
     assert hits == []
+
+
+# ---------------------------------------------------------------- follow-ups (the owner, 2026-10-16)
+
+@pytest.mark.parametrize("error,silent", [
+    ("Vinted refused the form: no error shown on the form (its requests after the click: /api/v2/x 500)", True),
+    ("Vinted refused the form: it kept the sell form (not a listing page: https://www.vinted.com/items/new)", True),
+    ("Vinted refused the form: Something went wrong. Please try again.", True),
+    ("Vinted refused the form: Brand: Fill in brand to continue", False),
+    ("Vinted refused the form: Something went wrong | Title: marked invalid", False),
+    ("Vinted refused the form: Fill in brand to continue | Something went wrong", False),
+    ("unconfirmed publish: after the click no listing page", False),
+])
+def test_a_refusal_with_no_field_error_is_silent(error, silent):
+    assert crosslist.silent_refusal(error) is silent
+
+
+def _render_ready(db, iid):
+    renders = {mp: {"marketplace": mp, "title": "Sam Edelman Daniella Sandals size 8.5", "description": "Sandals.",
+                    "brand": "Sam Edelman", "department": "Women", "category": "Shoes", "subcategory": "Heels",
+                    "size": "8.5", "colors": ["Tan"], "condition": "like_new", "price": 25, "photos": [],
+                    "sku": iid} for mp in ("poshmark", "depop", "vinted")}
+    db.set_item(iid, status="ready", owner_price=25, renders=renders)
+
+
+def test_a_silent_refusal_is_checked_after_10_minutes_and_posted_once_more_by_itself(env, tmp_path, facts,
+                                                                                         monkeypatch):
+    import asyncio
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+
+    from thrift_agent.post import runner
+    s, db, said = env
+    ops = FakeBot(OPS)
+    monkeypatch.setattr(approve, "ops_bot_for", lambda *_: ops)
+    monkeypatch.setattr(crosslist.notify, "ops_photo", lambda *a, **k: True)
+    monkeypatch.setattr(runner.notify, "say", said.append)
+    iid = _item(db, tmp_path, facts, "Sam Edelman", status="ready", size="8.5", name="sam")
+    _render_ready(db, iid)
+    db.upsert_listing(iid, "vinted", status="posting", attempts=1)
+    silent = SimpleNamespace(status="failed", url=None, clicked=False, guesses=[], screenshot=None, note=None,
+                             error="Vinted refused the form: no error shown on the form")
+    crosslist.record(s, db, iid, "vinted", "Sam Edelman", silent, {})
+    assert ops.texts() == []                                                 # nothing asked yet
+    assert crosslist.rechecks_due(db, "vinted") == []                        # 10 minutes first
+    later = datetime.now(timezone.utc) + timedelta(minutes=11)
+    assert crosslist.rechecks_due(db, "vinted", now=later) == [iid]
+    crosslist.set_unconf(db, iid, "vinted", due=datetime.now(timezone.utc).isoformat())
+
+    class Absent:
+        held = set()
+
+        async def find_live(self, ctx, r, since):
+            return None, {"listings": 40, "how": "Vinted's newest items, the exact title"}
+
+    assert asyncio.run(runner.recheck_unconfirmed(s, db, {"vinted": Absent()}, "vinted"))
+    assert db.listing(iid, "vinted")["status"] == "queued"                    # posted once more, by itself
+    assert crosslist.unconf_state(db, iid, "vinted")["stage"] == "retry"      # ... after one last look
+    crosslist.set_unconf(db, iid, "vinted", stage="reposted")                 # (run_cross, right before the post)
+    db.upsert_listing(iid, "vinted", status="posting")
+    crosslist.record(s, db, iid, "vinted", "Sam Edelman", silent, {})        # refused again: now she is asked
+    assert len(ops.texts()) == 1 and ops.texts()[0].startswith("⛔ Sam Edelman: Vinted refused the form")
+    assert crosslist.unconf_state(db, iid, "vinted") is None
+    assert crosslist.rechecks_due(db, "vinted", now=later) == []             # never a third post by itself
+
+
+def test_an_item_waiting_for_a_size_gets_one_message_and_a_reply_to_it_sets_the_size(env, tmp_path, facts,
+                                                                                         monkeypatch):
+    s, db, _ = env
+    bot = FakeBot()
+    monkeypatch.setattr(approve, "bot_for", lambda *_: bot)
+    brown = _item(db, tmp_path, facts, BROWN, status="ready", name="brown")
+    db.set_item(brown, owner_price=25)
+    assert approve.ask_sizes(s, db) == 0                                     # priced, not skipped yet: nothing
+    for mp in ("poshmark", "depop", "vinted"):
+        db.upsert_listing(brown, mp, status="skipped", error="skipped: no size on the item")
+    assert approve.ask_sizes(s, db) == 1
+    assert bot.texts() == [f"Waiting for a size: {BROWN} — reply 'size …' to this message"]
+    assert approve.ask_sizes(s, db) == 0                                     # once, never repeated
+    mid = bot.next_id
+    _reply(db, s, bot, "size S", to=mid)
+    assert db.item(brown)["owner_size"] == "S"
+    assert {r["status"] for r in db.listings_for(brown)} == {"queued"}         # every site back in line
+    assert approve.ask_sizes(s, db) == 0

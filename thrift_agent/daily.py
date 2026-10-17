@@ -98,13 +98,7 @@ def owner_waits(s: Settings, db: DB) -> dict[str, list[str]]:
     a skipped listing, an unconfirmed publish she was asked about). Names as on the cards. The 💤 line says them; "All
     done" only when this is empty."""
     from thrift_agent import crosslist
-    sizes, retries = [], []
-    for (iid,) in db.conn.execute(
-            "SELECT DISTINCT l.item_id FROM listings l JOIN items i ON i.id=l.item_id WHERE l.status='skipped' AND "
-            "l.error LIKE ? AND i.status NOT IN ('dropped', 'posted', 'posting') AND NOT EXISTS (SELECT 1 FROM "
-            "listings p WHERE p.item_id=l.item_id AND p.status IN ('posted', 'posting')) ORDER BY i.created_at",
-            (f"%{crosslist.NO_SIZE}%",)).fetchall():
-        sizes.append(crosslist.item_name(db, iid))
+    sizes, retries = [crosslist.item_name(db, iid) for iid in size_waiting(db)], []
     for row in db.conn.execute(
             "SELECT o.ref FROM outbox o WHERE o.kind IN ('skipped', 'unconfirmed', 'refused') AND o.resolved_at IS "
             "NULL ORDER BY o.sent_at").fetchall():
@@ -116,6 +110,17 @@ def owner_waits(s: Settings, db: DB) -> dict[str, list[str]]:
         if name not in retries:
             retries.append(name)
     return {SIZE_WAIT: sizes, RETRY_WAIT: retries}
+
+
+def size_waiting(db: DB) -> list[str]:
+    """WO39: the items priced but listed nowhere for want of a size (every site skipped "no size on the item"), oldest
+    first."""
+    from thrift_agent import crosslist
+    return [r[0] for r in db.conn.execute(
+        "SELECT DISTINCT l.item_id FROM listings l JOIN items i ON i.id=l.item_id WHERE l.status='skipped' AND "
+        "l.error LIKE ? AND i.status NOT IN ('dropped', 'posted', 'posting') AND NOT EXISTS (SELECT 1 FROM "
+        "listings p WHERE p.item_id=l.item_id AND p.status IN ('posted', 'posting', 'queued')) ORDER BY i.created_at",
+        (f"%{crosslist.NO_SIZE}%",)).fetchall()]
 
 
 def done_text(s: Settings, db: DB) -> str | None:
@@ -272,7 +277,8 @@ def done_state(s: Settings, db: DB) -> list[str] | None:
         elif any((crosslist.unconf_state(db, r["item_id"], mp) or {}).get("stage") != "given_up"
                  for r in db.conn.execute("SELECT item_id, error FROM listings WHERE marketplace=? AND status='failed' "
                                           "AND url IS NULL", (mp,)).fetchall()
-                 if (r["error"] or "").startswith(crosslist.UNCONFIRMED)):
+                 if (r["error"] or "").startswith(crosslist.UNCONFIRMED)
+                 or (crosslist.refused(r["error"]) and crosslist.unconf_state(db, r["item_id"], mp))):
             waiting.append(mp)                        # WO35: an unconfirmed publish still to settle by the site's data
     return waiting
 
@@ -364,6 +370,10 @@ class Window:
         hours_open, block, opens = blocked(self.s, self.db, now)
         text = status_text(w, p, timings(self.s, self.db), hours_open, block, opens, now)
         self.show(text)
+        try:
+            approve.ask_sizes(self.s, self.db)        # WO39 follow-up: "Waiting for a size: …", once per item
+        except Exception as e:  # noqa: BLE001 — tried again on the next tick
+            self.db.log(None, "error", f"size message: {type(e).__name__}: {e}")
         return text
 
     def show(self, text: str) -> None:
