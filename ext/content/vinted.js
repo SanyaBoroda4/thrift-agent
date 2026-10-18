@@ -338,6 +338,11 @@
     // that follows it, on the listing's edit page. Nothing else.
     async setFields(job, st) {
       const f = job.fields || {};
+      // what the listing has now: a new category empties the condition and the package, and THOSE go back — the
+      // owner's own choices (live 2026-10-18: the dry run had put our mapping's "Very good" / medium over her "Good" /
+      // large); our values only where the page had none
+      const before = { condition: (T.$(S().condition?.selectors)?.value || "").trim(), package: chosenPackage() };
+      st.notes.push(`before the change: condition ${before.condition || "none"}, package ${before.package || "none"}`);
       if (f.category_id) {
         await T.step("category", st, async () => {
           await open("category");
@@ -361,16 +366,17 @@
         await T.quiet(600, 4000);                        // the size grid follows the category
         await T.step("size", st, async () => pick(st, "size", f.size));
       }
-      // live 2026-10-18: a new category empties the condition and the package size — set again, as the sell form does
-      if (f.condition) await T.step("condition", st, async () => pick(st, "condition", f.condition));
-      if ((f.package_sizes || []).length) await T.step("package", st, async () => packageSize(f));
+      // live 2026-10-18: a new category empties the condition and the package size — the listing's own set back
+      const condition = before.condition || f.condition;
+      const packages = [before.package, ...(f.package_sizes || [])].filter(Boolean);
+      if (condition) await T.step("condition", st, async () => pick(st, "condition", condition));
+      if (packages.length) await T.step("package", st, async () => packageSize({ package_sizes: packages }));
       await closeAll(st);
     },
     fieldsSeen(job, st) {
       const value = (sel) => (T.$(sel) ? T.$(sel).value : null);
-      const cell = packageCells().find((c) => T.$(S().package.radio, c)?.checked);
       return { category: value(S().category.selectors), size: value(S().size?.selectors),
-               condition: value(S().condition?.selectors), package: cell ? cellName(cell) : null,
+               condition: value(S().condition?.selectors), package: chosenPackage(),
                picked: st.picked ? { ...st.picked } : null };
     },
 

@@ -586,6 +586,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
     async setFields(job, st) {
       const f = job.fields || {};
       const ids = S().combo.ids;
+      const before = { condition: document.getElementById(ids.condition)?.value || "" };   // the listing's own
       if (f.category) {
         await T.step("category", st, async () =>
           choose(st, ids.category, f.category, { typed: f.category.split(" > ").pop(), category: true }));
@@ -595,8 +596,9 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
         await T.step("size", st, async () => size(st, f.size));
       }
       const of = (cid) => document.getElementById(cid)?.value || "";
-      if (f.condition && !of(ids.condition)) {           // emptied with the category: set again
-        await T.step("condition", st, async () => choose(st, ids.condition, f.condition));
+      const condition = before.condition || f.condition;
+      if (condition && !of(ids.condition)) {             // emptied with the category: the listing's own set back
+        await T.step("condition", st, async () => choose(st, ids.condition, condition));
       }
     },
     fieldsSeen(job, st) {
