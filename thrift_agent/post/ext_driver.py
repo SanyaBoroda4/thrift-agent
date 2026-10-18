@@ -1066,7 +1066,14 @@ class ExtensionPoster(Poster):
         if ev.get("event") == "error":
             if ev.get("page") in STOP_PAGES:
                 raise self._stop(ev)
-            return "gone"                                     # not a listing page any more
+            message = str(ev.get("message") or "")
+            # WO43 (the owner's check of a Vinted sale, 2026-10-18): "gone" only when the page really isn't a listing
+            # any more (Depop's "Sorry, that page doesn't exist" — a 404 in the logged-in Chrome); a page that didn't
+            # answer in time, or any other trouble, is NOT "gone" — a failed attempt, tried again, never a sale twice
+            if "not a listing page" in message:
+                self.notes.append(f"{address}: {message[:160]}")
+                return "gone"
+            raise PosterError(f"{self.site}: couldn't read {address}: {message[:200]}")
         live = ev.get("live") or {}
         if not live.get("product"):
             return "gone"

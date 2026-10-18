@@ -177,15 +177,23 @@ def recategorize(s: Settings, db: DB, iid: str, path: dict, dry: bool = False) -
     return {"placed": placed, "sites": list(payloads), "skipped": skipped, "rows": rows}
 
 
+def may_edit(s: Settings, db: DB, site: str, dry_poster: bool = False) -> bool:
+    """The poster LIVE, never with PAUSE, the lid closed or the site stopped for the window — in any hour (an edit the
+    owner asked for is made now, like a take-down; it lists nothing new)."""
+    from thrift_agent import power
+    from thrift_agent.post import runner
+    if dry_poster or s.flag_set("PAUSE") or runner._paused(db):
+        return False
+    return not (power.lid_closed() is True or crosslist.blocked(db, site))
+
+
 async def run_one(s: Settings, db: DB, site: str, poster, ctx, sites: list[str], dry_poster: bool = False) -> bool:
-    """The site's next due edit, made by its worker on an idle turn (the same gates as a price drop: LIVE poster, the
-    hours, no PAUSE, the site not stopped). True when a row was worked on."""
-    from thrift_agent import pricedrop
+    """The site's next due edit, made by its worker on an idle turn (`may_edit`). True when a row was worked on."""
     rows = due(db, site)
     if not rows:
         return False
     row = rows[0]
-    if not pricedrop.may_drop(s, db, site, bool(row["dry"]) or dry_poster):
+    if not may_edit(s, db, site, dry_poster):
         return False
     iid, title = row["item_id"], _title(db, row["item_id"])
     payload = loads(row["payload"]) or {}

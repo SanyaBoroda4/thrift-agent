@@ -484,10 +484,7 @@ def test_recategorize_moves_the_record_to_men_and_queues_one_edit_per_live_site(
             assert payload["render"]["department"] == "Men" and go()
             return {"ok": True, "saved": True, "note": "the public page shows Men › Shoes › Sneakers", "shot": ""}
     import asyncio
-    monkeypatch.setattr(edits.pricedrop_may_drop, "__call__", lambda *a, **k: True, raising=False) \
-        if hasattr(edits, "pricedrop_may_drop") else None
-    from thrift_agent import pricedrop
-    monkeypatch.setattr(pricedrop, "may_drop", lambda *a, **k: True)
+    monkeypatch.setattr(edits, "may_edit", lambda *a, **k: True)
     assert asyncio.run(edits.run_one(s, db, "poshmark", Posh(), None, ["poshmark"])) is True
     row = db.conn.execute("SELECT * FROM listing_edits WHERE item_id=? AND marketplace='poshmark'", (iid,)).fetchone()
     assert row["status"] == "done"
