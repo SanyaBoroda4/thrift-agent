@@ -156,14 +156,17 @@ def recategorize(s: Settings, db: DB, iid: str, path: dict, dry: bool = False) -
             cross = []
         for mp in cross:
             try:
+                # the fields a category change empties on the edit page come along (live 2026-10-18: Vinted cleared
+                # the condition and the package size with the category; Depop's edit page can come up blank)
                 if mp == "depop":
                     f = depop_cat.map_depop(view)
-                    payloads[mp] = {"fields": {"category": f.category, "size": f.size},
+                    payloads[mp] = {"fields": {"category": f.category, "size": f.size, "condition": f.condition},
                                     "want": {"category": f.category, "size": f.size}, "path": placed}
                 else:
                     f = vinted_cat.map_vinted(view)
                     payloads[mp] = {"fields": {"category_id": f.category_id, "category_path": f.category_path,
-                                               "size": f.size},
+                                               "size": f.size, "condition": f.condition,
+                                               "package_sizes": list(f.package_sizes)},
                                     "want": {"category_path": f.category_path, "size": f.size}, "path": placed}
             except MappingError as e:
                 skipped[mp] = str(e)

@@ -594,12 +594,16 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
         await T.quiet(600, 4000);                        // the size menu follows the category
         await T.step("size", st, async () => size(st, f.size));
       }
+      const of = (cid) => document.getElementById(cid)?.value || "";
+      if (f.condition && !of(ids.condition)) {           // emptied with the category: set again
+        await T.step("condition", st, async () => choose(st, ids.condition, f.condition));
+      }
     },
     fieldsSeen(job, st) {
       const ids = S().combo.ids;
       const of = (cid) => document.getElementById(cid)?.value || "";
-      return { category: of(ids.category), size: of(ids.size), size_menu: st.sizeMenu || null,
-               picked: st.picked ? { ...st.picked } : null };
+      return { category: of(ids.category), size: of(ids.size), condition: of(ids.condition),
+               size_menu: st.sizeMenu || null, picked: st.picked ? { ...st.picked } : null };
     },
 
     // The form as it is: the single-selects' values, the multi-selects' chips (the category's input shows its leaf

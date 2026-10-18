@@ -534,7 +534,7 @@
     T.noShots = job.mode === "orders";
     const fail = (stage, kind, message) => T.emit({ event: "error", job_id: job.job_id, stage, page: kind, message });
     if (T.off.has(job.job_id)) return fail("cancelled", "unknown", "called off by the bridge");
-    const page = await T.settled(job.site, job.mode === "find" || job.mode === "orders" ? 4000 : 15000);
+    let page = await T.settled(job.site, job.mode === "find" || job.mode === "orders" ? 4000 : 15000);
     if (job.mode === "check_login") {
       return page === "form" ? T.emit({ event: "result", job_id: job.job_id, page }) : fail("check_login", kindOf(page), `${page} page`);
     }
@@ -577,6 +577,12 @@
     if (job.mode === "probe") {                       // WO33: the take-down control looked for — never clicked
       if (page !== "listing") return fail("probe", "unknown", `not a listing page: ${location.href}`);
       return site.probe(job, st);
+    }
+    if (page !== "form" && ["cover", "price", "fields"].includes(job.mode)) {
+      // WO43 (live 2026-10-18): Depop's edit page came up as a header and a footer with no form for 15 s — the form
+      // is waited for a while longer before the page is called something else
+      const late = await T.until(() => (T.classify(job.site) === "form" ? true : null), 30000);
+      if (late) page = "form";
     }
     if (page !== "form") {
       await T.screenshot(page);

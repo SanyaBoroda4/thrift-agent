@@ -843,6 +843,8 @@ class ExtensionPoster(Poster):
         ok = not want_leaf or got_leaf == want_leaf or want_leaf in got_leaf
         if fields.get("size"):
             ok = ok and _norm(str(fields["size"])) in _norm(str(seen.get("size") or ""))
+        if fields.get("condition") and "condition" in seen:     # emptied by the category change: must be back
+            ok = ok and bool(str(seen.get("condition") or "").strip())
         return bool(ok)
 
     async def _fields(self, bridge: bridge_mod.Bridge, job: bridge_mod.Job, url: str, fields: dict, dry: bool,

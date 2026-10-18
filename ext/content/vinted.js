@@ -361,11 +361,16 @@
         await T.quiet(600, 4000);                        // the size grid follows the category
         await T.step("size", st, async () => pick(st, "size", f.size));
       }
+      // live 2026-10-18: a new category empties the condition and the package size — set again, as the sell form does
+      if (f.condition) await T.step("condition", st, async () => pick(st, "condition", f.condition));
+      if ((f.package_sizes || []).length) await T.step("package", st, async () => packageSize(f));
       await closeAll(st);
     },
     fieldsSeen(job, st) {
       const value = (sel) => (T.$(sel) ? T.$(sel).value : null);
+      const cell = packageCells().find((c) => T.$(S().package.radio, c)?.checked);
       return { category: value(S().category.selectors), size: value(S().size?.selectors),
+               condition: value(S().condition?.selectors), package: cell ? cellName(cell) : null,
                picked: st.picked ? { ...st.picked } : null };
     },
 

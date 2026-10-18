@@ -1213,8 +1213,11 @@ And the On Cloudsurfer Max sneakers — men's — went up under Women › Shoes 
   unconfirmed | failed | skipped; `thrift recategorize <item> "Men > Shoes > Sneakers" --dry-run | --now`): the item's
   record follows at once (facts, renders — the size on the new department's menu —, the sites' mapped fields through
   `map_depop` / `map_vinted`); each site worker takes its due row on an idle turn, before a price drop
-  (`parallel.listing_edit`): Poshmark `PoshmarkPoster.set_category` — the edit page's category menu (`_category`:
-  department, category, subcategory) and size menu (`_size`), read back, Update → List This Item for THIS edit (WO40)
+  (`parallel.listing_edit`, in any hour — before the cross workers' posting-hours gate, like a take-down): Poshmark
+  `PoshmarkPoster.set_category` — the edit page's own category field (`SEL["category_open_edit"]`: the dropdown in
+  `.listing-editor__category-container`, showing the listing's current value — live 2026-10-18, the create form's
+  "Select Category" text isn't there), then the same menu (`_category`: department, category, subcategory) and size
+  menu (`_size`), read back, Update → List This Item for THIS edit (WO40)
   once, then the public listing's JSON (`crosslist.poshmark_listing`: department.display, category_v2.display,
   category_features[0].display, size) until it shows the new department; Depop / Vinted `ExtensionPoster.set_fields`
   — the extension's "fields" job on the edit page (`T.fieldsSet` → `site.setFields`: Depop's category chosen under
