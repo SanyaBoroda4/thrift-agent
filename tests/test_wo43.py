@@ -5,7 +5,7 @@ Live that night: three items shared at 3:18 PM stayed on the iPhone (5G); "share
 at 7:26 PM and the phone's late upload of the first share both landed at 7:47 PM — six folders, six cards, three
 repeats. The On Cloudsurfer Max sneakers (men's) went up under Women."""
 import json
-import time
+import uuid
 
 import pytest
 from PIL import Image
@@ -92,7 +92,7 @@ def shoe_facts(**kw) -> Facts:
 
 def _item(db, tmp_path, facts: Facts, status="awaiting_price", title="On Cloudsurfer Max Sneakers", price=120,
           gate=None, size=None):
-    bid = db.add_batch(str(tmp_path / f"share-{time.monotonic_ns()}"), 3)
+    bid = db.add_batch(str(tmp_path / f"share-{uuid.uuid4().hex}"), 3)      # unique (Windows 3.12: a coarse clock)
     db.set_batch(bid, status="split")
     d = tmp_path / "items" / bid
     (d / "photos").mkdir(parents=True, exist_ok=True)

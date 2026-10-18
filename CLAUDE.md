@@ -1223,8 +1223,15 @@ And the On Cloudsurfer Max sneakers — men's — went up under Women › Shoes 
   — the extension's "fields" job on the edit page (`T.fieldsSet` → `site.setFields`: Depop's category chosen under
   the new department's heading and its size on the menu that follows; Vinted's leaf by id down the men's tree and
   its size), read back, Save once, then the edit page read again (`read_only` job, `read_fields`) for what stuck.
-  One Save per site; a failure is tried again an hour later, three in all, then ONE private line. Dry runs fill and
-  never save (a private line with the screenshot's name).
+  **Live 2026-10-18 (the On sneakers, done on all three):** a new category on Vinted EMPTIES the brand, the condition
+  and the package size (Vinted refused the Save: "Fill in brand to continue, Certain brands can only be changed if you
+  delete and re-upload this item.") and on Depop can empty the condition — the page scripts read the listing's OWN
+  values before the change and set those back (never our mapping over the owner's choices: the dry run had put
+  "Very good" / medium over her "Good" / large); Depop's edit page came up once as a header and a footer with no
+  form for 15 s — the edit modes wait up to 30 s longer for the form. One Save per site; an edit saved once and not
+  confirmed is READ an hour later (`_shows`), never saved again blind; a failed attempt is tried again an hour later,
+  three in all, then ONE private line. Dry runs fill and never save (a private line with the screenshot's name and
+  what the page read back).
 - Tests: `tests/test_wo43.py` (22); WO42's and WO39's updated to the new lines.
 
 ## Shares that end in a card or a clear message (WO42, 2026-10-17)
