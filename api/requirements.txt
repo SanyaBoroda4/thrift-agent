@@ -1,3 +1,4 @@
 azure-functions
 psycopg[binary]>=3.2
 tzdata
+azure-storage-blob>=12.19

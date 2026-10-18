@@ -70,7 +70,9 @@ def test_the_shortcuts_count_is_matched_against_photos_and_their_companions(env)
     e = share(s, clock, "2026-10-17_151900", photos=2, marker="done 4")
     assert pipeline.share_state(s, e, e / "_done.txt", 60) == "wait"   # 2 of 4 photos: not yet
     clock["now"] = T0 + 16 * MIN
-    assert pipeline.share_state(s, e, e / "_done.txt", 60) == "partial"   # 15 min: taken with the two
+    assert pipeline.share_state(s, e, e / "_done.txt", 60) == "wait"      # WO45: not at 15 min any more
+    clock["now"] = T0 + 31 * MIN
+    assert pipeline.share_state(s, e, e / "_done.txt", 60) == "partial"   # 30 min: taken with the two
 
 
 def test_three_of_four_photos_make_a_card_and_one_private_line(env):
@@ -79,6 +81,8 @@ def test_three_of_four_photos_make_a_card_and_one_private_line(env):
     clock["now"] = T0 + 5 * MIN
     assert pipeline.ready_folders(s, db) == []
     clock["now"] = T0 + 16 * MIN
+    assert pipeline.ready_folders(s, db) == []                              # WO45 §6: no partial card in 30 min
+    clock["now"] = T0 + 31 * MIN
     assert pipeline.ready_folders(s, db) == [d]
     assert pipeline.take_share(s, db, d) == ("partial", T0)
     [b] = db.batches("new")
@@ -89,12 +93,12 @@ def test_three_of_four_photos_make_a_card_and_one_private_line(env):
     assert pipeline.take_share(s, db, d) is None and len(said) == 1       # once: the batch is known
 
 
-def test_photos_without_the_end_mark_are_taken_after_15_minutes(env):
+def test_photos_without_the_end_mark_are_taken_after_30_minutes(env):
     s, db, clock, said, group = env
     d = share(s, clock, "2026-10-17_151932", photos=4)                 # the Shortcut never wrote _done
-    clock["now"] = T0 + 14 * MIN
+    clock["now"] = T0 + 29 * MIN
     assert pipeline.ready_folders(s, db) == []
-    clock["now"] = T0 + 15 * MIN + 1
+    clock["now"] = T0 + 30 * MIN + 1
     assert pipeline.take_share(s, db, d) == ("partial", T0)
     assert said == ["📸 Only 4 photos of your 3:19 PM share arrived and the Shortcut's end mark never came — the card "
                     "is made from those; the rest are told if they come."]

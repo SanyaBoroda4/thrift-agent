@@ -306,9 +306,11 @@ def test_photos_that_come_after_an_item_was_made_are_told_once(env, monkeypatch)
     db.set_item(iid, renders={"poshmark": {"title": "lululemon Printed Leggings size 2"}})
     assert pipeline.late_photos(s, db) == []
     Image.new("RGB", (30, 40)).save(archived / "IMG_1299.jpeg")                 # the full flat lay, late
-    assert pipeline.late_photos(s, db) == [f"{bid}: 1 late"]
-    assert said == ["📸 1 photos of lululemon Printed Leggings size 2 came after it was taken (IMG_1299.jpeg) — the "
-                    "listing doesn't have them"]
+    [done] = pipeline.late_photos(s, db)                                        # WO45 §6: taken where it is
+    assert done.startswith(f"{bid}: 1 late, taken as b_")
+    new = done.split(" as ")[1]
+    assert pipeline.late_of(db, new) == bid and pipeline.registered_names(db, new) == {"IMG_1299.jpeg"}
+    assert said == ["📸 1 photos of the 8:58 PM share came late — taken now: they join their item or become one"]
     assert pipeline.late_photos(s, db) == []
 
 

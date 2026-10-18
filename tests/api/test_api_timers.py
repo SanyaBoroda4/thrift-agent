@@ -137,7 +137,7 @@ def test_the_daily_cleanup_once_a_local_day_at_three(db, three_am):
     store("old-failed", "You made a sale!", "Congrats!", 31)
     store("new-failed", "You made a sale!", "Congrats again!", 2)
     assert timers.daily(db, three_am - timedelta(minutes=31))["ran"] is False             # 02:59
-    assert timers.daily(db, three_am) == {"ran": True, "raw_text_cleared": 1, "other_deleted": 1}
+    assert timers.daily(db, three_am) == {"ran": True, "raw_text_cleared": 1, "other_deleted": 1, "shares_deleted": 0}
     rows = {row["message_id"]: row for row in db.query("SELECT * FROM email_events")}
     assert set(rows) == {"new-other", "old-failed", "new-failed"}
     assert (rows["old-failed"]["raw_text"], rows["new-failed"]["raw_text"]) == (None, "Congrats again!")

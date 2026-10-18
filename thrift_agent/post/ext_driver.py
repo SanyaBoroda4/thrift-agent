@@ -806,6 +806,93 @@ class ExtensionPoster(Poster):
                 out["note"] = f"the edit page shows {after.get('seen')}"
         return out
 
+    async def add_photos(self, url: str, files: list[str], dry: bool = False, shots: Path | None = None, go=None,
+                         sku: str | None = None, had: int = 0) -> dict:
+        """WO45 §6: photos added to a live listing on its edit page — the extension's "photos" job (the page's tiles
+        counted: they must be the `had` recorded; the files set on the page's photo input; the tiles counted again),
+        then — never in a dry run, and only when `go()` says yes — Save pressed ONCE; then the edit page is read again
+        (`read_photos`) for the count that stuck. {"ok", "saved", "seen", "after", "error", "shot"}."""
+        edit = self.edit_url(url)
+        if edit is None:
+            return {"ok": False, "saved": False, "error": f"not a {self.site} listing address: {url}"}
+        if not await self.wait_connected():
+            raise PosterError(f"{self.site}: the Thrift Chrome extension isn't connected")
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.shot = (shots or Path(".")) / f"{sku or 'listing'}-{self.name}-{stamp}-photos{'-dry' if dry else ''}.png"
+        bridge = self._bridge()
+        urls = bridge.photo_urls(f"{sku or 'listing'}-add", files, self.name)
+        job = bridge.submit(self.name, "photos", {"fields": {}, "copy": {}, "price": None, "photos": urls,
+                                                  "listing_url": url, "edit_url": edit, "dry": dry, "had": had},
+                            shot=self.shot)
+        job.listener = self._listen
+        try:
+            out = await self._fields(bridge, job, url, {}, dry, go, want_photos=had + len(files))
+        finally:
+            if not job.done:
+                bridge.drop(job)
+                try:
+                    await bridge.settle(job, 5.0)
+                except BaseException:  # noqa: BLE001
+                    pass
+        if out.get("saved") and not out.get("error"):
+            after = await self.read_photos(url, shots, sku)
+            out["after"] = after.get("count")
+            out["ok"] = after.get("count") is not None and int(after["count"]) >= had + len(files)
+            if not out["ok"]:
+                out["error"] = after.get("error") or f"the edit page shows {after.get('count')} photos after Save"
+            else:
+                out["note"] = f"the edit page shows {after['count']} photos"
+        return out
+
+    async def read_photos(self, url: str, shots: Path | None = None, sku: str | None = None) -> dict:
+        """How many photos the listing's edit page shows now (a read-only "photos" job). {"count"} | {"error"}."""
+        edit = self.edit_url(url)
+        if edit is None:
+            return {"error": f"not a {self.site} listing address: {url}"}
+        bridge = self._bridge()
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        shot = (shots or Path(".")) / f"{sku or 'listing'}-{self.name}-{stamp}-photos-read.png"
+        job = bridge.submit(self.name, "photos", {"fields": {}, "copy": {}, "price": None, "photos": [],
+                                                  "listing_url": url, "edit_url": edit, "dry": True,
+                                                  "read_only": True}, shot=shot)
+        job.listener = self._listen
+        try:
+            ev = await self._await(job, ("ready", "result", "error"), job.created + bridge_mod.JOB_TIMEOUT)
+        except TimeoutError:
+            return {"error": "the edit page wasn't read in time"}
+        finally:
+            if not job.done:
+                bridge.drop(job)
+                try:
+                    await bridge.settle(job, 5.0)
+                except BaseException:  # noqa: BLE001
+                    pass
+        if ev.get("event") == "error":
+            if ev.get("page") in STOP_PAGES:
+                raise self._stop(ev)
+            return {"error": f"{ev.get('stage') or 'read'}: {ev.get('message')}"}
+        seen = ev.get("seen") or {}
+        return {"count": seen.get("photos"), "seen": seen}
+
+    async def read_listing(self, url: str) -> dict:
+        """WO45 §6/§7: what the listing page shows — the photo count and the price — from the extension's "verify" job
+        (Depop's JSON-LD images and price; Vinted's listing page). {"photos", "price", "live": the page's reading} |
+        {"error"}; a login / CAPTCHA page stops the site."""
+        if not await self.wait_connected():
+            raise PosterError(f"{self.site}: the Thrift Chrome extension isn't connected")
+        out = await self._job("verify", {"listing_url": url}, 120)
+        if out.get("event") == "error":
+            if out.get("page") in STOP_PAGES:
+                raise self._stop(out)
+            return {"error": f"{out.get('stage') or 'verify'}: {out.get('message')}"}
+        live = out.get("live") or {}
+        photos = live.get("photos")
+        try:
+            photos = int(photos) if photos is not None else None
+        except (TypeError, ValueError):
+            photos = None
+        return {"photos": photos, "price": live.get("price"), "live": live, "url": out.get("url")}
+
     async def read_fields(self, url: str, fields: dict, shots: Path | None = None, sku: str | None = None) -> dict:
         """The category and size the edit page shows now (a "fields" job that reads and changes nothing)."""
         edit = self.edit_url(url)
@@ -848,7 +935,7 @@ class ExtensionPoster(Poster):
         return bool(ok)
 
     async def _fields(self, bridge: bridge_mod.Bridge, job: bridge_mod.Job, url: str, fields: dict, dry: bool,
-                      go) -> dict:
+                      go, want_photos: int | None = None) -> dict:
         try:
             ev = await self._await(job, ("ready", "result", "error"), job.created + bridge_mod.JOB_TIMEOUT)
         except TimeoutError:
@@ -865,7 +952,13 @@ class ExtensionPoster(Poster):
         def cancel() -> None:
             if ev.get("event") == "ready":
                 bridge.command(job, "cancel")
-        if out["failed"] or not self._fields_match(fields, seen):
+        if want_photos is not None:                      # WO45 §6: a photos job — the tiles must show them all
+            shown = seen.get("photos")
+            if out["failed"] or shown is None or int(shown) < want_photos:
+                cancel()
+                return {**out, "error": f"the edit page shows {shown} photos, not {want_photos}: nothing saved"
+                        + (f" ({'; '.join(out['failed'])})" if out["failed"] else "")}
+        elif out["failed"] or not self._fields_match(fields, seen):
             cancel()
             return {**out, "error": f"the edit page reads {seen} after picking {fields}: nothing saved"
                     + (f" ({'; '.join(out['failed'])})" if out["failed"] else "")}

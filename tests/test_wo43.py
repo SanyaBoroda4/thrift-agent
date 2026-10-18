@@ -335,7 +335,7 @@ def test_known_photos_plus_new_ones_join_the_item_as_late_photos_with_no_card(en
         im.save(paths[0], exif=im.getexif().tobytes())                         # the known photo, as a copy
     bid2 = pipeline.register(s, db, d2)
     pipeline.process_batch(s, db, bid2)
-    assert db.batch(bid2)["status"] == "failed" and "joined" in json.loads(db.batch(bid2)["reasons"])[0]
+    assert db.batch(bid2)["status"] == "joined" and "joined" in json.loads(db.batch(bid2)["reasons"])[0]   # WO45
     assert db.conn.execute("SELECT COUNT(*) FROM items WHERE batch_id=?", (bid2,)).fetchone()[0] == 0
     assert said and said[-1].startswith("📸 1 photos of ") and "came with a repeat share" in said[-1]
     assert db.conn.execute("SELECT COUNT(*) FROM events WHERE ref=? AND kind='late_photos'", (bid2,)).fetchone()[0] == 1

@@ -119,6 +119,10 @@ a.st { padding: 2px 4px; font-weight: 700; text-underline-offset: 3px; }
   display: inline-block; max-width: 12em; vertical-align: top; text-align: left; white-space: normal;
   font-size: .75rem; color: var(--muted); word-break: break-all;
 }
+.shares { margin: 0 0 14px; padding: 10px 12px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+.shares ul { margin: 4px 0 0; padding: 0; list-style: none; }
+.shares li { padding: 4px 0; border-top: 1px solid var(--line); font-size: .9rem; }
+.shares li:first-child { border-top: 0; }
 footer { margin-top: 14px; font-size: .8rem; color: var(--muted); }
 footer p { margin: 0; }
 .legend { display: flex; flex-wrap: wrap; gap: 2px 14px; margin: 6px 0 0; padding: 0; list-style: none; }
@@ -217,6 +221,7 @@ def render(data: dict, now: datetime | None = None, tz: str = "America/New_York"
         "<main>",
         "<h1>Thrift dashboard</h1>",
         _cards(items, _count(data.get("unmatched")), zone, local_now),
+        _shares_panel(data.get("shares"), zone),
         _filters(),
         _table(items, zone, today),
         _footer(data.get("generated_at"), zone, today, data.get("swept")),
@@ -334,6 +339,53 @@ def _cards(items: list[dict], unmatched: int, zone: tzinfo, now: datetime) -> st
         _drops_card(items, zone, now),
         "</section>",
     ))
+
+
+SHARE_STEPS = (("received", "received"), ("complete", "complete"), ("grouped", "grouped"), ("carded", "carded"))
+OUTCOME_WORDS = {"carded": ("cards sent", "ok"), "repeat": ("repeat — skipped", "dim"), "empty": ("no photos came", "warn"),
+                 "same_share": ("same share — skipped", "dim"), "failed": ("failed", "bad"),
+                 "joined": ("joined its item", "ok")}
+
+
+def _shares_panel(raw, zone: tzinfo) -> str:
+    """WO45 §3: today's shares — each with its photos, its steps' times, its outcome (or where it is now)."""
+    rows = [r for r in raw if isinstance(r, dict)] if isinstance(raw, list) else []
+    if not rows:
+        return ('<section class="shares" aria-label="Shares today"><h2>Shares today</h2>'
+                '<p class="sub" id="shares-none">No shares today.</p></section>')
+    parts = ['<section class="shares" aria-label="Shares today"><h2>Shares today</h2><ul id="shares">']
+    for r in rows:
+        when = _share_clock(r.get("id"))
+        n, want = _number(r.get("received")), _number(r.get("expected"))
+        photos = f"{int(n) if n is not None else 0}" + (f" of {int(want)}" if want and (n is None or n < want) else "")
+        steps = []
+        for key, word in SHARE_STEPS:
+            moment = _when(r.get(f"{key}_at"))
+            if isinstance(moment, datetime):
+                steps.append(f"{word} {_clock(moment.astimezone(zone))}")
+        outcome = _norm(r.get("outcome"))
+        if outcome in OUTCOME_WORDS:
+            words, cls = OUTCOME_WORDS[outcome]
+        elif r.get("complete_at"):
+            words, cls = "in progress", "wait"
+        else:
+            words, cls = "photos still coming", "wait"
+        reason = f" — {_esc(r['reason'])}" if r.get("reason") and outcome in ("failed", "repeat", "empty") else ""
+        test = ' <span class="dim">test</span>' if r.get("test") else ""
+        parts.append(f'<li><b>{_esc(when)}</b> · {photos} photos · <span class="st {cls}">{_esc(words)}</span>{reason}'
+                     f'{test}<br><span class="sub">{_esc(" → ".join(steps) or "nothing yet")}</span></li>')
+    parts.append("</ul></section>")
+    return "".join(parts)
+
+
+def _share_clock(share_id: object) -> str:
+    """"12:31 PM" from a share id (2026-10-18_123105…), else the id."""
+    import re
+    m = re.match(r"\d{4}-\d{2}-\d{2}_(\d{2})(\d{2})\d{2}", str(share_id or ""))
+    if not m:
+        return str(share_id or DASH)
+    hour = int(m[1])
+    return f"{hour % 12 or 12}:{m[2]} {'AM' if hour < 12 else 'PM'}"
 
 
 def _still_card(items: list[dict]) -> str:

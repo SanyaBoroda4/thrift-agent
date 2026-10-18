@@ -648,6 +648,8 @@ def item_caption(iid: str, it) -> tuple[str, int | None]:
     if (facts.get("condition_evidence") or {}).get("source") == "owner":
         label += " (your answer)"                                   # "Brand new or worn?" was answered
     lines.append(f"Condition: {label}")
+    if line := photo_line(it, posh, facts):                         # WO45 §6: "📷 4 photos"
+        lines.append(line)
     if posh.get("category"):                                        # WO37: what the rules decided, shown
         dept = posh.get("department")
         unsure = (facts.get("department_confidence") is not None and float(facts["department_confidence"]) < 0.7
@@ -672,6 +674,22 @@ def item_caption(iid: str, it) -> tuple[str, int | None]:
     if price is None:
         lines.append("No price yet: type one")
     return "\n".join(lines), price
+
+
+PHOTO_LINE = "📷 {n} photos"
+PHOTO_LINE_PART = "📷 {n} of {want} photos — the rest join when they arrive"
+
+
+def photo_line(it, posh: dict, facts: dict) -> str | None:
+    """WO45 §6: the card says how many photos the item has; a card made from part of a share (`photos_expected` on
+    the item, from the share's `done N`) says "3 of 4 — the rest join when they arrive"."""
+    n = len(facts.get("photo_roles") or []) or len(posh.get("photos") or [])
+    if not n:
+        return None
+    want = it["photos_expected"] if "photos_expected" in it.keys() else None
+    if want and int(want) > n:
+        return PHOTO_LINE_PART.format(n=n, want=int(want))
+    return PHOTO_LINE.format(n=n)
 
 
 def card(iid: str, it) -> tuple[str, str] | None:
@@ -801,8 +819,8 @@ def refresh_card(s: Settings, db: DB, iid: str, reopen: bool = False) -> bool:
     "the price card always shows the chosen cover"). `reopen`: it waits for the owner again (the queue's open message).
     An answered card keeps one inert "✓ $X" button. False when there is no card to edit (none sent, or sent without an
     answer from Telegram)."""
-    bot = bot_for(s)
     it = db.item(iid)
+    bot = card_bot(s, it)
     if bot is None or it is None:
         return False
     row = sent_before(db, bot.chat_id, "item", iid)
@@ -845,18 +863,24 @@ def send_item(s: Settings, db: DB, iid: str) -> None:
         return
     caption, price = item_caption(iid, it)
     cover = Path(it["dir"]) / "cover.jpg"
-    bot = bot_for(s)
+    test = bool(it["test"]) if "test" in it.keys() else False
+    bot = (ops_bot_for(s) or bot_for(s)) if test else bot_for(s)   # WO45 §2: a test share's card to the private chat
+    if test:
+        caption = f"🧪 TEST — nothing will be listed\n{caption}"
     if bot is None:
         text = f"{caption}\n(thrift price {iid} {price or '<amount>'})"
         notify.group_photo(cover, text) if cover.is_file() else notify.group(text)
         return
     buttons = card_buttons(db, iid, it, price)
+    from thrift_agent import shares                     # WO45 §3: the share's ledger sees the card
     if sent_before(db, bot.chat_id, "item", iid) is not None:   # WO37: the card that went out is edited, never resent
         refresh_card(s, db, iid, reopen=True)
+        shares.batch_carded(db, it["batch_id"])
         return
     once(db, bot, "item", iid, caption,
          lambda: bot.send_photo(cover, caption, buttons) if cover.is_file() and len(caption) <= MAX_CAPTION
          else bot.send_message(caption, buttons))
+    shares.batch_carded(db, it["batch_id"])
 
 
 def _ask(s: Settings, db: DB, iid: str, kind: str, question: str, buttons: list[list[dict]], cli: str) -> None:
@@ -933,6 +957,9 @@ def handle_update(s: Settings, db: DB, bot: Bot, update: dict) -> str:
     updates are ignored."""
     if not bot.authorized(update):
         if _from_ops_chat(s, bot, update):
+            if "callback_query" in update:                 # WO45 §2: a tap on a 🧪 test card in the private chat
+                ops = ops_bot_for(s)
+                return _handle_callback(s, db, ops, update["callback_query"]) if ops else "ignored: no ops chat"
             return _route_ops(s, db, update)               # WO33: a reply there is enough too
         return "ignored: unauthorized"
     result = _route(s, db, bot, update)
@@ -941,14 +968,29 @@ def handle_update(s: Settings, db: DB, bot: Bot, update: dict) -> str:
     return result
 
 
+def card_bot(s: Settings, it) -> Bot | None:
+    """The bot that holds the item's card: the group's, or the private chat's for a test share's item (WO45 §2)."""
+    if it is not None and "test" in it.keys() and it["test"]:
+        return ops_bot_for(s) or bot_for(s)
+    return bot_for(s)
+
+
 UNMATCHED_LINE = re.compile(r"Unmatched sale on (\w+) \((s_[0-9a-f]+)\)")
 
 
 def _from_ops_chat(s: Settings, bot: Bot, update: dict) -> bool:
-    """A message in the ops chat (the owner's private chat with the bot) from an allowed user."""
+    """A message — or a button tap (WO45 §2: a 🧪 test card) — in the ops chat (the owner's private chat with the
+    bot) from an allowed user."""
     msg = update.get("message") if isinstance(update, dict) else None
+    cq = update.get("callback_query") if isinstance(update, dict) else None
     chat = notify.ops_chat(s)
-    if not isinstance(msg, dict) or chat is None:
+    if chat is None:
+        return False
+    if isinstance(cq, dict):
+        uid = (cq.get("from") or {}).get("id")
+        return (str(((cq.get("message") or {}).get("chat") or {}).get("id")) == str(chat) and isinstance(uid, int)
+                and uid in bot.allowed_users)
+    if not isinstance(msg, dict):
         return False
     uid = (msg.get("from") or {}).get("id")
     return str((msg.get("chat") or {}).get("id")) == str(chat) and isinstance(uid, int) and uid in bot.allowed_users

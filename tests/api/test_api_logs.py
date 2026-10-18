@@ -108,7 +108,7 @@ def test_the_host_logs_warnings_and_our_own_lines():
     host = json.loads((ROOT / "api" / "host.json").read_text(encoding="utf-8"))
     names = re.findall(r"^@app\.[^\n]+\ndef (\w+)\(", (ROOT / "api" / "function_app.py").read_text(encoding="utf-8"),
                        flags=re.M)
-    assert len(names) == 16
+    assert len(names) == 22                                   # WO45 §2 added the five upload routes, §3 a timer
     level = host["logging"]["logLevel"]
     assert level == {"default": "Warning", "Host.Results": "Information", "Host.Aggregator": "None",
                      "Function": "Warning", **{f"Function.{n}.User": "Information" for n in names},

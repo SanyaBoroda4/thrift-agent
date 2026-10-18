@@ -10,7 +10,10 @@ from thrift_agent.config import ROOT
 ROUTES = {("POST", "email"), ("POST", "samples"), ("POST", "heartbeat"), ("POST", "sync"), ("GET", "tasks"),
           ("POST", "tasks/{task_id}"), ("POST", "mac-event"), ("POST", "orders"), ("GET", "sales"),
           ("POST", "sales/{sale_id}/match"),
-          ("POST", "test-message"), ("GET", "dashboard"), ("GET", "health"), ("POST", "replay")}
+          ("POST", "test-message"), ("GET", "dashboard"), ("GET", "health"), ("POST", "replay"),
+          # WO45 §2: the iPhone's shares
+          ("POST", "share/{share_id}/photo"), ("POST", "share/{share_id}/end"), ("GET", "shares/pending"),
+          ("GET", "shares/{share_id}/photo/{name}"), ("POST", "shares/{share_id}/fetched")}
 
 
 @pytest.fixture(scope="module")
@@ -42,8 +45,8 @@ def test_every_route_needs_the_function_key(app, func):
 
 def test_two_timers(app):
     timers = {name: t["schedule"] for name, t in triggers(app).items() if t["type"] == "timerTrigger"}
-    assert timers == {"every_15_min": "0 */15 * * * *", "hourly": "0 0 * * * *"}
-    assert len(triggers(app)) == len(ROUTES) + 2
+    assert timers == {"every_15_min": "0 */15 * * * *", "hourly": "0 0 * * * *", "every_5_min": "0 */5 * * * *"}
+    assert len(triggers(app)) == len(ROUTES) + 3
 
 
 def test_a_route_and_a_timer_go_through_the_api(app, func, tmp_path, monkeypatch):
@@ -65,6 +68,30 @@ def test_a_route_and_a_timer_go_through_the_api(app, func, tmp_path, monkeypatch
             http._DB.close()
 
 
+def test_an_upload_goes_through_the_app_with_its_headers(app, func, tmp_path, monkeypatch):
+    """WO45 §2: the request's headers reach http.handle (a form is told from a raw image by its Content-Type) and a
+    photo comes back as its bytes."""
+    from thrift_api import http, uploads
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'api.db'}")
+    monkeypatch.setattr(uploads, "_STORE", uploads.MemoryStore())
+    sid, photo = "2026-10-18_153045_4821", b"\xff\xd8\xff\xe0" + bytes(range(256))
+    body = (b'--b\r\nContent-Disposition: form-data; name="photo"; filename="IMG_1.jpeg"\r\n\r\n' + photo + b"\r\n--b--\r\n")
+    try:
+        sent = user_function(app, "post_share_photo")(func.HttpRequest(
+            method="POST", url=f"https://thrift.example/share/{sid}/photo", headers={"content-type":
+                                                                                     "multipart/form-data; boundary=b"},
+            params={"n": "1", "of": "1"}, route_params={"share_id": sid}, body=body))
+        assert (sent.status_code, json.loads(sent.get_body())) == (200, {"ok": True, "received": 1, "name": "IMG_1.jpeg",
+                                                                         "stored": True})
+        got = user_function(app, "get_share_photo")(func.HttpRequest(
+            method="GET", url=f"https://thrift.example/shares/{sid}/photo/IMG_1.jpeg", headers={}, params={},
+            route_params={"share_id": sid, "name": "IMG_1.jpeg"}, body=b""))
+        assert (got.status_code, got.headers["Content-Type"], got.get_body()) == (200, "image/jpeg", photo)
+    finally:
+        if http._DB is not None:
+            http._DB.close()
+
+
 def test_the_deployment_files():
     api = ROOT / "api"
     host = json.loads((api / "host.json").read_text(encoding="utf-8"))
@@ -72,7 +99,7 @@ def test_the_deployment_files():
     assert host["logging"]["applicationInsights"]["samplingSettings"]["isEnabled"] is True
     assert host["logging"]["logLevel"]["default"] == "Warning"            # WO35: the log levels (test_api_logs.py)
     assert (api / "requirements.txt").read_text(encoding="utf-8").split() == ["azure-functions", "psycopg[binary]>=3.2",
-                                                                              "tzdata"]
+                                                                              "tzdata", "azure-storage-blob>=12.19"]
     assert {"tests", "__pycache__", ".venv", "local.settings.json"} <= set((api / ".funcignore").read_text(
         encoding="utf-8").split())
     dev = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["optional-dependencies"]["dev"]

@@ -18,6 +18,9 @@ subscription or the server changes.
                                                # in a real terminal (the owner's), never in a log
     python deploy/azure/provision.py open      # the temporary firewall rule for this PC again (samples.py pull)
     python deploy/azure/provision.py cleanup   # the temporary firewall rule for this PC removed (end of setup)
+    python deploy/azure/provision.py uploads   # WO45 §2 (part of `up`, after the deploy): the `shares` blob container,
+                                               # its 30-day lifecycle rule, the Shortcut's function-scoped `upload`
+                                               # key (keys.txt; told to the owner's private chat ONCE, never printed)
 
 Secrets are never printed (but by `keys`, in the owner's terminal) or committed: the function keys and thrift_app's
 password stay in var/azure/ (git-ignored, this PC only). The Telegram token and the group's chat id are read from the
@@ -25,6 +28,7 @@ Mac's .env over SSH (read only) and handed to Azure's app settings through a tem
 from __future__ import annotations
 
 import getpass
+import hashlib
 import json
 import os
 import secrets
@@ -48,6 +52,14 @@ MAC = os.getenv("THRIFT_MAC", "tatiana_sorokina@192.168.68.57")
 MAC_ALIAS = os.getenv("THRIFT_MAC_ALIAS", "192.168.68.57")
 FIREWALL_TMP = "thrift-setup-tmp"
 AZURE_SERVICES = "AllowAllAzureServicesAndResourcesWithinAzureIps"
+SHARES_CONTAINER = "shares"           # WO45 §2: the Shortcut's photos (api/thrift_api/uploads.py), 30 days
+SHARES_DAYS = 30
+SHARES_RULE = "thrift-shares-30-days"
+UPLOAD_KEY = "upload"                 # the function-scoped key the Shortcut carries: the two upload functions only
+UPLOAD_FUNCTIONS = ("post_share_photo", "post_share_end")
+WEB_API = "2023-12-01"                # Microsoft.Web's API version for a function key put through `az rest`
+UPLOAD_KEY_LINE = ("🔑 The upload key for the Shortcut: {key} — paste it into the Shortcut's x-functions-key header; "
+                   "this message is the only place it is shown.")
 
 
 def say(line: str) -> None:
@@ -382,11 +394,24 @@ def keys(st: dict) -> dict:
     out = {name: have.get(name) for name in ("mac", "gmail", "dashboard")}
     if not all(out.values()):
         raise SystemExit(f"function keys missing after setting them: {[n for n, v in out.items() if not v]}")
-    VAR.mkdir(parents=True, exist_ok=True)
-    KEYS.write_text("\n".join([f"API_URL={st['url']}", *(f"{k}={v}" for k, v in out.items()),
-                               f"dashboard_url={st['url']}/dashboard?code={out['dashboard']}"]) + "\n", encoding="utf-8")
+    write_keys({"API_URL": st["url"], **out, "dashboard_url": f"{st['url']}/dashboard?code={out['dashboard']}"})
     say(f"✓ function keys mac, gmail, dashboard — in {KEYS.relative_to(ROOT)} (this PC only; open it in your own terminal)")
     return out
+
+
+def read_keys() -> dict:
+    """var/azure/keys.txt as a dict (empty when it isn't there)."""
+    try:
+        return dict(line.split("=", 1) for line in KEYS.read_text(encoding="utf-8").splitlines() if "=" in line)
+    except OSError:
+        return {}
+
+
+def write_keys(values: dict) -> None:
+    """keys.txt with these lines set and the others kept (WO45: the `upload` key lives next to the host keys)."""
+    VAR.mkdir(parents=True, exist_ok=True)
+    merged = {**read_keys(), **values}
+    KEYS.write_text("\n".join(f"{k}={v}" for k, v in merged.items()) + "\n", encoding="utf-8")
 
 
 def call(st: dict, key: str, method: str, path: str, body: dict | None = None) -> dict:
@@ -421,6 +446,126 @@ def cleanup(st: dict) -> None:
     say(f"✓ firewall rule {FIREWALL_TMP} removed")
 
 
+# ---------------------------------------------------------------- WO45 §2: the shares uploaded by the iPhone
+
+def shares_container(st: dict) -> None:
+    """The `shares` container in the function app's own storage account, private (the API makes it too on its first
+    photo; this is the sure way). The account's key is looked up by az (`--auth-mode key`), never typed here."""
+    found = az("storage", "container", "exists", "-n", SHARES_CONTAINER, "--account-name", st["storage"],
+               "--auth-mode", "key", check=False) or {}
+    if not found.get("exists"):
+        az("storage", "container", "create", "-n", SHARES_CONTAINER, "--account-name", st["storage"],
+           "--auth-mode", "key", "--public-access", "off", parse=False)
+    say(f"✓ blob container {SHARES_CONTAINER} in {st['storage']} (private)")
+
+
+def shares_rule() -> dict:
+    return {"enabled": True, "name": SHARES_RULE, "type": "Lifecycle",
+            "definition": {"actions": {"baseBlob": {"delete": {"daysAfterModificationGreaterThan": SHARES_DAYS}}},
+                           "filters": {"blobTypes": ["blockBlob"], "prefixMatch": [f"{SHARES_CONTAINER}/"]}}}
+
+
+def same_rule(have: dict, days: int = SHARES_DAYS) -> bool:
+    """The account's rule is ours already (enabled, the days, the container prefix)."""
+    try:
+        got = have["definition"]["actions"]["baseBlob"]["delete"]["daysAfterModificationGreaterThan"]
+        prefixes = list(have["definition"]["filters"]["prefixMatch"])
+    except (KeyError, TypeError):
+        return False
+    return bool(have.get("enabled")) and got == days and prefixes == [f"{SHARES_CONTAINER}/"]
+
+
+def shares_lifecycle(st: dict) -> None:
+    """The account's lifecycle rule: blobs under `shares/` deleted SHARES_DAYS after they were written (the rows go by
+    the API's daily cleanup). The account's other rules, if any, are kept; ours is replaced when it differs. The policy
+    goes as a JSON file (`--policy @file`, as `az` takes it)."""
+    current = az("storage", "account", "management-policy", "show", "--account-name", st["storage"], "-g", RG,
+                 check=False) or {}
+    rules = list(((current.get("policy") or {}).get("rules")) or [])
+    ours = next((r for r in rules if isinstance(r, dict) and r.get("name") == SHARES_RULE), None)
+    if ours is not None and same_rule(ours):
+        say(f"✓ lifecycle rule {SHARES_RULE}: blobs in {SHARES_CONTAINER} deleted after {SHARES_DAYS} days (already)")
+        return
+    rules = [r for r in rules if not (isinstance(r, dict) and r.get("name") == SHARES_RULE)] + [shares_rule()]
+    fd, path = tempfile.mkstemp(suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"rules": rules}, f)
+        az("storage", "account", "management-policy", "create", "--account-name", st["storage"], "-g", RG,
+           "--policy", f"@{path}", parse=False)
+    finally:
+        os.unlink(path)
+    say(f"✓ lifecycle rule {SHARES_RULE}: blobs in {SHARES_CONTAINER} deleted after {SHARES_DAYS} days")
+
+
+def function_key(st: dict, function: str, name: str = UPLOAD_KEY) -> str | None:
+    """One function-scoped key's value from `az functionapp function keys list` (the value is only there: `keys set`
+    answers without it); None when it isn't set."""
+    answer = az("functionapp", "function", "keys", "list", "-g", RG, "-n", st["app"], "--function-name", function,
+                check=False) or {}
+    for level in (answer, answer.get("properties") or {}, answer.get("functionKeys") or {}):
+        if isinstance(level, dict) and level.get(name):
+            return str(level[name])
+    return None
+
+
+def upload_key(st: dict) -> str:
+    """The function-scoped key `upload` on the two upload functions — the only key the Shortcut carries, opening
+    nothing else: made by Azure on post_share_photo when missing and read back, then the same value put on
+    post_share_end through ARM with the value in a temporary file (never on a command line, like the app settings).
+    Kept in keys.txt; never printed. Needs the code deployed (the functions must exist)."""
+    photo, end = UPLOAD_FUNCTIONS
+    value = function_key(st, photo)
+    if not value:
+        az("functionapp", "function", "keys", "set", "-g", RG, "-n", st["app"], "--function-name", photo,
+           "--key-name", UPLOAD_KEY, parse=False)
+        value = function_key(st, photo)
+    if not value:
+        raise SystemExit(f"the {UPLOAD_KEY} key is missing on {photo} after setting it (is the code deployed?)")
+    if function_key(st, end) != value:
+        fd, path = tempfile.mkstemp(suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump({"properties": {"name": UPLOAD_KEY, "value": value}}, f)
+            az("rest", "--method", "put", "--url",
+               f"/subscriptions/{st['subscription']}/resourceGroups/{RG}/providers/Microsoft.Web/sites/{st['app']}"
+               f"/functions/{end}/keys/{UPLOAD_KEY}?api-version={WEB_API}", "--body", f"@{path}", parse=False)
+        finally:
+            os.unlink(path)
+        if function_key(st, end) != value:
+            raise SystemExit(f"the {UPLOAD_KEY} key on {end} differs from {photo}'s after setting it")
+    write_keys({UPLOAD_KEY: value})
+    say(f"✓ function key {UPLOAD_KEY} on {photo} and {end} — in {KEYS.relative_to(ROOT)} (never printed)")
+    return value
+
+
+def tell_upload_key(st: dict, value: str) -> None:
+    """The key to the owner's private chat ONCE — POST /test-message with the mac key and the line as `text`: the one
+    place it is shown. state.json keeps a fingerprint of the key (never the key) so it isn't told again; a new value
+    is told once more."""
+    mark = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+    if st.get("upload_key_told") == mark:
+        say("✓ upload key: told to the owner's private chat before (not again)")
+        return
+    mac = read_keys().get("mac")
+    if not mac:
+        say("… upload key: not told yet — the mac key isn't in keys.txt (run `provision.py finish` first)")
+        return
+    answer = call(st, mac, "POST", "/test-message", {"chat": "ops", "text": UPLOAD_KEY_LINE.format(key=value)})
+    if answer.get("sent"):
+        st["upload_key_told"] = mark
+        say("✓ upload key: sent to the owner's private chat (once; she pastes it into the Shortcut)")
+    else:
+        say(f"… upload key: not sent (mode {answer.get('mode')}; Telegram set?) — run `provision.py uploads` again")
+
+
+def uploads(st: dict) -> None:
+    """WO45 §2: the container, its lifecycle rule, the `upload` key on the two upload functions, the owner told."""
+    shares_container(st)
+    shares_lifecycle(st)
+    tell_upload_key(st, upload_key(st))
+
+
 def main(argv: list[str]) -> None:
     what = argv[1] if len(argv) > 1 else "up"
     st = load(STATE)
@@ -446,7 +591,10 @@ def main(argv: list[str]) -> None:
         k = keys(st)
         save(STATE, st)
         check(st, k)
-    if what in ("up", "infra", "db", "finish"):
+    if what in ("up", "uploads"):                 # WO45 §2: after the deploy (the upload functions must exist)
+        uploads(st)
+        save(STATE, st)
+    if what in ("up", "infra", "db", "finish", "uploads"):
         pass
     elif what == "deploy":
         deploy_code(st)

@@ -218,6 +218,8 @@ def next_job(s: Settings, db: DB, enabled: list[str], dry: bool,
         batch = db.batch(it["batch_id"])
         if batch is not None and batch["status"] == "regroup":
             continue            # the owner is fixing this batch's photos ([Wrong photos]): not until the fix
+        if "test" in it.keys() and it["test"]:
+            continue            # WO45 §2: a test share's item is never listed
         renders = loads(it["renders"]) or {}
         for mp in [m for m in enabled if m == "poshmark"]:   # Depop and Vinted follow Poshmark (crosslist, WO30)
             if mp not in renders:

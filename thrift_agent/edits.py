@@ -23,7 +23,7 @@ from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads, new_id
 from thrift_agent.schema import Facts, Render
 
-KINDS = ("category",)
+KINDS = ("category", "photos")        # WO43: a department / category change; WO45 §6: photos added to a live listing
 MAX_ATTEMPTS = 3
 RETRY_AFTER = timedelta(hours=1)
 OPEN = ("pending", "saving", "unconfirmed")
@@ -209,9 +209,13 @@ async def run_one(s: Settings, db: DB, site: str, poster, ctx, sites: list[str],
     url = listing["url"]
     dry = bool(row["dry"])
     label = crosslist.LABEL.get(site, site)
-    what = path_text(payload.get("path") or payload.get("want") or {}) or row["kind"]
+    what = (f"{payload.get('add')} more photo{'s' if payload.get('add') != 1 else ''}" if row["kind"] == "photos"
+            else path_text(payload.get("path") or payload.get("want") or {}) or row["kind"])
     shots = s.path("failed") / "shots"
     shots.mkdir(parents=True, exist_ok=True)
+    if row["kind"] == "photos" and not all(Path(f).is_file() for f in payload.get("files") or []):
+        _skip(db, row, "the photos to add are gone from the Mac")
+        return True
     from thrift_agent.post.base import AccountBlocked
     if row["status"] == "unconfirmed":                 # saved once already: the site is READ, never saved again blind
         try:
@@ -234,7 +238,13 @@ async def run_one(s: Settings, db: DB, site: str, poster, ctx, sites: list[str],
         return True
 
     try:
-        if site == "poshmark":
+        if row["kind"] == "photos":
+            if site == "poshmark":
+                out = await poster.set_photos(ctx, url, payload, dry=dry, shots=shots, go=go)
+            else:
+                out = await poster.add_photos(url, payload.get("files") or [], dry=dry, shots=shots, go=go, sku=iid,
+                                              had=int(payload.get("had") or 0))
+        elif site == "poshmark":
             out = await poster.set_category(ctx, url, payload, dry=dry, shots=shots, go=go)
         else:
             out = await poster.set_fields(url, payload.get("fields") or {}, dry=dry, shots=shots, go=go, sku=iid)
@@ -248,7 +258,7 @@ async def run_one(s: Settings, db: DB, site: str, poster, ctx, sites: list[str],
     if dry:
         _update(db, row["id"], status="done" if out.get("ok") else "failed", done_at=_iso(_now()),
                 error=out.get("error"), evidence=evidence)
-        notify.say(f"Category dry run on {label} — {title} → {what}: "
+        notify.say(f"{'Photos' if row['kind'] == 'photos' else 'Category'} dry run on {label} — {title} → {what}: "
                    + ("filled in on the edit page, not saved" if out.get("ok") else f"not filled: {out.get('error')}")
                    + (f" · {Path(evidence).name}" if evidence else "")
                    + (f" · seen: {out.get('seen')}" if out.get("seen") else ""))
@@ -270,10 +280,17 @@ async def run_one(s: Settings, db: DB, site: str, poster, ctx, sites: list[str],
 
 async def _shows(site: str, poster, url: str, payload: dict, iid: str, shots: Path) -> bool:
     """Does the site show the change now? Poshmark: its public listing's JSON; Depop / Vinted: the edit page read
-    (a read-only "fields" job)."""
+    (a read-only "fields" job, or the photo count for a "photos" edit)."""
+    import asyncio
     want = payload.get("want") or {}
+    if "files" in payload:                                        # WO45 §6: the photo count
+        need = int(payload.get("had") or 0) + int(payload.get("add") or 0)
+        if site == "poshmark":
+            live = await asyncio.to_thread(crosslist.poshmark_listing, url)
+            return bool(live and live.get("photos") is not None and int(live["photos"]) >= need)
+        out = await poster.read_photos(url, shots, iid)
+        return bool(out.get("count") is not None and int(out["count"]) >= need)
     if site == "poshmark":
-        import asyncio
         live = await asyncio.to_thread(crosslist.poshmark_listing, url)
         return bool(live and (live.get("department") or "").lower() == str(want.get("department") or "").lower()
                     and (live.get("category") or "").lower() == str(want.get("category") or "").lower())
@@ -287,11 +304,28 @@ def _mirror(db: DB, iid: str, site: str, payload: dict) -> None:
     if listing is None:
         return
     fields = loads(listing["fields_json"]) or {}
+    if "files" in payload:                                        # WO45 §6: the photos the site now has
+        had = int(payload.get("had") or 0)
+        if isinstance(fields.get("photos"), list):                # Depop's / Vinted's mapped list grows with them
+            fields["photos"] = list(fields["photos"]) + list(payload["files"])
+        db.upsert_listing(iid, site, fields_json=fields, photos_live=had + len(payload["files"]),
+                          photos_read_at=_iso(_now()))
+        return
     if site == "poshmark":
         fields.update({k: v for k, v in (payload.get("want") or {}).items() if k != "size"})
     else:
         fields.update(payload.get("fields") or {})
     db.upsert_listing(iid, site, fields_json=fields)
+
+
+def queue_photos(s: Settings, db: DB, iid: str, site: str, files: list[str], had: int, dry: bool = False) -> list[str]:
+    """WO45 §6: one "photos" edit for a live listing that shows fewer photos than its item has — `files` are the
+    item's prepared photos it lacks (in the listing's order), `had` what the site shows now."""
+    limit = int((s["marketplaces"].get(site) or {}).get("max_photos", 16))
+    files = [f for f in files if Path(f).is_file()][:max(0, limit - had)]
+    if not files:
+        return []
+    return queue(db, iid, "photos", {site: {"files": files, "had": had, "add": len(files), "limit": limit}}, dry=dry)
 
 
 def listing_text(db: DB) -> list[str]:

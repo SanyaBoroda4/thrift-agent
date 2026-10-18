@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
+import json
 import time
 from pathlib import Path
 from typing import TypeVar
@@ -60,8 +62,60 @@ def _rejects_forced(e: Exception) -> bool:
     return getattr(e, "status_code", None) == 400 and "tool_choice" in message and "not supported" in message
 
 
+class Answers:
+    """WO45 §10: recorded answers for the replay harness — every call keyed by its model, prompt, tool and content
+    (an image by the hash of its bytes), the model's tool input kept as JSON. `record`: a miss asks the model and keeps
+    the answer; otherwise a miss raises (CI never pays for a model call). One file per golden share."""
+
+    def __init__(self, path: Path, record: bool = False):
+        self.path, self.record = path, record
+        self.data: dict = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        self.hits = self.misses = 0
+
+    @staticmethod
+    def key(model: str, system: str, content: list[dict], tool: str) -> str:
+        parts = [{"text": c.get("text")} if c.get("type") == "text"
+                 else {"image": hashlib.sha256(c["source"]["data"].encode()).hexdigest()} for c in content]
+        raw = json.dumps({"model": model, "system": system, "tool": tool, "content": parts}, sort_keys=True)
+        return hashlib.sha256(raw.encode()).hexdigest()[:24]
+
+    def get(self, key: str) -> dict | None:
+        return self.data.get(key)
+
+    def put(self, key: str, value: dict, tool: str) -> None:
+        self.data[key] = value
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(self.data, indent=1, sort_keys=True, ensure_ascii=False), encoding="utf-8")
+
+
+class MissingAnswer(RuntimeError):
+    """A replay without a recorded answer for this call (the prompts changed, or the share was never recorded)."""
+
+
+RECORDER: Answers | None = None     # set by replay.run for the length of a replay
+
+
 def ask(model: str, system: str, content: list[dict], out: type[T], tool: str, description: str,
         max_tokens: int = 4096, retries: int = 3) -> T:
+    """One tool call, validated into `out` (see `_ask`); WO45 §10: with a recorder, a recorded answer instead of the
+    model, and a new answer recorded."""
+    if RECORDER is None:
+        return _ask(model, system, content, out, tool, description, max_tokens, retries)
+    key = RECORDER.key(model, system, content, tool)
+    hit = RECORDER.get(key)
+    if hit is not None:
+        RECORDER.hits += 1
+        return out.model_validate(hit)
+    if not RECORDER.record:
+        raise MissingAnswer(f"no recorded answer for {tool} ({model}): record the share again")
+    RECORDER.misses += 1
+    answer = _ask(model, system, content, out, tool, description, max_tokens, retries)
+    RECORDER.put(key, answer.model_dump(mode="json"), tool)
+    return answer
+
+
+def _ask(model: str, system: str, content: list[dict], out: type[T], tool: str, description: str,
+         max_tokens: int = 4096, retries: int = 3) -> T:
     """One tool call, validated into `out`.
 
     The call is forced (tool_choice {"type": "tool"}) on models that take it. Claude Opus 5.5, Sonnet 5.5, Fable 5.1

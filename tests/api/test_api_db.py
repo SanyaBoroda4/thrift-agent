@@ -15,15 +15,17 @@ from thrift_api.schema import migrate
 
 COLUMNS = {
     "items": ["id", "title", "brand", "size", "price", "created_at", "updated_at",
-              "all_live_at", "drop_stage", "next_drop_at", "no_drop"],                               # WO41
+              "all_live_at", "drop_stage", "next_drop_at", "no_drop",                                # WO41
+              "status", "priced", "test", "photos"],                                                 # WO45 §7
     "listings": ["item_id", "marketplace", "status", "url", "listing_id", "sku", "price", "posted_at", "updated_at",
-                 "price_live", "price_read_at"],                                                     # WO41
+                 "price_live", "price_read_at",                                                      # WO41
+                 "error", "photos_sent", "photos_live", "photos_read_at"],                            # WO45 §6/§7
     "email_events": ["message_id", "thread_id", "marketplace", "kind", "subject", "received_at", "parsed_json",
                      "raw_text", "status", "attempts", "created_at"],
     "sales": ["id", "marketplace", "item_id", "listing_id", "title_seen", "price", "order_id", "sold_at", "ship_by",
               "ship_by_source", "shipped_at", "delivered_at", "status", "message_id", "created_at", "drops"],
     "delist_tasks": ["id", "sale_id", "item_id", "marketplace", "listing_url", "status", "attempts", "last_error",
-                     "evidence", "lease_until", "created_at", "done_at"],
+                     "evidence", "lease_until", "created_at", "done_at", "kind"],                    # WO45 §7
     "reminders": ["sale_id", "kind", "sent_at"],
     "heartbeats": ["source", "last_seen", "info"],
     "samples": ["message_id", "marketplace", "subject", "received_at", "text"],
@@ -32,6 +34,11 @@ COLUMNS = {
                "seen_json", "last_seen", "first_seen"],
     "price_changes": ["id", "item_id", "marketplace", "stage", "old_price", "new_price", "pct", "status", "attempts",
                       "error", "due_at", "done_at", "created_at", "updated_at"],                     # WO41
+    "shares_in": ["share_id", "count", "received", "started_at", "ended_at", "fetched_at", "last_received_at",
+                  "test"],                                                                           # WO45 §2
+    "share_uploads": ["share_id", "name", "n", "sha256", "size", "content_type", "received_at", "test"],
+    "shares": ["id", "source", "expected", "received", "received_at", "complete_at", "grouped_at", "carded_at",
+               "outcome", "outcome_at", "reason", "batch_id", "test", "updated_at"],                   # WO45 §3
 }
 
 

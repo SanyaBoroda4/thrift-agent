@@ -1159,6 +1159,100 @@ live on Poshmark and Vinted overnight with no word to anyone. Three causes, all 
   listing is still posted handed to the Mac once more, `takedown_reopened:<task>`). Live mode only; a read never starts
   the live clock.
 
+## The whole path from share to listing (WO45, 2026-10-18 — replaces WO43's and WO44's scope; WO43's code stays)
+Live (Oct 12–18): 4 of 23 shares never became a card and 11 came short or late; the Ralph Lauren shirt (a 20-photo
+share) was taken with ONE photo at minute 17 (WO42's 15-minute rule), went up on Vinted and Depop with it, failed on
+Poshmark (its cover dialog has no title for one photo), and the other 19 photos — its own three and three more items —
+were told in a private line and never processed. The rules: every share reaches the Mac within 2 minutes when the
+phone has internet (§2); every share ends in exactly one visible outcome (§3); the same photos never make a second
+card (§4); photos of one item stay one item (§5); every photo she shares is on every site's listing (§6); every priced
+item goes up on all three sites or she is told why (§7); she only taps (§8); every listing is read back (§6).
+- **The direct upload (§2, `api/thrift_api/uploads.py`, `thrift_agent/uploads.py`, `docs/SHORTCUT_UPLOAD.md`):** the
+  Shortcut POSTs each photo to `POST /share/<share id>/photo?n=&of=&name=` (a raw image or one multipart file; HEIC and
+  EXIF kept; images only, ≤ 30 MB, ≤ 60 a share; the same bytes stored once) and then `POST /share/<id>/end?count=N`
+  — behind a key for those two functions only (`provision.py uploads` makes it and sends it ONCE to the private
+  chat); the photos are blobs in the function app's storage (container `shares`, gone after 30 days by Azure's rule;
+  the rows by `timers.daily`). The Mac asks `GET /shares/pending` every 30 s while awake (`uploads.fetch_new` from
+  the inbox scan), downloads each photo (SHA-256 checked), writes `_done.txt`, `_source.txt` ("azure") and `_test`
+  for a test share into `inbox/<share id>/` and tells the API (`POST /shares/<id>/fetched`). **One share id names
+  both copies** (the Shortcut's `yyyy-MM-dd_HHmmss_<random>`): whichever arrives first is taken; the other is the
+  same share (`register`: a folder of a batch already taken is archived without a word, ledger outcome
+  `same_share`; `process_batch`: known photos whose items came from that share id are never a "repeat"). `?test=1`
+  = a test share: the batch and its items carry `test`; the cards go to the PRIVATE chat marked 🧪 (`approve.card_bot`,
+  a tap there works), and the poster, `feed` and `crosslist.pending` never take a test item.
+- **The share ledger (§3, `shares.py`, table `shares`, synced to thrift-api's `shares`):** one row per share id —
+  source (icloud | azure | both), expected (`done N`) and received, and the time of each step: received → complete
+  (taken) → grouped (split) → carded (the first card; the outcome `carded` once every item has its card); outcomes
+  `repeat`, `empty` (a day without photos), `same_share`, `joined` (every photo joined an item), `failed` with its
+  reason. Recorded before the next step (`_share_seen` on every look at the inbox, `take_share`, `split`,
+  `send_item`). The API's **watchdog** (`watch.shares_watch`, a 5-minute timer): a complete share with no outcome after
+  15 minutes (30 past 20 photos) while the Mac's heartbeat is fresh → ONE private line, "⏳ Share 12:31 PM (4 photos)
+  stuck at grouped since 12:33"; the dashboard's **Shares today** panel; `thrift shares [--day | --all]`.
+- **No card from part of a share in its first 30 minutes (§6):** `PARTIAL_AFTER` is 30 minutes (was 15); the card of an
+  item made from part of a share says "📷 1 of 20 photos — the rest join when they arrive" (`items.photos_expected`,
+  `approve.photo_line`), every card "📷 N photos".
+- **Late photos join their item or become items (§5/§6, replaces the private line):** `late_photos` takes the photos
+  that came into a SPLIT share's archive folder too — a batch of their own on that folder (`_in_place_batch`: src_dir
+  `<archive dir>#hhmmss`, only those names, `late_of` the share's batch; `batch_dir` strips the suffix) — and
+  `process_batch` first puts them to the model against the share's items (`reference_items`, `seg.attach`: the items'
+  covers and a few photos as A, B, C; one vision call; ATTACH_MIN 0.7): a photo of an item already made is ADDED to it
+  (`add_photos_to_item`: normalized into its photos/, the manifest's `late` entries, remembered; an item not yet
+  processed takes them when it is; one processed but not on a site has its cover, order and card recomputed
+  (`recover_item` asks the front check again for late photos); one on a site keeps its cover and copy, the photos go
+  at the end of its lists and ONE "photos" edit per live site puts them on the listing); the rest go on as a share
+  (their own cards). Nothing left → the batch `joined`. **A small follow-up share** (≤ 3 photos within 15 minutes of
+  the previous share) is compared with that share's items the same way. **A one-photo group** is checked against the
+  share's other groups before any card (`merge_singletons`). The grouping prompt: one roll is one item unless the
+  photos clearly show different things — never split for the background, the light, the angle, hanger vs flat lay
+  vs worn; a photo in doubt joins the most likely item, never a one-photo item. `thrift late --take <batch>`
+  (the photos told in a line before WO45, taken now), `thrift late --add-to <item> --file …`, `--dry-run` (the photo
+  edits as dry runs first — §11).
+- **Photos added to a live listing (§6, `edits.py` kind "photos", `edits.queue_photos`):** Poshmark
+  `PoshmarkPoster.set_photos` — the edit page's file input after its tiles (`SEL["edit_photo_input"]`,
+  `input.listing-editor__file-list`, UNVERIFIED until the first dry run), each crop dialog applied, the tiles counted,
+  Update → List This Item for THIS edit (WO40) once, the public JSON's photo count (`poshmark_listing` now gives
+  `photos` and `price`); Depop / Vinted `ExtensionPoster.add_photos` — the extension's "photos" job on the edit page
+  (`T.photosAdd`: the tiles must be the `had` recorded, the files set on the page's photo input, the tiles counted
+  again), Save once, then `read_photos` (a read-only "photos" job) for the count that stuck. Unconfirmed → read an
+  hour later, never saved again blind; 3 failures → one private line (WO43's edit rules).
+- **Every listing read back (§6/§7, `photocheck.py`, the poster's housekeeping every 5 minutes, 6 listings a run):**
+  a live listing 10 minutes after it posts and then every 6 hours — Poshmark's public JSON, Depop's / Vinted's
+  listing page through the extension's verify job (`read_listing`) — `listings.photos_live` / `price_live` recorded;
+  fewer photos than sent → ONE "photos" edit with the missing ones (once per count, kv `photocheck_asked`); a price
+  that differs (her hand change) → event `price_differs`, never undone.
+- **Poshmark's cover dialog for ONE photo** has no "Select a Covershot." title and no thumbnail strip (live, the
+  shirt): accepted as the same dialog (`_apply_cover`: the crop frame and Apply still required).
+- **Depop's package size** (live: the Polo tee failed three times — this seller's menu offers Medium, Large and
+  Extra large only, and "offered: " came out empty because the typed filter had emptied the list): a size the menu
+  doesn't offer becomes the smallest offered one that is at least ours, else the largest (`depop.js packageSize`,
+  in the "check:" line); the tidy sets back the size chosen, never one the menu lacks; the whole list is reported.
+- **The API's safety net for an item priced but not live (§7, `watch.unposted`, the 15-minute timer, 08:00–22:00
+  local):** an item priced an hour ago (the mirror's `items.priced`, `status`, `test`; `listings.error`) whose row
+  on a site is failed / skipped with no reason the Mac settles itself (no size, a twin, sold, autopublish off, an
+  unconfirmed publish, a mismatch) → ONE `repost` task the Mac takes with its take-downs (`delist_tasks.kind`;
+  `sales.repost`: the row back to `queued` once, with the same reasons kept) → still not live an hour after the Mac
+  answered → ONE private line per item and site, "⚠️ <title> isn't on Poshmark: <reason>".
+- **The size (§8):** before any buttons, ONE more look for a printed size on the label, tag, detail, box and other
+  photos at the label resolution (`second_look_size` → `cover.read_size_label`; "US 8.5" / "M" is the size,
+  "EU 38" the EU size); the extraction prompt looks at the insole, tongue, outsole, box, neck label, waistband and
+  care tag and, with nothing printed, gives `size_guess` from the item's proportions next to her hand — the ⭐ only
+  (`sizebuttons.model_guess`), never listed by itself; men's and the other women's categories have defaults.
+- **Messages (§9):** the private chat gets "📸 N photos of the 12:11 PM share came late — taken now: they join their
+  item or become one", "📸 2 late photos joined <title>: its listings get them", the ⏳ and ⚠️ lines above, and ONE
+  line a day in the 21:00 hour from the API: "📊 Today: 7 shares → 8 items, 7 live on all 3 sites with all photos, 1
+  waiting for a size." (`watch.evening_line`). The group's list is WO29's + WO43's 📭 line; nothing else.
+- **The replay harness (§10, `replay.py`, `thrift replay <case> | --golden [--record] [--card]`,
+  `tests/test_golden.py`):** a saved share (or several, in order, plus a `late/` folder) through the whole intake in a
+  scratch workspace and database — never the live one — with the model's answers recorded once (`brain/llm.Answers`,
+  `answers.json`, keyed by the model, the prompt, the tool and the images' bytes: a prompt change needs a new
+  recording) and replayed after (a replay never asks the model: `MissingAnswer`), compared with `expected.yaml`
+  (`items`, `outcomes`, `each: [{photos, department, size, cover_role, title_contains, size_buttons}]`,
+  `said_contains`). The golden cases live in `private/tests/golden/<case>/` (the owner's photos, never the public
+  repo): the test runs where that folder is (the Mac's pre-deploy test run) and is skipped in GitHub CI.
+- Tests: `tests/test_wo45.py`, `tests/api/test_api_wo45.py`, `tests/api/test_api_uploads.py`, `tests/test_uploads.py`;
+  the jsdom tests for the package fallback and the photos job; WO42's and WO37's updated to the 30-minute rule and
+  the in-place late batches.
+
 ## Size buttons, the photo memory, no "share it again", a listing's department changed (WO43, 2026-10-17)
 That evening: three items shared at 3:18 PM stayed on the iPhone (5G); WO42's "share it again" line went out; the
 re-share at 7:26 PM and the phone's late upload of the first share both landed at 7:47 PM — six folders holding three

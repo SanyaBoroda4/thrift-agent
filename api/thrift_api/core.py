@@ -49,13 +49,18 @@ SAME_SALE_WINDOW = timedelta(days=3)
 SITE_SORT = "CASE {0}marketplace WHEN 'poshmark' THEN 0 WHEN 'depop' THEN 1 WHEN 'vinted' THEN 2 ELSE 3 END"
 TASK_ORDER = f"created_at, {SITE_SORT.format('')}, id"
 ITEM_COLUMNS = ("title", "brand", "size", "price", "created_at",
-                "all_live_at", "drop_stage", "next_drop_at", "no_drop")              # WO41: the price-drop clock
-LISTING_COLUMNS = ("status", "url", "listing_id", "sku", "price", "posted_at", "price_live", "price_read_at")
+                "all_live_at", "drop_stage", "next_drop_at", "no_drop",              # WO41: the price-drop clock
+                "status", "priced", "test", "photos")                                 # WO45 §7: the safety net
+LISTING_COLUMNS = ("status", "url", "listing_id", "sku", "price", "posted_at", "price_live", "price_read_at",
+                   "error", "photos_sent", "photos_live", "photos_read_at")          # WO45 §6/§7
 PRICE_COLUMNS = ("item_id", "marketplace", "stage", "old_price", "new_price", "pct", "status", "attempts", "error",
                  "due_at", "done_at", "created_at")                                   # WO41: the Mac's price drops
+SHARE_COLUMNS = ("source", "expected", "received", "received_at", "complete_at", "grouped_at", "carded_at", "outcome",
+                 "outcome_at", "reason", "batch_id", "test")                          # WO45 §3: the share ledger
 NUMBERS = ("price", "price_live", "old_price", "new_price", "pct")
-INTEGERS = ("drop_stage", "attempts")
-TIMES = ("created_at", "posted_at", "all_live_at", "next_drop_at", "no_drop", "price_read_at", "due_at", "done_at")
+INTEGERS = ("drop_stage", "attempts", "priced", "test", "photos", "photos_sent", "photos_live", "expected", "received")
+TIMES = ("created_at", "posted_at", "all_live_at", "next_drop_at", "no_drop", "price_read_at", "due_at", "done_at",
+         "photos_read_at", "received_at", "complete_at", "grouped_at", "carded_at", "outcome_at")
 
 
 class Outbox:
@@ -706,8 +711,10 @@ def sync(db: Database, body: dict, now: datetime | None = None) -> dict:
         raise BadRequest("the body must be a JSON object")
     items, listings = body.get("items") or [], body.get("listings") or []
     changes = body.get("price_changes") or []                     # WO41
-    if not isinstance(items, list) or not isinstance(listings, list) or not isinstance(changes, list):
-        raise BadRequest("items, listings and price_changes must be lists")
+    shares = body.get("shares") or []                             # WO45 §3
+    if not isinstance(items, list) or not isinstance(listings, list) or not isinstance(changes, list) \
+            or not isinstance(shares, list):
+        raise BadRequest("items, listings, price_changes and shares must be lists")
     counts = {"items": dict.fromkeys(("inserted", "updated", "unchanged"), 0),
               "listings": dict.fromkeys(("inserted", "updated", "unchanged"), 0)}
     with db.tx():
@@ -730,6 +737,13 @@ def sync(db: Database, body: dict, now: datetime | None = None) -> dict:
             if not change_id or not _text(raw.get("item_id")).strip():
                 raise BadRequest("every price change needs an id and an item_id")
             counts["price_changes"][_upsert(db, "price_changes", {"id": change_id}, raw, PRICE_COLUMNS, now)] += 1
+        if shares:
+            counts["shares"] = dict.fromkeys(("inserted", "updated", "unchanged"), 0)
+        for raw in shares:
+            share_id = _text(raw.get("id")).strip() if isinstance(raw, dict) else ""
+            if not share_id:
+                raise BadRequest("every share needs an id")
+            counts["shares"][_upsert(db, "shares", {"id": share_id}, raw, SHARE_COLUMNS, now)] += 1
         # WO40: a listing that reaches the mirror after its item sold (posted, or posted again) gets its take-down
         for item_id in sorted({_text(r.get("item_id")).strip() for r in listings
                                if _text(r.get("status")).strip().lower() == "posted"}):
@@ -783,6 +797,7 @@ def take_tasks(db: Database, sites: list[str], now: datetime | None = None, mode
     with db.tx():
         rows = db.query(
             "SELECT t.id, t.sale_id, t.item_id, t.marketplace, t.listing_url, t.attempts, l.listing_id, "
+            "COALESCE(t.kind, 'delist') AS kind, "
             "COALESCE(i.title, s.title_seen) AS title FROM delist_tasks t "
             "LEFT JOIN items i ON i.id = t.item_id LEFT JOIN sales s ON s.id = t.sale_id "
             "LEFT JOIN listings l ON l.item_id = t.item_id AND l.marketplace = t.marketplace "
@@ -824,6 +839,11 @@ def task_result(db: Database, task_id: str, result: str, error: str | None = Non
         sale = db.one("SELECT title_seen, listing_id FROM sales WHERE id = ?", (task["sale_id"],)) or {}
         title = _title(db, task["item_id"], sale.get("title_seen"), sale.get("listing_id"))
         site = site_name(task["marketplace"])
+        if (task["kind"] if "kind" in task.keys() else None) == "repost":   # WO45 §7: the safety net's one retry
+            status = "done" if result in ("done", "sold") else result        # the Mac answered: nothing else changes
+            db.execute("UPDATE delist_tasks SET status = ?, done_at = ?, lease_until = NULL, last_error = ? WHERE id = ?",
+                       (status, iso(now), error, task_id))
+            return {"id": task_id, "status": status, "attempts": attempts, "changed": True}
         if result == "done":
             status = "done"
             db.execute("UPDATE delist_tasks SET status = 'done', done_at = ?, lease_until = NULL, last_error = NULL, "
@@ -1147,8 +1167,9 @@ def dashboard_data(db: Database, now: datetime | None = None) -> dict:
     for entry in late:                                  # WO40: still listed elsewhere 2 h after the sale
         if entry["item_id"] in items:
             items[entry["item_id"]]["still_listed"] = [site_name(m) for m in entry["sites"]]
+    from . import watch                                 # WO45 §3: the day's shares (the ledger)
     return {"items": list(items.values()), "unmatched": unmatched, "swept": swept, "generated_at": iso(now),
-            "late_takedowns": [{**e, "line": late_line(e)} for e in late]}
+            "late_takedowns": [{**e, "line": late_line(e)} for e in late], "shares": watch.shares_today(db, now)}
 
 
 def _drops(row: dict, now: datetime) -> dict:
@@ -1177,14 +1198,19 @@ def shipping(status: str | None, shipped_at: str | None, delivered_at: str | Non
     return ours
 
 
-def test_message(chat: str = "ops", now: datetime | None = None, mode: str | None = None) -> dict:
-    """"✓ thrift-api is up — <local time>" to the ops chat (or the group), as the mode routes it; off sends nothing."""
+def test_message(chat: str = "ops", now: datetime | None = None, mode: str | None = None,
+                 text: str | None = None) -> dict:
+    """"✓ thrift-api is up — <local time>" to the ops chat (or the group), as the mode routes it; off sends nothing.
+    WO45: `text`, when given, goes as it is instead — provision.py tells the owner the Shortcut's upload key this way,
+    the one place it is shown (never logged here: the text is only ever handed to Telegram)."""
     now, mode = _clock(now), mode or util.mode()
     if chat not in telegram.CHAT_ENV:
         raise BadRequest("chat is ops or group")
+    if text is not None and (not isinstance(text, str) or not text.strip()):
+        raise BadRequest("text is a non-empty string")
     if mode == "off":
         return {"sent": False, "chat": chat, "mode": mode}
-    sent = telegram.send(f"✓ thrift-api is up — {local_text(now)}", chat, now=now, mode=mode)
+    sent = telegram.send(text.strip() if text else f"✓ thrift-api is up — {local_text(now)}", chat, now=now, mode=mode)
     return {"sent": sent, "chat": "ops" if mode == "replay" else chat, "mode": mode}
 
 

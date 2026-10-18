@@ -87,6 +87,17 @@ CREATE TABLE IF NOT EXISTS listing_edits (
   status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, error TEXT, evidence TEXT, dry INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL, done_at TEXT
 );
+CREATE TABLE IF NOT EXISTS shares (
+  id TEXT PRIMARY KEY, source TEXT, expected INTEGER, received INTEGER NOT NULL DEFAULT 0, received_at TEXT,
+  complete_at TEXT, grouped_at TEXT, carded_at TEXT, outcome TEXT, outcome_at TEXT, reason TEXT, batch_id TEXT,
+  test INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS api_dirty_share_ins AFTER INSERT ON shares BEGIN
+  INSERT OR REPLACE INTO api_dirty VALUES ('share', NEW.id, strftime('%Y-%m-%dT%H:%M:%f', 'now'));
+END;
+CREATE TRIGGER IF NOT EXISTS api_dirty_share_upd AFTER UPDATE ON shares BEGIN
+  INSERT OR REPLACE INTO api_dirty VALUES ('share', NEW.id, strftime('%Y-%m-%dT%H:%M:%f', 'now'));
+END;
 """
 
 # batch: new → needs_confirm → split | failed
@@ -102,6 +113,10 @@ CREATE TABLE IF NOT EXISTS listing_edits (
 #        whoever made it), emptied by sales.push once the API took them; api_outbox: the other calls to the API
 #        (task results, the owner's 'shipped' replies) kept while it is out of reach and replayed in order;
 #        takedowns: the take-downs the API handed to this Mac (a sale elsewhere), done by the poster's site workers.
+# shares (WO45 §3): the share ledger — one row per share id (the Shortcut's folder name; the iCloud copy and the
+#        direct upload are one share): source icloud | azure | both, the photos expected and received, the time of
+#        each step (received → complete → grouped → carded), the outcome (carded | repeat | empty | same_share |
+#        failed | joined) with its reason; synced to thrift-api (its watchdog and the dashboard's Shares panel).
 # price_changes (WO41): one row per item, site and drop stage (auto_1 | auto_2; `dry` rows are the owner's dry runs,
 #        never synced): pending → saving (the moment before the one Save) → done | unconfirmed (saved, the site's data
 #        not yet showing it: read again before anything else) | failed (3 attempts: the owner is asked) | skipped.
@@ -123,9 +138,16 @@ MIGRATIONS = {"items": {"cover_hash": "TEXT", "owner_price": "INTEGER", "owner_c
                         "drop_stage": "INTEGER",         # WO41: 0, 1, 2 — drops made (never a third)
                         "last_drop_at": "TEXT",          # WO41: when the last stage started
                         "next_drop_at": "TEXT",          # WO41: when the next stage is due (none after the second)
-                        "no_drop": "TEXT"},              # WO41: the owner's 'no drop' (when she said it)
+                        "no_drop": "TEXT",               # WO41: the owner's 'no drop' (when she said it)
+                        "test": "INTEGER",               # WO45 §2: a test share's item — its card goes to the private
+              #                                            chat marked 🧪, the poster refuses it
+                        "photos_expected": "INTEGER"},   # WO45 §6: the share's `done N` when the item was made from
+              #                                            part of it — the card says "3 of 4 photos"
+              "batches": {"test": "INTEGER"},            # WO45 §2: from a test share (the Shortcut's test copy)
               "listings": {"price_live": "REAL",         # WO41: the price last read on the site itself
-                           "price_read_at": "TEXT"}}
+                           "price_read_at": "TEXT",
+                           "photos_live": "INTEGER",     # WO45 §6: the photos the site shows (read after posting)
+                           "photos_read_at": "TEXT"}}
 
 
 def now() -> str:
@@ -261,7 +283,8 @@ class DB:
     def add_batch(self, src_dir: str, n_photos: int) -> str | None:
         bid = new_id("b")
         cur = self.conn.execute(
-            "INSERT OR IGNORE INTO batches VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT OR IGNORE INTO batches (id, src_dir, status, n_photos, segmentation, reasons, created_at, "
+            "updated_at) VALUES (?,?,?,?,?,?,?,?)",
             (bid, src_dir, "new", n_photos, None, None, now(), now()))
         return bid if cur.rowcount else None
 

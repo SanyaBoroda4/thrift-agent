@@ -39,6 +39,11 @@ SYSTEM = """You split a seller's photo roll into items for resale listings.
 The seller's own photos are in capture order. The seller shoots one item completely, then the next; items do
 not interleave, except that an occasional forgotten detail shot of an earlier item may appear later. Items are
 often shot in quick bursts, a minute or less apart, so decide by what the photos show.
+One roll is ONE item unless the photos clearly show different things: a different garment type, colour, pattern,
+brand or size label. NEVER split for the background, the light or white balance, the angle or distance, or for a
+hanger shot vs a flat lay vs a photo worn vs one on a stand — the same shirt on a hanger and on the floor is one
+item. A photo you are not sure about joins the most likely item of the roll, never an item of its own: a one-photo
+group needs a visible difference from every other group.
 Visual identity first. Photos of the same item share:
 - the fabric or material texture (knit, denim, suede, grain, sequins), the color and shade, the print or pattern;
 - the shape and silhouette (neckline, sleeves, hem, heel, toe), construction details (seams, pockets, stitching),
@@ -91,6 +96,45 @@ def pauses(times: list[datetime], kinds: list[str] | None = None, min_seconds: f
         return {}
     at = max(min_seconds, factor * statistics.median(gaps.values()))
     return {b: g for b, g in gaps.items() if g > at}
+
+
+class Attachment(BaseModel):
+    photo: int = Field(description="The new photo's number")
+    item: str | None = Field(None, description="The letter of the item it shows, or null when it shows none of them")
+    confidence: float = Field(ge=0, le=1, description="How sure you are")
+
+
+class AttachOut(BaseModel):
+    photos: list[Attachment]
+    notes: str = ""
+
+
+ATTACH_SYSTEM = """You decide whether a seller's late photos show items already made from the same photo roll.
+You see each item (a letter, its listing title, a few of its photos), then the new photos, numbered.
+The same item shares the garment type, colour and shade, print or pattern, fabric texture, shape (neckline,
+sleeves, hem, heel, toe), construction details, hardware and trims, and its label, brand or size tag. A close-up
+(a logo, pocket, label, buttons, fabric, flaw) belongs to the item whose fabric, colour and pattern it shows.
+NEVER call a photo a different item for the background, the light or white balance, the angle or distance, or
+for a hanger shot vs a flat lay vs a photo worn: the same shirt on a hanger and on the floor is one item.
+A different garment type, colour, pattern, brand or size label IS a different item: then the photo shows none of
+the items listed (item null). For each new photo: the letter of the item it shows, or null, with your confidence."""
+
+
+def attach(new: list[Path], refs: list[tuple[str, str, list[Path]]], model: str, thumb_px: int) -> AttachOut:
+    """WO45 §5/§6: which of the items already made (refs: (letter, title, a few photos each)) each new photo shows —
+    the late photos of a share, a small follow-up share, a one-photo group checked against the others — by the
+    photos themselves, never by comparing text descriptions (those change with the light and the angle)."""
+    content: list[dict] = []
+    for letter, title, photos in refs:
+        content.append(llm.text(f"Item {letter} — {title}"))
+        content.extend(llm.image(p, thumb_px) for p in photos)
+    content.append(llm.text("New photos:"))
+    for i, p in enumerate(new):
+        content.append(llm.text(f"Photo {i}"))
+        content.append(llm.image(p, thumb_px))
+    content.append(llm.text(f"{len(new)} new photos. For each: the item it shows (a letter) or null."))
+    return llm.ask(model, ATTACH_SYSTEM, content, AttachOut, "report_attachments",
+                   "Report which item each new photo shows", max_tokens=1500)
 
 
 def _content(photos: list[tuple[Path, datetime]], kinds: list[str], breaks: dict[int, float], px: int) -> list[dict]:

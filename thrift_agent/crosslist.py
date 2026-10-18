@@ -247,8 +247,10 @@ def pending(s: Settings, db: DB, mps: list[str] | None = None) -> list[tuple[str
         states = ("queued", "dryrun") if live(s, mp) else ("queued",)
         rows = db.conn.execute(
             f"SELECT l.item_id FROM listings l LEFT JOIN listings p ON p.item_id=l.item_id AND p.marketplace='poshmark' "
-            f"WHERE l.marketplace=? AND l.status IN ({','.join('?' * len(states))}) "
+            f"JOIN items i ON i.id=l.item_id "
+            f"WHERE l.marketplace=? AND l.status IN ({','.join('?' * len(states))}) AND COALESCE(i.test, 0)=0 "
             f"ORDER BY COALESCE(p.posted_at, l.updated_at), l.rowid", (mp, *states)).fetchall()   # ties: queue order
+        #   (WO45 §2: a test share's item is never listed)
         out += [(r["item_id"], mp) for r in rows]
     return out
 
@@ -775,10 +777,17 @@ def poshmark_listing(url: str) -> dict | None:
         return None
     features = d.get("category_features") or []
     status = ((d.get("inventory") or {}).get("status") or "").lower()
+    pictures = d.get("pictures")
+    photos = (len(pictures) + (1 if d.get("cover_shot") else 0)) if isinstance(pictures, list) else None   # WO45 §6
+    try:
+        price = float(((d.get("price_amount") or {}).get("val")) or d.get("price") or 0) or None
+    except (TypeError, ValueError):
+        price = None
     return {"department": (d.get("department") or {}).get("display"),
             "category": (d.get("category_v2") or {}).get("display") or d.get("category"),
             "subcategory": (features[0].get("display") if features and isinstance(features[0], dict) else None),
-            "size": d.get("size"), "for_sale": status == "available" if status else None}
+            "size": d.get("size"), "for_sale": status == "available" if status else None,
+            "photos": photos, "price": price}
 
 
 def poshmark_cover(url: str) -> str | None:

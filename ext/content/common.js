@@ -578,7 +578,7 @@
       if (page !== "listing") return fail("probe", "unknown", `not a listing page: ${location.href}`);
       return site.probe(job, st);
     }
-    if (page !== "form" && ["cover", "price", "fields"].includes(job.mode)) {
+    if (page !== "form" && ["cover", "price", "fields", "photos"].includes(job.mode)) {
       // WO43 (live 2026-10-18): Depop's edit page came up as a header and a footer with no form for 15 s — the form
       // is waited for a while longer before the page is called something else
       const late = await T.until(() => (T.classify(job.site) === "form" ? true : null), 30000);
@@ -598,15 +598,17 @@
       if (job.mode === "cover") await T.coverFirst(job, st);          // WO37: the right photo first, nothing else
       else if (job.mode === "price") await T.priceSet(job, st);       // WO41: the price, nothing else
       else if (job.mode === "fields") await T.fieldsSet(job, st);     // WO43: the category and size, nothing else
+      else if (job.mode === "photos") await T.photosAdd(job, st, (photos || []).map(T.fileOf));   // WO45 §6
       else await site.fill(job, (photos || []).map(T.fileOf), st);
     } catch (e) {
       await T.screenshot("form");
       return fail(st.failed.length ? st.failed[0].split(":")[0] : "fill", "form",
                   String(e && e.message ? e.message : e).slice(0, 300));
     }
-    const edit = ["cover", "price", "fields"].includes(job.mode);
+    const edit = ["cover", "price", "fields", "photos"].includes(job.mode);
     const seen = job.mode === "cover" ? T.coverSeen(job, st) : job.mode === "price" ? T.priceSeen(job, st)
-      : job.mode === "fields" ? T.fieldsSeen(job, st) : site.readBack(job, st);
+      : job.mode === "fields" ? T.fieldsSeen(job, st) : job.mode === "photos" ? T.photosSeen(job, st)
+        : site.readBack(job, st);
     seen.submit_buttons = (edit ? T.saveButtons(job.site) : site.submitButtons()).length;
     seen.fill_ms = Math.round(performance.now() - t0);
     T.emit({ event: "step", job_id: job.job_id, name: "submit_seen", ok: seen.submit_buttons === 1,
@@ -794,6 +796,39 @@
     st.fieldsAfter = site.fieldsSeen(job, st);
   };
   T.fieldsSeen = (job, st) => ({ ...(st.fieldsAfter || {}), before: st.fieldsBefore || null, read_only: !!job.read_only });
+
+  // ---- WO45 §6: photos added to a live listing on its edit page (live 2026-10-18: the Ralph Lauren shirt went up on
+  // Vinted and Depop with one photo of four). The page's photo tiles are counted (they must be the `had` recorded, else
+  // nothing is touched), the files set on the page's photo input (the same input as the sell form's: `photos`
+  // selectors), the tiles counted again until they show had + the files; a `read_only` job only counts. Save is the
+  // bridge's go-ahead, as for every edit; nothing else on the listing is touched.
+  T.photosAdd = async (job, st, files) => {
+    const tiles = () => T.editTiles(job.site).length;
+    await T.until(() => (tiles() >= 1 ? true : null), 20000);
+    st.photosBefore = tiles();
+    st.photosAfter = st.photosBefore;
+    if (job.read_only) return;
+    if (!files.length) throw new Error("no photos to add");
+    if (job.had != null && st.photosBefore !== Number(job.had)) {
+      throw new Error(`the listing shows ${st.photosBefore} photos, not the ${job.had} recorded: changed since — left as it is`);
+    }
+    const sel = T.selectors[job.site].steps.photos;
+    const input = await T.need(sel.selectors, "photos", { visible: false });
+    await T.step("photos_add", st, async () => {
+      st.attached = await T.attach(input, files, sel.drop);
+      const want = st.photosBefore + files.length;
+      await T.until(() => (tiles() >= want ? true : null), 90000);
+      await T.quiet(600, 4000);
+      st.photosAfter = tiles();
+      return `${st.photosAfter} tiles (${st.photosBefore} + ${files.length})`;
+    }, { limit: 120000 });
+    if (st.photosAfter < st.photosBefore + files.length) {
+      throw new Error(`the edit page shows ${st.photosAfter} photos after adding ${files.length} to ${st.photosBefore}: nothing saved`);
+    }
+  };
+  T.photosSeen = (job, st) => ({ photos_before: st.photosBefore ?? null, photos: st.photosAfter ?? null,
+                                 attached: st.attached || null, read_only: !!job.read_only,
+                                 save_enabled: T.saveButtons(job.site).some((b) => !b.disabled) });
 
   // WO35: a listing's title as the site keeps it, the same as ours (spaces aside — the exact words, the exact case).
   T.sameTitle = (a, b) => String(a ?? "").replace(/\s+/g, " ").trim() === String(b ?? "").replace(/\s+/g, " ").trim();

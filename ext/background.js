@@ -404,7 +404,7 @@ async function fetchPhotos(urls) {
 }
 
 function urlFor(job, site) {
-  if (["cover", "price", "fields"].includes(job.mode)) return job.edit_url;   // WO37 / WO41 / WO43: the edit page
+  if (["cover", "price", "fields", "photos"].includes(job.mode)) return job.edit_url;   // WO37/41/43/45: the edit page
   if (job.mode === "orders") return job.orders_url;                  // WO38: the sold orders, read only
   if (["verify", "delist", "probe", "practice"].includes(job.mode)) return job.listing_url;
   if (job.mode === "find") return site.shop_url.replace("{shop}", encodeURIComponent(job.shop || ""));
@@ -433,7 +433,7 @@ async function startJob(job) {
   // Still this job? (A cancel can come while the tab opens: it is ended before the page has it.)
   const ours = async () => { await restore(); const j = jobs[job.site]; return j && j.job_id === job.job_id ? j : null; };
   try {
-    const photos = job.mode === "dry_run" || job.mode === "publish" ? await fetchPhotos(job.photos || []) : [];
+    const photos = ["dry_run", "publish", "photos"].includes(job.mode) ? await fetchPhotos(job.photos || []) : [];
     const url = urlFor(job, site);
     const where = await siteWindow(job.mode === "orders" ? "orders" : job.site);   // WO38: the "Orders" window
     const tab = await chrome.tabs.create({ url, active: true, windowId: where.windowId });
@@ -520,7 +520,7 @@ async function onNavigatedMidJob(j) {
     const tab = await landed(j.tabId, urlFor(j.job, sel[j.site]), OPEN_MS, j);
     await send({ event: "progress", job_id: j.job_id, what: `the page reloaded (${pathOf(tab.url)}) — ` +
                  (j.mode === "delist" ? "the take-down handed to it again" : "filling it again") });
-    const photos = j.job.mode === "dry_run" || j.job.mode === "publish" ? await fetchPhotos(j.job.photos || []) : [];
+    const photos = ["dry_run", "publish", "photos"].includes(j.job.mode) ? await fetchPhotos(j.job.photos || []) : [];
     const job = j.mode === "delist" ? { ...j.job, pressed: !!j.pressed } : j.job;
     await toTab(j.tabId, { type: "job", job, selectors: sel, photos, pace: j.job.pace }, REACH_MS, j.site, j);
     await restore();

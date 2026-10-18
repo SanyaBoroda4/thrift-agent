@@ -16,7 +16,7 @@ from rich import print
 from rich.markup import escape
 from rich.table import Table
 
-from thrift_agent import alerts, approve, config, daily, notify, photomem, pipeline, power, runlock
+from thrift_agent import alerts, approve, config, daily, notify, photomem, pipeline, power, runlock, uploads
 from thrift_agent.config import settings
 from thrift_agent.db import DB, loads
 
@@ -82,6 +82,8 @@ def _scan_inbox(s, db) -> int:
     alerts.scan_started(db)
     n, empty = 0, []
     try:
+        if uploads.due(db):                                   # WO45 §2: the shares the iPhone sent straight to the API
+            uploads.fetch_new(s, db)                          # (never raises; into the inbox as a folder each)
         for folder in pipeline.ready_folders(s, db):
             taken = pipeline.take_share(s, db, folder)       # WO42/43: ready, partial (a private line), empty, stale
             if taken is None:
@@ -1198,6 +1200,97 @@ def recategorize_cmd(item: str, path: str = typer.Argument(..., help='e.g. "Men 
     notify.say(f"{'Dry run: ' if dry_run else ''}{name} → {edits.path_text(out['placed'])} on {where}"
                + (f" (skipped: {', '.join(f'{k}: {v}' for k, v in out['skipped'].items())})" if out["skipped"] else "")
                + " — the running poster does it on each site's next idle turn")
+
+
+@app.command("late")
+def late_cmd(take: list[str] = typer.Option(None, "--take", help="batch id(s) whose archive folder holds photos that "
+                                                                   "came late: taken now, where they are"),
+             item: str = typer.Option(None, "--add-to", help="with --file: the photos added to this item"),
+             file: list[str] = typer.Option(None, "--file", help="photo file(s) to add to --add-to's item"),
+             dry_run: bool = typer.Option(False, "--dry-run", help="the live listings' photo edits queued as dry "
+                                                                   "runs: the edit pages filled, never saved")) -> None:
+    """WO45 §6: late photos. --take <batch>: the archive folder's photos that aren't the batch's are taken now as a
+    batch of their own (the worker compares them with the share's items: a photo of an item already made joins it —
+    its card, its live listings —, the rest become items). --add-to <item> --file <photo>…: these photos added to the
+    item directly (its record, its card; one "photos" edit per live site). --dry-run (§11: a dry run first): the
+    edits fill the edit pages and never save. Without options: what the last looks did."""
+    from thrift_agent import pipeline
+    s, db = settings(), _db()
+    if item or file:
+        if not (item and file):
+            raise typer.BadParameter("--add-to needs --file, and --file needs --add-to")
+        paths = [Path(f) for f in file]
+        if missing := [str(p) for p in paths if not p.is_file()]:
+            raise typer.BadParameter(f"not a file: {', '.join(missing)}")
+        from thrift_agent import photomem
+        keys = {p.name: photomem.keys_of(p) for p in paths}
+        out = pipeline.add_photos_to_item(s, db, item, paths, keys, dry=dry_run)
+        db.conn.commit()
+        print(escape(f"{item}: {out.get('added', 0)} photos added"
+                     + (f"; edits queued on {', '.join(out['edits'])}" if out.get("edits") else "")
+                     + (" (dry runs)" if out.get("edits") and dry_run else "")
+                     + (f" — {out['why']}" if out.get("why") else "")))
+        return
+    if take:
+        for bid in take:
+            if db.batch(bid) is None:
+                raise typer.BadParameter(f"unknown batch {bid}")
+        pipeline.DRY_EDITS = dry_run
+        done = pipeline.late_photos(s, db, force=list(take))
+        db.conn.commit()
+        print(escape("\n".join(done) if done else "nothing late in those folders"))
+        return
+    for e in db.conn.execute("SELECT ts, ref, detail FROM events WHERE kind IN ('late_photos', 'photos_attached', "
+                             "'photos_added') ORDER BY ts DESC LIMIT 20"):
+        print(escape(f"{e['ts']} {e['ref']}: {(e['detail'] or '')[:160]}"))
+
+
+@app.command("replay")
+def replay_cmd(case: Path = typer.Argument(None, help="a golden case folder (shares/, expected.yaml, answers.json) "
+                                                      "or one share folder"),
+               golden: bool = typer.Option(False, "--golden", help="every case under private/tests/golden"),
+               record: bool = typer.Option(False, "--record", help="ask the model where no answer is recorded and "
+                                                                   "keep it (Opus calls)"),
+               card: bool = typer.Option(False, "--card", help="each card to the owner's private chat, marked 🧪"),
+               work: Path = typer.Option(None, "--work", help="the scratch folder (default: var/replay/<case>)")
+               ) -> None:
+    """WO45 §10: a saved share through the whole path in a scratch workspace — the memory, the grouping, the items —
+    with the model's answers recorded once and replayed after, compared with expected.yaml. Nothing posts; the live
+    database isn't touched."""
+    from thrift_agent import replay
+    s = settings()
+    targets = replay.cases() if golden else ([case] if case is not None else [])
+    if not targets:
+        raise typer.BadParameter("a case folder, or --golden with private/tests/golden present")
+    send = None
+    if card:
+        bot = approve.ops_bot_for(s)
+        if bot is None:
+            raise typer.BadParameter("--card needs the private chat (telegram.ops_chat_id)")
+
+        def send(iid, caption, cover):
+            text = f"🧪 REPLAY — nothing will be listed\n{caption}"
+            bot.send_photo(cover, text, []) if cover.is_file() else bot.send_message(text, [])
+    failed = 0
+    for target in targets:
+        where = work or (config.ROOT / "var" / "replay" / target.name)
+        out = replay.run(s, target, where, record=record, card=send)
+        print(escape(f"{target.name}:\n{replay.summary(out)}"))
+        failed += bool(out["mismatches"])
+    if failed:
+        raise typer.Exit(code=1)
+
+
+@app.command("shares")
+def shares_cmd(day: str = typer.Option(None, "--day", help="YYYY-MM-DD (default: today)"),
+               all_: bool = typer.Option(False, "--all", help="every share in the ledger, newest first")) -> None:
+    """WO45 §3: the share ledger — each share's steps (received → complete → grouped → carded) and its outcome."""
+    from thrift_agent import shares
+    db = _db()
+    rows = (db.conn.execute("SELECT * FROM shares ORDER BY id DESC LIMIT 200").fetchall() if all_
+            else shares.today(db, day))
+    lines = shares.lines(db, rows)
+    print(escape("\n".join(lines) if lines else "no shares that day"))
 
 
 @app.command("photos")

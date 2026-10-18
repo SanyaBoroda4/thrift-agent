@@ -20,8 +20,14 @@
       "Function.post_test_message.User": "Information",
       "Function.get_dashboard.User": "Information",
       "Function.get_health.User": "Information",
+      "Function.post_share_photo.User": "Information",
+      "Function.post_share_end.User": "Information",
+      "Function.get_shares_pending.User": "Information",
+      "Function.get_share_photo.User": "Information",
+      "Function.post_share_fetched.User": "Information",
       "Function.every_15_min.User": "Information",
       "Function.hourly.User": "Information",
+      "Function.every_5_min.User": "Information",
       "Microsoft.Azure.WebJobs.Script.Diagnostics.HealthChecks": "Error"
     },
     "applicationInsights": {

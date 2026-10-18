@@ -15,9 +15,15 @@ The routes (every one needs the function key; Azure checks it before this code r
   POST /orders              {"marketplace", "swept_at", "orders": [...]}         a site's sold orders (WO38)
   GET  /sales?state=open|unmatched|all
   POST /sales/{id}/match    {"item_id"}
-  POST /test-message        {"chat": "ops" | "group"}
+  POST /test-message        {"chat": "ops" | "group", "text": "…" (optional: sent as given, WO45)}
   GET  /dashboard           the owner's page (HTML)
   GET  /health
+  WO45 §2 (uploads.py): the iPhone's shares straight to the API, the Mac fetching them —
+  POST /share/{id}/photo?n=&of=&name=&test=1   the photo itself (a raw image body, or one multipart file field)
+  POST /share/{id}/end?count=N&test=1          the end of the share (an empty or JSON body)
+  GET  /shares/pending                         the shares the Mac hasn't fetched, with their photos
+  GET  /shares/{id}/photo/{name}               the bytes, with their Content-Type
+  POST /shares/{id}/fetched {"names": [...]}   the Mac has it
 
 The database is DATABASE_URL's, opened at the first request that needs it (migrations then, once per process). In live
 mode every request that uses it is a live call: the first one writes go_live_at when it is missing."""
@@ -31,7 +37,7 @@ import threading
 from collections.abc import Callable
 from datetime import datetime
 
-from . import core, dashboard, orders, util
+from . import core, dashboard, orders, uploads, util
 from .db import Database
 from .schema import migrate
 from .util import ApiError, BadRequest
@@ -42,6 +48,20 @@ JSON_TYPE = "application/json; charset=utf-8"
 HTML_HEADERS = {"Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store",
                 "Content-Security-Policy": dashboard.CSP, "Referrer-Policy": "no-referrer",
                 "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY"}
+
+
+class Raw:
+    """A request body handed to a route as it came (WO45: a photo's bytes), with the request's Content-Type."""
+
+    def __init__(self, data: bytes, content_type: str):
+        self.data, self.content_type = data, content_type
+
+
+class Binary:
+    """A route's answer that is neither JSON nor the dashboard's HTML (WO45: a photo's bytes, its Content-Type)."""
+
+    def __init__(self, data: bytes, content_type: str):
+        self.data, self.content_type = data, content_type
 
 _DB: Database | None = None
 _DB_LOCK = threading.Lock()
@@ -121,7 +141,7 @@ def _test_message(db, body, query, params, now):
     chat = body.get("chat", "ops")
     if chat not in ("ops", "group"):
         raise BadRequest("chat is ops or group")
-    return 200, core.test_message(chat, now)
+    return 200, core.test_message(chat, now, text=body.get("text"))
 
 
 def _dashboard(db, body, query, params, now):
@@ -132,8 +152,43 @@ def _health(db, body, query, params, now):
     return 200, core.health(db, now)
 
 
-Route = tuple[str, re.Pattern, Callable, bool]          # method, path, handler, needs the database
-ROUTES: tuple[Route, ...] = (
+# WO45 §2 — the upload routes answer a refusal as {"ok": false, "error": …} (the Shortcut shows "ok")
+
+def _upload(handler: Callable) -> Callable:
+    def run(db, body, query, params, now):
+        try:
+            return handler(db, body, query, params, now)
+        except ApiError as e:
+            return e.status, {"ok": False, "error": str(e)}
+    return run
+
+
+@_upload
+def _share_photo(db, body, query, params, now):
+    return 200, uploads.receive_photo(db, uploads.store(), params["share_id"], body.data, body.content_type, query, now)
+
+
+@_upload
+def _share_end(db, body, query, params, now):
+    return 200, uploads.end_share(db, params["share_id"], query, now)
+
+
+def _shares_pending(db, body, query, params, now):
+    return 200, uploads.pending(db)
+
+
+def _share_photo_get(db, body, query, params, now):
+    data, content_type = uploads.photo(db, uploads.store(), params["share_id"], params["name"])
+    return 200, Binary(data, content_type)
+
+
+def _share_fetched(db, body, query, params, now):
+    return 200, uploads.mark_fetched(db, params["share_id"], body, now)
+
+
+Route = tuple[str, re.Pattern, Callable, bool]          # method, path, handler, needs the database; a fifth element
+#                                                         "raw" hands the handler the body as it came (http.Raw)
+ROUTES: tuple[tuple, ...] = (
     ("POST", re.compile(r"/email"), _email, True),
     ("POST", re.compile(r"/samples"), _samples, True),
     ("POST", re.compile(r"/heartbeat"), _heartbeat, True),
@@ -148,12 +203,18 @@ ROUTES: tuple[Route, ...] = (
     ("POST", re.compile(r"/replay"), _replay, True),
     ("GET", re.compile(r"/dashboard"), _dashboard, True),
     ("GET", re.compile(r"/health"), _health, True),
+    ("POST", re.compile(r"/share/(?P<share_id>[^/]+)/photo"), _share_photo, True, "raw"),               # WO45 §2
+    ("POST", re.compile(r"/share/(?P<share_id>[^/]+)/end"), _share_end, True, "raw"),
+    ("GET", re.compile(r"/shares/pending"), _shares_pending, True),
+    ("GET", re.compile(r"/shares/(?P<share_id>[^/]+)/photo/(?P<name>[^/]+)"), _share_photo_get, True),
+    ("POST", re.compile(r"/shares/(?P<share_id>[^/]+)/fetched"), _share_fetched, True),
 )
 
 
 def handle(method: str, path: str, query: dict | None = None, body: bytes | None = b"", now: datetime | None = None,
-           db: Database | None = None) -> tuple[int, dict, bytes]:
-    """One request: (status, headers, body). `db` and `now` are for the tests; the Function passes neither."""
+           db: Database | None = None, headers: dict | None = None) -> tuple[int, dict, bytes]:
+    """One request: (status, headers, body). `db` and `now` are for the tests; the Function passes neither. `headers`
+    (WO45): the request's, for a route that takes its body raw (the Content-Type tells a form from an image)."""
     method = (method or "GET").upper()
     path = "/" + (path or "").split("?", 1)[0].strip("/")
     found = [(route, m) for route in ROUTES if (m := route[1].fullmatch(path))]
@@ -162,12 +223,16 @@ def handle(method: str, path: str, query: dict | None = None, body: bytes | None
     chosen = next(((route, m) for route, m in found if route[0] == method), None)
     if chosen is None:
         allowed = ", ".join(sorted({route[0] for route, _ in found}))
-        status, headers, data = _json(405, {"error": f"{method} is not allowed here", "allowed": allowed})
-        return status, {**headers, "Allow": allowed}, data
-    (_, _, handler, needs_db), match = chosen
+        status, headers_, data = _json(405, {"error": f"{method} is not allowed here", "allowed": allowed})
+        return status, {**headers_, "Allow": allowed}, data
+    (_, _, handler, needs_db, *extra), match = chosen
     now = util.aware(now) if now else util.utcnow()
     try:
-        payload = _body(body) if method == "POST" else {}
+        if "raw" in extra:
+            data = body if isinstance(body, bytes) else (body or "").encode("utf-8")
+            payload = Raw(data, _header(headers, "content-type"))
+        else:
+            payload = _body(body) if method == "POST" else {}
         database = None
         if needs_db:
             try:
@@ -189,7 +254,18 @@ def handle(method: str, path: str, query: dict | None = None, body: bytes | None
         return _json(500, {"error": "internal error"})
     if isinstance(result, str):
         return status, dict(HTML_HEADERS), result.encode("utf-8")
+    if isinstance(result, Binary):
+        return status, {"Content-Type": result.content_type, "Cache-Control": "no-store",
+                        "X-Content-Type-Options": "nosniff"}, result.data
     return _json(status, result)
+
+
+def _header(headers: dict | None, name: str) -> str:
+    """One request header, whatever its case (Azure hands them lower-cased, a test as written)."""
+    for key, value in (headers or {}).items():
+        if str(key).lower() == name:
+            return str(value or "")
+    return ""
 
 
 def _body(raw: bytes | str | None) -> dict:

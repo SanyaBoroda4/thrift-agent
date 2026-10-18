@@ -221,6 +221,10 @@ class Facts(BaseModel):
                                          "'S'}, {piece: 'pants', size: 'XS'}]. Empty for one garment, or when the set "
                                          "has one size label")
     size_eu: Ev = Field(default_factory=Ev)
+    size_guess: str | None = Field(None, description="Only when NO size is printed anywhere: your best guess of the "
+                                                     "US size from the item's proportions next to the seller's hand "
+                                                     "or other things in the frame ('8', 'M'). A guess, never a fact: "
+                                                     "it only marks the size the owner is most likely to tap")
     colors: list[Color] = Field(description="1-2 main colors from the palette")
     color_name: str | None = Field(None, description="Natural color words for copy, e.g. 'chocolate brown'; the "
                                                      "retailer's color name when a retail screenshot shows it")

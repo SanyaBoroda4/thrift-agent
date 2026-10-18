@@ -24,7 +24,7 @@ def _timer(job) -> None:
 
 
 def _respond(req: func.HttpRequest, path: str) -> func.HttpResponse:
-    status, headers, body = http.handle(req.method, path, dict(req.params), req.get_body())
+    status, headers, body = http.handle(req.method, path, dict(req.params), req.get_body(), headers=dict(req.headers))
     return func.HttpResponse(body=body, status_code=status, headers=headers)
 
 
@@ -98,13 +98,49 @@ def get_health(req: func.HttpRequest) -> func.HttpResponse:
     return _respond(req, "/health")
 
 
+# WO45 §2: the iPhone's shares straight to the API (the Shortcut carries the function-scoped key `upload`, which opens
+# the two upload functions only — provision.py uploads), and the Mac fetching them (the mac key).
+
+@app.route(route="share/{share_id}/photo", methods=["POST"], auth_level=FUNCTION)
+def post_share_photo(req: func.HttpRequest) -> func.HttpResponse:
+    return _respond(req, f"/share/{req.route_params.get('share_id', '')}/photo")
+
+
+@app.route(route="share/{share_id}/end", methods=["POST"], auth_level=FUNCTION)
+def post_share_end(req: func.HttpRequest) -> func.HttpResponse:
+    return _respond(req, f"/share/{req.route_params.get('share_id', '')}/end")
+
+
+@app.route(route="shares/pending", methods=["GET"], auth_level=FUNCTION)
+def get_shares_pending(req: func.HttpRequest) -> func.HttpResponse:
+    return _respond(req, "/shares/pending")
+
+
+@app.route(route="shares/{share_id}/photo/{name}", methods=["GET"], auth_level=FUNCTION)
+def get_share_photo(req: func.HttpRequest) -> func.HttpResponse:
+    return _respond(req, f"/shares/{req.route_params.get('share_id', '')}/photo/{req.route_params.get('name', '')}")
+
+
+@app.route(route="shares/{share_id}/fetched", methods=["POST"], auth_level=FUNCTION)
+def post_share_fetched(req: func.HttpRequest) -> func.HttpResponse:
+    return _respond(req, f"/shares/{req.route_params.get('share_id', '')}/fetched")
+
+
 @app.timer_trigger(schedule="0 */15 * * * *", arg_name="timer", run_on_startup=False, use_monitor=True)
 def every_15_min(timer: func.TimerRequest) -> None:
     """Reminders, the Gmail reader's heartbeat, failed emails again."""
     _timer(lambda: timers.every_15_min(http.get_db(), datetime.now(timezone.utc)))
 
 
+@app.timer_trigger(schedule="0 */5 * * * *", arg_name="timer", run_on_startup=False, use_monitor=True)
+def every_5_min(timer: func.TimerRequest) -> None:
+    """WO45 §3: the share watchdog (a complete share with no outcome while the Mac is online)."""
+    _timer(lambda: timers.every_5_min(http.get_db(), datetime.now(timezone.utc)))
+
+
 @app.timer_trigger(schedule="0 0 * * * *", arg_name="timer", run_on_startup=False, use_monitor=True)
 def hourly(timer: func.TimerRequest) -> None:
-    """The daily cleanup, done in the 3 AM hour New York time (the schedule itself is UTC)."""
+    """The daily cleanup, done in the 3 AM hour New York time (the schedule itself is UTC); WO45 §9: the day's one
+    line in the 21:00 hour."""
     _timer(lambda: timers.daily(http.get_db(), datetime.now(timezone.utc)))
+    _timer(lambda: timers.evening(http.get_db(), datetime.now(timezone.utc)))

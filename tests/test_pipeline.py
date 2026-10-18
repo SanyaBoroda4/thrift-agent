@@ -1243,7 +1243,9 @@ def test_a_batch_that_failed_on_the_tool_choice_400_is_requeued_and_split(tmp_pa
     pipeline.process_batch(s, db, bid)                     # what the worker does with a 'new' batch
     assert db.batch(bid)["status"] == "split" and ("batch", bid) not in owner_messages     # accepted at once (WO20b)
     assert loads(db.batch(bid)["segmentation"])["groups"] == [[0], [1]]
-    assert [k["model"] for k in calls] == ["claude-opus-5-5"] and calls[0]["tool_choice"]["type"] == "auto"
+    # WO45 §5: the two one-photo groups are each put to the model once more against the other (seg.attach): more
+    # calls on the same model, the grouping kept when they answer nothing usable
+    assert calls and all(k["model"] == "claude-opus-5-5" for k in calls) and calls[0]["tool_choice"]["type"] == "auto"
 
 
 def test_requeue_batch_takes_only_a_failed_batch_whose_photos_are_still_there(tmp_path):

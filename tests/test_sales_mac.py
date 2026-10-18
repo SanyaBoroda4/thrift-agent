@@ -78,7 +78,9 @@ def test_every_change_reaches_the_api_in_order_after_an_offline_spell(tmp_path, 
     assert sync["listings"] == [{"item_id": iid, "marketplace": "depop", "status": "posted",
                                  "url": "https://www.depop.com/products/shop-x/", "listing_id": None, "sku": iid,
                                  "price": None, "posted_at": None, "updated_at": db.listing(iid, "depop")["updated_at"],
-                                 "price_live": None, "price_read_at": None}]                          # WO41
+                                 "price_live": None, "price_read_at": None,                           # WO41
+                                 "error": None, "photos_sent": None, "photos_live": None,            # WO45
+                                 "photos_read_at": None}]
     assert api.paths().index("/sync") < api.paths().index("/heartbeat")
     assert db.conn.execute("SELECT COUNT(*) FROM api_dirty").fetchone()[0] == 0
     assert sales.tick(db) == {}                                        # nothing due a second later

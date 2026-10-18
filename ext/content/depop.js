@@ -176,6 +176,39 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
     return [ids.category, ids.brand, ids.condition, ids.size, ids.package].includes(cid);
   };
 
+  // WO45 (live 2026-10-17/18, the Polo tee, three times): Depop's package menu for this seller offered Medium, Large
+  // and Extra large only, and our "Extra small" failed the form each time. A package size the menu doesn't offer is
+  // the smallest offered one that is at least ours, else the largest offered — said in the "check:" line; the choice
+  // is kept (st.packageChoice) so the tidy sets THAT back, not the one the menu lacks.
+  const PACKAGE_ORDER = ["extra small", "small", "medium", "large", "extra large"];
+  const packageRank = (t) => PACKAGE_ORDER.findIndex((p) => T.norm(t).startsWith(T.norm(p)));
+  async function packageSize(st, cid, want) {
+    try {
+      await choose(st, cid, want, { prefix: true });
+      st.packageChoice = want;
+      return;
+    } catch (e) {
+      if (!/no option/.test(String(e && e.message))) throw e;
+    }
+    const box = await open(cid);
+    await T.type(box, "");
+    const all = await options(cid, 3000);
+    const texts = all.map(textOf);
+    const ranked = all.map((o, k) => ({ o, t: texts[k], r: packageRank(texts[k]) })).filter((x) => x.r >= 0);
+    const mine = packageRank(want);
+    const bigger = ranked.filter((x) => x.r >= mine).sort((a, b) => a.r - b.r);
+    const pick = bigger[0] || ranked.sort((a, b) => b.r - a.r)[0];
+    if (!pick) {
+      escape(box);
+      throw new Error(`${cid}: no option '${want}' (offered: ${texts.slice(0, 8).join(", ")})`);
+    }
+    await T.click(pick.o);
+    T.picked(st, cid, want, pick.t);
+    st.packageChoice = pick.t;
+    st.guesses.push(`package size set to '${pick.t}' (Depop offers no '${want}': ${texts.join(", ")})`);
+    await T.until(() => !optionsOf(menuOf(cid)).length, 1500);
+  }
+
   async function choose(st, cid, value, { typed = null, category = false, optional = false, prefix = false } = {}) {
     if (optional && !(await T.until(() => document.getElementById(cid), 1500))) {
       st.notes.push(`${cid}: not on this form, left out`);
@@ -202,10 +235,13 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
     const opts = await options(cid);
     const texts = opts.map(textOf);
     let i = prefix ? texts.findIndex((t) => T.norm(t).startsWith(T.norm(value))) : T.matchOption(texts, value, category);
+    let offered = texts;
     if (i < 0 && !category && !texts.length) {           // a menu that offers nothing for the typed text: its whole
       await T.type(box, "");                             // list, our value picked from it
       const all = await options(cid, 3000);
       const allTexts = all.map(textOf);
+      offered = allTexts;                                // WO45 (live 2026-10-18: "offered: " came out empty)
+      st.offered = { ...(st.offered || {}), [cid]: allTexts };
       const k = prefix ? allTexts.findIndex((t) => T.norm(t).startsWith(T.norm(value))) : T.matchOption(allTexts, value, false);
       if (k >= 0) {
         await T.click(all[k]);
@@ -232,10 +268,10 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
       escape(box);
       if (optional) {                                    // WO36: an optional field without our value stays empty —
         T.setValue(box, "");                             // never the first option, never a near one
-        leftOut(st, cid, value, `no option '${value}'${T.offered(texts, 8)}`);
+        leftOut(st, cid, value, `no option '${value}'${T.offered(offered, 8)}`);
         return;
       }
-      throw new Error(`${cid}: no option '${value}' (offered: ${texts.slice(0, 8).join(", ")})`);
+      throw new Error(`${cid}: no option '${value}' (offered: ${offered.slice(0, 8).join(", ")})`);
     }
     await T.click(opts[i]);
     T.picked(st, cid, value, shown);
@@ -489,7 +525,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
         await T.sleep(150);
       });
       await T.step("package", st, async () => {
-        await choose(st, ids.package, f.package_size, { prefix: true });
+        await packageSize(st, ids.package, f.package_size);
         st.package = document.getElementById(ids.package)?.value || null;
       });
       // Boost is paid: never on. One that is on by itself is turned off, with a real click.
@@ -524,11 +560,13 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
           st.notes.push(`Depop changed the brand to '${brandBox.value}': set back to Other`);
           await brandOther(st, f.brand || null);
         }
-        // A single choice Depop replaced after ours (its suggestions came late): ours again.
+        // A single choice Depop replaced after ours (its suggestions came late): ours again — the size chosen for
+        // this form (WO45: the nearest offered when Depop's menu has no "Extra small"), never one the menu lacks
         const pkg = document.getElementById(ids.package);
-        if (f.package_size && pkg && !T.norm(pkg.value).startsWith(T.norm(f.package_size))) {
-          st.notes.push(`Depop changed the package size to '${pkg.value}': set back to ${f.package_size}`);
-          await choose(st, ids.package, f.package_size, { prefix: true });
+        const pkgWant = st.packageChoice || f.package_size;
+        if (pkgWant && pkg && !T.norm(pkg.value).startsWith(T.norm(pkgWant))) {
+          st.notes.push(`Depop changed the package size to '${pkg.value}': set back to ${pkgWant}`);
+          await packageSize(st, ids.package, pkgWant);
         }
         if (f.brand && !st.brandOther && brandBox && T.brandKey(brandBox.value) !== T.brandKey(st.brandChoice)) {
           st.notes.push(`Depop changed the brand to '${brandBox.value}': set back`);

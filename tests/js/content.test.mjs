@@ -1491,3 +1491,36 @@ test("depop: the fields its edit page left blank are filled from the listing bef
   assert.equal(r.seen.price, "22");
 });
 
+
+test("Depop: a package size its menu doesn't offer becomes the smallest bigger one it does (WO45; live: no Extra small)", async () => {
+  const p = page("depop", undefined, undefined, { ...DEPOP_FIX, pkgOnly: ["Medium", "Large", "Extra large"], ai: false });
+  await run(p, { ...DEPOP_JOB, fields: { ...DEPOP_JOB.fields, package_size: "Extra small" } });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.deepEqual(r.failed, []);
+  assert.equal(r.seen.package, "Medium");
+  assert.ok(r.guesses.some((g) => /^package size set to 'Medium' \(Depop offers no 'Extra small': Medium, Large, Extra large\)/.test(g)), r.guesses);
+  assert.ok(!r.notes.some((n) => /set back to Extra small/.test(n)), r.notes);   // the tidy keeps the choice made
+});
+
+test("Depop: a 'photos' job on the edit page adds the files after the tiles it has and counts them (WO45 §6)", async () => {
+  const p = page("depop", undefined, undefined, { ...DEPOP_FIX, ai: false });
+  const first = run(p, { ...DEPOP_JOB, job_id: "depop-p0", mode: "dry_run" });    // one photo on the page first
+  await first;
+  const before = p.d.querySelectorAll("[aria-roledescription='sortable']").length;
+  assert.equal(before, 1);
+  await p.w.Thrift.run({ job: { job_id: "depop-p1", site: "depop", mode: "photos", had: 1, dry: true,
+                                edit_url: URLS.depop, listing_url: URLS.depop, fields: {}, copy: {}, photos: [] },
+                         selectors: SELECTORS, photos: [PHOTO, PHOTO], pace: "fast" });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(r.dry_run, true);
+  assert.equal(r.seen.photos_before, 1);
+  assert.equal(r.seen.photos, 3);
+  await p.w.Thrift.run({ job: { job_id: "depop-p2", site: "depop", mode: "photos", had: 1, dry: true, read_only: true,
+                                edit_url: URLS.depop, listing_url: URLS.depop, fields: {}, copy: {}, photos: [] },
+                         selectors: SELECTORS, photos: [], pace: "fast" });
+  const q = plain(p.last());
+  assert.equal(q.event, "result");
+  assert.equal(q.seen.photos, 3);                                            // read only: counted, nothing added
+});

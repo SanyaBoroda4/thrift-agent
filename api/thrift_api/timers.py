@@ -3,17 +3,18 @@
 `every_15_min`: the shipping reminders (deadlines.reminders_due, from 09:00 local — "📦 Ship tomorrow" and "📦 Due
 today" to the group; overdue, WO38: "📦 Overdue: … — ship today" in the group when the site itself, read after the
 ship-by day, still shows it unshipped, else the ops line — each recorded in `reminders` before it is sent, so never
-twice, and none once a sale is shipped or its site shows it on its way); the Gmail reader's heartbeat (silent 30 minutes → ONE "Gmail reader stopped" to the
-ops chat per episode, "✓ Gmail reader back" when it beats again); the failed emails tried again (3 attempts in all).
+twice, and none once a sale is shipped or its site shows it on its way); the Gmail reader's heartbeat (silent 30
+minutes → ONE "Gmail reader stopped" to the ops chat per episode, "✓ Gmail reader back" when it beats again); the
+failed emails tried again (3 attempts in all).
 In off mode it does nothing.
 
 `daily` (the timer runs hourly; the work is done once a local day, at 3 AM New York): the emails' text cleared after
-30 days, OTHER emails deleted after 90 days."""
+30 days, OTHER emails deleted after 90 days, the uploaded shares' rows after 30 days (WO45, uploads.cleanup)."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from . import core, deadlines, orders, util
+from . import core, deadlines, orders, uploads, util, watch
 from .db import Database
 from .util import iso, parse_time, site_name
 
@@ -33,7 +34,22 @@ def every_15_min(db: Database, now: datetime | None = None, mode: str | None = N
         core.go_live(db, now)                         # a live call like any request: starts the live clock if needed
     return {"mode": mode, "reminders": reminders(db, now, mode), "gmail": gmail_watch(db, now, mode),
             "mac": mac_watch(db, now, mode),
-            "retried": retry_failed(db, now, mode), "late_takedowns": core.say_late_takedowns(db, now, mode)}
+            "retried": retry_failed(db, now, mode), "late_takedowns": core.say_late_takedowns(db, now, mode),
+            "unposted": watch.unposted(db, now, mode)}          # WO45 §7: an item priced but not live on a site
+
+
+def every_5_min(db: Database, now: datetime | None = None, mode: str | None = None) -> dict:
+    """WO45 §3: the share watchdog — a complete share with no outcome after 15 minutes (30 past 20 photos) while the
+    Mac is online → one private line per share."""
+    now, mode = (util.aware(now) if now else util.utcnow()), mode or util.mode()
+    if mode == "off":
+        return {"mode": mode}
+    return {"mode": mode, "shares": watch.shares_watch(db, now, mode)}
+
+
+def evening(db: Database, now: datetime | None = None, mode: str | None = None) -> dict:
+    """WO45 §9: the day's one line in the 21:00 hour (the hourly timer)."""
+    return {"line": watch.evening_line(db, now, mode)}
 
 
 MAC_SILENCE = timedelta(hours=2)
@@ -188,5 +204,6 @@ def daily(db: Database, now: datetime | None = None) -> dict:
                              (iso(now - timedelta(days=TEXT_DAYS)),))
         deleted = db.execute("DELETE FROM email_events WHERE kind = 'OTHER' AND created_at < ?",
                              (iso(now - timedelta(days=OTHER_DAYS)),))
+        shares = uploads.cleanup(db, now)                                       # WO45 §2: the blobs go by Azure's rule
         core.put_setting(db, CLEANUP_DONE, today)
-    return {"ran": True, "raw_text_cleared": cleared, "other_deleted": deleted}
+    return {"ran": True, "raw_text_cleared": cleared, "other_deleted": deleted, "shares_deleted": shares}

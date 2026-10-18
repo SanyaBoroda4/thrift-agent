@@ -6,6 +6,7 @@ import json
 import platform
 import re
 import shutil
+import sqlite3
 import subprocess
 import time
 from datetime import datetime, timedelta, timezone
@@ -56,6 +57,8 @@ def ready_folders(s: Settings, db: DB | None = None) -> list[Path]:
         return []
     out, waiting = [], {}
     for d in sorted(p for p in inbox.iterdir() if p.is_dir() and not p.name.startswith(".")):
+        if db is not None:
+            _share_seen(db, d, marker)                   # WO45 §3: the ledger knows the share from its first look
         pending = prep.icloud_placeholders(d)
         if pending:
             pull_from_icloud(db, d, pending)
@@ -74,11 +77,45 @@ def marker_of(d: Path, marker: str) -> Path | None:
     return marks[0] if marks else None
 
 
+def share_source(d: Path) -> str:
+    """"azure" for a folder the direct upload made (WO45 §2, `_source.txt`), else "icloud"."""
+    try:
+        return "azure" if (d / SOURCE_FILE).is_file() and "azure" in (d / SOURCE_FILE).read_text()[:20] else "icloud"
+    except OSError:
+        return "icloud"
+
+
+def is_test_share(d: Path) -> bool:
+    """A test share (WO45 §2): the Shortcut's test copy marks it; its cards go to the private chat, nothing posts."""
+    try:
+        return (d / TEST_FILE).exists() or (d / f"{TEST_FILE}.txt").exists()
+    except OSError:
+        return False
+
+
+def _share_seen(db: DB, d: Path, marker: str) -> None:
+    """The ledger's row for a folder in the inbox, brought up to date (never raises: the ledger is a record)."""
+    try:
+        from thrift_agent import shares
+        mark = marker_of(d, marker)
+        photos = [f for f in d.iterdir() if prep.is_photo(f)]
+        shares.seen(db, shares.share_id_of(d), share_source(d), expected_photos(mark) if mark else None, len(photos),
+                    test=is_test_share(d))
+    except (OSError, sqlite3.Error) as e:
+        db.log(None, "share_ledger_failed", f"{type(e).__name__}: {e}")
+
+
 EMPTY_SHARE_WAIT = 30 * 60        # WO42/WO43: a share with no camera photo this long after it appeared: the photos are
 #                                   still on the iPhone — ONE group line says so ("no need to share again"); the folder
 #                                   stays where it is (they come when the phone is on Wi-Fi: live 2026-10-17, 4½ h)
-PARTIAL_AFTER = 15 * 60           # WO42: a share short of its count, or without its end mark, this long after it appeared
-#                                   is taken with the camera photos that came (a private line says how many)
+PARTIAL_AFTER = 30 * 60           # WO45 §6 (was WO42's 15 min — live 2026-10-18: a 20-photo share taken with ONE photo
+#                                   at minute 17, the other 19 came at minute 22): a share short of its count, or
+#                                   without its end mark, is taken with the camera photos that came only after this
+#                                   long (iCloud only: the direct upload arrives whole); the card says "3 of 4 photos"
+LATE_SHARE_PHOTOS = 3             # WO45 §5: a share of at most this many photos within FOLLOW_UP of the previous share
+FOLLOW_UP = 15 * 60               # is first compared with that share's items — a forgotten shot joins its item
+SOURCE_FILE = "_source.txt"       # WO45 §2: "azure" in a folder the direct upload made (else the iCloud copy)
+TEST_FILE = "_test"               # WO45 §2: a test share (the Shortcut's test copy): cards to the private chat, 🧪
 EMPTY_TELL_OWNER = 3 * 3600       # WO43: still nothing after this long → ONE private line (never a second group line)
 EMPTY_ARCHIVE_AFTER = 24 * 3600   # WO43: an empty folder is archived (with a note) only after this long; photos that
 #                                   land in it there are taken as a share in place (never copied back)
@@ -210,6 +247,8 @@ def take_share(s: Settings, db: DB, folder: Path) -> tuple[str, float] | None:
     bid = register(s, db, folder)
     if bid is None:
         return None
+    from thrift_agent import shares
+    shares.step(db, shares.share_id_of(folder), "complete", batch_id=bid)       # WO45 §3: taken, whole or partial
     if state == "partial":
         want = expected_photos(marker) if marker is not None else None
         text = (PARTIAL_LINE.format(have=len(photos), want=want, when=share_time(folder)) if want
@@ -232,6 +271,8 @@ def lose_share(s: Settings, db: DB, folder: Path) -> str | None:
                                  .isoformat(timespec="seconds"),
                                  "names": sorted(p.name for p in folder.iterdir() if prep.is_photo(p))})   # what
     #                                 was here (a screenshot): only photos that come AFTER this are "late" (late_photos)
+    from thrift_agent import shares
+    shares.outcome(db, shares.share_id_of(folder), "empty", "no photos reached the Mac within a day", batch_id=bid)
     try:
         (folder / LOST_NOTE).write_text(
             f"No photos reached the Mac within a day of this share ({share_time(folder)}): they stayed on the iPhone. "
@@ -299,18 +340,28 @@ def share_complete(s: Settings, d: Path, marker: Path, settle: float) -> bool:
     return share_state(s, d, marker, settle) == "ready"
 
 
-def late_photos(s: Settings, db: DB) -> list[str]:
-    """WO37: photos that came into a share after it was taken (live 2026-10-12: two alo bras' shares failed as "no
-    usable photos", and the leggings' and the vest's full shots came after their label shots). Looks at the archived
-    shares of the last two days, once per new file:
-    - a share failed for having no photo now has some: it goes back into the inbox and is taken as a new share;
-    - a share taken whole whose single item isn't on any site yet: the item is noted for the owner (ops) — a reply
-      'redo' rebuilds it with every photo;
-    - otherwise one line to the private chat: which photos came late for which item.
-    Returns what was done (for the log)."""
+DRY_EDITS = False                 # WO45 §11: `thrift late --dry-run` — the "photos" edits of late photos queued as dry runs
+
+
+def late_photos(s: Settings, db: DB, force: list[str] | None = None) -> list[str]:
+    """Photos that came into a share after it was taken (WO37; live 2026-10-12: two alo bras' shares failed as "no
+    usable photos", the leggings' and the vest's full shots came after their label shots; 2026-10-18: a 20-photo share
+    taken with ONE photo, the other 19 told in a private line and never processed). Looks at the archived shares of
+    the last two days, once per new file; WO45 §6: every late photo ends up on its item or as a new item —
+    - a share failed for having no photo now has some: taken where it is, as a new share (WO43);
+    - a share already split: the new photos are taken where they are too, as a batch of their own on the archive
+      folder (`late_of` the share's batch) — `process_batch` first compares them with the share's items
+      (`attach_to_items`): a photo of an item already made joins it (its card edited, its live listings get it),
+      the rest become items of their own with their cards.
+    `force`: these batches' archive folders looked at whatever `late_photos_seen` says (the CLI's `thrift late`:
+    photos told in a line before WO45 are taken now). Returns what was done (for the log)."""
     done, seen = [], set(json.loads(db.kv_get("late_photos_seen") or "[]"))
     since = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat(timespec="seconds")
-    for b in db.conn.execute("SELECT * FROM batches WHERE created_at >= ?", (since,)).fetchall():
+    rows = db.conn.execute("SELECT * FROM batches WHERE created_at >= ?", (since,)).fetchall()
+    if force:
+        rows = [r for r in rows if r["id"] in force] + [b for bid in force if (b := db.batch(bid)) is not None
+                                                        and b["created_at"] < since]
+    for b in rows:
         dest = None
         for e in db.conn.execute("SELECT detail FROM events WHERE ref=? AND kind='archived'", (b["id"],)):
             dest = (loads(e["detail"]) or {}).get("dest")
@@ -325,34 +376,85 @@ def late_photos(s: Settings, db: DB) -> list[str]:
             work = s.path("work") / b["id"] / "all"      # as its preparation read (more than registered, at times)
             n = len(list(work.glob("*.jpg"))) if work.is_dir() else 0
             taken = {p.name for p in sorted(photos, key=arrived)[:n or int(b["n_photos"] or 0)]}
-        new = [p for p in photos if p.name not in taken and f"{b['id']}:{p.name}" not in seen]
+        forced = bool(force) and b["id"] in force
+        new = [p for p in photos if p.name not in taken and (forced or f"{b['id']}:{p.name}" not in seen)]
         seen.update(f"{b['id']}:{p.name}" for p in new)
         if not new:
             continue
-        items = db.conn.execute("SELECT * FROM items WHERE batch_id=?", (b["id"],)).fetchall()
         if b["status"] == "failed" and not int(b["n_photos"] or 0):
             # WO43: taken where it is — a new batch on the archive folder itself (never copied back into the inbox:
             # live 2026-10-17, the "-late" copies met the owner's re-share and made three duplicate cards); the
             # original batch learns the names, so the same photos are never "late" twice
-            nid = db.add_batch(dest, len(photos))
+            nid = _in_place_batch(db, b, Path(dest), photos, late_of=None)
             if nid is None:
                 continue
-            names = sorted(p.name for p in photos)
-            db.log(nid, "batch_registered", {"folder": Path(dest).name, "photos": len(photos), "names": names,
-                                             "late_of": b["id"], "in_place": True})
-            db.log(b["id"], "batch_registered", {"folder": Path(dest).name, "photos": len(photos), "names": names,
-                                                 "taken_as": nid})
-            db.log(b["id"], "late_photos", {"photos": len(photos), "as": nid, "how": "taken where it is"})
             notify.say(f"📸 {len(photos)} photos of the {share_time(Path(dest))} share came late — taken now")
             done.append(f"{b['id']}: retaken as {nid}")
             continue
+        if b["status"] in ("split", "joined", "failed"):
+            # WO45 §6: the late photos of a share already taken are processed too — a batch of their own on the
+            # archive folder, compared with the share's items first (process_batch → attach_to_items)
+            nid = _in_place_batch(db, b, Path(dest), new, late_of=b["id"])
+            if nid is None:
+                continue
+            db.log(b["id"], "late_photos", {"photos": [p.name for p in new], "as": nid, "how": "taken where they are"})
+            notify.say(f"📸 {len(new)} photos of the {share_time(Path(dest))} share came late — taken now: they join "
+                       "their item or become one")
+            done.append(f"{b['id']}: {len(new)} late, taken as {nid}")
+            continue
         names = ", ".join(p.name for p in new[:6])
-        title = (_title_of(items[0]) if len(items) == 1 else f"batch {b['id']}")
-        db.log(b["id"], "late_photos", {"photos": [p.name for p in new], "items": [it["id"] for it in items]})
-        notify.say(f"📸 {len(new)} photos of {title} came after it was taken ({names}) — the listing doesn't have them")
-        done.append(f"{b['id']}: {len(new)} late")
+        db.log(b["id"], "late_photos", {"photos": [p.name for p in new], "status": b["status"]})
+        notify.say(f"📸 {len(new)} photos of the {share_time(Path(dest))} share came after it was taken ({names}) — "
+                   f"the share is still {b['status']}: they'll be taken once it is split")
+        done.append(f"{b['id']}: {len(new)} late, waiting")
     db.kv_set("late_photos_seen", json.dumps(sorted(seen)))
     return done
+
+
+def _in_place_batch(db: DB, b, dest: Path, photos: list[Path], late_of: str | None) -> str | None:
+    """A new batch on an archive folder (never copied back into the inbox) for these photos only; the original
+    batch learns their names, so nothing is "late" twice. A folder that already has an open in-place batch (the
+    worker hasn't taken it yet) gets none: the next look adds the newer photos to it."""
+    src = str(dest) if late_of is None else f"{dest}#{datetime.now():%H%M%S}"   # src_dir is UNIQUE: one per batch
+    open_row = db.conn.execute("SELECT id FROM batches WHERE src_dir LIKE ? AND status='new'",
+                               (f"{dest}%",)).fetchone()
+    if open_row is not None:
+        return None
+    nid = db.add_batch(src, len(photos))
+    if nid is None:
+        return None
+    names = sorted(p.name for p in photos)
+    if b["test"] if "test" in b.keys() else False:
+        db.set_batch(nid, test=1)
+    db.log(nid, "batch_registered", {"folder": dest.name, "photos": len(photos), "names": names,
+                                     "late_of": late_of or b["id"], "in_place": True, "dir": str(dest),
+                                     **({"dry_edits": True} if DRY_EDITS else {})})
+    db.log(b["id"], "batch_registered", {"folder": dest.name, "photos": len(photos),
+                                         "names": sorted(set(names) | (registered_names(db, b["id"]) or set())),
+                                         "taken_as": nid})
+    if late_of is None:
+        db.log(b["id"], "late_photos", {"photos": len(photos), "as": nid, "how": "taken where it is"})
+    return nid
+
+
+def batch_dir(b) -> Path:
+    """The folder a batch's photos are in: its src_dir, minus the "#hhmmss" an in-place late batch carries (src_dir
+    is UNIQUE and one archive folder can get late photos more than once)."""
+    return Path(str(b["src_dir"]).split("#")[0])
+
+
+def late_of(db: DB, bid: str) -> str | None:
+    """The batch whose late photos this in-place batch holds (WO45 §6), or None."""
+    return (_in_place(db, bid) or {}).get("late_of") or None
+
+
+def _in_place(db: DB, bid: str) -> dict | None:
+    for e in db.conn.execute("SELECT detail FROM events WHERE ref=? AND kind='batch_registered' ORDER BY rowid DESC "
+                             "LIMIT 1", (bid,)):
+        d = loads(e["detail"]) or {}
+        if d.get("in_place"):
+            return d
+    return None
 
 
 def registered_names(db: DB, bid: str) -> set[str] | None:
@@ -390,20 +492,35 @@ def _icloud_wait(db: DB, waiting: dict[str, int]) -> None:
 
 
 def register(s: Settings, db: DB, folder: Path) -> str | None:
+    from thrift_agent import shares
     photos = [p for p in folder.iterdir() if prep.is_photo(p)]
     bid = db.add_batch(str(folder), len(photos))
+    sid = shares.share_id_of(folder)
     if bid is None:                                   # already known (src_dir is UNIQUE)
+        # WO45 §2/§4: the share's other copy — the iCloud folder of a share the direct upload brought first (the
+        # same name, taken and archived already) — is the same share: archived without a word, never a repeat line
+        old = db.conn.execute("SELECT * FROM batches WHERE src_dir=?", (str(folder),)).fetchone()
+        if old is not None and old["status"] in ("split", "failed", "joined") and folder.is_dir():
+            db.log(old["id"], "batch_same_share", {"folder": folder.name, "photos": len(photos), "copy": True})
+            shares.seen(db, sid, share_source(folder), None, len(photos), batch_id=old["id"])
+            shares.outcome(db, sid, "same_share", "the share's other copy came after it was taken",
+                           batch_id=old["id"])
+            archive_share(s, db, old["id"], folder)
         return None
+    if is_test_share(folder):
+        db.set_batch(bid, test=1)
     if not photos:
         # A share of only .dng/.mov/_done must still be recorded, pinged and archived; otherwise it sits in the
         # inbox and is re-scanned every tick forever, and the seller never learns why nothing was listed.
         db.set_batch(bid, status="failed", reasons=["no usable photos"])
         db.log(bid, "batch_failed", {"folder": folder.name, "reason": "no usable photos"})
         notify.say(f"batch {folder.name}: no usable photos (jpg/jpeg/png/heic/heif/webp)")
+        shares.outcome(db, sid, "failed", "no usable photos", batch_id=bid)
         archive_share(s, db, bid, folder)
         return None
     db.log(bid, "batch_registered", {"folder": folder.name, "photos": len(photos),
                                      "names": sorted(p.name for p in photos)})   # WO37: what came late is told apart
+    shares.seen(db, sid, share_source(folder), None, len(photos), test=is_test_share(folder), batch_id=bid)
     return bid
 
 
@@ -411,27 +528,45 @@ def register(s: Settings, db: DB, folder: Path) -> str | None:
 
 
 def process_batch(s: Settings, db: DB, bid: str) -> None:
+    from thrift_agent import shares
     b = db.batch(bid)
-    src = Path(b["src_dir"])
+    src = batch_dir(b)
     work = s.path("work") / bid
     listed = prep.list_photos(src)
+    only = registered_names(db, bid) if late_of(db, bid) else None       # WO45 §6: an in-place late batch takes
+    if only:                                                             # only the photos registered to it
+        listed = [(p, t) for p, t in listed if p.name in only]
     if not listed:
         raise ValueError(f"no photos in {src} (moved away, or still downloading from iCloud?)")
     raw = [p for p, _ in listed]
+    sid = shares.share_id_of(src)
     # WO43: the photo memory, before grouping and before any model call — a share of nothing but known photos is a
     # repeat (skipped, archived, one private line); known photos among new ones are dropped, the new ones told as
-    # late photos of their item when they all belong to one, else taken as a share of their own
+    # late photos of their item when they all belong to one, else taken as a share of their own. WO45 §4: the
+    # iCloud copy of a share the direct upload brought first (the same share id) is the same share, not a repeat.
     known_as, new, keys = photomem.check_share(db, raw)
     if raw and not new:
-        repeat_share(s, db, bid, src, known_as)
+        repeat_share(s, db, bid, src, known_as, same_share=_same_share(db, sid, known_as))
         return
     if known_as:
-        if (joined := known_photos_dropped(s, db, bid, src, known_as, new)) is not None:
+        new_keys = {p.name: keys[p.name] for p in new}
+        if (joined := known_photos_dropped(s, db, bid, src, known_as, new, keys=new_keys)) is not None:
             db.log(bid, "late_photos", {"photos": [p.name for p in new], "items": [joined], "how": "repeat share"})
-            db.set_batch(bid, status="failed", reasons=[f"repeat share: new photos joined {joined} as late"])
+            db.set_batch(bid, status="joined", reasons=[f"repeat share: new photos joined {joined}"])
+            shares.outcome(db, sid, "joined", f"the new photos joined {joined}", batch_id=bid)
             archive_share(s, db, bid, src)
             return
         raw = new
+    # WO45 §5/§6: the late photos of a share already made into items, and a small follow-up share, are compared
+    # with those items first — a photo of an item already made joins it; only the rest go on as a share
+    refs = reference_items(db, bid, src, len(raw))
+    if refs:
+        raw = attach_to_items(s, db, bid, src, raw, keys, refs, dry=bool((_in_place(db, bid) or {}).get("dry_edits")))
+        if not raw:
+            db.set_batch(bid, status="joined", reasons=["every photo joined an item of the share"])
+            shares.outcome(db, sid, "joined", "every late photo joined its item", batch_id=bid)
+            archive_share(s, db, bid, src)
+            return
     db.log(bid, "batch_prepped", {"names": sorted(p.name for p in raw)})   # WO37: the photos it really took
     times = {p.name: t for p, t in listed}
     kinds_raw = prep.photo_kinds(raw)                     # from the originals: normalize() strips the EXIF
@@ -470,6 +605,9 @@ def process_batch(s: Settings, db: DB, bid: str) -> None:
         # a pause AND a colour change inside an item, neither between two — only where the model was unsure (WO20)
         reasons += seg.timing_check(groups, kept_kinds, breaks, changes, [g.confidence for g in out.groups],
                                     cfg["min_confidence"])
+        # WO45 §5: a one-photo item is checked against the share's other items by the photos themselves before any
+        # card — the same thing seen in another light or from another angle joins it
+        groups, summaries = merge_singletons(s, db, bid, kept, kept_kinds, groups, summaries)
 
     seg.contact_sheet(kept, groups, work / "contact_sheet.png", kinds=kept_kinds, breaks=breaks)   # approve.send_batch
     db.set_batch(bid, segmentation={"groups": groups, "summaries": summaries, "photos": [str(p) for p in kept],
@@ -501,32 +639,256 @@ def process_batch(s: Settings, db: DB, bid: str) -> None:
     split(s, db, bid, groups)
 
 
-def repeat_share(s: Settings, db: DB, bid: str, src: Path, known_as: dict[str, str]) -> None:
+def repeat_share(s: Settings, db: DB, bid: str, src: Path, known_as: dict[str, str], same_share: bool = False) -> None:
     """WO43: every photo of the share is known — a repeat (the iPhone's late upload, a second run of the Shortcut):
     nothing is processed, no card, nothing to the group; the batch is recorded, the folder archived, one private line
-    for all the repeats of this look (`photomem.say_skipped`)."""
+    for all the repeats of this look (`photomem.say_skipped`). WO45 §4: the second copy of ONE share (the iCloud
+    folder after the direct upload, the same share id) is `same_share`: archived without a word."""
+    from thrift_agent import shares
     items = list(dict.fromkeys(v for v in known_as.values() if v and not v.startswith("batch:")))
+    sid = shares.share_id_of(src)
+    if same_share:
+        db.set_batch(bid, status="failed", reasons=["the same share again (its other copy was taken)"])
+        db.log(bid, "batch_same_share", {"folder": src.name, "items": items, "photos": sorted(known_as)})
+        shares.outcome(db, sid, "same_share", "the share's other copy was taken", batch_id=bid)
+        archive_share(s, db, bid, src)
+        return
     titles = [photomem.title_of(db, iid) for iid in items] or ["photos already taken"]
     db.set_batch(bid, status="failed", reasons=[f"repeat share: same photos as {', '.join(items) or 'an earlier share'}"])
     db.log(bid, "batch_repeat", {"folder": src.name, "items": items, "photos": sorted(known_as)})
     photomem.note_skipped(db, share_time(src), titles)
+    shares.outcome(db, sid, "repeat", f"same photos as {', '.join(titles)}", batch_id=bid)
     archive_share(s, db, bid, src)
 
 
+def _same_share(db: DB, sid: str, known_as: dict[str, str]) -> bool:
+    """Are the known photos those of THIS share's other copy (WO45 §2: the iCloud folder and the direct upload carry
+    one share id; the earlier copy's items were made from a batch on a folder of that id)?"""
+    from thrift_agent import shares
+    items = {v for v in known_as.values() if v and not v.startswith("batch:")}
+    if not items:
+        return False
+    for iid in items:
+        it = db.item(iid)
+        b = db.batch(it["batch_id"]) if it is not None else None
+        if b is None or shares.share_id_of(batch_dir(b)) != sid:
+            return False
+    return True
+
+
 def known_photos_dropped(s: Settings, db: DB, bid: str, src: Path, known_as: dict[str, str],
-                         new: list[Path]) -> str | None:
+                         new: list[Path], keys: dict[str, dict] | None = None) -> str | None:
     """Some of a share's photos are known (WO43): they are dropped. When they all belong to ONE item, the new photos
-    are that item's late photos (WO37's line, no new card) — returns the item; else None (the new ones go on as a
-    share of their own)."""
+    are that item's late photos — WO45 §6: ADDED to the item (its record, its card, its live listings) — returns the
+    item; else None (the new ones go on as a share of their own)."""
     items = list(dict.fromkeys(v for v in known_as.values() if v and not v.startswith("batch:")))
     db.log(bid, "photos_known", {"folder": src.name, "known": sorted(known_as), "items": items})
     if len(items) != 1 or not new:
         return None
     iid = items[0]
+    added = add_photos_to_item(s, db, iid, new, keys or {})
     names = ", ".join(p.name for p in new[:6])
-    notify.say(f"📸 {len(new)} photos of {photomem.title_of(db, iid)} came with a repeat share ({names}) — the listing "
-               "doesn't have them")
+    notify.say(f"📸 {len(new)} photos of {photomem.title_of(db, iid)} came with a repeat share ({names}) — "
+               + ("added to it" + (": its listings get them" if added.get("edits") else "") if added.get("added")
+                  else f"not added: {added.get('why')}"))
     return iid
+
+
+ATTACH_MIN = 0.7                  # WO45 §5: a late photo joins an item only when the model is this sure
+
+
+def merge_singletons(s: Settings, db: DB, bid: str, photos: list[Path], kinds: list[str], groups: list[list[int]],
+                     summaries: list[str]) -> tuple[list[list[int]], list[str]]:
+    """WO45 §5: every group of ONE own photo, with other groups beside it, is put to the model once more against those
+    groups' photos (`seg.attach`): the same item in another light, from another angle, on a hanger instead of the
+    floor joins it. A failed call changes nothing (logged)."""
+    singles = [k for k, g in enumerate(groups) if len(g) == 1 and kinds[g[0]] != "retail"]
+    if not singles or len(groups) < 2:
+        return groups, summaries
+    merged: dict[int, int] = {}
+    for k in singles:
+        others = [(j, g) for j, g in enumerate(groups) if j != k and j not in merged]
+        if not others:
+            continue
+        refs = [(chr(ord("A") + n), summaries[j] if j < len(summaries) else f"item {j + 1}",
+                 [photos[i] for i in g[:3]], j) for n, (j, g) in enumerate(others)]
+        try:
+            out = seg.attach([photos[groups[k][0]]], [(r[0], r[1], r[2]) for r in refs], s["models"]["segment"],
+                             s["images"]["thumb_long_edge"])
+        except Exception as e:  # noqa: BLE001
+            db.log(bid, "attach_failed", f"{type(e).__name__}: {e}")
+            continue
+        by_letter = {r[0]: r[3] for r in refs}
+        for a in out.photos:
+            if a.photo == 0 and a.item in by_letter \
+                    and a.confidence >= float(s["segmentation"].get("attach_min_confidence", ATTACH_MIN)):
+                merged[k] = by_letter[a.item]
+    if not merged:
+        return groups, summaries
+    new_groups = [list(g) for g in groups]
+    for k, j in merged.items():
+        new_groups[j] = sorted(new_groups[j] + groups[k])
+        new_groups[k] = []
+    db.log(bid, "singletons_merged", {f"{groups[k][0]}": j for k, j in merged.items()})
+    keep = [j for j, g in enumerate(new_groups) if g]
+    return [new_groups[j] for j in keep], [summaries[j] if j < len(summaries) else "" for j in keep]
+
+
+def reference_items(db: DB, bid: str, src: Path, n_new: int) -> list[tuple[str, str, list[Path], str]]:
+    """WO45 §5/§6: the items a batch's photos are compared with before they are grouped — the share's own items when
+    this is an in-place late batch, else the previous share's items when this share is small (at most
+    LATE_SHARE_PHOTOS photos) and came within FOLLOW_UP of it. [(letter, title, a few photos, item id)], at most 8."""
+    from thrift_agent import shares
+    origin = late_of(db, bid)
+    bids: list[str] = []
+    if origin is not None:
+        sid = shares.share_id_of(src)
+        for b in db.conn.execute("SELECT * FROM batches WHERE status IN ('split', 'joined') AND id<>? ORDER BY "
+                                 "created_at", (bid,)).fetchall():
+            if shares.share_id_of(batch_dir(b)) == sid:
+                bids.append(b["id"])
+    elif n_new <= LATE_SHARE_PHOTOS:
+        mine = _share_moment(src)
+        if mine is not None:
+            best = None
+            for b in db.conn.execute("SELECT * FROM batches WHERE status='split' AND id<>? ORDER BY created_at DESC "
+                                     "LIMIT 20", (bid,)).fetchall():
+                theirs = _share_moment(batch_dir(b))
+                if theirs is not None and 0 <= (mine - theirs).total_seconds() <= FOLLOW_UP:
+                    if best is None or theirs > best[0]:
+                        best = (theirs, b["id"])
+            if best is not None:
+                bids.append(best[1])
+    refs = []
+    for b in bids:
+        for it in db.conn.execute("SELECT * FROM items WHERE batch_id=? AND status NOT IN ('dropped', 'failed') "
+                                  "ORDER BY seq", (b,)).fetchall():
+            photos = _item_reference_photos(it)
+            if photos:
+                refs.append((chr(ord("A") + len(refs)), _title_of(it), photos, it["id"]))
+            if len(refs) >= 8:
+                return refs
+    return refs
+
+
+def _share_moment(d: Path) -> datetime | None:
+    """The Shortcut's own moment from a share's folder name (2026-10-18_121154), or None."""
+    from thrift_agent import shares
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})_(\d{2})(\d{2})(\d{2})", shares.share_id_of(d))
+    if not m:
+        return None
+    try:
+        return datetime(*(int(x) for x in m.groups()))
+    except ValueError:
+        return None
+
+
+def _item_reference_photos(it, limit: int = 3) -> list[Path]:
+    """A few of an item's photos for the model to compare with: its cover first, then its other photos."""
+    d = Path(it["dir"])
+    photos = sorted((d / "photos").glob("*.jpg"))
+    cover = d / "cover.jpg"
+    out = [cover] if cover.is_file() else []
+    return (out + photos)[:limit]
+
+
+def attach_to_items(s: Settings, db: DB, bid: str, src: Path, raw: list[Path], keys: dict[str, dict],
+                    refs: list[tuple[str, str, list[Path], str]], dry: bool = False) -> list[Path]:
+    """The photos compared with the reference items (`seg.attach`, one vision call): a photo the model is sure shows
+    one of them is ADDED to that item (`add_photos_to_item`); the rest are returned to go on as a share. A failed call
+    attaches nothing (everything goes on as a share, and the failure is logged)."""
+    try:
+        out = seg.attach(raw, [(r[0], r[1], r[2]) for r in refs], s["models"]["segment"],
+                         s["images"]["thumb_long_edge"])
+    except Exception as e:  # noqa: BLE001
+        db.log(bid, "attach_failed", f"{type(e).__name__}: {e}")
+        return raw
+    by_letter = {r[0]: r[3] for r in refs}
+    joined: dict[str, list[Path]] = {}
+    rest = list(raw)
+    for a in out.photos:
+        if a.item in by_letter and a.confidence >= float(s["segmentation"].get("attach_min_confidence", ATTACH_MIN)) \
+                and 0 <= a.photo < len(raw):
+            joined.setdefault(by_letter[a.item], []).append(raw[a.photo])
+            if raw[a.photo] in rest:
+                rest.remove(raw[a.photo])
+    db.log(bid, "photos_attached", {"joined": {iid: [p.name for p in ps] for iid, ps in joined.items()},
+                                    "rest": [p.name for p in rest], "notes": out.notes[:300]})
+    for iid, ps in joined.items():
+        added = add_photos_to_item(s, db, iid, ps, {p.name: keys[p.name] for p in ps if p.name in keys}, dry=dry)
+        names = ", ".join(p.name for p in ps[:6])
+        notify.say(f"📸 {len(ps)} late photos joined {photomem.title_of(db, iid)} ({names})"
+                   + (": its listings get them" if added.get("edits") else "" if added.get("added")
+                      else f" — not added: {added.get('why')}"))
+    return rest
+
+
+def add_photos_to_item(s: Settings, db: DB, iid: str, files: list[Path], keys: dict[str, dict],
+                       dry: bool = False) -> dict:
+    """WO45 §6: photos that arrived after the item was made, added to it — normalized into its photos/, remembered in
+    the photo memory; an item not yet processed takes them when it is; one processed but not yet on a site has its
+    cover, order and card recomputed (`recover_item`: the front check sees every photo); one on a site keeps its cover
+    and copy, the photos go at the end of its photo lists and one "photos" edit per live site puts them on the listing
+    (`edits.queue`, kind "photos"). {"added": n, "edits": [sites], "why"}."""
+    from thrift_agent import edits
+    it = db.item(iid)
+    if it is None:
+        return {"added": 0, "edits": [], "why": "unknown item"}
+    if it["status"] in ("dropped", "failed"):
+        return {"added": 0, "edits": [], "why": "the item is retired"}
+    d = Path(it["dir"])
+    existing = sorted((d / "photos").glob("*.jpg"))
+    n0 = len(existing)
+    manifest = d / MANIFEST
+    entries = json.loads(manifest.read_text(encoding="utf-8")) if manifest.exists() else \
+        [{"file": p.name, "kind": "own"} for p in existing]
+    added = []
+    for j, p in enumerate(files):
+        dst = d / "photos" / f"{n0 + j:02d}.jpg"
+        try:
+            prep.normalize(p, dst, s["images"]["work_long_edge"])
+        except OSError as e:
+            db.log(iid, "photo_add_failed", {"file": p.name, "error": f"{type(e).__name__}: {e}"})
+            continue
+        entries.append({"file": dst.name, "kind": prep.photo_kind(p), "late": p.name})
+        added.append(dst)
+    if not added:
+        return {"added": 0, "edits": [], "why": "the photos couldn't be read"}
+    manifest.write_text(json.dumps(entries, indent=1), encoding="utf-8")
+    photomem.remember(db, [(p, keys[p.name]) for p in files if p.name in keys], iid, it["batch_id"])
+    db.log(iid, "photos_added", {"files": [p.name for p in files], "now": n0 + len(added)})
+    if it["status"] == "new" or not it["facts"] or not it["renders"]:
+        return {"added": len(added), "edits": []}            # the processing takes every photo in photos/
+    if not reached_site(db, it):
+        try:
+            recover_item(s, db, iid)                         # the cover, the order, the card — with every photo
+        except ValueError as e:
+            db.log(iid, "photos_added_recover_failed", str(e)[:200])
+        return {"added": len(added), "edits": []}
+    # on a site: the cover and the copy stay; the new photos go at the end of the photo lists, and each live site's
+    # listing gets them through its edit page (nothing else changes)
+    facts = Facts.model_validate(loads(it["facts"]))
+    new_idx = list(range(n0, n0 + len(added)))
+    facts = facts.model_copy(update={"photo_order": [i for i in facts.photo_order if i not in new_idx] + new_idx})
+    renders = loads(it["renders"]) or {}
+    before = {mp: len(r.get("photos") or []) for mp, r in renders.items()}
+    renders2 = relist(s, it, facts, renders)
+    db.set_item(iid, facts=facts.model_dump(), renders=renders2)
+    payloads = {}
+    for row in db.listings_for(iid):
+        mp = row["marketplace"]
+        if row["status"] != "posted" or not row["url"]:
+            continue
+        fields = loads(row["fields_json"]) or {}
+        had = len(fields.get("photos") or []) or before.get("poshmark" if mp == "poshmark" else mp) \
+            or before.get("poshmark") or 0
+        limit = int((s["marketplaces"].get(mp) or {}).get("max_photos", 16))
+        room = max(0, limit - had)
+        files_for = [str(p) for p in added[:room]]
+        if files_for:
+            payloads[mp] = {"files": files_for, "had": had, "add": len(files_for), "limit": limit}
+    rows = edits.queue(db, iid, "photos", payloads, dry=dry) if payloads else []
+    return {"added": len(added), "edits": list(payloads), "rows": rows, "dry": dry}
 
 
 def accept_grouping(groups: list[list[int]], n: int, kinds: list[str], unassigned: list[int] | tuple[int, ...] = (),
@@ -604,21 +966,29 @@ def split(s: Settings, db: DB, bid: str, groups: list[list[int]], dropped: list[
         dirs.append(d)
 
     keys_by_src = segd.get("keys") or {}                 # WO43: the photo memory's keys, by the share's photo index
+    from thrift_agent import shares
+    share = shares.of_batch(db, bid)
+    want = int(share["expected"]) if share is not None and share["expected"] else None   # the share's `done N`
     with db.tx():
         iids = [db.add_item(bid, k, str(d), item_note) for k, d in enumerate(dirs, 1)]
         for iid, g in zip(iids, groups):
             db.log(iid, "item_created", {"batch": bid, "photos": g})
+            if b["test"] if "test" in b.keys() else False:         # WO45 §2: a test share's items never post
+                db.set_item(iid, test=1)
+            if len(groups) == 1 and want and want > len(photos):   # WO45 §6: made from part of the share
+                db.set_item(iid, photos_expected=want)
             photomem.remember(db, [(Path(k["name"]), k) for idx in g
                                    if (k := keys_by_src.get(str(int(photos[idx].stem)) if photos[idx].stem.isdigit()
                                                             else str(idx)))], iid, bid)
         if dropped:
             db.log(bid, "photos_dropped", {"photos": list(dropped)})
         db.set_batch(bid, status="split")
+        shares.step(db, shares.share_id_of(batch_dir(b)), "grouped", batch_id=bid)     # WO45 §3
 
     if note and len(groups) > 1:
         notify.say(f"⚠️ Batch {bid}: the note \"{note}\" was not applied — it can't be matched to one of the "
                    f"{len(groups)} items ({', '.join(iids)}). Reply to the right item's card with it")
-    archive_share(s, db, bid, Path(b["src_dir"]))
+    archive_share(s, db, bid, batch_dir(b))
 
 
 def fill_item_dir(d: Path, group: list[int], photos: list[Path], kinds: list[str]) -> None:
@@ -790,6 +1160,18 @@ def archive_share(s: Settings, db: DB, bid: str, src: Path) -> Path | None:
 
 
 # ---------- item → ready ----------
+
+
+def late_indices(d: Path) -> set[int]:
+    """The item's photos that came after it was made (WO45 §6: the manifest's `late` entries), by index."""
+    manifest = d / MANIFEST
+    if not manifest.exists():
+        return set()
+    try:
+        entries = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    return {j for j, e in enumerate(entries) if isinstance(e, dict) and e.get("late")}
 
 
 def photo_kinds_of(d: Path, photos: list[Path]) -> list[str]:
@@ -1173,6 +1555,7 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
     facts, fit_notes, fit_questions = taxonomy.fit(facts)   # Poshmark's own category names (Kids Tops -> Shirts & Tops)
     facts = settle_shoe_kind(facts, it["owner_category"])  # loafers are Flats & Loafers, never Heels (WO37)
     facts = settle_kids_size(s, facts, photos)            # a kids label's cm or age -> Poshmark's size, no question
+    facts = second_look_size(s, db, iid, facts, photos, kinds)   # WO45 §8: a printed size looked for once more
     facts, decided = settle_open_questions(facts, fit_questions, it["owner_category"])   # WO37: decided, not asked
     if any(x.startswith("category:") for x in decided):
         fit_questions = []                               # the category was decided: nothing left to ask about it
@@ -1314,6 +1697,48 @@ def _open_cards(db: DB, iid: str) -> int:
     marks = ",".join("?" * len(approve.QUEUE_KINDS))
     return db.conn.execute(f"SELECT COUNT(*) FROM outbox WHERE ref=? AND resolved_at IS NULL AND kind IN ({marks})",
                            (iid, *approve.QUEUE_KINDS)).fetchone()[0]
+
+
+SIZE_LOOK_ROLES = ("label", "tag", "detail", "box", "other")   # where a printed size hides (WO45 §8): the insole
+#                                                                stamp and the sole are "label" / "detail" shots
+_PLAIN_SIZE = re.compile(r"^(?:US\s*)?(\d{1,2}(?:\.5)?|XXS|XS|S|M|L|XL|XXL|XXXL|2XL|3XL)$", re.I)
+
+
+def second_look_size(s: Settings, db: DB, iid: str, facts: Facts, photos: list[Path], kinds: list[str]) -> Facts:
+    """WO45 §8 (the owner: shoes rarely show a size on the photos — look harder before asking her to tap): an item
+    that takes a size with none read gets ONE more look at its label, tag, detail, inside, sole and box photos at the
+    label resolution (`cover.read_size_label`). A size printed there is the size (source photo, 0.85): a plain US
+    size or letter as it is; "EU nn" kept as the EU size for the derivation the sizes module makes. Nothing found: the
+    facts as they were (the buttons come; the model's `size_guess` marks the ⭐). A failed call changes nothing."""
+    if facts.size_us.value or facts.size_printed.value or not facts.photo_roles:
+        return facts
+    if sizes.one_size(facts.department, facts.category, facts.subcategory):
+        return facts
+    roles = {r.photo: r.role for r in facts.photo_roles if 0 <= r.photo < len(photos)}
+    looks = [i for i in range(len(photos)) if kinds[i] != "retail" and roles.get(i) in SIZE_LOOK_ROLES][:6]
+    if not looks:
+        return facts
+    try:
+        printed = cover_brain.read_size_label([photos[i] for i in looks], s["models"].get("labels")
+                                              or s["models"]["extract"], int(s["images"].get("label_long_edge", 2048)))
+    except Exception as e:  # noqa: BLE001
+        db.log(iid, "size_look_failed", f"{type(e).__name__}: {e}")
+        return facts
+    if not printed:
+        db.log(iid, "size_look", {"photos": looks, "printed": None})
+        return facts
+    db.log(iid, "size_look", {"photos": looks, "printed": printed})
+    ev = Ev(value=printed, photos=looks, source="photo", confidence=0.85)
+    update: dict = {"size_printed": ev}
+    plain = _PLAIN_SIZE.match(printed.strip())
+    if plain:
+        update["size_us"] = Ev(value=plain.group(1).upper() if plain.group(1).isalpha() else plain.group(1),
+                               photos=looks, source="photo", confidence=0.85)
+    elif m := re.search(r"\bUS\s*([A-Z]{1,3}|\d{1,2}(?:\.5)?)\b", printed, re.I):
+        update["size_us"] = Ev(value=m.group(1).upper(), photos=looks, source="derived", confidence=0.85)
+    elif m := re.search(r"\bEU\s*(\d{2}(?:\.5)?)\b", printed, re.I):
+        update["size_eu"] = Ev(value=m.group(1), photos=looks, source="photo", confidence=0.85)
+    return facts.model_copy(update=update)
 
 
 def settle_kids_size(s: Settings, facts: Facts, photos: list[Path] | None = None) -> Facts:
@@ -1514,6 +1939,8 @@ def recover_item(s: Settings, db: DB, iid: str, recheck: bool = False, relabel: 
     facts = settle_shoe_kind(facts, it["owner_category"])
     facts = settle_kids_size(s, facts, photos)
     stored = None if recheck else _stored_check(it)
+    if stored is not None and late_indices(d) - {v.photo for v in stored.views}:
+        stored = None                                       # WO45 §6: photos came after the check — asked again
     check = stored or front_view(s, db, iid, photos, facts, kinds)
     cover, upright, cover_note = choose_cover(facts, len(photos), kinds, check, it["owner_cover"])
     if cover is not None:
@@ -2166,7 +2593,7 @@ def requeue_batch(s: Settings, db: DB, bid: str) -> str:
         raise ValueError(f"unknown batch {bid}")
     if b["status"] != "failed":
         raise ValueError(f"batch {bid} is {b['status']} — only a failed batch can be requeued")
-    if not Path(b["src_dir"]).is_dir():
+    if not batch_dir(b).is_dir():
         raise ValueError(f"batch {bid}: its share folder is gone ({b['src_dir']}) — share the photos again")
     with db.tx():
         db.set_batch(bid, status="new", reasons=None)

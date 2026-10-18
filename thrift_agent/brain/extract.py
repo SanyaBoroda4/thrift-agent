@@ -19,6 +19,11 @@ Rules:
   men's or unisex say so.
 - A label that prints several size systems (US 7.5 / EU 38 / UK 5) is ONE size — report size_printed
   as printed and derive size_us; it is not a conflict.
+- Look hard for a printed size before giving none: shoes — the insole near the heel, inside the tongue or heel,
+  the outsole, the box end; clothing — the neck label, the waistband, the care tag. When none is printed anywhere,
+  size_us stays null and size_guess is your best guess of the US size from the item's proportions next to the
+  seller's hand or other things in the frame (a guess marks the size the owner is most likely to tap; it is never
+  listed by itself).
 - department and category come from evidence (labels, the retailer page, sizing), never from a default.
   Use the real Poshmark category and subcategory, spelled as in the lists below — never 'Other'. The category is
   never a department name: a kids tee is department Kids, category "Shirts & Tops".

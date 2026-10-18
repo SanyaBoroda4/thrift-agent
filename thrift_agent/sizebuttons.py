@@ -28,7 +28,12 @@ EU_MEN = {"6": "39", "6.5": "39.5", "7": "40", "7.5": "40.5", "8": "41", "8.5": 
           "10": "44", "10.5": "44.5", "11": "45", "11.5": "45.5", "12": "46", "13": "47", "14": "48"}
 DEFAULTS = {("Women", "Shoes"): "8", ("Men", "Shoes"): "10", ("Kids", "Shoes"): "12 (Toddler Girl)",
             ("Women", "Jeans"): "27", ("Men", "Jeans"): "Waist 32", ("Men", "Pants"): "Waist 32",
-            ("Women", "Intimates & Sleepwear"): "34B", ("Women", "Dresses"): "M", ("Women", "Pants & Jumpsuits"): "M"}
+            ("Women", "Intimates & Sleepwear"): "34B", ("Women", "Dresses"): "M", ("Women", "Pants & Jumpsuits"): "M",
+            # WO45 §8: men's and the other women's categories
+            ("Men", "Shirts"): "L", ("Men", "Sweaters"): "L", ("Men", "Jackets & Coats"): "L", ("Men", "Shorts"): "32",
+            ("Men", "Suits & Blazers"): "40R", ("Women", "Tops"): "M", ("Women", "Sweaters"): "M",
+            ("Women", "Jackets & Coats"): "M", ("Women", "Skirts"): "M", ("Women", "Shorts"): "M",
+            ("Women", "Swim"): "M"}
 
 
 def _rank(v: str) -> float:
@@ -96,15 +101,30 @@ def history_guess(db: DB, facts: Facts, values: list[str]) -> str | None:
 
 
 def guess(db: DB, facts: Facts, values: list[str]) -> str | None:
-    """The ⭐: the shop's history, else the category's usual size, else the middle of the menu."""
+    """The ⭐: the shop's history for the brand and category, else the model's guess from the photos (WO45 §8:
+    `facts.size_guess` — the item's proportions next to her hand; never listed by itself), else the category's usual
+    size, else the middle of the menu."""
     if not values:
         return None
     if (v := history_guess(db, facts, values)) is not None:
         return v
+    if (hint := model_guess(facts, values)) is not None:
+        return hint
     want = DEFAULTS.get((facts.department, facts.category))
     if want in values:
         return want
     return values[len(values) // 2]
+
+
+def model_guess(facts: Facts, values: list[str]) -> str | None:
+    """The menu value the model's `size_guess` names ("8", "M", "US 8.5" → the value as the menu spells it)."""
+    raw = (getattr(facts, "size_guess", None) or "").strip().upper().replace("US ", "")
+    if not raw:
+        return None
+    for v in values:
+        if v.upper() == raw or v.upper().split(" ")[0] == raw:
+            return v
+    return None
 
 
 def crosslist_ok(facts: Facts, values: list[str]) -> list[str]:

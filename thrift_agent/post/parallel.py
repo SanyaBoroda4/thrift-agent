@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from thrift_agent import catalogs, crosslist, daily, notify, orders, power, pricedrop, sales
+from thrift_agent import catalogs, crosslist, daily, notify, orders, photocheck, power, pricedrop, sales
 from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
 from thrift_agent.post import runner
@@ -120,6 +120,8 @@ def feed(s: Settings, db: DB) -> list[str]:
         batch = db.batch(it["batch_id"])
         if batch is not None and batch["status"] == "regroup":
             continue
+        if "test" in it.keys() and it["test"]:
+            continue                                   # WO45 §2: a test share's item is never listed
         render = (loads(it["renders"]) or {}).get("poshmark")
         if not render or not runner.approved(it, render):
             continue
@@ -414,6 +416,8 @@ async def _housekeeping(s, db, ps, cross, dry, stop, state, sites, until_idle) -
                     pricedrop.plan(db)
                     planned = time.monotonic()
                 pricedrop.announce(s, db)
+            if not dry and photocheck.due(db) and not runner._paused(db):   # WO45 §6: every listing read back
+                await photocheck.run(s, db, ps)
             if until_idle and state.all_idle(sites) and _nothing_left(s, db, sites, dry):
                 stop.set()
                 return

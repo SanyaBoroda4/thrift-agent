@@ -142,6 +142,10 @@ def item_doc(db: DB, iid: str) -> dict | None:
     return {"id": iid, "title": render.get("title"), "brand": render.get("brand"), "size": render.get("size"),
             "price": it["owner_price"] or render.get("price"), "created_at": it["created_at"],
             "updated_at": it["updated_at"],
+            # WO45 §7: the API's safety net for an item priced but not live — the status, whether the owner priced
+            # it, a test item (never listed), and how many photos it has
+            "status": it["status"], "priced": bool(it["owner_price"]), "test": bool(it["test"]),
+            "photos": len((render.get("photos") or [])),
             # WO41: the price-drop clock and stage
             "all_live_at": it["all_live_at"], "drop_stage": it["drop_stage"] or 0, "next_drop_at": it["next_drop_at"],
             "no_drop": it["no_drop"]}
@@ -160,10 +164,20 @@ def listing_doc(db: DB, iid: str, mp: str) -> dict | None:
     row = db.listing(iid, mp)
     if row is None:
         return None
+    fields = loads(row["fields_json"]) or {}
     return {"item_id": iid, "marketplace": mp, "status": row["status"], "url": row["url"],
             "listing_id": row["listing_id"], "sku": iid if mp == "depop" else None, "price": row["price"],
             "posted_at": row["posted_at"], "updated_at": row["updated_at"],
-            "price_live": row["price_live"], "price_read_at": row["price_read_at"]}           # WO41
+            "price_live": row["price_live"], "price_read_at": row["price_read_at"],           # WO41
+            "error": (row["error"] or "")[:200] or None,                                     # WO45 §7: its reason
+            "photos_sent": len(fields.get("photos") or []) or None,                            # WO45 §6
+            "photos_live": row["photos_live"], "photos_read_at": row["photos_read_at"]}
+
+
+def share_doc(db: DB, sid: str) -> dict | None:
+    """WO45 §3: a share's ledger row as /sync takes it."""
+    from thrift_agent import shares
+    return shares.doc(db, sid)
 
 
 def push(db: DB, client: Api) -> int:
@@ -175,7 +189,7 @@ def push(db: DB, client: Api) -> int:
                                (BATCH,)).fetchall()
         if not rows:
             return sent
-        items, listings, changes = [], [], []
+        items, listings, changes, shares_ = [], [], [], []
         for kind, key, _ in rows:
             if kind == "item":
                 doc = item_doc(db, key)
@@ -185,12 +199,17 @@ def push(db: DB, client: Api) -> int:
                 doc = price_doc(db, key)
                 if doc:
                     changes.append(doc)
+            elif kind == "share":                        # WO45 §3: the share ledger
+                doc = share_doc(db, key)
+                if doc:
+                    shares_.append(doc)
             else:
                 iid, _, mp = key.partition("|")
                 doc = listing_doc(db, iid, mp)
                 if doc:
                     listings.append(doc)
-        client.post("/sync", {"items": items, "listings": listings, **({"price_changes": changes} if changes else {})})
+        client.post("/sync", {"items": items, "listings": listings, **({"price_changes": changes} if changes else {}),
+                              **({"shares": shares_} if shares_ else {})})
         with db.tx() as c:
             for kind, key, changed_at in rows:
                 c.execute("DELETE FROM api_dirty WHERE kind=? AND key=? AND changed_at=?", (kind, key, changed_at))
@@ -318,6 +337,10 @@ def fetch_tasks(db: DB, sites: list[str], force: bool = False) -> int:
     got = answer.get("tasks") or []
     for iid in answer.get("sold") or []:            # sold anywhere: never listed after the sale (A1)
         skip_sold(db, iid)
+    reposts = [t for t in got if t.get("kind") == "repost"]      # WO45 §7: the API's safety net asks for one retry
+    got = [t for t in got if t.get("kind") != "repost"]
+    for t in reposts:
+        repost(db, t)
     for t in got:
         db.conn.execute(
             "INSERT INTO takedowns (id, item_id, marketplace, listing_url, title, status, attempts, fetched_at) "
@@ -327,6 +350,34 @@ def fetch_tasks(db: DB, sites: list[str], force: bool = False) -> int:
             (t["id"], t["item_id"], t["marketplace"], t.get("listing_url"), t.get("title"), t.get("attempts") or 0,
              now()))
     return len(got)
+
+
+KEEP_REASONS = ("no size on the item", "shared again", "already live", "sold", "not published automatically",
+                "unconfirmed publish", "Mismatch")   # a listing row left as it is: its reason is the owner's to settle
+
+
+def repost(db: DB, task: dict) -> None:
+    """WO45 §7: the API found an item priced an hour ago and not live on a site with no reason it knows — its row
+    here goes back in line ONCE (failed or skipped → queued; a row with a reason of the owner's — no size, a twin,
+    sold, autopublish off, an unconfirmed publish, a mismatch — stays), and the task is answered at once."""
+    iid, mp = task.get("item_id"), task.get("marketplace")
+    row = db.listing(iid, mp) if iid and mp else None
+    it = db.item(iid) if iid else None
+    if row is None or it is None:
+        call(db, f"/tasks/{task['id']}", {"result": "not_found", "error": "no such listing here"})
+        return
+    error = row["error"] or ""
+    if it["status"] in ("dropped", "failed") or ("test" in it.keys() and it["test"]):
+        call(db, f"/tasks/{task['id']}", {"result": "done", "error": f"item {it['status']}: left as it is"})
+        return
+    if row["status"] not in ("failed", "skipped") or any(k in error for k in KEEP_REASONS):
+        call(db, f"/tasks/{task['id']}", {"result": "done", "error": f"left as it is ({row['status']}: {error[:80]})"})
+        return
+    db.upsert_listing(iid, mp, status="queued", error=f"retried by the safety net (was: {error[:120]})")
+    if it["status"] in ("failed",):
+        pass
+    db.log(iid, "reposted", {"site": mp, "was": error[:200], "by": "api"})
+    call(db, f"/tasks/{task['id']}", {"result": "done"})
 
 
 def pending(db: DB, site: str | None = None) -> list:

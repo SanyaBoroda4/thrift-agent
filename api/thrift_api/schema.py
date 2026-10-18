@@ -56,14 +56,35 @@ TABLES = (
         id TEXT PRIMARY KEY, item_id TEXT NOT NULL, marketplace TEXT NOT NULL, stage TEXT,
         old_price DOUBLE PRECISION, new_price DOUBLE PRECISION, pct DOUBLE PRECISION, status TEXT, attempts INTEGER,
         error TEXT, due_at TEXT, done_at TEXT, created_at TEXT, updated_at TEXT)""",
+    # WO45 §2: a share the iPhone uploads straight to the API (uploads.py) — its metadata only, the bytes are blobs
+    # (`shares` container, `<share_id>/<name>`); fetched_at once the Mac has it; 30 days (timers.daily)
+    """CREATE TABLE IF NOT EXISTS shares_in (
+        share_id TEXT PRIMARY KEY, count INTEGER, received INTEGER NOT NULL DEFAULT 0, started_at TEXT NOT NULL,
+        ended_at TEXT, fetched_at TEXT, last_received_at TEXT, test INTEGER NOT NULL DEFAULT 0)""",
+    """CREATE TABLE IF NOT EXISTS share_uploads (
+        share_id TEXT NOT NULL, name TEXT NOT NULL, n INTEGER, sha256 TEXT NOT NULL, size INTEGER NOT NULL,
+        content_type TEXT, received_at TEXT NOT NULL, test INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (share_id, name))""",
+    # WO45 §3: the Mac's share ledger, mirrored by /sync — one row per share id with the time of each step and its
+    # outcome (carded | repeat | empty | same_share | failed | joined); the watchdog (watch.shares_watch) and the
+    # dashboard's Shares panel read it
+    """CREATE TABLE IF NOT EXISTS shares (
+        id TEXT PRIMARY KEY, source TEXT, expected INTEGER, received INTEGER, received_at TEXT, complete_at TEXT,
+        grouped_at TEXT, carded_at TEXT, outcome TEXT, outcome_at TEXT, reason TEXT, batch_id TEXT, test INTEGER,
+        updated_at TEXT)""",
 )
 
 # Columns added after a table was first made (WO41), added where missing: Postgres by ADD COLUMN IF NOT EXISTS,
 # SQLite by its table_info (it has no IF NOT EXISTS there).
 COLUMNS = {
-    "items": {"all_live_at": "TEXT", "drop_stage": "INTEGER", "next_drop_at": "TEXT", "no_drop": "TEXT"},
-    "listings": {"price_live": "DOUBLE PRECISION", "price_read_at": "TEXT"},
+    "items": {"all_live_at": "TEXT", "drop_stage": "INTEGER", "next_drop_at": "TEXT", "no_drop": "TEXT",
+              # WO45 §7: the safety net — the Mac's status, whether the owner priced it, a test item, its photos
+              "status": "TEXT", "priced": "INTEGER", "test": "INTEGER", "photos": "INTEGER"},
+    "listings": {"price_live": "DOUBLE PRECISION", "price_read_at": "TEXT",
+                 # WO45 §6/§7: the row's reason, the photos sent and the photos the site shows
+                 "error": "TEXT", "photos_sent": "INTEGER", "photos_live": "INTEGER", "photos_read_at": "TEXT"},
     "sales": {"drops": "INTEGER"},              # WO41: the item's price drops made before it sold
+    "delist_tasks": {"kind": "TEXT"},           # WO45 §7: NULL / delist = a take-down; repost = the safety net's one retry
 }
 
 INDEXES = (
@@ -78,6 +99,8 @@ INDEXES = (
     "CREATE UNIQUE INDEX IF NOT EXISTS ux_delist_tasks_sale_site ON delist_tasks (sale_id, marketplace)",
     "CREATE INDEX IF NOT EXISTS ix_orders_sale ON orders (sale_id)",
     "CREATE INDEX IF NOT EXISTS ix_price_changes_item ON price_changes (item_id, marketplace)",
+    "CREATE INDEX IF NOT EXISTS ix_shares_in_pending ON shares_in (fetched_at, started_at)",         # WO45 §2
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_share_uploads_sha ON share_uploads (share_id, sha256)",  # the same bytes once
 )
 
 

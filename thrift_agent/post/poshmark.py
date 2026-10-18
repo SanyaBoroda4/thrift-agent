@@ -255,6 +255,10 @@ SEL = {
     "edit_tiles": lambda p: p.locator("div.listing-editor__images.listing-editor__image"),
     "edit_tile_photo": lambda tile: tile.locator("img.listing-editor__image"),
     "edit_tile_open": lambda tile: tile.locator('[data-et-name="edit_photo"]'),
+    # WO45 §6 (from WO37's probe of the edit page, 2026-10-12): the empty tiles after the photos each hold a file input
+    # (input.listing-editor__file-list) — files set on the first one add photos to the listing; UNVERIFIED until the
+    # first photos dry run records it
+    "edit_photo_input": lambda p: p.locator("input.listing-editor__file-list"),
     "photo_dialog": lambda p: p.locator('[data-test="modal-container"]').filter(
         has=p.locator('input[name="replaceImage"]')),
     "photo_dialog_image": lambda d: d.locator("img.image-edit-modal__selected-image"),
@@ -264,6 +268,12 @@ SEL = {
     # frame (also in a plain photo's dialog: "Delete | Replace"), zoom slider, rotate — and the photo it had is gone
     "photo_dialog_crop": lambda d: d.locator(".croppie-container"),
     "promote_toggle": lambda panel: panel.locator('input[type="checkbox"]'),
+    # WO45, recorded from the live panel (2026-10-18): one li.listing-editor__share__line-item per line — an h4 with
+    # its name ("Promote My Closet"; a Posh Party: "Luxury Bags: … Posh Party") and [data-test=toggle] with its
+    # checkbox [data-test=toggle-input]; Pinterest / Facebook lines carry Connect Now links instead
+    "share_lines": lambda panel: panel.locator("li.listing-editor__share__line-item"),
+    "share_line_toggle": lambda line: line.locator('[data-test="toggle"] input[type="checkbox"], '
+                                                   'input[data-test="toggle-input"]'),
     "draft_saved": re.compile(r"/closet/|/listing/"),
     "captcha": lambda p: p.get_by_text(re.compile("captcha|verify you are human", re.I)),
 }
@@ -545,7 +555,11 @@ class PoshmarkPoster(Poster):
         the slider and the rotate buttons are never touched; Apply, then the dialog must close. A dialog that differs
         from the recording fails the item."""
         differs = []
-        if not await SEL["cover_title"](dialog).count():
+        # WO45 (live 2026-10-18, the Ralph Lauren shirt's one photo): for ONE photo Poshmark's dialog has no "Select a
+        # Covershot." title and no thumbnail strip — the crop frame, the zoom slider, "Replace Photo", Cancel and Apply
+        # only. The same dialog, the same Apply; nothing to select.
+        single = n_photos == 1 and not await SEL["cover_thumbs"](dialog).count()
+        if not await SEL["cover_title"](dialog).count() and not single:
             differs.append("no 'Select a Covershot.' title")
         if await SEL["cover_crop"](dialog).count() != 1:
             differs.append("no crop frame")
@@ -556,15 +570,17 @@ class PoshmarkPoster(Poster):
             differs.append(f"the confirm button reads '{(await apply.inner_text()).strip()}'")
         if differs:
             raise PosterError("Poshmark's cover dialog differs from the recorded one: " + "; ".join(differs))
-        thumbs, waited = SEL["cover_thumbs"](dialog), 0
-        while (have := await thumbs.count()) < n_photos:      # it may list the photos as they are read
-            if waited >= THUMB_TIMEOUT_MS:
-                raise PosterError(f"Poshmark's cover dialog lists {have} of {n_photos} photos")
-            await page.wait_for_timeout(THUMB_POLL_MS)
-            waited += THUMB_POLL_MS
-        if not await SEL["cover_selected"](thumbs.first).count():
-            raise PosterError("Poshmark's cover dialog did not preselect the first photo (the cover)")
-        self._state["cover_dialog"] = {"photos": have, "crop": "Poshmark's default"}
+        thumbs, waited, have = SEL["cover_thumbs"](dialog), 0, n_photos
+        if not single:
+            while (have := await thumbs.count()) < n_photos:      # it may list the photos as they are read
+                if waited >= THUMB_TIMEOUT_MS:
+                    raise PosterError(f"Poshmark's cover dialog lists {have} of {n_photos} photos")
+                await page.wait_for_timeout(THUMB_POLL_MS)
+                waited += THUMB_POLL_MS
+            if not await SEL["cover_selected"](thumbs.first).count():
+                raise PosterError("Poshmark's cover dialog did not preselect the first photo (the cover)")
+        self._state["cover_dialog"] = {"photos": have, "crop": "Poshmark's default",
+                                       **({"variant": "one photo: no title, no thumbnails"} if single else {})}
         await settle(page, 0.5, 1.2)
         await apply.click()
         try:
@@ -1071,14 +1087,30 @@ class PoshmarkPoster(Poster):
         try:
             if _key(r.title)[:40] not in _key(text):
                 raise PosterError("the Share Listing panel doesn't show this item's title")
-            toggle = SEL["promote_toggle"](panel)
-            n = await toggle.count()
-            if n > 1:
-                raise PosterError(f"the Share Listing panel has {n} toggles: can't tell which is Promote My Closet")
-            if n == 1 and await toggle.is_checked():
-                raise PosterError("Promote My Closet is on in the Share Listing panel; it must stay off")
-            if n == 0 and not re.search(r"promote my closet off\b", _key(text)):
-                raise PosterError("can't tell whether Promote My Closet is off in the Share Listing panel")
+            # WO45 (live 2026-10-18, the Free People set): the panel carries a SECOND toggle now — a Posh Party
+            # ("Luxury Bags: Louis Vuitton, Mulberry, Goyard & More Posh Party") beside Promote My Closet, each in its
+            # own line item with its heading. Promote My Closet is found by its heading; every toggle on the panel
+            # must be off (a party or a promotion is never opted into): one that is on stops before List, with its name.
+            lines = SEL["share_lines"](panel)
+            if await lines.count():
+                promote = SEL["share_line_toggle"](lines.filter(has_text=re.compile("Promote My Closet", re.I)))
+                if await promote.count() != 1:
+                    raise PosterError("can't find the Promote My Closet toggle in the Share Listing panel")
+                for k in range(await lines.count()):
+                    line = lines.nth(k)
+                    box = SEL["share_line_toggle"](line)
+                    if await box.count() and await box.first.is_checked():
+                        name = re.sub(r"\s+", " ", await line.inner_text()).strip()[:80]
+                        raise PosterError(f"'{name}' is on in the Share Listing panel; every toggle must stay off")
+            else:                                          # the panel as recorded before (no line items)
+                toggle = SEL["promote_toggle"](panel)
+                n = await toggle.count()
+                if n > 1:
+                    raise PosterError(f"the Share Listing panel has {n} toggles: can't tell which is Promote My Closet")
+                if n == 1 and await toggle.is_checked():
+                    raise PosterError("Promote My Closet is on in the Share Listing panel; it must stay off")
+                if n == 0 and not re.search(r"promote my closet off\b", _key(text)):
+                    raise PosterError("can't tell whether Promote My Closet is off in the Share Listing panel")
         except PosterError as e:                       # the panel as it was, kept before ‹ Back takes it away
             try:
                 shot = self._evidence("panel", r.sku)
@@ -1488,6 +1520,94 @@ class PoshmarkPoster(Poster):
             if out["ok"]:
                 out["note"] = f"the public page shows {live.get('department')} › {live.get('category')}" \
                               + (f" › {live.get('subcategory')}" if live.get("subcategory") else "")
+            return out
+        finally:
+            await page.close()
+
+    async def set_photos(self, ctx: BrowserContext, url: str, payload: dict, dry: bool = False,
+                         shots: Path | None = None, go=None) -> dict:
+        """WO45 §6: photos added to a live listing on its edit page (the owner's authorization: "adding missing photos
+        to live listings through the edit pages, changing nothing else") — `payload["files"]` set on the edit page's
+        file input after its photos (`had` of them), each dialog Poshmark opens applied with its default crop (the cover
+        dialog's one-photo form), the filled tiles counted (had + add); then — never in a dry run, and only when `go()`
+        says yes — Update and the Share Listing panel's List This Item for THIS edit (WO40), pressed once; then the
+        public listing's JSON read until it shows that many photos. {"ok", "saved", "seen", "live", "error", "shot"}."""
+        m = SEL["listing_url"].search(urlparse(url or "").path)
+        if m is None:
+            raise PosterError(f"not a Poshmark listing address: {url!r}")
+        files = [str(f) for f in payload.get("files") or []]
+        had, add = int(payload.get("had") or 0), len(files)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.shot = (shots or Path(".")) / f"{m['id']}-poshmark-{stamp}-photos{'-dry' if dry else ''}.png"
+        out: dict = {"ok": False, "saved": False, "shot": str(self.shot)}
+        if not files:
+            return {**out, "error": "no photos to add"}
+        self._state = {}
+        page = await ctx.new_page()
+        try:
+            resp = await page.goto(SEL["edit_url"].format(base=self.base_url, id=m["id"]))
+            await page.wait_for_load_state("domcontentloaded")
+            if resp is not None and resp.status == 404:
+                return {**out, "error": "the edit page is gone (404)"}
+            tiles = SEL["edit_tiles"](page)
+            try:
+                await tiles.first.wait_for(state="visible", timeout=UPDATE_TIMEOUT_MS)
+            except PlaywrightTimeout:
+                await keep_evidence(page, self.shot, {"url": url, "found": False})
+                return {**out, "error": "no photo tiles on the edit page"}
+            before = await tiles.count()
+            if before >= had + add:
+                await keep_evidence(page, self.shot, {"url": url, "before": before, "had": had, "add": add})
+                return {**out, "ok": True, "saved": True, "seen": {"before": before},
+                        "note": f"the edit page already shows {before} photos"}
+            box = SEL["edit_photo_input"](page)
+            if not await box.count():
+                await keep_evidence(page, self.shot, {"url": url, "before": before, "input": False})
+                return {**out, "error": "no photo input on the edit page: nothing saved"}
+            await box.first.set_input_files(files)
+            want, waited = before + add, 0
+            while True:
+                dialog = SEL["cover_dialog"](page)
+                if await dialog.count():                  # the photo's crop dialog (one photo: no title) — Apply
+                    self._state = {}
+                    await self._apply_cover(page, dialog, 1)
+                    continue
+                other = SEL["any_dialog"](page)
+                if await other.count():
+                    text = re.sub(r"\s+", " ", await other.first.inner_text()).strip()
+                    await keep_evidence(page, self.shot, {"url": url, "dialog": text[:200]})
+                    return {**out, "error": f"a dialog that isn't recorded opened after the upload: '{text[:120]}': "
+                                            "nothing saved"}
+                if await tiles.count() >= want or waited >= THUMB_TIMEOUT_MS:
+                    break
+                await page.wait_for_timeout(THUMB_POLL_MS)
+                waited += THUMB_POLL_MS
+            await settle(page, 1, 2)
+            after = await tiles.count()
+            out["seen"] = {"before": before, "after": after, "had": had, "add": add}
+            await keep_evidence(page, self.shot, {"url": url, **out["seen"], "dry": dry})
+            if after < want:
+                return {**out, "error": f"the edit page shows {after} photos after adding {add} to {before}: nothing saved"}
+            if dry:
+                return {**out, "ok": True}
+            if go is not None and not go():
+                return {**out, "error": "stopped before Save"}
+            await SEL["update_listing"](page).first.click()
+            out["saved"] = True
+            out["save"] = await self._save_edit(page, m["id"])
+            from thrift_agent.crosslist import poshmark_listing
+            end, live = time.monotonic() + PUBLIC_CHECK_S * 3, None
+            while True:
+                live = await asyncio.to_thread(poshmark_listing, url)
+                if (live and live.get("photos") is not None and int(live["photos"]) >= want) or time.monotonic() >= end:
+                    break
+                await asyncio.sleep(PUBLIC_EVERY_S)
+            out["live"] = live
+            await keep_evidence(page, self.shot.with_name(self.shot.stem + "-after.png"),
+                                {"url": url, "save": out["save"], "live": live})
+            out["ok"] = bool(live and live.get("photos") is not None and int(live["photos"]) >= want)
+            if out["ok"]:
+                out["note"] = f"the public page shows {live['photos']} photos"
             return out
         finally:
             await page.close()
