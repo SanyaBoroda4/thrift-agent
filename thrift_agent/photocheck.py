@@ -155,6 +155,13 @@ async def run(s: Settings, db: DB, ps: dict, limit: int = PER_RUN) -> list[str]:
                 if live.get("error"):
                     db.log(iid, "photocheck_failed", {"site": mp, "error": str(live["error"])[:200]})
                     continue
+                # WO45 (live 2026-10-18): Vinted's listing page shows 5 thumbnails of a 7-photo listing — a count
+                # short of what was sent is confirmed on the edit page (its tiles) before any edit is asked for
+                sent = len(sent_photos(db, row))
+                if live.get("photos") is not None and int(live["photos"]) < sent and hasattr(poster, "read_photos"):
+                    tiles = await poster.read_photos(row["url"], s.path("failed") / "shots", iid)
+                    if tiles.get("count") is not None:
+                        live = {**live, "photos": max(int(live["photos"]), int(tiles["count"]))}
             done.append(apply(s, db, row, live))
         except Exception as e:  # noqa: BLE001 — a reading never ends the poster
             db.log(iid, "photocheck_failed", {"site": mp, "error": f"{type(e).__name__}: {e}"[:200]})

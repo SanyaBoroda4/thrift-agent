@@ -203,10 +203,13 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
       throw new Error(`${cid}: no option '${want}' (offered: ${texts.slice(0, 8).join(", ")})`);
     }
     await T.click(pick.o);
-    T.picked(st, cid, want, pick.t);
-    st.packageChoice = pick.t;
-    st.guesses.push(`package size set to '${pick.t}' (Depop offers no '${want}': ${texts.join(", ")})`);
     await T.until(() => !optionsOf(menuOf(cid)).length, 1500);
+    // the choice as the FORM shows it (the option's text carries its sub-line, "MediumUnder 1lb" — live 2026-10-18,
+    // the second mismatch): the input's value once the menu closed, else the option's first line
+    const shown = (document.getElementById(cid)?.value || "").trim() || String(pick.t).split(/\n|Under/)[0].trim();
+    T.picked(st, cid, want, shown);
+    st.packageChoice = shown;
+    st.guesses.push(`package size set to '${shown}' (Depop offers no '${want}': ${texts.map((t) => t.split(/\n|Under/)[0].trim()).join(", ")})`);
   }
 
   async function choose(st, cid, value, { typed = null, category = false, optional = false, prefix = false } = {}) {
@@ -564,9 +567,12 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
         // this form (WO45: the nearest offered when Depop's menu has no "Extra small"), never one the menu lacks
         const pkg = document.getElementById(ids.package);
         const pkgWant = st.packageChoice || f.package_size;
-        if (pkgWant && pkg && !T.norm(pkg.value).startsWith(T.norm(pkgWant))) {
-          st.notes.push(`Depop changed the package size to '${pkg.value}': set back to ${pkgWant}`);
-          await packageSize(st, ids.package, pkgWant);
+        if (pkgWant && pkg) {
+          await T.until(() => ((pkg.value || "").trim() ? true : null), 3000);   // Depop redraws it after a chip change
+          if (!T.norm(pkg.value).startsWith(T.norm(pkgWant))) {
+            st.notes.push(`Depop changed the package size to '${pkg.value}': set back to ${pkgWant}`);
+            await packageSize(st, ids.package, pkgWant);
+          }
         }
         if (f.brand && !st.brandOther && brandBox && T.brandKey(brandBox.value) !== T.brandKey(st.brandChoice)) {
           st.notes.push(`Depop changed the brand to '${brandBox.value}': set back`);

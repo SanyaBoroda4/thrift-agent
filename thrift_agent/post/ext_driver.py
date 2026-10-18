@@ -112,6 +112,18 @@ class OneOf:
         return f"one of {self.values}"
 
 
+class PackageOf(OneOf):
+    """WO45: Depop's package size as the form shows it ("Medium") against the plan or the page's choice — an option's
+    text may carry its weight line ("MediumUnder 1lb"): the one is the other's first word(s)."""
+
+    def matches(self, seen) -> bool:
+        s = str(seen or "").upper().strip()
+        return bool(s) and any(v == s or v.startswith(s) or s.startswith(v) for v in self.values)
+
+    def __repr__(self) -> str:
+        return f"package {self.values}"
+
+
 class BrandOf:
     """WO36: a read-back brand that is one of ours — exactly one of our names (brands.candidates), or a name of ours
     followed by more words (the one the step took: "Alo Yoga" for "alo") — or the site's own fallback when none of ours
@@ -247,7 +259,7 @@ class ExtensionPoster(Poster):
             # bigger size it offered (its `package_choice`, said in the check line); the read-back is that one
             choice = (seen or {}).get("package_choice")
             if choice and getattr(f, "package_size", None) and str(choice).upper() != str(f.package_size).upper():
-                want["package"] = OneOf([f.package_size, choice])
+                want["package"] = PackageOf([f.package_size, choice])
             for key in (seen or {}):                   # any other multi-select on the form (an occasion…): empty
                 if key.endswith("-input") and key not in want and key not in DEPOP_SINGLE:
                     want[key] = Chosen([])
@@ -824,6 +836,18 @@ class ExtensionPoster(Poster):
             raise PosterError(f"{self.site}: the Thrift Chrome extension isn't connected")
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         self.shot = (shots or Path(".")) / f"{sku or 'listing'}-{self.name}-{stamp}-photos{'-dry' if dry else ''}.png"
+        # WO45 (live 2026-10-18): Vinted's listing page shows 5 thumbnails for a 7-photo listing, so the photo check
+        # asked for 2 more three times — the edit page is read first: a listing that already shows them all is done,
+        # one that shows another count than recorded is left as it is (changed since)
+        before = await self.read_photos(url, shots, sku)
+        count = before.get("count")
+        if count is not None:
+            if int(count) >= had + len(files):
+                return {"ok": True, "saved": True, "after": int(count), "already": True,
+                        "note": f"the edit page already shows {count} photos", "shot": before.get("shot")}
+            if int(count) != had:
+                return {"ok": False, "saved": False, "after": int(count), "shot": before.get("shot"),
+                        "error": f"the listing shows {count} photos, not the {had} recorded: changed since — left as it is"}
         bridge = self._bridge()
         urls = bridge.photo_urls(f"{sku or 'listing'}-add", files, self.name)
         job = bridge.submit(self.name, "photos", {"fields": {}, "copy": {}, "price": None, "photos": urls,

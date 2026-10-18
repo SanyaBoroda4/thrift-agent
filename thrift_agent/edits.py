@@ -268,8 +268,10 @@ async def run_one(s: Settings, db: DB, site: str, poster, ctx, sites: list[str],
         return True
     if out.get("ok"):
         _done(db, row, f"{what}: {out.get('note') or 'the site shows it'}", evidence)
+        if out.get("after") is not None:                    # WO45: the count the edit page showed after Save
+            payload = {**payload, "live": out["after"]}
         _mirror(db, iid, site, payload)
-        notify.say(f"✓ {title} is now {what} on {label}")
+        notify.say(f"✓ {title} {'already shows' if out.get('already') else 'is now'} {what} on {label}")
         return True
     _update(db, row["id"], status="unconfirmed", evidence=evidence, attempts=int(row["attempts"] or 0) + 1,
             error=out.get("error") or "saved; the site doesn't show it yet")
@@ -306,10 +308,11 @@ def _mirror(db: DB, iid: str, site: str, payload: dict) -> None:
     fields = loads(listing["fields_json"]) or {}
     if "files" in payload:                                        # WO45 §6: the photos the site now has
         had = int(payload.get("had") or 0)
+        live = int(payload["live"]) if payload.get("live") is not None else had + len(payload["files"])
         if isinstance(fields.get("photos"), list):                # Depop's / Vinted's mapped list grows with them
             fields["photos"] = list(fields["photos"]) + list(payload["files"])
-        db.upsert_listing(iid, site, fields_json=fields, photos_live=had + len(payload["files"]),
-                          photos_read_at=_iso(_now()))
+            fields["photos"] = fields["photos"][:max(live, len(fields["photos"]) - len(payload["files"]))]
+        db.upsert_listing(iid, site, fields_json=fields, photos_live=live, photos_read_at=_iso(_now()))
         return
     if site == "poshmark":
         fields.update({k: v for k, v in (payload.get("want") or {}).items() if k != "size"})
