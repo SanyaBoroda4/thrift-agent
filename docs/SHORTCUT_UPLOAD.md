@@ -70,6 +70,11 @@ Duplicate the Shortcut, name it **New item (TEST)**, and add `&test=1` to BOTH a
 (`…&name=Name&test=1`) and the end one (`…/end?count=Count&test=1`). Its shares are test shares on the Mac: the cards
 go to your private chat marked 🧪 and nothing is posted.
 
+**Its iCloud copy:** in the test copy, change the two Save File paths from `Posh/inbox/…` to `Posh/test/…` — a folder
+the Mac doesn't watch. The iCloud copy carries no test mark of its own: if it were saved into `Posh/inbox` and reached
+the Mac before the API's copy was asked for, it could make a real card. (The Mac also marks an inbox copy as a test
+the moment the API says so, and tells you if a copy was taken before that — but the separate folder is the sure way.)
+
 ## Checking it
 
 After the first share: `thrift status` on the Mac, or the private chat — the share's card as usual. On the PC,

@@ -67,10 +67,43 @@
       return (data.items || []).filter((x) => x && x.id).map((x) => ({
         id: String(x.id), title: String(x.title || ""), text: String(x.title || ""),
         url: x.url ? new URL(x.url, location.origin).href : `${location.origin}/items/${x.id}`,
+        ...itemFacts(x),
       }));
     } catch (e) {
       return [];
     }
+  }
+
+  // WO45 follow-up: what one wardrobe item says about itself — its price, its state, and its photo count when the
+  // JSON carries the photos (a list) or a count; null when it doesn't (then the edit page is the only count). The
+  // first item's keys are reported once (`shape`) so the live JSON's names are known.
+  const itemFacts = (x) => ({
+    price: x.price?.amount ?? x.price ?? null,
+    is_reserved: !!x.is_reserved, is_hidden: !!x.is_hidden, is_closed: !!x.is_closed, is_draft: !!x.is_draft,
+    photos: Array.isArray(x.photos) ? x.photos.length : (Number.isInteger(x.photos_count) ? x.photos_count
+      : Number.isInteger(x.photo_count) ? x.photo_count : null),
+  });
+
+  // Every wardrobe item (96 a page, 5 pages at most): one JSON call a page — the bulk read of every listing's price,
+  // state and photo count, never a listing page each (WO45 follow-up: the owner, "looks like a bot").
+  async function wardrobeAll(member) {
+    const base = String(S().wardrobe?.url || "/api/v2/wardrobe/{member}/items?order=newest_first&per_page=40&page=1")
+      .replace("{member}", encodeURIComponent(member)).replace(/per_page=\d+/, "per_page=96");
+    const out = [];
+    let shape = null;
+    for (let n = 1; n <= 5; n++) {
+      const r = await fetch(new URL(base.replace(/page=\d+$/, `page=${n}`), location.origin).href,
+                            { credentials: "include", headers: { Accept: "application/json" } });
+      if (!r.ok) throw new Error(`Vinted's data answered HTTP ${r.status}`);
+      const data = await r.json();
+      const items = data.items || [];
+      if (!shape && items[0]) shape = Object.keys(items[0]).slice(0, 40);
+      for (const x of items) {
+        if (x && x.id) out.push({ id: String(x.id), title: String(x.title || ""), ...itemFacts(x) });
+      }
+      if (items.length < 96) break;
+    }
+    return { items: out, shape };
   }
 
   // WO41: ONE of the seller's listings in Vinted's own JSON, by its id (the price drop reads its price and whether
@@ -548,6 +581,18 @@
       // WO35: Vinted's own JSON of the seller's newest items (same origin, from the member page): each listing's exact
       // title and address — the confirmation after an upload. The tiles below only when the JSON can't be read.
       const member = (location.pathname.match(/\/member\/(\d+)/) || [])[1] || job.shop;
+      if (job.all) {                                    // WO45 follow-up: every listing's price, state, photo count
+        if (!member) return T.emit({ event: "error", job_id: job.job_id, stage: "find", page: "unknown",
+                                     message: "no member page to read Vinted's data from" });
+        try {
+          const all = await wardrobeAll(member);
+          return T.emit({ event: "result", job_id: job.job_id, listings: all.items, shape: all.shape,
+                          source: "wardrobe", url: location.href });
+        } catch (e) {
+          return T.emit({ event: "error", job_id: job.job_id, stage: "find", page: "unknown",
+                          message: String(e && e.message ? e.message : e).slice(0, 200) });
+        }
+      }
       if (job.item_id) {                                // WO41: one listing's price and state, by its id
         if (!member) return T.emit({ event: "error", job_id: job.job_id, stage: "find", page: "unknown",
                                      message: "no member page to read Vinted's data from" });

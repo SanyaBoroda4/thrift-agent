@@ -685,7 +685,28 @@ class PoshmarkPoster(Poster):
                 await field.click()                    # the menu opened again
             if choice.tab:
                 await self._choose(page, SEL["size_tabs"](page), choice.tab)
-            await self._choose(page, sizes, choice.button, loose=choice.loose)
+            # WO45 follow-up (live: the Marc Jacobs bag, three times — a Bags menu with one "One Size" tile whose
+            # click never registered): the second pick presses the tile with the keyboard (focus, Space), the third
+            # clicks its own container (div.multi-size-selector__button__container, the live markup) — each a real
+            # event; the read-back keeps the last word
+            el, _ = await self._pick(page, sizes, choice.button, loose=choice.loose)
+            container = None
+            if el is not None and repicked >= 2:
+                parent = (await el.evaluate_handle("e => e.parentElement")).as_element()
+                if parent is not None and "button__container" in (await parent.get_attribute("class") or ""):
+                    container = parent
+            if el is None:
+                await self._choose(page, sizes, choice.button, loose=choice.loose)
+            elif repicked == 1:
+                await el.focus()
+                await page.keyboard.press("Space")
+                self.notes.append(f"size '{choice.button}' picked again with the keyboard")
+            elif container is not None:
+                await _click(container)
+                self.notes.append(f"size '{choice.button}' picked again on its tile's container")
+            else:
+                await _click(el)
+                self.notes.append(f"size '{choice.button}' picked again")
             closed_since = None
 
         def how(menu: str) -> str:

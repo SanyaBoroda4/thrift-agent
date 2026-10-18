@@ -176,6 +176,46 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
     return [ids.category, ids.brand, ids.condition, ids.size, ids.package].includes(cid);
   };
 
+  // WO45 follow-up: the shop's products from Depop's own JSON (its API host, with the page's sign-in token — the
+  // receipts' way, WO38), each with its address, price, sold state and photo count when the data carries the pictures
+  // (a list) — the bulk read behind the photo check, so no listing page is opened unless something looks wrong. The
+  // first product's keys are reported once (`shape`). null when the JSON can't be read (the shop page's tiles then).
+  async function shopAll(job) {
+    const token = (document.cookie.match(/(?:^|;\s*)access_token=([^;]+)/) || [])[1];
+    const shop = job.shop || (location.pathname.match(/^\/([^/]+)\/?$/) || [])[1];
+    if (!shop) return null;
+    const base = T.selectors.depop.shop_products?.json
+      || `https://webapi.depop.com/api/v2/shop/${encodeURIComponent(shop)}/products/?limit=200`;
+    const headers = { Accept: "application/json" };
+    if (token) headers.Authorization = `Bearer ${decodeURIComponent(token)}`;
+    const listings = [];
+    let shape = null, note = null, url = base;
+    try {
+      for (let page = 0; page < 10 && url; page++) {
+        const r = await fetch(url, { credentials: "omit", headers });
+        note = `products JSON ${r.status}`;
+        if (!r.ok) return null;
+        const data = await r.json();
+        const list = [data?.objects, data?.products, data?.items, data?.data].find(Array.isArray) || [];
+        if (!shape && list[0]) shape = Object.keys(list[0]).slice(0, 40);
+        for (const p of list) {
+          if (!p || typeof p !== "object") continue;
+          const slug = p.slug || (String(p.url || p.href || "").match(/\/products\/([^/?#]+)/) || [])[1] || null;
+          const price = p.price?.priceAmount ?? p.price?.amount ?? p.priceAmount ?? p.price ?? null;
+          const pics = Array.isArray(p.pictures) ? p.pictures.length : Array.isArray(p.photos) ? p.photos.length : null;
+          listings.push({ id: p.id != null ? String(p.id) : null, slug, price: price != null ? String(price) : null,
+                          sold: !!(p.sold || p.isSold || p.status === "SOLD"), photos: pics,
+                          url: slug ? `${location.origin}/products/${slug}/` : null });
+        }
+        const next = data?.meta?.last_offset_id ?? data?.meta?.next ?? null;
+        url = next && data?.meta?.end === false ? `${base}&offset_id=${encodeURIComponent(next)}` : null;
+      }
+    } catch (e) {
+      return null;
+    }
+    return { listings, shape, source: "json", note };
+  }
+
   // WO45 (live 2026-10-17/18, the Polo tee, three times): Depop's package menu for this seller offered Medium, Large
   // and Extra large only, and our "Extra small" failed the form each time. A package size the menu doesn't offer is
   // the smallest offered one that is at least ours, else the largest offered — said in the "check:" line; the choice
@@ -818,13 +858,17 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
     },
 
     async find(job, st) {
+      if (job.all) {                                    // WO45 follow-up: every product's price, state, photo count
+        const bulk = await shopAll(job);                // from Depop's own products JSON, never a listing page each
+        if (bulk) return T.emit({ event: "result", job_id: job.job_id, ...bulk });
+      }
       await T.waitFor(S().shop_links.selectors, { timeout: 8000, visible: false });   // the shop's tiles
       await T.quiet(600, 3000);
       await T.sleep(150);
       const listings = T.$$(S().shop_links.selectors).map((a) => ({
         url: a.href, text: (a.getAttribute("title") || a.textContent || "").replace(/\s+/g, " ").trim(),
       }));
-      T.emit({ event: "result", job_id: job.job_id, listings });
+      T.emit({ event: "result", job_id: job.job_id, listings, source: "page" });
     },
   };
 })();

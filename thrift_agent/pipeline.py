@@ -532,6 +532,9 @@ def process_batch(s: Settings, db: DB, bid: str) -> None:
     b = db.batch(bid)
     src = batch_dir(b)
     work = s.path("work") / bid
+    if not src.is_dir():
+        vanished_share(s, db, bid, src)                 # WO45 follow-up: a folder gone while it was being read
+        return
     listed = prep.list_photos(src)
     only = registered_names(db, bid) if late_of(db, bid) else None       # WO45 §6: an in-place late batch takes
     if only:                                                             # only the photos registered to it
@@ -637,6 +640,21 @@ def process_batch(s: Settings, db: DB, bid: str) -> None:
         approve.pump(s, db)                               # the contact sheet, when it is next (one question at a time)
         return
     split(s, db, bid, groups)
+
+
+VANISHED_LINE = ("⚠️ The {when} share's folder disappeared from iCloud while the Mac was reading it (deleted on the "
+                 "phone, or moved?) — nothing was listed from it. Share those photos again if they were yours.")
+
+
+def vanished_share(s: Settings, db: DB, bid: str, src: Path) -> None:
+    """WO45 follow-up (live 2026-10-12, 6:02 PM: the inbox folder was gone by the time the worker read it — a
+    traceback in the ops chat, nothing else): the batch is `failed` with a plain reason, the share's outcome `failed`,
+    ONE private line — never a traceback for the owner."""
+    from thrift_agent import shares
+    db.set_batch(bid, status="failed", reasons=["the share folder vanished while it was being read"])
+    db.log(bid, "batch_failed", {"folder": src.name, "reason": "the share folder vanished while it was being read"})
+    shares.outcome(db, shares.share_id_of(src), "failed", "the folder vanished while it was being read", batch_id=bid)
+    notify.say(VANISHED_LINE.format(when=share_time(src)))
 
 
 def repeat_share(s: Settings, db: DB, bid: str, src: Path, known_as: dict[str, str], same_share: bool = False) -> None:

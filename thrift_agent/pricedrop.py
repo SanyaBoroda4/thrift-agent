@@ -168,6 +168,58 @@ def plan(db: DB, now: datetime | None = None, item: str | None = None, force: bo
     return started
 
 
+OWNER = "owner"                           # WO45 follow-up: the owner's own price for a live item ("price 80")
+
+
+def owner_price(db: DB, iid: str, amount: int) -> list[str]:
+    """WO45 follow-up (the owner): a reply "price 80" to a live item's card changes its price on every site it is on,
+    through the WO41 price-edit path — one row per live site, stage `owner`, the new price given (the site's price
+    is read right before the change as always; the floor and the automatic stages don't apply); the item's
+    `owner_price` and each listing's `price` follow once the site shows it. Open automatic drops of the item are
+    called off (her price wins). Returns the rows made."""
+    it = db.item(iid)
+    if it is None:
+        raise ValueError(f"unknown item {iid}")
+    if it["status"] != "posted":
+        raise ValueError(f"the item is {it['status']}: a price before it is listed goes on its card")
+    live = [r for r in db.listings_for(iid) if r["status"] == "posted" and r["url"]]
+    if not live:
+        raise ValueError("the item isn't live on any site")
+    cancel(db, iid, "the owner's own price")
+    now, rows = _now(), []
+    stamp = now.strftime("%y%m%d%H%M%S")
+    with db.tx() as c:
+        for r in live:
+            rid = f"pc_{iid}_{r['marketplace']}_{OWNER}_{stamp}"
+            c.execute("INSERT OR IGNORE INTO price_changes (id, item_id, marketplace, stage, new_price, status, due_at, "
+                      "created_at, updated_at) VALUES (?,?,?,?,?,'pending',?,?,?)",
+                      (rid, iid, r["marketplace"], OWNER, float(amount), _iso(now), _iso(now), _iso(now)))
+            rows.append(rid)
+        c.execute("UPDATE items SET owner_price=?, updated_at=? WHERE id=?", (int(amount), _iso(_now()), iid))
+    db.log(iid, "owner_price_change", {"amount": amount, "sites": [r["marketplace"] for r in live]})
+    return rows
+
+
+def _owner_done(db: DB, iid: str) -> None:
+    """ONE private line once every site's owner-price row of the item is settled."""
+    rows = db.conn.execute("SELECT * FROM price_changes WHERE item_id=? AND stage=? AND dry=0 ORDER BY created_at DESC",
+                           (iid, OWNER)).fetchall()
+    newest = rows[0]["created_at"] if rows else None
+    mine = [r for r in rows if r["created_at"] == newest]
+    if not mine or any(r["status"] in OPEN for r in mine) or any(r["announced_at"] for r in mine):
+        return
+    done = [crosslist.LABEL.get(r["marketplace"], r["marketplace"]) for r in mine if r["status"] == "done"]
+    missed = [f"{crosslist.LABEL.get(r['marketplace'], r['marketplace'])} ({r['error'] or r['status']})"
+              for r in mine if r["status"] != "done"]
+    new = mine[0]["new_price"]
+    text = f"✓ {short_name(db, iid)}: ${new:g} on {', '.join(done)}" if done else f"⚠️ {short_name(db, iid)}: ${new:g}"
+    if missed:
+        text += (" — not on " if done else " not changed on ") + ", ".join(missed)
+    notify.say(text)
+    with db.tx() as c:
+        c.executemany("UPDATE price_changes SET announced_at=? WHERE id=?", [(_iso(_now()), r["id"]) for r in mine])
+
+
 def _set(db: DB, iid: str, **values) -> None:
     it = db.item(iid)
     if it is not None and any(it[k] != v for k, v in values.items()):
@@ -249,14 +301,19 @@ def _done(db: DB, row, new: float, note: str, stage: str | None = None) -> None:
     pct = round(100 * (1 - new / old), 1) if old else None
     _update(db, row["id"], status="done", new_price=new, pct=pct, done_at=_iso(_now()), error=None, evidence=note,
             **({"stage": stage} if stage else {}))
-    db.upsert_listing(row["item_id"], row["marketplace"], price_live=new, price_read_at=_iso(_now()))
+    db.upsert_listing(row["item_id"], row["marketplace"], price_live=new, price_read_at=_iso(_now()),
+                      **({"price": int(round(new))} if row["stage"] == OWNER else {}))   # her price is the listing's
     db.log(row["item_id"], "price_dropped", {"mp": row["marketplace"], "stage": stage or row["stage"], "old": old,
                                              "new": new, "note": note})
+    if row["stage"] == OWNER:
+        _owner_done(db, row["item_id"])
 
 
 def _skip(db: DB, row, why: str) -> None:
     _update(db, row["id"], status="skipped", error=why)
     db.log(row["item_id"], "price_drop_skipped", {"mp": row["marketplace"], "stage": row["stage"], "why": why})
+    if row["stage"] == OWNER:
+        _owner_done(db, row["item_id"])
 
 
 def _failed(db: DB, row, why: str, title: str) -> None:
@@ -266,7 +323,9 @@ def _failed(db: DB, row, why: str, title: str) -> None:
             retry_at=None if final else _iso(_now() + RETRY_AFTER))
     db.log(row["item_id"], "price_drop_failed", {"mp": row["marketplace"], "stage": row["stage"], "why": why[:300],
                                                  "attempts": attempts})
-    if final:
+    if final and row["stage"] == OWNER:
+        _owner_done(db, row["item_id"])                    # the item's one line names the site that didn't take it
+    elif final:
         old, new = row["old_price"], row["new_price"]
         prices = f": ${old:g} → ${new:g}" if old and new else ""
         notify.say(f"Price drop on {crosslist.LABEL.get(row['marketplace'], row['marketplace'])} failed for {title}"
@@ -287,7 +346,9 @@ async def apply(s: Settings, db: DB, row, poster, ctx, sites: list[str]) -> str:
     title = crosslist.item_name(db, iid) if it is not None else iid
     listing = db.listing(iid, site)
     dry = bool(row["dry"])
-    if not dry and (why := why_not(db, it)):
+    owner = row["stage"] == OWNER                       # her own price: no floor, no 'no drop', no hand-change rule
+    why = why_not(db, it) if not dry else None
+    if why and not (owner and why == "the owner said no drop"):
         _skip(db, row, why)
         return "skipped"
     if listing is None or listing["status"] != "posted" or not listing["url"]:
@@ -321,18 +382,24 @@ async def apply(s: Settings, db: DB, row, poster, ctx, sites: list[str]) -> str:
         if row["new_price"] is not None and live == row["new_price"]:
             _done(db, row, live, "the site's data shows the new price")
             return "done"
-        if old is not None and live < old:
+        if old is not None and live < old and not owner:
             _done(db, row, live, f"changed by hand to ${live:g}", stage=None)
             return "done"
         # the old price still: the Save didn't take — one attempt counted, tried again the next window
         _failed(db, _fresh(db, row["id"]), "saved, but the site still shows the old price", title)
         return _fresh(db, row["id"])["status"]
-    if old is not None and live < old and not dry:
+    if owner and row["new_price"] is not None and float(live) == float(row["new_price"]):
+        _done(db, row, live, "the site shows that price already")
+        return "done"
+    if old is not None and live < old and not dry and not owner:
         _done(db, row, live, f"changed by hand to ${live:g}")
         return "done"
     old = live
-    new = row["new_price"] if row["new_price"] is not None and row["old_price"] == live else dropped(live)
-    if (low := too_low(site, new, floor_of(s))) and not dry:
+    if owner:
+        new = float(row["new_price"])
+    else:
+        new = row["new_price"] if row["new_price"] is not None and row["old_price"] == live else dropped(live)
+    if (low := too_low(site, new, None if owner else floor_of(s))) and not dry:
         _update(db, row["id"], old_price=old, new_price=new)
         _skip(db, row, low)
         return "skipped"
@@ -433,7 +500,7 @@ def announce(s: Settings, db: DB, now: datetime | None = None) -> str | None:
             if (_t(r["retry_at"]) or now) <= now]:
         return None
     rows = db.conn.execute("SELECT * FROM price_changes WHERE dry=0 AND status='done' AND announced_at IS NULL "
-                           "ORDER BY item_id, marketplace").fetchall()
+                           "AND stage<>? ORDER BY item_id, marketplace", (OWNER,)).fetchall()   # her own: a private line
     if not rows:
         return None
     parts, seen = [], []

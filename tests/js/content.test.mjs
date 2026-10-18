@@ -1036,8 +1036,9 @@ test("vinted: the shop read takes Vinted's JSON of the newest items when it answ
   await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
   const r = plain(p.events().find((e) => e.event === "result"));
   assert.equal(r.source, "wardrobe");
-  assert.deepEqual(r.listings, [{ id: "7", title: items[0].title, text: items[0].title,
-                                  url: "https://www.vinted.com/items/7" }]);
+  assert.deepEqual(r.listings.map(({ id, title, text, url }) => ({ id, title, text, url })),
+                   [{ id: "7", title: items[0].title, text: items[0].title, url: "https://www.vinted.com/items/7" }]);
+  assert.equal(r.listings[0].photos, null);                            // WO45 follow-up: the item's facts ride along
 });
 
 test("vinted: a member page without the dialog presses nothing", async () => {
@@ -1524,4 +1525,35 @@ test("Depop: a 'photos' job on the edit page adds the files after the tiles it h
   const q = plain(p.last());
   assert.equal(q.event, "result");
   assert.equal(q.seen.photos, 3);                                            // read only: counted, nothing added
+});
+
+test("Vinted: the shop read in bulk — every wardrobe item's price, state and photo count from its JSON (WO45 follow-up)", async () => {
+  const p = page("vinted", undefined, "https://www.vinted.com/member/12345");
+  p.w.fetch = async (u) => ({ ok: true, status: 200, json: async () => (String(u).includes("page=1") ? { items: [
+    { id: 1, title: "A", price: { amount: "40.0" }, photos: [{}, {}, {}], is_hidden: false },
+    { id: 2, title: "B", price: "35.0", is_reserved: true } ] } : { items: [] }) });
+  await p.w.Thrift.run({ job: { job_id: "v-bulk", site: "vinted", mode: "find", shop: "12345", wardrobe: true, all: true },
+                         selectors: SELECTORS, photos: [], pace: "fast" });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(r.source, "wardrobe");
+  assert.deepEqual(r.shape, ["id", "title", "price", "photos", "is_hidden"]);
+  assert.deepEqual(r.listings.map((x) => [x.id, x.price, x.photos, x.is_reserved]), [["1", "40.0", 3, false], ["2", "35.0", null, true]]);
+});
+
+test("Depop: the shop read in bulk from its products JSON with the page's token; the tiles when it can't be read", async () => {
+  const p = page("depop", undefined, "https://www.depop.com/tetianasorokina/");
+  p.d.cookie = "access_token=tok123";
+  const asked = [];
+  p.w.fetch = async (u, opts) => { asked.push([String(u), opts?.headers?.Authorization]); return { ok: true, status: 200,
+    json: async () => ({ objects: [{ id: 7, slug: "tetiana-shirt-24cb", price: { priceAmount: "40.0" }, pictures: [{}, {}], sold: false }],
+                          meta: { end: true } }) }; };
+  await p.w.Thrift.run({ job: { job_id: "d-bulk", site: "depop", mode: "find", shop: "tetianasorokina", all: true },
+                         selectors: SELECTORS, photos: [], pace: "fast" });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(r.source, "json");
+  assert.ok(asked[0][0].includes("/shop/tetianasorokina/products/") && asked[0][1] === "Bearer tok123", asked);
+  assert.deepEqual(r.listings, [{ id: "7", slug: "tetiana-shirt-24cb", price: "40.0", sold: false, photos: 2,
+                                  url: "https://www.depop.com/products/tetiana-shirt-24cb/" }]);
 });

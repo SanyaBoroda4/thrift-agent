@@ -1134,7 +1134,36 @@ def _route_message(s: Settings, db: DB, bot: Bot, msg: dict) -> str:
         return _reply_unconfirmed(s, db, bot, ref, text, mid)
     if kind == "skipped":
         return _reply_skipped(s, db, bot, ref, text, mid)
+    if kind == "posted":                                  # WO45 follow-up: "price 80" on the ✅ card
+        return _reply_posted(s, db, bot, ref, text, mid)
     return f"ignored: unknown outbox kind {kind}"
+
+
+PRICE_ONLY = re.compile(r"^\s*(?:price|list)?\s*\$?\s*(\d{1,5}(?:\.\d{1,2})?)\s*(?:dollars|usd)?\s*[.!]?\s*$", re.I)
+POSTED_HINT = ("Reply 'price 80' here to change the price on every site, or 'no drop' to keep the automatic drops "
+               "off this item")
+
+
+def _reply_posted(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int | None) -> str:
+    """A reply to an item's ✅ card: "price 80" (or a bare number) changes the price on every site it is on."""
+    if m := PRICE_ONLY.match(text or ""):
+        return _owner_price(s, db, bot, iid, int(round(float(m[1]))), mid)
+    bot.send_message(POSTED_HINT, reply_to=mid)
+    return f"posted {iid}: unreadable reply {text!r}"
+
+
+def _owner_price(s: Settings, db: DB, bot: Bot, iid: str, amount: int, reply_to: int | None) -> str:
+    """WO45 follow-up (the owner): her price for a live item, changed on every site through the price-edit path
+    (pricedrop.owner_price) and recorded; one answer at once, one private line when the sites show it."""
+    from thrift_agent import crosslist, pricedrop
+    try:
+        rows = pricedrop.owner_price(db, iid, amount)
+    except ValueError as e:
+        _tell(bot, reply_to, str(e))
+        return f"owner price {iid}: rejected ${amount}: {e}"
+    sites = ", ".join(crosslist.LABEL.get(r.split("_")[-3], r.split("_")[-3]) for r in rows)
+    _tell(bot, reply_to, f"✓ ${amount} — the price changes on {sites} in a minute")
+    return f"owner price {iid}: ${amount} on {sites}"
 
 
 def _no_drop_reply(text: str) -> bool:
@@ -1563,6 +1592,9 @@ def _reply_item(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int | N
     if price is None and note is None:
         bot.send_message(ITEM_HINT, reply_to=mid)
         return f"item {iid}: empty reply"
+    posted = db.item(iid)
+    if note is None and posted is not None and posted["status"] == "posted" and PRICE_ONLY.match(text or ""):
+        return _owner_price(s, db, bot, iid, price, mid)   # WO45 follow-up: a live item's price, on every site
     if note is None:
         return _set_price(s, db, bot, iid, price, mid)
     if (size := size_reply(note)) is not None:          # WO33: "Size S", "size s", "S" — with or without a price

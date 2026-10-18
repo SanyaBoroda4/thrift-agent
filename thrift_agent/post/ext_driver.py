@@ -903,6 +903,22 @@ class ExtensionPoster(Poster):
         seen = ev.get("seen") or {}
         return {"count": seen.get("photos"), "seen": seen}
 
+    async def read_shop(self) -> dict:
+        """WO45 follow-up: every listing of the shop in ONE read of the site's own data — Vinted's wardrobe JSON
+        (a page of 96 at a time), Depop's products JSON (the receipts' way, with the page's token) — each with its id
+        or slug, its price, its state and its photo count when the data carries the photos. {"listings": [...],
+        "shape": the first record's keys (logged once), "source"} | {"error"}; a login / CAPTCHA page stops the site."""
+        if not await self.wait_connected():
+            raise PosterError(f"{self.site}: the Thrift Chrome extension isn't connected")
+        shop = self.shop or self.learned_shop or ""
+        ev = await self._job("find", {"shop": shop, "wardrobe": self.name == "vinted", "all": True}, 180)
+        if ev.get("event") == "error":
+            if ev.get("page") in STOP_PAGES:
+                raise self._stop(ev)
+            return {"error": f"{ev.get('stage') or 'find'}: {ev.get('message')}"}
+        return {"listings": ev.get("listings") or [], "shape": ev.get("shape"), "source": ev.get("source"),
+                "note": ev.get("note")}
+
     async def read_listing(self, url: str) -> dict:
         """WO45 §6/§7: what the listing page shows — the photo count and the price — from the extension's "verify" job
         (Depop's JSON-LD images and price; Vinted's listing page). {"photos", "price", "live": the page's reading} |

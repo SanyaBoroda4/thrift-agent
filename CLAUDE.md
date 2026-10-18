@@ -1252,6 +1252,23 @@ item goes up on all three sites or she is told why (§7); she only taps (§8); e
 - Tests: `tests/test_wo45.py`, `tests/api/test_api_wo45.py`, `tests/api/test_api_uploads.py`, `tests/test_uploads.py`;
   the jsdom tests for the package fallback and the photos job; WO42's and WO37's updated to the 30-minute rule and
   the in-place late batches.
+- **Follow-up (the owner, 2026-10-18 evening):** (1) a reply **"price 80"** (or a bare number) to a LIVE item's card —
+  its price card or its ✅ card — changes the price on every site it is on through WO41's price-edit path
+  (`pricedrop.owner_price`: one `price_changes` row per live site, stage `owner`, the site's price read before the
+  change as always, no floor, no 'no drop'; `items.owner_price` and `listings.price` follow; ONE private line when
+  the sites show it, never the 🔻 group line); a price that differs on a site is her hand change: recorded
+  (`price_differs`), never undone, no message. (2) **The photo check reads the shops in BULK** (`photocheck.bulk_reads`,
+  every 6 h): Vinted's wardrobe JSON (`vinted.js wardrobeAll`, 96 a page), Depop's products JSON with the page's
+  token (`depop.js shopAll`, the receipts' way; the shop page's tiles when it can't be read) — each listing's price,
+  state and photo count when the JSON carries the photos; the first record's keys are logged once
+  (`photocheck_shape`). A listing's own edit page is opened only when the bulk data has no count for it or shows
+  fewer than were sent (to confirm before any edit), at most once a day per listing and 6 a run; Poshmark's public
+  JSON once a day. (3) A share folder gone while the Mac reads it (live 2026-10-12, 6:02 PM) → the batch `failed`
+  "the share folder vanished…", the ledger's outcome, ONE private line — never a traceback (`vanished_share`). (4) The
+  iCloud copy of a `?test=1` share: the API's word marks the inbox copy `_test` (`uploads._settle_known`); a copy
+  taken before that is told; the doc has the test Shortcut save its iCloud copy under `Posh/test/`. (5) Poshmark's
+  Bags size menu (the Marc Jacobs bag, three failures): the "One Size" tile's click didn't register — the repicks
+  now click its container, then press it with the keyboard (`_confirm_size.pick_again`); recorded live below.
 
 ## Size buttons, the photo memory, no "share it again", a listing's department changed (WO43, 2026-10-17)
 That evening: three items shared at 3:18 PM stayed on the iPhone (5G); WO42's "share it again" line went out; the

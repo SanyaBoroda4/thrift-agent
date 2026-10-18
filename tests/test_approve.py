@@ -370,8 +370,10 @@ def test_reply_price_error_is_sent_back_not_raised(env, tmp_path, facts):
     iid = _item(db, tmp_path, facts, status="posted")
     db.add_outbox(CHAT, 11, "item", iid)
     out = handle_update(s, db, bot, _reply("45", reply_to=11))
-    assert out.startswith(f"price {iid}: rejected")
-    assert "can't be changed" in bot.texts()[-1]
+    # WO45 follow-up: a price on a LIVE item's card is her new price for every site (pricedrop.owner_price); this
+    # posted item has no live listing row, so the answer says so — sent back, never raised
+    assert out.startswith(f"owner price {iid}: rejected")
+    assert "isn't live on any site" in bot.texts()[-1]
     assert _outbox(db, iid)[0]["resolved_at"]               # a posted item waits for nothing: no longer the open one
 
 

@@ -30,7 +30,7 @@ from pathlib import Path
 
 import httpx
 
-from thrift_agent import sales
+from thrift_agent import notify, sales
 from thrift_agent.config import Settings
 from thrift_agent.db import DB
 
@@ -124,9 +124,22 @@ def take(s: Settings, db: DB, client, share: dict, sid: str) -> bool:
 
 
 def _settle_known(db: DB, client, sid: str, found: Path, names: list[str], test: bool) -> None:
-    """The share's folder is here already: the iCloud copy (said once), or ours whose fetched call didn't go."""
+    """The share's folder is here already: the iCloud copy (said once), or ours whose fetched call didn't go.
+    WO45 follow-up: the iCloud copy of a TEST share carries no mark of its own — the API's word puts `_test` into the
+    folder while it still waits in the inbox (the intake then makes a 🧪 card, never a real one); a copy taken
+    before the API was asked is told to the owner (its card is a real one: 'same item' retires it)."""
     if source_of(found) != "azure":
         db.log(sid, "share_same_as_icloud", {"share_id": sid, "folder": found.name, "photos": names, "test": test})
+        if test:
+            if found.parent.name != "archive" and not (found / "_test").exists():
+                try:
+                    (found / "_test").write_text("1", encoding="utf-8")
+                    db.log(sid, "share_marked_test", {"share_id": sid, "folder": found.name})
+                except OSError as e:
+                    db.log(sid, "share_mark_failed", f"{type(e).__name__}: {e}")
+            elif found.parent.name == "archive":
+                notify.say(f"🧪 The iCloud copy of test share {sid} was taken before the API said it was a test — its "
+                           "card is a real one: reply 'same item' to it, or price it if it is real.")
     client.post(f"/shares/{sid}/fetched", {"names": names})
 
 
