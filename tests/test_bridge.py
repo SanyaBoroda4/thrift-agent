@@ -1131,3 +1131,19 @@ def test_a_change_the_site_refuses_is_reported_as_nothing_saved():
     assert fake.clicks == 1 and not out["ok"] and not out["saved"], out
     assert out["error"].startswith("Depop refused the change (Category: This field is required")
     assert out["error"].endswith("nothing saved")
+
+
+def test_a_package_size_the_menu_lacked_is_read_back_as_the_one_the_page_chose(tmp_path, selectors, monkeypatch):
+    """WO45 (live 2026-10-18, the Polo tee, three times): Depop's menu offered no "Extra small"; the page takes the
+    smallest bigger size it offers and reports it as `package_choice` — the read-back expects that one, never the one
+    the menu lacks; a page that reports no choice still has to show ours."""
+    import ext_fake
+    real = ext_fake.seen_for
+    monkeypatch.setattr(ext_fake, "seen_for", lambda job: {**real(job), "package": "Medium", "package_choice": "Medium"})
+    out, fake, _ = run(_with_fake([Outcome("dryrun")], mp="depop", selectors_path=selectors.path, dry=True,
+                                  tmp=tmp_path))
+    assert out.status == "dryrun", (out.error, out.diff)
+    monkeypatch.setattr(ext_fake, "seen_for", lambda job: {**real(job), "package": "Medium"})
+    out, fake, _ = run(_with_fake([Outcome("dryrun")], mp="depop", selectors_path=selectors.path, dry=True,
+                                  tmp=tmp_path))
+    assert out.status == "failed" and "package" in out.diff

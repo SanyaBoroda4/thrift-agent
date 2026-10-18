@@ -661,6 +661,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
         sku: S().sku ? value(S().sku.selectors) : null,
         photos: String(T.$$(S().photos.thumbs).length), photos_loaded: String(T.loaded(S().photos.thumbs)),
         package: of(ids.package) || null, shipping: st.shipping || null,
+        package_choice: st.packageChoice || null,          // WO45: the size chosen when the menu lacked ours
         boost: boosts().some((b) => b.checked), boost_found: boosts().length, size_menu: st.sizeMenu || null,
       };
       const leaf = String(f.category || "").split(" > ").pop();

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -60,13 +61,22 @@ def sent_photos(db: DB, row) -> list[str]:
     return [str(p) for p in render.get("photos") or []]
 
 
-def record(db: DB, iid: str, mp: str, photos: int | None, price: float | None) -> None:
+def money(value) -> float | None:
+    """A price as the site's page gives it — 35, "35.00", "$35.00", "1,250" (live 2026-10-18: Vinted's and Depop's
+    pages say "$35.00") — as a number, or None."""
+    if value is None:
+        return None
+    m = re.search(r"\d+(?:\.\d+)?", str(value).replace(",", ""))
+    return float(m.group()) if m else None
+
+
+def record(db: DB, iid: str, mp: str, photos: int | None, price) -> None:
     stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
     fields = {"photos_read_at": stamp}
     if photos is not None:
         fields["photos_live"] = int(photos)
-    if price is not None:
-        fields["price_live"] = float(price)
+    if (amount := money(price)) is not None:
+        fields["price_live"] = amount
         fields["price_read_at"] = stamp
     db.upsert_listing(iid, mp, **fields)
 
@@ -112,9 +122,10 @@ def apply(s: Settings, db: DB, row, live: dict) -> str:
                        "by hand")
             asked[key] = len(sent)
             db.kv_set(ASKED, json.dumps(asked))
-    if price is not None and row["price"] is not None and abs(float(price) - float(row["price"])) >= 1:
-        db.log(iid, "price_differs", {"site": mp, "site_price": price, "ours": row["price"]})
-        note += f"; price {price} on the site vs {row['price']} ours"
+    amount = money(price)
+    if amount is not None and row["price"] is not None and abs(amount - float(row["price"])) >= 1:
+        db.log(iid, "price_differs", {"site": mp, "site_price": amount, "ours": row["price"]})
+        note += f"; price {amount:g} on the site vs {row['price']} ours"
     return note
 
 

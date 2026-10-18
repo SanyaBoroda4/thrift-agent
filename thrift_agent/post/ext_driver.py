@@ -243,6 +243,11 @@ class ExtensionPoster(Poster):
             want["style-input"] = Chosen([])           # never (the owner, 2026-10-12)
             for name, values in (f.attributes or {}).items():
                 want[f"attributes.{name}-input"] = Chosen(ours(f"attributes.{name}-input", values))
+            # WO45 (live 2026-10-18, the Polo tee): Depop's menu had no "Extra small" — the page took the smallest
+            # bigger size it offered (its `package_choice`, said in the check line); the read-back is that one
+            choice = (seen or {}).get("package_choice")
+            if choice and getattr(f, "package_size", None) and str(choice).upper() != str(f.package_size).upper():
+                want["package"] = OneOf([f.package_size, choice])
             for key in (seen or {}):                   # any other multi-select on the form (an occasion…): empty
                 if key.endswith("-input") and key not in want and key not in DEPOP_SINGLE:
                     want[key] = Chosen([])

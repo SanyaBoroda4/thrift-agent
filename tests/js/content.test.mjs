@@ -1499,6 +1499,7 @@ test("Depop: a package size its menu doesn't offer becomes the smallest bigger o
   assert.equal(r.event, "result", JSON.stringify(r));
   assert.deepEqual(r.failed, []);
   assert.equal(r.seen.package, "Medium");
+  assert.equal(r.seen.package_choice, "Medium");                            // the driver's read-back takes that one
   assert.ok(r.guesses.some((g) => /^package size set to 'Medium' \(Depop offers no 'Extra small': Medium, Large, Extra large\)/.test(g)), r.guesses);
   assert.ok(!r.notes.some((n) => /set back to Extra small/.test(n)), r.notes);   // the tidy keeps the choice made
 });
