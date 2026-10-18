@@ -1208,7 +1208,10 @@ def late_cmd(take: list[str] = typer.Option(None, "--take", help="batch id(s) wh
              item: str = typer.Option(None, "--add-to", help="with --file: the photos added to this item"),
              file: list[str] = typer.Option(None, "--file", help="photo file(s) to add to --add-to's item"),
              dry_run: bool = typer.Option(False, "--dry-run", help="the live listings' photo edits queued as dry "
-                                                                   "runs: the edit pages filled, never saved")) -> None:
+                                                                   "runs: the edit pages filled, never saved"),
+             queue_edits: str = typer.Option(None, "--queue-edits", help="this item's live listings get the photos "
+                                                                          "they lack (after a dry run): one photos "
+                                                                          "edit per site")) -> None:
     """WO45 §6: late photos. --take <batch>: the archive folder's photos that aren't the batch's are taken now as a
     batch of their own (the worker compares them with the share's items: a photo of an item already made joins it —
     its card, its live listings —, the rest become items). --add-to <item> --file <photo>…: these photos added to the
@@ -1216,6 +1219,27 @@ def late_cmd(take: list[str] = typer.Option(None, "--take", help="batch id(s) wh
     edits fill the edit pages and never save. Without options: what the last looks did."""
     from thrift_agent import pipeline
     s, db = settings(), _db()
+    if queue_edits:
+        from thrift_agent import edits
+        it = db.item(queue_edits)
+        if it is None:
+            raise typer.BadParameter(f"unknown item {queue_edits}")
+        photos = ((loads(it["renders"]) or {}).get("poshmark") or {}).get("photos") or []
+        queued = []
+        for row in db.listings_for(queue_edits):
+            if row["status"] != "posted" or not row["url"]:
+                continue
+            fields = loads(row["fields_json"]) or {}
+            had = len(fields.get("photos") or []) or (int(row["photos_live"]) if row["photos_live"] else 0)
+            if not had and row["marketplace"] == "poshmark":
+                had = int(row["photos_live"] or 0)
+            rows = edits.queue_photos(s, db, queue_edits, row["marketplace"], [str(p) for p in photos[had:]], had,
+                                      dry=dry_run)
+            queued += [f"{row['marketplace']} ({len(photos) - had} photos after {had})" for _ in rows]
+        db.conn.commit()
+        print(escape(f"{queue_edits}: " + ("; ".join(queued) if queued else "nothing to add")
+                     + (" (dry runs)" if queued and dry_run else "")))
+        return
     if item or file:
         if not (item and file):
             raise typer.BadParameter("--add-to needs --file, and --file needs --add-to")

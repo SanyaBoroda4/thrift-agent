@@ -452,13 +452,18 @@ def test_the_late_and_shares_commands(env, monkeypatch, capsys):
     bid, iid = _item(s, db, facts_for(), status="posted", posted=("vinted",))
     extra = s.path("work") / "extra.jpg"
     Image.new("RGB", (60, 80), "red").save(extra)
-    cli.late_cmd(take=None, item=iid, file=[str(extra)], dry_run=False)
+    cli.late_cmd(take=None, item=iid, file=[str(extra)], dry_run=False, queue_edits=None)
     assert "1 photos added; edits queued on vinted" in capsys.readouterr().out
+    db.conn.execute("DELETE FROM listing_edits")                               # --queue-edits: the rows the sites lack
+    cli.late_cmd(take=None, item=None, file=None, dry_run=True, queue_edits=iid)
+    out = capsys.readouterr().out
+    assert "vinted (1 photos after 1)" in out and "(dry runs)" in out
+    assert db.conn.execute("SELECT dry FROM listing_edits WHERE item_id=?", (iid,)).fetchone()[0] == 1
     shares.seen(db, "2026-10-18_121154", "icloud", 20, 1)
     cli.shares_cmd(day="2026-10-18", all_=False)
     assert "2026-10-18_121154 (icloud; 1 of 20 photos)" in capsys.readouterr().out
     with pytest.raises(Exception):
-        cli.late_cmd(take=["b_nope"], item=None, file=None, dry_run=False)
+        cli.late_cmd(take=["b_nope"], item=None, file=None, dry_run=False, queue_edits=None)
 
 
 # ---------------------------------------------------------------- §10 the replay harness
