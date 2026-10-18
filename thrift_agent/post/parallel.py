@@ -346,6 +346,9 @@ async def _cross_turn(s, db, ps, mp, dry, state, awake, takedowns) -> bool:
     if (reachable and may_take_down(s, db, mp) and not crosslist.blocked(db, mp)
             and await runner.recheck_unconfirmed(s, db, ps, mp)):
         return True
+    if (reachable and not dry and not crosslist.blocked(db, mp) and not runner._paused(db)
+            and await listing_edit(s, db, mp, poster, None, list(ps), dry)):   # WO43: the owner's edit, any hour
+        return True
     hours_ok, _ = can_post(s, 0, 0)
     if dry or not reachable or not hours_ok or crosslist.blocked(db, mp) or runner._paused(db):
         state.idle(mp)

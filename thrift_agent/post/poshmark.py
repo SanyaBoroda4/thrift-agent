@@ -164,6 +164,11 @@ SEL = {
     "title": lambda p: p.locator('input[data-vv-name="title"]'),
     "description": lambda p: p.locator('textarea[data-vv-name="description"]'),
     "category_open": lambda p: p.get_by_text("Select Category", exact=True).locator("visible=true"),
+    # WO43: the edit page's category field shows the listing's current category, never "Select Category" (live
+    # 2026-10-18: `selectedvalue="Shoes"` in `.listing-editor__category-container`; the department links are drawn
+    # once it opens, as on the create form)
+    "category_open_edit": lambda p: p.locator('.listing-editor__category-container [data-test="dropdown"] '
+                                              '.dropdown__selector:visible'),
     "department": lambda p, et: p.locator(f'a.dropdown__link[data-et-name="{et}"]:visible'),
     "department_all": lambda p: p.locator('a[data-et-name="all"]:visible'),
     # The class sits on the <li> (the inspection) or on its <a> (the departments in the snapshot): either is fine.
@@ -568,11 +573,11 @@ class PoshmarkPoster(Poster):
             raise PosterError("Poshmark's cover dialog did not close after Apply") from None
         await settle(page, 0.5, 1.2)
 
-    async def _category(self, page: Page, r: Render) -> None:
+    async def _category(self, page: Page, r: Render, trigger: Locator | None = None) -> None:
         et = r.department.strip().lower()
         if et not in DEPARTMENTS:
             raise Skipped(f"Poshmark has no '{r.department}' department (the category is required)")
-        trigger = SEL["category_open"](page)
+        trigger = SEL["category_open"](page) if trigger is None else trigger   # WO43: the edit page's own field
         await self._remember("category", trigger)
         await trigger.click()
         dept, back = SEL["department"](page, et), SEL["department_all"](page)
@@ -1435,14 +1440,14 @@ class PoshmarkPoster(Poster):
             await page.wait_for_load_state("domcontentloaded")
             if resp is not None and resp.status == 404:
                 return {**out, "error": "the edit page is gone (404)"}
-            trigger = SEL["category_open"](page).first
+            trigger = SEL["category_open_edit"](page).first
             try:
                 await trigger.wait_for(state="visible", timeout=UPDATE_TIMEOUT_MS)
             except PlaywrightTimeout:
                 await keep_evidence(page, self.shot, {"url": url, "found": False})
                 return {**out, "error": "no category field on the edit page"}
             try:
-                await self._category(page, r)                 # department → category → subcategory
+                await self._category(page, r, trigger)        # department → category → subcategory
                 await self._size(page, r)                     # the new department's size menu
             except (Skipped, PosterError) as e:
                 await keep_evidence(page, self.shot, {"url": url, "error": str(e)})
