@@ -67,11 +67,13 @@ def queue(db: DB, iid: str, kind: str, payloads: dict[str, dict], dry: bool = Fa
 
 
 def due(db: DB, site: str, now: datetime | None = None) -> list:
+    """The site's rows to work on: pending ones (a failed attempt waits RETRY_AFTER), and unconfirmed ones — saved
+    once, the site not yet showing it — after RETRY_AFTER too, and those are only READ (`run_one`), never saved again
+    blind (live 2026-10-18: Vinted's refusal was followed by a second Save within the minute)."""
     now = now or _now()
     rows = db.conn.execute("SELECT * FROM listing_edits WHERE marketplace=? AND status IN ('pending', 'unconfirmed') "
                            "ORDER BY created_at", (site,)).fetchall()
-    return [r for r in rows if not r["error"] or not r["updated_at"]
-            or r["status"] == "pending" and _retry_ok(r, now) or r["status"] == "unconfirmed"]
+    return [r for r in rows if _retry_ok(r, now)]
 
 
 def _retry_ok(row, now: datetime) -> bool:
@@ -210,12 +212,27 @@ async def run_one(s: Settings, db: DB, site: str, poster, ctx, sites: list[str],
     what = path_text(payload.get("path") or payload.get("want") or {}) or row["kind"]
     shots = s.path("failed") / "shots"
     shots.mkdir(parents=True, exist_ok=True)
+    from thrift_agent.post.base import AccountBlocked
+    if row["status"] == "unconfirmed":                 # saved once already: the site is READ, never saved again blind
+        try:
+            shown = await _shows(site, poster, url, payload, iid, shots)
+        except AccountBlocked:
+            raise
+        except Exception as e:  # noqa: BLE001
+            shown = False
+            notify.say(f"❌ {label}: couldn't read {title} after the change: {type(e).__name__}: {e}")
+        if shown:
+            _done(db, row, f"{what}: the site shows it now", row["evidence"])
+            _mirror(db, iid, site, payload)
+            notify.say(f"✓ {title} is now {what} on {label}")
+        else:
+            _failed(db, row, "saved, but the site doesn't show the change", title)
+        return True
 
     def go() -> bool:
         _update(db, row["id"], status="saving")
         return True
 
-    from thrift_agent.post.base import AccountBlocked
     try:
         if site == "poshmark":
             out = await poster.set_category(ctx, url, payload, dry=dry, shots=shots, go=go)
@@ -249,6 +266,19 @@ async def run_one(s: Settings, db: DB, site: str, poster, ctx, sites: list[str],
     if int(row["attempts"] or 0) + 1 >= MAX_ATTEMPTS:
         _failed(db, _fresh(db, row["id"]), out.get("error") or "saved, but the site doesn't show the change", title)
     return True
+
+
+async def _shows(site: str, poster, url: str, payload: dict, iid: str, shots: Path) -> bool:
+    """Does the site show the change now? Poshmark: its public listing's JSON; Depop / Vinted: the edit page read
+    (a read-only "fields" job)."""
+    want = payload.get("want") or {}
+    if site == "poshmark":
+        import asyncio
+        live = await asyncio.to_thread(crosslist.poshmark_listing, url)
+        return bool(live and (live.get("department") or "").lower() == str(want.get("department") or "").lower()
+                    and (live.get("category") or "").lower() == str(want.get("category") or "").lower())
+    out = await poster.read_fields(url, payload.get("fields") or {}, shots, iid)
+    return bool(out.get("ok"))
 
 
 def _mirror(db: DB, iid: str, site: str, payload: dict) -> None:

@@ -341,8 +341,10 @@
       // what the listing has now: a new category empties the condition and the package, and THOSE go back — the
       // owner's own choices (live 2026-10-18: the dry run had put our mapping's "Very good" / medium over her "Good" /
       // large); our values only where the page had none
-      const before = { condition: (T.$(S().condition?.selectors)?.value || "").trim(), package: chosenPackage() };
-      st.notes.push(`before the change: condition ${before.condition || "none"}, package ${before.package || "none"}`);
+      const before = { condition: (T.$(S().condition?.selectors)?.value || "").trim(), package: chosenPackage(),
+                       brand: (T.$(S().brand?.selectors)?.value || "").trim() };
+      st.notes.push(`before the change: brand ${before.brand || "none"}, condition ${before.condition || "none"}, `
+                    + `package ${before.package || "none"}`);
       if (f.category_id) {
         await T.step("category", st, async () => {
           await open("category");
@@ -366,7 +368,12 @@
         await T.quiet(600, 4000);                        // the size grid follows the category
         await T.step("size", st, async () => pick(st, "size", f.size));
       }
-      // live 2026-10-18: a new category empties the condition and the package size — the listing's own set back
+      // live 2026-10-18: a new category empties the brand ("Fill in brand to continue" — Vinted refused the Save), the
+      // condition and the package size — the listing's own set back, the same brand searched as the sell form does
+      if (before.brand && !(T.$(S().brand?.selectors)?.value || "").trim()) {
+        await T.step("brand", st, async () => brand(st, { brand: before.brand, brand_candidates: [before.brand] }),
+                     { limit: 60000 });
+      }
       const condition = before.condition || f.condition;
       const packages = [before.package, ...(f.package_sizes || [])].filter(Boolean);
       if (condition) await T.step("condition", st, async () => pick(st, "condition", condition));
@@ -377,7 +384,7 @@
       const value = (sel) => (T.$(sel) ? T.$(sel).value : null);
       return { category: value(S().category.selectors), size: value(S().size?.selectors),
                condition: value(S().condition?.selectors), package: chosenPackage(),
-               picked: st.picked ? { ...st.picked } : null };
+               brand: value(S().brand?.selectors), picked: st.picked ? { ...st.picked } : null };
     },
 
     readBack(job, st) {
