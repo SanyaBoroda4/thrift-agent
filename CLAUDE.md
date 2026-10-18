@@ -1159,6 +1159,71 @@ live on Poshmark and Vinted overnight with no word to anyone. Three causes, all 
   listing is still posted handed to the Mac once more, `takedown_reopened:<task>`). Live mode only; a read never starts
   the live clock.
 
+## Size buttons, the photo memory, no "share it again", a listing's department changed (WO43, 2026-10-17)
+That evening: three items shared at 3:18 PM stayed on the iPhone (5G); WO42's "share it again" line went out; the
+re-share at 7:26 PM and the phone's late upload of the first share both landed at 7:47 PM — six folders holding three
+pairs of byte-identical photos (SHA-256), six cards, three repeats (the On sneakers' first card was retired by the
+twin rule when the second got its price; the tee's and the jacket's repeats were retired and deleted by hand, §0).
+And the On Cloudsurfer Max sneakers — men's — went up under Women › Shoes › Sneakers on all three sites.
+- **Size buttons** (`sizebuttons.py`; the owner: shoes almost never show a size, she taps, never types). An item that
+  takes a size with none read: the card's line is "📏 No size on the photos — tap it below (⭐ = my guess)" and its
+  buttons start with the size rows — Poshmark's own menu for the category (`taxonomy.size_menus`), kept to what Depop
+  and Vinted take too (`crosslist_ok`: their catalogs' mappers; WO36: no made-up value) — eight in two rows of four
+  (shoes in half sizes), letters all in one row (a mixed menu: the letters first, the numbers behind "bigger ›"),
+  ⭐ on the guess (the shop's history for the brand and category, else the category's usual size, else the menu's
+  middle), "‹ smaller · bigger ›" when there are more (`sizes:<item>:±1`, the window kept in kv `size_page`), a shoe of
+  a brand that marks sizes in EU (`EU_BRANDS`) shows "8 · EU 38.5"; right above the price rows (`approve.card_buttons`).
+  A tap (`size:<item>:<value>`, `approve._tap_size`): the size of THAT item, no model call (`pipeline.set_size`, noted
+  in the gate doc as `size_tapped`), the card EDITED in place — "📏 Size 8 ✓", the button "✓ 8", the title's size, the
+  rows kept so another tap changes it until the item starts posting (a tap on a posting / retired item changes
+  nothing; the same size twice does nothing twice). Size and price in either order: the item is queued when it has
+  both; a price first leaves the card with its size rows and one inert "✓ $25 — tap a size to list it" (the queue moves
+  on). The typed `size …` still works; the private line says "once a size is tapped on its card"; WO39's "Waiting for a
+  size" line says "tap one on its card (or reply 'size …' …)". The guess never goes on a listing by itself.
+- **The photo memory** (`photomem.py`, table `photos`, 30 days): every photo of a share is remembered with its item as
+  the share is taken (`pipeline.split`; burst photos dropped at dedupe with the batch), known again by its bytes
+  (SHA-256), its capture (EXIF DateTimeOriginal + SubsecTimeOriginal + Model + pixel size — checked on the archived
+  shares: all of it survives the Shortcut, a HEIC→JPEG, a rename, a new folder) or, with no EXIF, a near-identical
+  picture (phash ≤ 2 and the average colours within 10 — two different items on the same carpet never match). The
+  check runs in `process_batch` before grouping and before any model call: every photo known → a repeat share (the
+  batch `failed` "repeat share: same photos as …", archived, nothing to the group, ONE private line per look "🧹
+  Repeat share skipped (7:42 PM): same photos as <title>." — `photomem.say_skipped` from the scan); some known → they
+  are dropped, and when they all belong to one item the new ones are its late photos (WO37's line, no card), else the
+  new ones go on as a share of their own. A second guard in the outbox (`photomem.card_blocked`, from `send_item`): no
+  card for photos that had one in the last 30 days or for a retired item — the item is retired, one private line.
+  `thrift photos --forget <item>` clears an item's photos (a re-share is then processed again).
+- **Late photos, never "share it again"** (replaces WO42's lost line): an empty share folder means the Shortcut ran and
+  the photos are still on the iPhone. 30 minutes with no camera photo (`share_state` "empty") → ONE group line, once
+  per share: "📭 Photos from your 7:31 PM share are still on the iPhone — unlock it on Wi-Fi and they'll come through.
+  No need to share again." (several in one look: one line naming the times; `say_waiting`, kv `share_waiting_said`);
+  still nothing after 3 hours → ONE private line, never a second group line (a folder first seen that old gets the
+  private line only). Cloud-only placeholders are pulled as before (WO42), private lines only. The folder is NOT moved:
+  it waits where it is for 24 hours (`EMPTY_ARCHIVE_AFTER`, "stale" → archived with a note, the failed batch), never
+  holding up other shares. A folder that fills after being archived is taken where it is — a new batch on the archive
+  folder itself (`late_photos`; the old batch learns the names so nothing is "late" twice), never copied back into the
+  inbox. A share whose count is covered waits only for its mark's `min_wait_seconds` — never "partial" (live: "5 of 5
+  photos arrived").
+- **The department** (live: the On sneakers). The extraction prompt reads men's/women's from the item (the last's shape
+  and width, the size system on the label, the model's line and colourway, a garment's cut) and gives
+  `department_confidence` (+ `department_alternative` below 0.70); the card names the department unless it is plainly
+  Women ("Category: Men › Shoes › Sneakers"; unsure: "… — my best reading; reply 'men' or 'women' to change it";
+  CORRECT_HINT has "men / women"); a reply `men` / `women` (`approve._set_department`) puts the item under that
+  department (`pipeline.set_category`: reprocessed, the size menu and copy follow). **A listed item** is changed on the
+  sites by the running poster (`edits.py`, table `listing_edits`, one row per item and site, pending → saving → done |
+  unconfirmed | failed | skipped; `thrift recategorize <item> "Men > Shoes > Sneakers" --dry-run | --now`): the item's
+  record follows at once (facts, renders — the size on the new department's menu —, the sites' mapped fields through
+  `map_depop` / `map_vinted`); each site worker takes its due row on an idle turn, before a price drop
+  (`parallel.listing_edit`): Poshmark `PoshmarkPoster.set_category` — the edit page's category menu (`_category`:
+  department, category, subcategory) and size menu (`_size`), read back, Update → List This Item for THIS edit (WO40)
+  once, then the public listing's JSON (`crosslist.poshmark_listing`: department.display, category_v2.display,
+  category_features[0].display, size) until it shows the new department; Depop / Vinted `ExtensionPoster.set_fields`
+  — the extension's "fields" job on the edit page (`T.fieldsSet` → `site.setFields`: Depop's category chosen under
+  the new department's heading and its size on the menu that follows; Vinted's leaf by id down the men's tree and
+  its size), read back, Save once, then the edit page read again (`read_only` job, `read_fields`) for what stuck.
+  One Save per site; a failure is tried again an hour later, three in all, then ONE private line. Dry runs fill and
+  never save (a private line with the screenshot's name).
+- Tests: `tests/test_wo43.py` (22); WO42's and WO39's updated to the new lines.
+
 ## Shares that end in a card or a clear message (WO42, 2026-10-17)
 Live: a share at 3:18 PM whose 11 photos never reached iCloud — the folder and its 7-byte `_done.txt` came within two
 seconds, no photo ever (iCloud's own log: three pushes, one tiny document, nothing else; `brctl status` caught up); two
@@ -1177,14 +1242,11 @@ folders were skipped on every tick, forever. Since Oct 12, 4 of 23 shares never 
   least one camera photo (`camera_photos`: not a retail screenshot — the stand-in for "a label or front shot", the
   model's roles come only after) → taken with those, ONE private line "📸 3 of 4 photos of your 3:18 PM share arrived —
   the card is made from those; the rest are told if they come." (event `share_partial`); **30 minutes**
-  (`EMPTY_SHARE_WAIT`) with no camera photo (nothing, or only screenshots) → lost: a failed batch ("no photos arrived",
-  its files in the event so only later photos count as late), a `_thrift_note.txt` written into the folder, the folder
-  archived — never deleted; photos that land in it later are taken as a new share by `late_photos`, as before — and
-  ONE group line she can act on: "📭 Your share from 3:18 PM didn't come through — please share it again." (the
-  Shortcut's own time from the folder's name; several lost in one look → "Your shares from 3:19 PM and 3:20 PM …";
-  kv `share_lost_said`, never repeated). A share lost 2 hours or more ago (`STALE_SHARE`: the Mac was closed meanwhile)
-  is old news for the group: the same line goes to the private chat. Empty and leftover folders are shares too: taken
-  through the same deadlines, so they never sit in the inbox or block the next share.
+  (`EMPTY_SHARE_WAIT`) with no camera photo (nothing, or only screenshots) → **replaced the same night by WO43** (the
+  "share it again" line made three duplicates): the photos are still on the iPhone — ONE group line says so, the
+  folder waits where it is for a day, then is archived with a `_thrift_note.txt` and the failed batch; photos that
+  land in it later are taken where they are. Empty and leftover folders are shares too: judged by the same clock,
+  never blocking the next share.
 - **The watcher's heartbeat** (`alerts.beat`, kv `worker_inbox_beat`: every look at the inbox, whatever iCloud
   answered): the Telegram thread restarts the worker (`alerts.restart_watcher`: one private line an hour at most, event
   `watcher_restarted`, `os._exit(3)` — launchd's KeepAlive starts it again) when no look finished for 15 minutes

@@ -34,7 +34,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from thrift_agent import notify, pipeline
+from thrift_agent import notify, pipeline, sizebuttons
 from thrift_agent.brain import taxonomy
 from thrift_agent.brain.price import note_floor
 from thrift_agent.brain.gate import SIZE_NOTE
@@ -59,7 +59,9 @@ WAITING_ITEM = ("awaiting_price", "needs_info")      # item statuses whose price
 BATCH_HINT = "Reply to this message: ok | 12>2 | split 7 | merge 2 3 | drop 7"
 REGROUP_HINT = "Reply with the fix: 12>2 | split 7 | merge 2 3 | drop 7 (or ok: nothing changes)"
 ITEM_HINT = "Tap a price, type a number, or reply with an answer like 'size 8, 45'"
-CORRECT_HINT = "To change: reply size … · brand … · condition … · category … · cover 2"   # WO37: corrections by reply
+CORRECT_HINT = "To change: reply size … · brand … · condition … · category … · men / women · cover 2"   # WO37/43
+DEPARTMENT_WORDS = {"men": "Men", "mens": "Men", "men's": "Men", "man": "Men", "women": "Women", "womens": "Women",
+                    "women's": "Women", "woman": "Women", "kids": "Kids", "kid": "Kids", "unisex": "Unisex"}
 HELD_HINT = " (still held as a possible re-share: reply 'different item' to list it or 'same item' to drop it)"
 CONDITION_QUESTION = "Brand new or worn? (couldn't tell from the photos)"
 CONDITION_BUTTONS = (("NWT", "nwt"), ("Like New", "like_new"), ("Good", "good"))    # label, callback choice
@@ -190,7 +192,7 @@ def next_step(s: Settings, db: DB, iid: str) -> str:
         return f"it's already live on {' and '.join(live)} — a change there is made in the app"
     status = it["status"]
     if status == "ready" and it["owner_price"] and needs_size(it):     # WO39: nothing goes up without a size
-        return "it goes up once you reply 'size …' to its card"
+        return "it goes up once a size is tapped on its card"
     if status == "ready" and it["owner_price"]:
         return f"it goes up {when_posting(s)} on {_sites(s)}"
     if status == "new":
@@ -580,8 +582,8 @@ def needs_size(it) -> bool:
     return not size_words(posh, facts) and bool(guessed)
 
 
-NEEDS_SIZE = "needs a size: reply 'size …' to this card"
-SIZE_ASK = "Waiting for a size: {title} — reply 'size …' to this message"
+NEEDS_SIZE = "tap a size to list it"
+SIZE_ASK = "Waiting for a size: {title} — tap one on its card (or reply 'size …' to this message)"
 
 
 def ask_sizes(s: Settings, db: DB) -> int:
@@ -635,19 +637,26 @@ def item_caption(iid: str, it) -> tuple[str, int | None]:
     notes = list(gate.get("notes") or [])
     guessed = [n for n in [*(gate.get("info") or []), *notes] if n.startswith(SIZE_NOTE)]   # WO33: shown, never asked
     if size := size_words(posh, facts):
-        lines.append(f"Size {size}" + (" — my best reading; reply 'size …' to change it" if guessed else ""))
-    elif guessed:                                                   # WO37: no site lists it without one
-        lines.append("⚠️ No size on the photos — reply 'size …' (it can't be listed without one)")
+        if it["owner_size"] and (guessed or size_tapped(it)):      # WO43: her tap (or reply) on a card without a size
+            lines.append(f"📏 Size {size} ✓")
+        else:
+            lines.append(f"Size {size}" + (" — my best reading; reply 'size …' to change it" if guessed else ""))
+    elif guessed:                                                   # WO37: no site lists it without one; WO43: tap it
+        lines.append(NO_SIZE_LINE)
     cond = facts.get("condition")
     label = POSH_CONDITION.get(cond, cond or "unknown")
     if (facts.get("condition_evidence") or {}).get("source") == "owner":
         label += " (your answer)"                                   # "Brand new or worn?" was answered
     lines.append(f"Condition: {label}")
     if posh.get("category"):                                        # WO37: what the rules decided, shown
-        lines.append("Category: " + taxonomy.path_label({"department": posh.get("department"),
-                                                         "category": posh.get("category"),
-                                                         "subcategory": posh.get("subcategory")},
-                                                        posh.get("department")))
+        dept = posh.get("department")
+        unsure = (facts.get("department_confidence") is not None and float(facts["department_confidence"]) < 0.7
+                  and dept in ("Women", "Men"))
+        path = {"department": dept, "category": posh.get("category"), "subcategory": posh.get("subcategory")}
+        named = (dept in ("Men", "Unisex") or unsure) and dept     # WO43: the department named unless plainly Women
+        lines.append("Category: " + (f"{dept} › {taxonomy.path_label(path, dept)}" if named
+                                     else taxonomy.path_label(path, dept))
+                     + (" — my best reading; reply 'men' or 'women' to change it" if unsure else ""))
     if "questions" in gate:                                         # processed since WO20
         lines += [f"⚠️ {n}" for n in notes if not n.startswith(SIZE_NOTE)]
         if questions := gate.get("questions") or []:
@@ -702,12 +711,18 @@ def asks_brand(gate: dict) -> bool:
     return any(q.startswith(("Brand?", "Brand:")) for q in gate.get("questions") or [])
 
 
-def item_buttons(iid: str, price: int | None, no_brand: bool = False) -> list[list[dict]]:
-    """Eight prices in two rows of four — $10 below, ⭐ the suggestion, $10 steps up (WO32b) — / [No brand] (when the
-    brand is asked, WO25) / [Later] [Change] [Wrong photos]. Every price button sets that price
-    (approve:<item>:<amount>); [No brand] leaves Poshmark's brand empty (nobrand:<item>); [Wrong photos] reopens the
-    batch's grouping (regroup:<item>, WO20b)."""
-    rows = []
+def item_buttons(iid: str, price: int | None, no_brand: bool = False, sizes: list[list[dict]] | None = None,
+                 priced: int | None = None, needs_size_tap: bool = False) -> list[list[dict]]:
+    """WO43: the size rows first (when the card offers sizes) — right above the prices. Then eight prices in two rows
+    of four — $10 below, ⭐ the suggestion, $10 steps up (WO32b) — / [No brand] (when the brand is asked, WO25) /
+    [Later] [Change] [Wrong photos]; or, once the price is in (`priced`), one inert "✓ $25 — queued" / "✓ $25 — tap a
+    size to list it". Every price button sets that price (approve:<item>:<amount>); [No brand] leaves Poshmark's brand
+    empty (nobrand:<item>); [Wrong photos] reopens the batch's grouping (regroup:<item>, WO20b)."""
+    rows = list(sizes or [])
+    if priced:
+        rows.append([{"text": f"✓ ${priced} — " + ("tap a size to list it" if needs_size_tap else "queued"),
+                      "callback_data": NOOP}])
+        return rows
     if price:
         buttons = [{"text": f"⭐${p}" if p == price else f"${p}", "callback_data": f"approve:{iid}:{p}"}
                    for p in price_options(price)]
@@ -717,6 +732,38 @@ def item_buttons(iid: str, price: int | None, no_brand: bool = False) -> list[li
     rows.append([{"text": "Later", "callback_data": f"later:{iid}"}, {"text": "Change", "callback_data": f"change:{iid}"},
                  {"text": "Wrong photos", "callback_data": f"regroup:{iid}"}])
     return rows
+
+
+NO_SIZE_LINE = "📏 No size on the photos — tap it below (⭐ = my guess)"
+SIZE_OFFERED = ("awaiting_price", "needs_info", "ready")   # the size rows show while the item hasn't started posting
+
+
+def size_tapped(it) -> bool:
+    """The item's size came from the card's size buttons (WO43: the rows stay, with ✓, until it starts posting)."""
+    return bool((loads(it["gate"]) or {}).get("size_tapped"))
+
+
+def mark_size_tapped(db: DB, iid: str) -> None:
+    """Noted in the item's gate doc before `pipeline.set_size` (which keeps the doc's other keys)."""
+    it = db.item(iid)
+    if it is None:
+        return
+    gate = loads(it["gate"]) or {}
+    if not gate.get("size_tapped"):
+        db.set_item(iid, gate={**gate, "size_tapped": True})
+
+
+def card_buttons(db: DB, iid: str, it, price: int | None) -> list[list[dict]]:
+    """The card's buttons as the item stands (WO43): the size rows while it has no size (or its size was tapped and it
+    hasn't started posting), ✓ on the size tapped; the price rows, or the inert "✓ $X — …" once the price is in."""
+    gate = loads(it["gate"]) or {}
+    rows = None
+    wants = needs_size(it)
+    if it["status"] in SIZE_OFFERED and (wants or size_tapped(it)):
+        if (o := sizebuttons.offer(db, it)) is not None:
+            rows = sizebuttons.buttons(iid, o, it["owner_size"] if it["owner_size"] else None)
+    return item_buttons(iid, price, asks_brand(gate), sizes=rows, priced=it["owner_price"] or None,
+                        needs_size_tap=wants)
 
 
 def sent_before(db: DB, chat_id: str, kind: str, ref: str):
@@ -768,7 +815,8 @@ def refresh_card(s: Settings, db: DB, iid: str, reopen: bool = False) -> bool:
         return False
     caption, price = item_caption(iid, it)
     waiting = reopen or row["resolved_at"] is None
-    buttons = (item_buttons(iid, price, asks_brand(loads(it["gate"]) or {})) if waiting else
+    sizing = it["status"] in SIZE_OFFERED and (size_tapped(it) or needs_size(it))   # WO43: the size rows stay
+    buttons = (card_buttons(db, iid, it, price) if waiting or sizing else
                [[{"text": f"\u2713 ${it['owner_price']}" if it["owner_price"] else "\u2713", "callback_data": NOOP}]])
     cover = Path(it["dir"]) / "cover.jpg"
     try:
@@ -787,6 +835,14 @@ def send_item(s: Settings, db: DB, iid: str) -> None:
     it = db.item(iid)
     if it is None:
         raise ValueError(f"unknown item {iid}")
+    from thrift_agent import photomem                   # WO43's second guard: never a card for photos that had one
+    if why := photomem.card_blocked(db, iid):
+        db.log(iid, "card_blocked", why)
+        if it["status"] != "dropped":
+            db.set_item(iid, status="dropped")
+            db.log(iid, "dropped", {"why": f"card blocked: {why}"})
+        notify.say(f"🧹 No card for {_title(it, iid)}: {why} — the item is retired")
+        return
     caption, price = item_caption(iid, it)
     cover = Path(it["dir"]) / "cover.jpg"
     bot = bot_for(s)
@@ -794,7 +850,7 @@ def send_item(s: Settings, db: DB, iid: str) -> None:
         text = f"{caption}\n(thrift price {iid} {price or '<amount>'})"
         notify.group_photo(cover, text) if cover.is_file() else notify.group(text)
         return
-    buttons = item_buttons(iid, price, asks_brand(loads(it["gate"]) or {}))
+    buttons = card_buttons(db, iid, it, price)
     if sent_before(db, bot.chat_id, "item", iid) is not None:   # WO37: the card that went out is edited, never resent
         refresh_card(s, db, iid, reopen=True)
         return
@@ -1195,10 +1251,17 @@ def _set_price(s: Settings, db: DB, bot: Bot, iid: str, amount: int, reply_to: i
         _ack(db, bot, "item", iid, f"✓ ${amount} recorded")
         if gate.get("hold"):                           # a question only the owner can settle: said plainly
             _tell(bot, reply_to, f"${amount} recorded{HELD_HINT}")
+    elif needs_size(db.item(iid)):
+        # WO39: an item with no size isn't queued anywhere (the queue moves on); WO43: the card keeps its size rows
+        # and one inert "✓ $25 — tap a size to list it" — said once, on the card itself
+        db.outbox_resolve("item", iid)
+        if not refresh_card(s, db, iid):
+            _ack(db, bot, "item", iid, f"✓ ${amount} — {NEEDS_SIZE}")
     else:
         db.outbox_resolve("item", iid)
-        # WO29: no "✓ $X — N left" message; WO39: an item with no size isn't queued anywhere — said on the button
-        _ack(db, bot, "item", iid, f"✓ ${amount} — {NEEDS_SIZE}" if needs_size(db.item(iid)) else f"✓ ${amount} — queued")
+        # WO29: no "✓ $X — N left" message: said on the button (the size rows stay when the size was tapped, WO43)
+        if not (size_tapped(db.item(iid)) and refresh_card(s, db, iid)):
+            _ack(db, bot, "item", iid, f"✓ ${amount} — queued")
     if not (status in OWNER_WAITING and (loads(db.item(iid)["gate"]) or {}).get("hold")):
         _confirm(s, db, bot, reply_to, iid, f"${amount}")          # WO33: a reply always gets its answer
     return f"price {iid}: ${amount} ({status})"
@@ -1239,6 +1302,20 @@ def _handle_callback(s: Settings, db: DB, bot: Bot, cq: dict) -> str:
         result = _set_price(s, db, bot, parts[1], int(parts[2]), src_mid)
         bot.answer_callback(cid, f"${parts[2]}" if "rejected" not in result else "Could not set the price")
         return result
+    if parts[0] == "size" and len(parts) == 3 and parts[2]:         # WO43: a size tapped on the card
+        result = _tap_size(s, db, bot, parts[1], parts[2])
+        bot.answer_callback(cid, f"Size {parts[2]}" if "rejected" not in result else "Can't change the size now")
+        return result
+    if parts[0] == "sizes" and len(parts) == 3 and parts[2] in ("-1", "1"):   # ‹ smaller · bigger ›
+        it = db.item(parts[1])
+        o = sizebuttons.offer(db, it) if it is not None and it["status"] in SIZE_OFFERED else None
+        if o is None:
+            bot.answer_callback(cid, "No sizes to show")
+            return f"sizes {parts[1]}: nothing to shift"
+        sizebuttons.shift(db, parts[1], o, int(parts[2]))
+        refresh_card(s, db, parts[1])
+        bot.answer_callback(cid)
+        return f"sizes {parts[1]}: shifted {parts[2]}"
     if parts[0] == "later" and len(parts) == 2:
         try:
             pipeline.defer_item(s, db, parts[1])
@@ -1509,7 +1586,34 @@ def _correction(s: Settings, db: DB, bot: Bot, iid: str, note: str, price: int |
         return _reply_category(s, db, bot, iid, m[1], mid)
     if (kids := parse_kids(note)) is not None and price is None:
         return _set_kids(s, db, bot, iid, kids, mid)
+    if (dept := DEPARTMENT_WORDS.get((note or "").strip().lower().rstrip(".!"))) and dept != "Kids":   # WO43
+        if price is not None:
+            _set_price(s, db, bot, iid, price, mid)
+        return _set_department(s, db, bot, iid, dept, mid)
     return None
+
+
+def _set_department(s: Settings, db: DB, bot: Bot, iid: str, dept: str, mid: int | None) -> str:
+    """WO43 (live: the On Cloudsurfer Max sneakers listed under Women — men's): a reply 'men' / 'women' puts the item's
+    category under that department (the same category and subcategory where that department has them; the item is
+    reprocessed with it, so the size menu and the copy follow). An item already on the marketplace: `thrift
+    recategorize` changes it on the sites."""
+    it = db.item(iid)
+    if it is None:
+        _tell(bot, mid, "Unknown item")
+        return f"department {iid}: unknown item"
+    facts = loads(it["facts"]) or {}
+    path = {"department": dept, "category": facts.get("category"), "subcategory": facts.get("subcategory")}
+    if path["department"] == facts.get("department"):
+        _confirm(s, db, bot, mid, iid, f"{dept} already")
+        return f"department {iid}: {dept} already"
+    placed = taxonomy.place(Facts.model_validate(facts), dept, path["category"] or "", path["subcategory"])
+    if placed is None:
+        placed = taxonomy.place(Facts.model_validate(facts), dept, path["category"] or "", None)
+    if placed is None:
+        _tell(bot, mid, f"Poshmark has no {path['category']} under {dept} — reply 'category {dept} › …' with its name")
+        return f"department {iid}: no {path['category']} under {dept}"
+    return _set_category(s, db, bot, iid, placed, mid)
 
 
 SIZE_SAID = re.compile(r"^\s*(?:size|sz)\s*[:=#]?\s*([A-Za-z0-9][A-Za-z0-9./ -]{0,11}?)\s*[.!]?\s*$", re.I)
@@ -1546,6 +1650,27 @@ def _set_size(s: Settings, db: DB, bot: Bot, iid: str, size: str, price: int | N
     _ack(db, bot, "item", iid, "✓ " + " · ".join([f"size {size}", *said]))
     _confirm(s, db, bot, mid, iid, " · ".join([f"Size {size}", *said]))
     return f"item {iid}: size {size!r}" + (f", ${price}" if price is not None else "") + f" ({status})"
+
+
+def _tap_size(s: Settings, db: DB, bot: Bot, iid: str, size: str) -> str:
+    """WO43: a size button — the size of THIS card's item only, set at once (no model call), the card EDITED in place
+    (the line "📏 Size 8 ✓", the button ✓, the title's size, the rows kept so another tap changes it) — no new message.
+    A second tap of the same size does nothing twice; an item that started posting, or is retired, changes nothing."""
+    it = db.item(iid)
+    if it is None or it["status"] not in SIZE_OFFERED:
+        return f"size {iid}: rejected: " + ("unknown item" if it is None else f"it is {it['status']}")
+    if it["owner_size"] == size:
+        return f"size {iid}: {size!r} already"
+    mark_size_tapped(db, iid)
+    try:
+        status = pipeline.set_size(s, db, iid, size)
+    except ValueError as e:
+        return f"size {iid}: rejected {size!r}: {e}"
+    sizebuttons.forget_page(db, iid)
+    if status not in OWNER_WAITING:
+        db.outbox_resolve("item", iid)
+    refresh_card(s, db, iid, reopen=status in OWNER_WAITING)
+    return f"size {iid}: {size!r} tapped ({status})"
 
 
 def _reply_owner_q(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int | None) -> str:

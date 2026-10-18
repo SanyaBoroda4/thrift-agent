@@ -75,6 +75,18 @@ END;
 CREATE TRIGGER IF NOT EXISTS api_dirty_price_upd AFTER UPDATE ON price_changes WHEN NEW.dry = 0 BEGIN
   INSERT OR REPLACE INTO api_dirty VALUES ('price_change', NEW.id, strftime('%Y-%m-%dT%H:%M:%f', 'now'));
 END;
+CREATE TABLE IF NOT EXISTS photos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, sha TEXT, capture TEXT, phash TEXT, colors TEXT, name TEXT,
+  item_id TEXT, batch_id TEXT, seen_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS photos_sha ON photos (sha);
+CREATE INDEX IF NOT EXISTS photos_capture ON photos (capture);
+CREATE INDEX IF NOT EXISTS photos_item ON photos (item_id);
+CREATE TABLE IF NOT EXISTS listing_edits (
+  id TEXT PRIMARY KEY, item_id TEXT NOT NULL, marketplace TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL,
+  status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, error TEXT, evidence TEXT, dry INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, done_at TEXT
+);
 """
 
 # batch: new → needs_confirm → split | failed

@@ -100,7 +100,7 @@ def test_photos_without_the_end_mark_are_taken_after_15_minutes(env):
                     "is made from those; the rest are told if they come."]
 
 
-def test_a_share_with_no_photos_after_30_minutes_is_told_once_in_the_group_and_archived(env):
+def test_a_share_with_no_photos_after_30_minutes_is_told_once_in_the_group_and_waits(env):
     s, db, clock, said, group = env
     d = share(s, clock, "2026-10-17_151834", marker="done 11")
     clock["now"] = T0 + 29 * MIN
@@ -108,16 +108,22 @@ def test_a_share_with_no_photos_after_30_minutes_is_told_once_in_the_group_and_a
     clock["now"] = T0 + 31 * MIN
     assert pipeline.ready_folders(s, db) == [d]
     assert cli._scan_inbox(s, db) == 0
-    assert group == ["📭 Your share from 3:18 PM didn't come through — please share it again."]
+    assert group == ["📭 Photos from your 3:18 PM share are still on the iPhone — unlock it on Wi-Fi and they'll come "
+                     "through. No need to share again."]                 # WO43: never "share it again"
     assert said == []
-    assert not d.exists()                                              # archived, never deleted: the note inside
+    assert d.exists() and list(s.path("archive").iterdir()) == []      # left where it is: its photos may still come
+    assert db.batches("failed") == []
+    assert cli._scan_inbox(s, db) == 0 and len(group) == 1             # never repeated
+    assert db.kv_get(alerts.WATCH_BEAT)                                # the watcher's heartbeat
+    clock["now"] = T0 + 25 * 3600                                      # a day: archived with the note, no line
+    cli._scan_inbox(s, db)
+    assert not d.exists()
     [arch] = list(s.path("archive").iterdir())
     assert arch.name.endswith("2026-10-17_151834") and (arch / "_done.txt").is_file()
-    assert "share it again" in (arch / pipeline.LOST_NOTE).read_text(encoding="utf-8")
+    assert "stayed on the iPhone" in (arch / pipeline.LOST_NOTE).read_text(encoding="utf-8")
     [b] = db.batches("failed")
     assert json.loads(b["reasons"]) == ["no photos arrived"] and b["n_photos"] == 0
-    assert cli._scan_inbox(s, db) == 0 and len(group) == 1             # nothing left; never repeated
-    assert db.kv_get(alerts.WATCH_BEAT)                                # the watcher's heartbeat
+    assert len(group) == 1 and len(said) == 1                          # the 3-hour private line came in between
 
 
 def test_empty_and_leftover_folders_are_one_line_and_never_block_the_next_share(env):
@@ -129,31 +135,34 @@ def test_empty_and_leftover_folders_are_one_line_and_never_block_the_next_share(
     fresh = share(s, clock, "2026-10-17_154900", photos=3, marker="done 3", at=T0 + 28 * MIN)
     assert cli._scan_inbox(s, db) == 1                                 # the real share is taken …
     assert [b["n_photos"] for b in db.batches("new")] == [3] and fresh.exists()
-    assert group == ["📭 Your shares from 3:19 PM and 3:20 PM didn't come through — please share them again."]
-    assert sorted(p.name[-6:] for p in s.path("archive").iterdir()) == ["151932", "151954", "152010"]   # … the rest archived
+    assert group == ["📭 Photos from your 3:19 PM and 3:20 PM shares are still on the iPhone — unlock it on Wi-Fi and "
+                     "they'll come through. No need to share again."]
+    assert list(s.path("archive").iterdir()) == []                     # … the rest wait where they are (WO43)
     assert cli._scan_inbox(s, db) == 0 and len(group) == 1
 
 
-def test_photos_landing_in_a_lost_shares_archive_folder_are_taken_as_a_new_share(env):
+def test_photos_landing_in_an_archived_folder_are_taken_where_they_are(env):
     s, db, clock, said, group = env
-    d = share(s, clock, "2026-10-17_151834", marker="done 3")
-    clock["now"] = T0 + 31 * MIN
+    d = share(s, clock, "2026-10-17_151834", marker="done 3", at=T0 - 25 * 3600)   # a day old: archived
+    clock["now"] = T0
     cli._scan_inbox(s, db)
     [arch] = list(s.path("archive").iterdir())
     for i in (1, 2, 3):
-        Image.new("RGB", (30, 40)).save(arch / f"IMG_{i}.jpeg")         # the phone caught up, hours later
-    assert pipeline.late_photos(s, db) == [f"{db.batches('failed')[0]['id']}: retaken"]
-    back = s.path("inbox") / "2026-10-17_151834-late"
-    assert back.is_dir() and not d.exists()
-    assert said[-1].startswith("📸 3 photos came late into a share that had none")
+        Image.new("RGB", (30, 40)).save(arch / f"IMG_{i}.jpeg")         # the phone caught up, a day later
+    [done] = pipeline.late_photos(s, db)
+    assert done.startswith(f"{db.batches('failed')[0]['id']}: retaken as b_")
+    assert arch.exists() and not d.exists() and not (s.path("inbox") / "2026-10-17_151834-late").exists()
+    assert said[-1].startswith("📸 3 photos of the 3:18 PM share came late — taken now")
 
 
-def test_a_share_lost_hours_ago_is_old_news_for_the_group(env):
+def test_a_share_empty_for_hours_is_old_news_for_the_group(env):
     s, db, clock, said, group = env
-    share(s, clock, "2026-10-17_151834", marker="done 11", at=T0 - 3 * 3600)   # the Mac was closed meanwhile
+    share(s, clock, "2026-10-17_151834", marker="done 11", at=T0 - 3 * 3600 - 1)   # the Mac was closed meanwhile
     clock["now"] = T0
     cli._scan_inbox(s, db)
-    assert group == [] and said == ["📭 Your share from 3:18 PM didn't come through — please share it again."]
+    assert group == [] and said == ["📭 Still no photos from the 3:18 PM share after 3 hours — the iPhone hasn't "
+                                    "uploaded them (Wi-Fi, Low Power Mode, iCloud storage?). The folder waits; "
+                                    "nothing to share again."]
 
 
 def test_cloud_only_files_are_pulled_with_backoff_and_the_card_comes(env, monkeypatch):

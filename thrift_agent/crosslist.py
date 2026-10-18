@@ -753,6 +753,34 @@ def poshmark_page(url: str) -> tuple[bool | None, int | None]:
     return (None if not status else status == "available"), (price or None)
 
 
+def poshmark_listing(url: str) -> dict | None:
+    """WO43: what the public listing says it is — {"department", "category", "subcategory", "size", "for_sale"} from
+    listingDetails (department.display, category_v2.display, category_features[0].display, size) — or None when the
+    page can't be read."""
+    import httpx
+
+    from thrift_agent.harvest import parse_state
+    try:
+        r = httpx.get(url, headers={"User-Agent": UA, "Accept": "text/html"}, timeout=20, follow_redirects=True,
+                      verify=_tls())
+    except httpx.HTTPError:
+        return None
+    if r.status_code != 200:
+        return None
+    try:
+        d = parse_state(r.text).get("$_listing_details", {}).get("listingDetails", {})
+    except ValueError:
+        return None
+    if not d:
+        return None
+    features = d.get("category_features") or []
+    status = ((d.get("inventory") or {}).get("status") or "").lower()
+    return {"department": (d.get("department") or {}).get("display"),
+            "category": (d.get("category_v2") or {}).get("display") or d.get("category"),
+            "subcategory": (features[0].get("display") if features and isinstance(features[0], dict) else None),
+            "size": d.get("size"), "for_sale": status == "available" if status else None}
+
+
 def poshmark_cover(url: str) -> str | None:
     """The Poshmark listing's cover as its public page shows it (listingDetails.picture_url), or None (WO37)."""
     import httpx

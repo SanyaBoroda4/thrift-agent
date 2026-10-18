@@ -591,15 +591,16 @@
     try {
       if (job.mode === "cover") await T.coverFirst(job, st);          // WO37: the right photo first, nothing else
       else if (job.mode === "price") await T.priceSet(job, st);       // WO41: the price, nothing else
+      else if (job.mode === "fields") await T.fieldsSet(job, st);     // WO43: the category and size, nothing else
       else await site.fill(job, (photos || []).map(T.fileOf), st);
     } catch (e) {
       await T.screenshot("form");
       return fail(st.failed.length ? st.failed[0].split(":")[0] : "fill", "form",
                   String(e && e.message ? e.message : e).slice(0, 300));
     }
-    const edit = job.mode === "cover" || job.mode === "price";
+    const edit = ["cover", "price", "fields"].includes(job.mode);
     const seen = job.mode === "cover" ? T.coverSeen(job, st) : job.mode === "price" ? T.priceSeen(job, st)
-      : site.readBack(job, st);
+      : job.mode === "fields" ? T.fieldsSeen(job, st) : site.readBack(job, st);
     seen.submit_buttons = (edit ? T.saveButtons(job.site) : site.submitButtons()).length;
     seen.fill_ms = Math.round(performance.now() - t0);
     T.emit({ event: "step", job_id: job.job_id, name: "submit_seen", ok: seen.submit_buttons === 1,
@@ -774,6 +775,19 @@
   };
   T.priceSeen = (job, st) => ({ price_before: st.priceBefore ?? null, price: st.priceAfter ?? null,
                                 mismatch: !!st.priceMismatch, refilled: st.refilled || [] });
+
+  // ---- WO43: a listing's category and size changed on its edit page (live 2026-10-17: men's sneakers listed under
+  // Women): the site's own category and size steps, as the sell form's, on the values the bridge sends; a
+  // `read_only` job reads what the page shows and changes nothing (the check after Save). Nothing else is touched.
+  T.fieldsSet = async (job, st) => {
+    const site = T.sites[job.site];
+    await T.quiet(600, 4000);
+    st.fieldsBefore = site.fieldsSeen(job, st);
+    if (!job.read_only) await site.setFields(job, st);
+    await T.settle(300);
+    st.fieldsAfter = site.fieldsSeen(job, st);
+  };
+  T.fieldsSeen = (job, st) => ({ ...(st.fieldsAfter || {}), before: st.fieldsBefore || null, read_only: !!job.read_only });
 
   // WO35: a listing's title as the site keeps it, the same as ours (spaces aside — the exact words, the exact case).
   T.sameTitle = (a, b) => String(a ?? "").replace(/\s+/g, " ").trim() === String(b ?? "").replace(/\s+/g, " ").trim();

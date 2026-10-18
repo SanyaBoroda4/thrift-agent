@@ -16,7 +16,7 @@ from rich import print
 from rich.markup import escape
 from rich.table import Table
 
-from thrift_agent import alerts, approve, config, daily, notify, pipeline, power, runlock
+from thrift_agent import alerts, approve, config, daily, notify, photomem, pipeline, power, runlock
 from thrift_agent.config import settings
 from thrift_agent.db import DB, loads
 
@@ -80,17 +80,18 @@ def _scan_inbox(s, db) -> int:
     through one. Processing of the items already split goes on either way. iCloud still downloading a share
     (EDEADLK, WO29) is quieter still: retried, and only the ops chat hears if it lasts 10 minutes."""
     alerts.scan_started(db)
-    n, lost = 0, []
+    n, empty = 0, []
     try:
         for folder in pipeline.ready_folders(s, db):
-            taken = pipeline.take_share(s, db, folder)       # WO42: ready, partial (a private line) or lost
+            taken = pipeline.take_share(s, db, folder)       # WO42/43: ready, partial (a private line), empty, stale
             if taken is None:
                 continue
-            if taken[0] == "lost":
-                lost.append((folder, taken[1]))
+            if taken[0] in ("empty", "stale"):               # stale: archived; its private line, if never said
+                empty.append((folder, taken[1]))
             else:
                 n += 1
-        pipeline.say_lost(s, db, lost)                        # ONE group line for the shares lost in this look
+        pipeline.say_waiting(s, db, empty)                    # WO43: "still on the iPhone", once per share
+        photomem.say_skipped(db)                              # WO43: the repeat shares skipped in this look, one line
     except OSError as e:
         alerts.beat(db)                                       # the watcher ran, whatever iCloud answered
         if alerts.icloud_busy(e):
@@ -1159,6 +1160,62 @@ def price_drop_cmd(list_: bool = typer.Option(False, "--list", help="each live i
 def crosslist_name(db, iid: str) -> str:
     from thrift_agent import crosslist
     return crosslist.item_name(db, iid)
+
+
+@app.command("recategorize")
+def recategorize_cmd(item: str, path: str = typer.Argument(..., help='e.g. "Men > Shoes > Sneakers"'),
+                     dry_run: bool = typer.Option(False, "--dry-run", help="each site's edit page filled, never saved"),
+                     now: bool = typer.Option(False, "--now", help="the change made on each site by the running "
+                                                                   "poster"),
+                     list_: bool = typer.Option(False, "--list", help="the edits queued and done")) -> None:
+    """WO43: a listed item's department / category changed on every site it is on (live 2026-10-17: the On
+    Cloudsurfer Max sneakers, men's, listed under Women). The item's record follows at once; the running poster
+    makes the change on each site on its next idle turn (Poshmark: the edit page's category and size menus, Update,
+    List This Item; Depop / Vinted: the extension's "fields" job, Save once), then reads the site to confirm."""
+    from thrift_agent import edits
+    s, db = settings(), _db()
+    if list_:
+        for line in edits.listing_text(db) or ["no edits"]:
+            print(escape(line))
+        return
+    if db.item(item) is None:
+        raise typer.BadParameter(f"unknown item {item}")
+    if sum(map(bool, (dry_run, now))) != 1:
+        raise typer.BadParameter("one of --dry-run, --now")
+    parts = [p.strip() for p in re.split(r"\s*[>›/]\s*", path) if p.strip()]
+    if not parts:
+        raise typer.BadParameter('give the path, e.g. "Men > Shoes > Sneakers"')
+    dept = parts[0] if parts[0] in ("Women", "Men", "Kids", "Home") else None
+    rest = parts[1:] if dept else parts
+    target = {"department": dept, "category": rest[0] if rest else None, "subcategory": rest[1] if len(rest) > 1 else None}
+    if not s.is_prod:
+        raise typer.BadParameter("listing edits are made on the Mac only (machine_role: prod)")
+    out = edits.recategorize(s, db, item, target, dry=dry_run)
+    name = crosslist_name(db, item)
+    where = ", ".join(out["sites"]) or "no live site"
+    print(escape(f"{item}: {edits.path_text(out['placed'])} — {'dry run' if dry_run else 'queued'} for {where}"
+                 + (f"; skipped: {out['skipped']}" if out["skipped"] else "")))
+    notify.say(f"{'Dry run: ' if dry_run else ''}{name} → {edits.path_text(out['placed'])} on {where}"
+               + (f" (skipped: {', '.join(f'{k}: {v}' for k, v in out['skipped'].items())})" if out["skipped"] else "")
+               + " — the running poster does it on each site's next idle turn")
+
+
+@app.command("photos")
+def photos_cmd(forget: str = typer.Option(None, "--forget", help="clear this item's photos from the memory, so a "
+                                                                 "re-share of them is processed again")) -> None:
+    """WO43: the photo memory (30 days). --forget <item>: she really wants to start the item over."""
+    from thrift_agent import photomem
+    db = _db()
+    if not forget:
+        n = db.conn.execute("SELECT COUNT(*) FROM photos").fetchone()[0]
+        print(f"{n} photos remembered (30 days)")
+        return
+    if db.item(forget) is None:
+        raise typer.BadParameter(f"unknown item {forget}")
+    n = photomem.forget(db, forget)
+    db.conn.commit()
+    db.log(forget, "photos_forgotten", {"rows": n})
+    print(escape(f"{forget}: {n} photos forgotten — a re-share of them is processed again"))
 
 
 @app.command("orders")

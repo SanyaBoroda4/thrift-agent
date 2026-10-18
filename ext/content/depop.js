@@ -581,6 +581,27 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
       if (st.refilled.length) st.notes.push(`blank on the edit page, filled from the listing: ${st.refilled.join(", ")}`);
     },
 
+    // WO43: the category chosen again under the new department's heading ("Men > Footwear > Sneakers") and the size
+    // on the menu that follows it (it reloads with the category), on the listing's edit page. Nothing else.
+    async setFields(job, st) {
+      const f = job.fields || {};
+      const ids = S().combo.ids;
+      if (f.category) {
+        await T.step("category", st, async () =>
+          choose(st, ids.category, f.category, { typed: f.category.split(" > ").pop(), category: true }));
+      }
+      if (f.size) {
+        await T.quiet(600, 4000);                        // the size menu follows the category
+        await T.step("size", st, async () => size(st, f.size));
+      }
+    },
+    fieldsSeen(job, st) {
+      const ids = S().combo.ids;
+      const of = (cid) => document.getElementById(cid)?.value || "";
+      return { category: of(ids.category), size: of(ids.size), size_menu: st.sizeMenu || null,
+               picked: st.picked ? { ...st.picked } : null };
+    },
+
     // The form as it is: the single-selects' values, the multi-selects' chips (the category's input shows its leaf
     // name: our path when it is that name, chosen under the department heading).
     readBack(job, st) {

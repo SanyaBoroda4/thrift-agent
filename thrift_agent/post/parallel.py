@@ -77,6 +77,19 @@ async def takedowns(site: str, poster, db: DB, ctx, sites: list[str] | None = No
     return await sales.run_takedown(site, poster, db, ctx, ready=delist_ready, shots=shots)
 
 
+async def listing_edit(s: Settings, db: DB, site: str, poster, ctx, sites: list[str], dry: bool) -> bool:
+    """WO43: the site's next due listing edit (a department / category change), before a price drop."""
+    from thrift_agent import edits
+    try:
+        return await edits.run_one(s, db, site, poster, ctx, sites, dry_poster=dry)
+    except AccountBlocked as e:
+        crosslist.block(db, site, str(e), e.page)
+        return True
+    except Exception as e:  # noqa: BLE001 — never the worker's end
+        notify.say(f"❌ {crosslist.LABEL.get(site, site)} listing edit: {type(e).__name__}: {e}")
+        return True
+
+
 async def price_drop(s: Settings, db: DB, site: str, poster, ctx, sites: list[str], dry: bool) -> bool:
     """WO41: the site's next due price drop, on a turn with no take-down and no listing to do. A login / CAPTCHA page
     stops the site for the window, as a listing's would. True when it worked on one."""
@@ -262,7 +275,8 @@ async def _poshmark_turn(s, db, ps, ctx, dry, stage, state, awake, failures, mar
     if job is not None and runner._paused(db):
         job = None
     if job is None:
-        if await price_drop(s, db, "poshmark", ps["poshmark"], ctx, marketplaces, dry):
+        if (await listing_edit(s, db, "poshmark", ps["poshmark"], ctx, marketplaces, dry)
+                or await price_drop(s, db, "poshmark", ps["poshmark"], ctx, marketplaces, dry)):
             return True
         state.idle("poshmark")
         return False
@@ -338,7 +352,8 @@ async def _cross_turn(s, db, ps, mp, dry, state, awake, takedowns) -> bool:
         return False
     job = crosslist.next_job(s, db, mps=[mp])
     if job is None:
-        if await price_drop(s, db, mp, poster, None, list(ps), dry):
+        if (await listing_edit(s, db, mp, poster, None, list(ps), dry)
+                or await price_drop(s, db, mp, poster, None, list(ps), dry)):
             return True
         state.idle(mp)
         return False

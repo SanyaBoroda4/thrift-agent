@@ -13,7 +13,7 @@ from pathlib import Path
 
 import imagehash
 
-from thrift_agent import approve, brands, notify
+from thrift_agent import approve, brands, notify, photomem
 from thrift_agent.brain import copy as copywriter, cover as cover_brain, labels, premium, sizes, taxonomy
 from thrift_agent.brain.extract import extract, strip_screenshot_evidence
 from thrift_agent.brain.gate import OTHER_CATEGORY_QUESTION, SIZE_NOTE, GateResult, evaluate
@@ -74,18 +74,26 @@ def marker_of(d: Path, marker: str) -> Path | None:
     return marks[0] if marks else None
 
 
-EMPTY_SHARE_WAIT = 30 * 60        # WO37/WO42: a share with no camera photo this long after it appeared is lost: ONE group
-#                                   line ("share it again"), the folder archived with a note
+EMPTY_SHARE_WAIT = 30 * 60        # WO42/WO43: a share with no camera photo this long after it appeared: the photos are
+#                                   still on the iPhone — ONE group line says so ("no need to share again"); the folder
+#                                   stays where it is (they come when the phone is on Wi-Fi: live 2026-10-17, 4½ h)
 PARTIAL_AFTER = 15 * 60           # WO42: a share short of its count, or without its end mark, this long after it appeared
 #                                   is taken with the camera photos that came (a private line says how many)
-STALE_SHARE = 2 * 3600            # WO42: a share lost this long ago is told in the private chat, not the group (old news)
+EMPTY_TELL_OWNER = 3 * 3600       # WO43: still nothing after this long → ONE private line (never a second group line)
+EMPTY_ARCHIVE_AFTER = 24 * 3600   # WO43: an empty folder is archived (with a note) only after this long; photos that
+#                                   land in it there are taken as a share in place (never copied back)
 MEDIA_EXT = {".mov", ".mp4", ".m4v", ".dng", ".avi", ".3gp", ".gif"}   # a Live Photo's video, a video, a raw: they count
 #                                   toward the Shortcut's "done N" (it counts what she shared), never as a photo
 PULL = "icloud_pull"              # kv: {folder: {"n": asks so far, "next": epoch}} — the cloud-only files asked for
 PULL_BACKOFF = (15, 30, 60, 120, 300)   # seconds between asks, per folder
-LOST_SAID = "share_lost_said"     # kv: {folder: when} — its "📭 share again" line went out (once, ever)
-LOST_LINE = "📭 Your share from {when} didn't come through — please share it again."
-LOST_LINES = "📭 Your shares from {when} didn't come through — please share them again."
+WAITING_SAID = "share_waiting_said"     # kv: {folder: {"group": when, "owner": when}} — the lines that went out for it
+LOST_SAID = "share_lost_said"     # kv (WO42, kept for the record): {folder: when}
+STILL_ON_PHONE = ("📭 Photos from your {when} share are still on the iPhone — unlock it on Wi-Fi and they'll come "
+                  "through. No need to share again.")
+STILL_ON_PHONE_MANY = ("📭 Photos from your {when} shares are still on the iPhone — unlock it on Wi-Fi and they'll "
+                       "come through. No need to share again.")
+EMPTY_OWNER_LINE = ("📭 Still no photos from the {when} share after 3 hours — the iPhone hasn't uploaded them (Wi-Fi, "
+                    "Low Power Mode, iCloud storage?). The folder waits; nothing to share again.")
 PARTIAL_LINE = ("📸 {have} of {want} photos of your {when} share arrived — the card is made from those; the rest are "
                 "told if they come.")
 PARTIAL_NO_MARK = ("📸 Only {have} photos of your {when} share arrived and the Shortcut's end mark never came — the card "
@@ -109,7 +117,7 @@ def appeared(p: Path) -> float:
 
 def share_time(d: Path) -> str:
     """"3:18 PM": the Shortcut's own time from the folder's name (2026-10-17_151834), else when it appeared here."""
-    m = re.search(r"_(\d{2})(\d{2})(\d{2})?$", d.name)
+    m = re.search(r"_(\d{2})(\d{2})(\d{2})?(?:-late)?(?:_\d+)?$", d.name)   # "…_151834", "…_151834-late", "…_2"
     if m:
         hour, minute = int(m[1]), int(m[2])
     else:
@@ -130,27 +138,29 @@ def share_state(s: Settings, d: Path, marker: Path | None, settle: float, now: f
       since the Shortcut counts what she shared, not what the Mac can list);
     - "partial": PARTIAL_AFTER after it appeared, quiet, short of the count or without the mark, with at least one
       camera photo — taken with those (`take_share` says so in the private chat);
-    - "lost": EMPTY_SHARE_WAIT after it appeared with no camera photo at all (nothing, or only screenshots) — ONE group
-      line asks for the share again, the folder goes to the archive with a note;
-    - "wait": anything else."""
+    - "empty": EMPTY_SHARE_WAIT after it appeared with no camera photo at all (nothing, or only screenshots) — the photos
+      are still on the iPhone (WO43): ONE group line says so, the folder stays where it is;
+    - "stale": EMPTY_ARCHIVE_AFTER after it appeared, still no camera photo — archived with a note (`lose_share`);
+      photos that land in it there are taken as a share in place (`late_photos`);
+    - "wait": anything else (a share whose count is covered waits only for the mark's `min_wait_seconds`)."""
     now = time.time() if now is None else now
     files = [f for f in d.iterdir() if not f.name.startswith(".") and f.name != LOST_NOTE]
     photos = [f for f in files if prep.is_photo(f)]
     media = [f for f in files if f.is_file() and f.suffix.lower() in MEDIA_EXT]
     age = now - appeared(d)
     quiet = now - max((arrived(f) for f in files), default=appeared(d)) >= settle
-    if marker is not None and quiet and photos and now - arrived(marker) >= float(s.get("inbox.min_wait_seconds", 90) or 0):
-        want = expected_photos(marker)
-        if want is None or len(photos) + len(media) >= want:
-            return "ready"
-    if age < PARTIAL_AFTER:
+    want = expected_photos(marker) if marker is not None else None
+    covered = marker is not None and photos and (want is None or len(photos) + len(media) >= want)
+    if covered and quiet and now - arrived(marker) >= float(s.get("inbox.min_wait_seconds", 90) or 0):
+        return "ready"
+    if covered or age < PARTIAL_AFTER:      # whole: only the mark's wait is left (live 2026-10-17: "5 of 5 arrived")
         return "wait"
     own = camera_photos(photos)
     if own and quiet:
         return "partial"
-    if not own and age >= EMPTY_SHARE_WAIT:
-        return "lost"
-    return "wait"
+    if own or age < EMPTY_SHARE_WAIT:
+        return "wait"
+    return "stale" if age >= EMPTY_ARCHIVE_AFTER else "empty"
 
 
 def pull_from_icloud(db: DB | None, folder: Path, pending: list[Path]) -> bool:
@@ -183,13 +193,16 @@ def pull_from_icloud(db: DB | None, folder: Path, pending: list[Path]) -> bool:
 
 def take_share(s: Settings, db: DB, folder: Path) -> tuple[str, float] | None:
     """A folder `ready_folders` handed over (WO42): registered as a batch when it is ready or partial (the partial one
-    with ONE private line saying how many photos came), or lost — recorded as a failed batch, a note written into it,
-    archived (never deleted: photos that land in it later are taken as a new share by `late_photos`). Returns (state,
-    when it appeared) or None when nothing was done (already known, or not ready after all)."""
+    with ONE private line saying how many photos came); "empty" (WO43: the photos are still on the iPhone) is handed
+    back for `say_waiting`, the folder untouched; "stale" (a day with nothing) is archived with a note (`lose_share`;
+    never deleted: photos that land in it there are taken as a share in place by `late_photos`). Returns (state, when
+    it appeared) or None when nothing was done (already known, or not ready after all)."""
     marker = marker_of(folder, s["inbox"]["done_marker"])
     state = share_state(s, folder, marker, s["inbox"]["settle_seconds"])
     when = appeared(folder)
-    if state == "lost":
+    if state == "empty":
+        return state, when
+    if state == "stale":
         return (state, when) if lose_share(s, db, folder) else None
     if state == "wait":
         return None
@@ -208,8 +221,8 @@ def take_share(s: Settings, db: DB, folder: Path) -> tuple[str, float] | None:
 
 
 def lose_share(s: Settings, db: DB, folder: Path) -> str | None:
-    """A share whose photos never came (WO42): the failed batch (so `late_photos` watches its archive folder), the
-    note, the archive. The group line is `say_lost`'s, one for all the folders of a look."""
+    """A share whose photos never came (WO42/WO43: a day without them): the failed batch (so `late_photos` watches its
+    archive folder), the note, the archive. The lines went out long before (`say_waiting`)."""
     bid = db.add_batch(str(folder), 0)
     if bid is None:
         return None
@@ -221,39 +234,51 @@ def lose_share(s: Settings, db: DB, folder: Path) -> str | None:
     #                                 was here (a screenshot): only photos that come AFTER this are "late" (late_photos)
     try:
         (folder / LOST_NOTE).write_text(
-            f"No photos reached the Mac within 30 minutes of this share ({share_time(folder)}). The owner was asked to "
-            f"share it again. Photos that land in this folder later are taken as a new share.\n", encoding="utf-8")
+            f"No photos reached the Mac within a day of this share ({share_time(folder)}): they stayed on the iPhone. "
+            f"Photos that land in this folder later are taken as a share here, where it is.\n", encoding="utf-8")
     except OSError:
         pass
     archive_share(s, db, bid, folder)
     return bid
 
 
-def say_lost(s: Settings, db: DB, lost: list[tuple[Path, float]]) -> list[str]:
-    """ONE group line for the shares lost in this look — "📭 Your share from 3:18 PM didn't come through — please share
-    it again." (several: "Your shares from 3:18 PM and 3:19 PM …") — never repeated for a folder (kv `share_lost_said`).
-    A share that appeared STALE_SHARE or longer ago (the Mac was closed meanwhile, or the code is new) is old news for
-    the group: the same line goes to the private chat instead. Returns the lines sent."""
-    said = loads(db.kv_get(LOST_SAID)) or {}
+def say_waiting(s: Settings, db: DB, empty: list[tuple[Path, float]]) -> list[str]:
+    """WO43 (live 2026-10-17: "share it again" made three duplicates — the phone uploaded the first share's photos
+    4½ hours later, right after the re-share): an empty share folder means the Shortcut ran and the photos are still
+    on the iPhone. ONE group line per share, once — "📭 Photos from your 7:31 PM share are still on the iPhone — unlock
+    it on Wi-Fi and they'll come through. No need to share again." (several in one look: one line naming the times);
+    still nothing EMPTY_TELL_OWNER later → ONE private line; never a second group line. A folder first seen that old
+    (the Mac was closed) gets the private line only. kv `share_waiting_said` {folder: {"group", "owner"}}. Returns the
+    lines sent."""
+    said = loads(db.kv_get(WAITING_SAID)) or {}
     now = time.time()
-    fresh, stale = [], []
-    for folder, when in lost:
-        if folder.name in said:
-            continue
-        (stale if now - when >= STALE_SHARE else fresh).append(folder)
-        said[folder.name] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    group, owner = [], []
+    for folder, when in empty:
+        st = said.setdefault(folder.name, {})
+        late = now - when >= EMPTY_TELL_OWNER
+        if late and not st.get("owner"):
+            st["owner"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            st.setdefault("group", st["owner"])           # never the group line after the private one
+            owner.append(folder)
+        elif not late and not st.get("group"):
+            st["group"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            group.append(folder)
     out = []
-    for group, folders in ((True, fresh), (False, stale)):
-        if not folders:
-            continue
-        times = list(dict.fromkeys(share_time(f) for f in folders))
+    if group:
+        times = list(dict.fromkeys(share_time(f) for f in group))
         when = " and ".join(times)
-        text = LOST_LINE.format(when=when) if len(times) == 1 and len(folders) == 1 else LOST_LINES.format(when=when)
-        (notify.group if group else notify.say)(text)
-        db.log(None, "share_lost_said", {"folders": [f.name for f in folders], "group": group})
+        text = STILL_ON_PHONE.format(when=when) if len(group) == 1 else STILL_ON_PHONE_MANY.format(when=when)
+        notify.group(text)
+        db.log(None, "share_waiting_said", {"folders": [f.name for f in group], "group": True})
         out.append(text)
-    if lost:
-        db.kv_set(LOST_SAID, json.dumps(said))
+    for folder in owner:
+        text = EMPTY_OWNER_LINE.format(when=share_time(folder))
+        notify.say(text)
+        db.log(None, "share_waiting_said", {"folders": [folder.name], "group": False})
+        out.append(text)
+    if empty:
+        keep = {f.name for f, _ in empty}
+        db.kv_set(WAITING_SAID, json.dumps({k: v for k, v in said.items() if k in keep or v.get("owner")}))
     return out
 
 
@@ -306,15 +331,20 @@ def late_photos(s: Settings, db: DB) -> list[str]:
             continue
         items = db.conn.execute("SELECT * FROM items WHERE batch_id=?", (b["id"],)).fetchall()
         if b["status"] == "failed" and not int(b["n_photos"] or 0):
-            back = s.path("inbox") / f"{Path(dest).name.split('_', 1)[-1]}-late"
-            try:
-                shutil.move(dest, str(back))
-            except OSError as e:
-                db.log(b["id"], "late_photos_failed", str(e))
+            # WO43: taken where it is — a new batch on the archive folder itself (never copied back into the inbox:
+            # live 2026-10-17, the "-late" copies met the owner's re-share and made three duplicate cards); the
+            # original batch learns the names, so the same photos are never "late" twice
+            nid = db.add_batch(dest, len(photos))
+            if nid is None:
                 continue
-            db.log(b["id"], "late_photos", {"photos": len(photos), "to": back.name, "how": "taken again as a new share"})
-            notify.say(f"📸 {len(photos)} photos came late into a share that had none — taken again now ({back.name})")
-            done.append(f"{b['id']}: retaken")
+            names = sorted(p.name for p in photos)
+            db.log(nid, "batch_registered", {"folder": Path(dest).name, "photos": len(photos), "names": names,
+                                             "late_of": b["id"], "in_place": True})
+            db.log(b["id"], "batch_registered", {"folder": Path(dest).name, "photos": len(photos), "names": names,
+                                                 "taken_as": nid})
+            db.log(b["id"], "late_photos", {"photos": len(photos), "as": nid, "how": "taken where it is"})
+            notify.say(f"📸 {len(photos)} photos of the {share_time(Path(dest))} share came late — taken now")
+            done.append(f"{b['id']}: retaken as {nid}")
             continue
         names = ", ".join(p.name for p in new[:6])
         title = (_title_of(items[0]) if len(items) == 1 else f"batch {b['id']}")
@@ -388,6 +418,20 @@ def process_batch(s: Settings, db: DB, bid: str) -> None:
     if not listed:
         raise ValueError(f"no photos in {src} (moved away, or still downloading from iCloud?)")
     raw = [p for p, _ in listed]
+    # WO43: the photo memory, before grouping and before any model call — a share of nothing but known photos is a
+    # repeat (skipped, archived, one private line); known photos among new ones are dropped, the new ones told as
+    # late photos of their item when they all belong to one, else taken as a share of their own
+    known_as, new, keys = photomem.check_share(db, raw)
+    if raw and not new:
+        repeat_share(s, db, bid, src, known_as)
+        return
+    if known_as:
+        if (joined := known_photos_dropped(s, db, bid, src, known_as, new)) is not None:
+            db.log(bid, "late_photos", {"photos": [p.name for p in new], "items": [joined], "how": "repeat share"})
+            db.set_batch(bid, status="failed", reasons=[f"repeat share: new photos joined {joined} as late"])
+            archive_share(s, db, bid, src)
+            return
+        raw = new
     db.log(bid, "batch_prepped", {"names": sorted(p.name for p in raw)})   # WO37: the photos it really took
     times = {p.name: t for p, t in listed}
     kinds_raw = prep.photo_kinds(raw)                     # from the originals: normalize() strips the EXIF
@@ -396,6 +440,8 @@ def process_batch(s: Settings, db: DB, bid: str) -> None:
     kept, dropped = prep.drop_near_duplicates(norm, norm_times, s["images"]["dedupe_hamming"])
     kept_times = [times[raw[int(p.stem)].name] for p in kept]
     kept_kinds = [kinds_raw[int(p.stem)] for p in kept]
+    photo_keys = {str(i): keys[p.name] for i, p in enumerate(raw)}     # by raw index (= the normalized file's stem)
+    photomem.remember(db, [(raw[int(p.stem)], keys[raw[int(p.stem)].name]) for p in dropped], None, bid)   # bursts
 
     note_file = src / "notes.txt"
     note = note_file.read_text(encoding="utf-8").strip() if note_file.exists() else None
@@ -432,7 +478,8 @@ def process_batch(s: Settings, db: DB, bid: str) -> None:
                                     # what the code saw, kept to tune the thresholds on real rolls
                                     "pauses": [[i, round(sec)] for i, sec in sorted(breaks.items())],
                                     "distances": [[i, d] for i, d in sorted(distances.items())],
-                                    "changes": sorted(changes), "preview_px": report.get("preview_px")},
+                                    "changes": sorted(changes), "preview_px": report.get("preview_px"),
+                                    "keys": photo_keys},                  # WO43: each photo's memory keys, by raw index
                  reasons=reasons)
 
     if cfg.get("auto_confirm", True):
@@ -452,6 +499,34 @@ def process_batch(s: Settings, db: DB, bid: str) -> None:
         approve.pump(s, db)                               # the contact sheet, when it is next (one question at a time)
         return
     split(s, db, bid, groups)
+
+
+def repeat_share(s: Settings, db: DB, bid: str, src: Path, known_as: dict[str, str]) -> None:
+    """WO43: every photo of the share is known — a repeat (the iPhone's late upload, a second run of the Shortcut):
+    nothing is processed, no card, nothing to the group; the batch is recorded, the folder archived, one private line
+    for all the repeats of this look (`photomem.say_skipped`)."""
+    items = list(dict.fromkeys(v for v in known_as.values() if v and not v.startswith("batch:")))
+    titles = [photomem.title_of(db, iid) for iid in items] or ["photos already taken"]
+    db.set_batch(bid, status="failed", reasons=[f"repeat share: same photos as {', '.join(items) or 'an earlier share'}"])
+    db.log(bid, "batch_repeat", {"folder": src.name, "items": items, "photos": sorted(known_as)})
+    photomem.note_skipped(db, share_time(src), titles)
+    archive_share(s, db, bid, src)
+
+
+def known_photos_dropped(s: Settings, db: DB, bid: str, src: Path, known_as: dict[str, str],
+                         new: list[Path]) -> str | None:
+    """Some of a share's photos are known (WO43): they are dropped. When they all belong to ONE item, the new photos
+    are that item's late photos (WO37's line, no new card) — returns the item; else None (the new ones go on as a
+    share of their own)."""
+    items = list(dict.fromkeys(v for v in known_as.values() if v and not v.startswith("batch:")))
+    db.log(bid, "photos_known", {"folder": src.name, "known": sorted(known_as), "items": items})
+    if len(items) != 1 or not new:
+        return None
+    iid = items[0]
+    names = ", ".join(p.name for p in new[:6])
+    notify.say(f"📸 {len(new)} photos of {photomem.title_of(db, iid)} came with a repeat share ({names}) — the listing "
+               "doesn't have them")
+    return iid
 
 
 def accept_grouping(groups: list[list[int]], n: int, kinds: list[str], unassigned: list[int] | tuple[int, ...] = (),
@@ -528,10 +603,14 @@ def split(s: Settings, db: DB, bid: str, groups: list[list[int]], dropped: list[
         fill_item_dir(d, g, photos, kinds)
         dirs.append(d)
 
+    keys_by_src = segd.get("keys") or {}                 # WO43: the photo memory's keys, by the share's photo index
     with db.tx():
         iids = [db.add_item(bid, k, str(d), item_note) for k, d in enumerate(dirs, 1)]
         for iid, g in zip(iids, groups):
             db.log(iid, "item_created", {"batch": bid, "photos": g})
+            photomem.remember(db, [(Path(k["name"]), k) for idx in g
+                                   if (k := keys_by_src.get(str(int(photos[idx].stem)) if photos[idx].stem.isdigit()
+                                                            else str(idx)))], iid, bid)
         if dropped:
             db.log(bid, "photos_dropped", {"photos": list(dropped)})
         db.set_batch(bid, status="split")

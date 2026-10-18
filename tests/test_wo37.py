@@ -265,7 +265,7 @@ def test_a_share_is_whole_only_once_its_photos_are_here(tmp_path, monkeypatch):
     monkeypatch.setattr(pipeline, "arrived", lambda p: clock["now"] - 31 * 60)
     monkeypatch.setattr(pipeline, "appeared", lambda p: clock["now"] - 31 * 60)
     assert not pipeline.share_complete(s, d, marker, 60)                         # 30 min, no photo: never "whole"
-    assert pipeline.share_state(s, d, marker, 60) == "lost"                      # WO42: lost — the group line, archived
+    assert pipeline.share_state(s, d, marker, 60) == "empty"                     # WO43: still on the iPhone — said once
 
 
 def test_photos_that_come_after_an_empty_share_send_it_again(env, monkeypatch):
@@ -280,9 +280,12 @@ def test_photos_that_come_after_an_empty_share_send_it_again(env, monkeypatch):
     assert pipeline.late_photos(s, db) == []                                     # nothing came yet
     for i in (1296, 1297, 1298):
         Image.new("RGB", (30, 40)).save(archived / f"IMG_{i}.jpeg")
-    assert pipeline.late_photos(s, db) == [f"{bid}: retaken"]
-    assert (s.path("inbox") / "2026-10-12_205751-late").is_dir() and not archived.exists()
-    assert said and said[0].startswith("📸 3 photos came late")
+    [done] = pipeline.late_photos(s, db)
+    assert done.startswith(f"{bid}: retaken as b_")                             # WO43: taken where it is
+    new = done.split(" as ")[1]
+    assert archived.exists() and not (s.path("inbox") / "2026-10-12_205751-late").exists()   # never copied back
+    assert db.batch(new)["src_dir"] == str(archived) and db.batch(new)["n_photos"] == 3
+    assert said and said[0].startswith("📸 3 photos of the 8:57 PM share came late — taken now")
     assert pipeline.late_photos(s, db) == []                                     # once
 
 

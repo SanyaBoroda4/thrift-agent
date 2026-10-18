@@ -769,6 +769,125 @@ class ExtensionPoster(Poster):
             out["saved"] = False                    # refused, and the site still shows the old price: nothing saved
         return out
 
+    async def set_fields(self, url: str, fields: dict, dry: bool = False, shots: Path | None = None, go=None,
+                         sku: str | None = None) -> dict:
+        """WO43: a listing's category (and the size that goes with it) changed on its edit page — the extension's
+        "fields" job: the category chosen under the new department's heading (Depop: the leaf under "Men > Shoes";
+        Vinted: the leaf by id down the men's tree), the size on the menu that follows, both read back; then — never
+        in a dry run, and only when `go()` says yes — Save pressed ONCE; then the edit page is read again
+        (`read_fields`) for what stuck. {"ok", "saved", "seen", "after", "error", "shot"}."""
+        edit = self.edit_url(url)
+        if edit is None:
+            return {"ok": False, "saved": False, "error": f"not a {self.site} listing address: {url}"}
+        if not await self.wait_connected():
+            raise PosterError(f"{self.site}: the Thrift Chrome extension isn't connected")
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.shot = (shots or Path(".")) / f"{sku or 'listing'}-{self.name}-{stamp}-fields{'-dry' if dry else ''}.png"
+        bridge = self._bridge()
+        job = bridge.submit(self.name, "fields", {"fields": fields, "copy": {}, "price": None, "photos": [],
+                                                  "listing_url": url, "edit_url": edit, "dry": dry}, shot=self.shot)
+        job.listener = self._listen
+        try:
+            out = await self._fields(bridge, job, url, fields, dry, go)
+        finally:
+            if not job.done:
+                bridge.drop(job)
+                try:
+                    await bridge.settle(job, 5.0)
+                except BaseException:  # noqa: BLE001
+                    pass
+        if out.get("saved") and not out.get("error"):
+            after = await self.read_fields(url, fields, shots, sku)
+            out["after"] = after.get("seen")
+            out["ok"] = bool(after.get("ok"))
+            if not out["ok"]:
+                out["error"] = after.get("error") or f"the edit page shows {after.get('seen')} after Save"
+            else:
+                out["note"] = f"the edit page shows {after.get('seen')}"
+        return out
+
+    async def read_fields(self, url: str, fields: dict, shots: Path | None = None, sku: str | None = None) -> dict:
+        """The category and size the edit page shows now (a "fields" job that reads and changes nothing)."""
+        edit = self.edit_url(url)
+        if edit is None:
+            return {"ok": False, "error": f"not a {self.site} listing address: {url}"}
+        bridge = self._bridge()
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        shot = (shots or Path(".")) / f"{sku or 'listing'}-{self.name}-{stamp}-fields-read.png"
+        job = bridge.submit(self.name, "fields", {"fields": fields, "copy": {}, "price": None, "photos": [],
+                                                  "listing_url": url, "edit_url": edit, "dry": True,
+                                                  "read_only": True}, shot=shot)
+        job.listener = self._listen
+        try:
+            ev = await self._await(job, ("ready", "result", "error"), job.created + bridge_mod.JOB_TIMEOUT)
+        except TimeoutError:
+            return {"ok": False, "error": "the edit page wasn't read in time"}
+        finally:
+            if not job.done:
+                bridge.drop(job)
+                try:
+                    await bridge.settle(job, 5.0)
+                except BaseException:  # noqa: BLE001
+                    pass
+        if ev.get("event") == "error":
+            if ev.get("page") in STOP_PAGES:
+                raise self._stop(ev)
+            return {"ok": False, "error": f"{ev.get('stage') or 'read'}: {ev.get('message')}"}
+        seen = ev.get("seen") or {}
+        return {"ok": self._fields_match(fields, seen), "seen": seen}
+
+    def _fields_match(self, fields: dict, seen: dict) -> bool:
+        """The edit page shows our category leaf and size (the page's inputs show the leaf's name, not the path)."""
+        want_leaf = (fields.get("category_path") or fields.get("category") or "").split(" > ")[-1].strip().lower()
+        got_leaf = str(seen.get("category") or "").strip().lower()
+        ok = not want_leaf or got_leaf == want_leaf or want_leaf in got_leaf
+        if fields.get("size"):
+            ok = ok and _norm(str(fields["size"])) in _norm(str(seen.get("size") or ""))
+        return bool(ok)
+
+    async def _fields(self, bridge: bridge_mod.Bridge, job: bridge_mod.Job, url: str, fields: dict, dry: bool,
+                      go) -> dict:
+        try:
+            ev = await self._await(job, ("ready", "result", "error"), job.created + bridge_mod.JOB_TIMEOUT)
+        except TimeoutError:
+            return {"ok": False, "saved": False, "error": "the edit page wasn't done in time: nothing saved"}
+        if ev.get("event") == "error":
+            if ev.get("page") in STOP_PAGES:
+                raise self._stop(ev)
+            return {"ok": False, "saved": False, "shot": self._kept(job, "form"),
+                    "error": f"{ev.get('stage') or 'edit'}: {ev.get('message')}"}
+        seen = ev.get("seen") or {}
+        out = {"ok": False, "saved": False, "shot": self._kept(job, "form"), "seen": seen,
+               "notes": ev.get("notes") or [], "failed": ev.get("failed") or []}
+
+        def cancel() -> None:
+            if ev.get("event") == "ready":
+                bridge.command(job, "cancel")
+        if out["failed"] or not self._fields_match(fields, seen):
+            cancel()
+            return {**out, "error": f"the edit page reads {seen} after picking {fields}: nothing saved"
+                    + (f" ({'; '.join(out['failed'])})" if out["failed"] else "")}
+        if dry or ev.get("event") == "result":
+            cancel()
+            return {**out, "ok": bool(dry)}
+        if (n := seen.get("submit_buttons")) != 1:
+            cancel()
+            return {**out, "error": f"the edit page's Save differs from the recording ({n} found): nothing saved"}
+        if go is not None and not go():
+            cancel()
+            return {**out, "error": "stopped before Save"}
+        self._say("go-ahead sent: Save once")
+        bridge.command(job, "submit")
+        out["saved"] = True
+        try:
+            ev = await job.wait(("result", "error"), AFTER_CLICK_MIN)
+        except (TimeoutError, asyncio.TimeoutError):
+            ev = {"event": "error", "message": "no page after Save"}
+        out["shot"] = self._kept(job, "after-publish", "refused", "form") or out["shot"]
+        if ev.get("event") == "error" and str(ev.get("message") or "").startswith("refused:"):
+            out["error"] = f"{self.site} refused the change ({ev['message'][len('refused: '):]})"
+        return out
+
     async def wait_connected(self, timeout: float = CONNECT_WAIT) -> bool:
         end = time.monotonic() + timeout
         while self.bridge is not None and not self.bridge.connected() and time.monotonic() < end:

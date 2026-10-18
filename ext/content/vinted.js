@@ -334,6 +334,41 @@
       await T.sleep(500);
     },
 
+    // WO43: the category chosen again (the leaf by its id down the new department's tree) and the size on the grid
+    // that follows it, on the listing's edit page. Nothing else.
+    async setFields(job, st) {
+      const f = job.fields || {};
+      if (f.category_id) {
+        await T.step("category", st, async () => {
+          await open("category");
+          const leafSel = S().category.leaf.map((s) => s.replace("{id}", f.category_id));
+          const parts = (f.category_path || "").split(" > ");
+          for (let k = 0; ; k++) {
+            const leaf = T.$(leafSel);
+            if (leaf && T.visible(leaf)) {
+              await T.click(leaf);
+              break;
+            }
+            if (k >= parts.length) throw new Error(`the leaf ${f.category_id} isn't under ${f.category_path}`);
+            await clickRow(parts[k]);
+          }
+          await T.until(() => (T.$(S().category.selectors)?.value || "").trim(), 3000);
+          T.picked(st, "category", f.category_path, T.$(S().category.selectors)?.value || "");
+          escape();
+        });
+      }
+      if (f.size) {
+        await T.quiet(600, 4000);                        // the size grid follows the category
+        await T.step("size", st, async () => pick(st, "size", f.size));
+      }
+      await closeAll(st);
+    },
+    fieldsSeen(job, st) {
+      const value = (sel) => (T.$(sel) ? T.$(sel).value : null);
+      return { category: value(S().category.selectors), size: value(S().size?.selectors),
+               picked: st.picked ? { ...st.picked } : null };
+    },
+
     readBack(job, st) {
       const value = (sel) => {
         const el = T.$(sel);

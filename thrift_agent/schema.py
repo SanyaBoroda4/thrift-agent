@@ -179,6 +179,13 @@ class PieceSize(BaseModel):
 class Facts(BaseModel):
     item_type: str = Field(description="Plain noun phrase, e.g. 'suede ankle boots', 'wrap midi dress'")
     department: Literal["Women", "Men", "Kids", "Unisex", "Home"]
+    department_confidence: float | None = Field(None, ge=0, le=1, description="How sure you are of the department "
+                                                "(0..1) — shoes and sportswear especially: men's or women's from the "
+                                                "last's shape and width, the size system on the label (M / W, a men's "
+                                                "run of sizes), the model's own line and colourway; below 0.70 the "
+                                                "card says so and the owner answers 'men' or 'women'")
+    department_alternative: Literal["Women", "Men", "Kids", "Unisex"] | None = Field(
+        None, description="Below 0.70: the other department you weighed")
     kids_gender: KidsGender | None = Field(None, description="Kids items only: girls | boys | unisex, your best reading "
                                                              "of the item itself (style, colour, the box or label, a "
                                                              "retail screenshot). It picks Poshmark's Girls or Boys "

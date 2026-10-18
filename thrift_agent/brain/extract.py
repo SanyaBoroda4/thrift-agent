@@ -22,6 +22,11 @@ Rules:
 - department and category come from evidence (labels, the retailer page, sizing), never from a default.
   Use the real Poshmark category and subcategory, spelled as in the lists below — never 'Other'. The category is
   never a department name: a kids tee is department Kids, category "Shirts & Tops".
+  Men's or women's is a reading of the item itself, never a default of Women: for shoes and sportswear look at the
+  last's shape and width (a men's running shoe is longer, wider and squarer at the toe), the size system on the
+  label or insole ("M 10.5 / W 12", a men's run of sizes), the model's own men's/women's line and colourway, the
+  cut of a garment (a men's tee's straight body and wider neck). Give department_confidence always; below 0.70 put
+  the other department you weighed in department_alternative — the owner is shown it and answers 'men' or 'women'.
   A set of two garments sold together is never a dress: Women top + skirt = Skirts > Skirt Sets, top + shorts = Shorts,
   top + pants = Pants & Jumpsuits (the bottom decides); Kids = Matching Sets. A one-piece catsuit, jumpsuit or romper =
   Pants & Jumpsuits > Jumpsuits & Rompers (Kids: Bottoms > Jumpsuits & Rompers). Pants, sheer or flowy ones too, are

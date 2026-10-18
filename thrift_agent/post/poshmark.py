@@ -1412,6 +1412,81 @@ class PoshmarkPoster(Poster):
         finally:
             await page.close()
 
+    async def set_category(self, ctx: BrowserContext, url: str, payload: dict, dry: bool = False,
+                           shots: Path | None = None, go=None) -> dict:
+        """WO43: the listing's department / category / subcategory — and its size on the new department's menu — on
+        its edit page: the same category menu as the create form (`_category`: department, category, subcategory),
+        the size menu (`_size`), the form read back (the category root's text must name the department and the
+        category, the size field the size); then — never in a dry run, and only when `go()` says yes — Update and the
+        Share Listing panel's List This Item for THIS edit (WO40), pressed once; then the public listing's own JSON is
+        read until it shows the new department. {"ok", "saved", "seen", "live", "error", "shot"}."""
+        m = SEL["listing_url"].search(urlparse(url or "").path)
+        if m is None:
+            raise PosterError(f"not a Poshmark listing address: {url!r}")
+        r = Render.model_validate(payload["render"])
+        want = payload.get("want") or {}
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.shot = (shots or Path(".")) / f"{r.sku}-poshmark-{stamp}-category{'-dry' if dry else ''}.png"
+        out: dict = {"ok": False, "saved": False, "shot": str(self.shot)}
+        self._roots, self._state, self._render, self.chosen, self.guesses = {}, {}, r, {}, []
+        page = await ctx.new_page()
+        try:
+            resp = await page.goto(SEL["edit_url"].format(base=self.base_url, id=m["id"]))
+            await page.wait_for_load_state("domcontentloaded")
+            if resp is not None and resp.status == 404:
+                return {**out, "error": "the edit page is gone (404)"}
+            trigger = SEL["category_open"](page).first
+            try:
+                await trigger.wait_for(state="visible", timeout=UPDATE_TIMEOUT_MS)
+            except PlaywrightTimeout:
+                await keep_evidence(page, self.shot, {"url": url, "found": False})
+                return {**out, "error": "no category field on the edit page"}
+            try:
+                await self._category(page, r)                 # department → category → subcategory
+                await self._size(page, r)                     # the new department's size menu
+            except (Skipped, PosterError) as e:
+                await keep_evidence(page, self.shot, {"url": url, "error": str(e)})
+                return {**out, "error": f"{e}: nothing saved"}
+            await settle(page)
+            seen = await self.read_back(page)
+            out["seen"] = {k: seen.get(k) for k in ("category", "subcategory", "size")}
+            out["guesses"] = list(self.guesses)
+            await keep_evidence(page, self.shot, {"url": url, "want": want, "seen": out["seen"], "dry": dry,
+                                                  "guesses": self.guesses})
+            category_text = str(seen.get("category") or "")
+            if not (Contains(r.department, r.category).matches(category_text)
+                    and (not r.subcategory or Contains(self.chosen.get("subcategory") or r.subcategory)
+                         .matches(str(seen.get("subcategory") or "")))
+                    and (not want.get("size") or Contains(str(want["size"])).matches(str(seen.get("size") or "")))):
+                return {**out, "error": f"the edit page reads {out['seen']} after picking {want}: nothing saved"}
+            if dry:
+                return {**out, "ok": True}
+            if go is not None and not go():
+                return {**out, "error": "stopped before Save"}
+            await SEL["update_listing"](page).first.click()
+            out["saved"] = True
+            out["save"] = await self._save_edit(page, m["id"])
+            from thrift_agent.crosslist import poshmark_listing
+            end = time.monotonic() + PUBLIC_CHECK_S * 3
+            live = None
+            while True:
+                live = await asyncio.to_thread(poshmark_listing, url)
+                if (live and (live.get("department") or "").lower() == r.department.lower()
+                        and _key(live.get("category") or "") == _key(r.category)) or time.monotonic() >= end:
+                    break
+                await asyncio.sleep(PUBLIC_EVERY_S)
+            out["live"] = live
+            await keep_evidence(page, self.shot.with_name(self.shot.stem + "-after.png"),
+                                {"url": url, "save": out["save"], "live": live})
+            out["ok"] = bool(live and (live.get("department") or "").lower() == r.department.lower()
+                             and _key(live.get("category") or "") == _key(r.category))
+            if out["ok"]:
+                out["note"] = f"the public page shows {live.get('department')} › {live.get('category')}" \
+                              + (f" › {live.get('subcategory')}" if live.get("subcategory") else "")
+            return out
+        finally:
+            await page.close()
+
     async def _save_edit(self, page: Page, listing_id: str) -> str:
         """After Update on the edit page (WO40): the Share Listing panel's List This Item for THIS edit (flow "edit",
         this listing's id) pressed once — that is what saves; then the page leaving the edit page. A page that left by

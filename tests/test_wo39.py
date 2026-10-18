@@ -166,9 +166,10 @@ def test_a_price_on_a_card_with_no_size_never_says_queued(env, tmp_path, facts, 
     brown = _item(db, tmp_path, facts, BROWN, name="brown")
     db.add_outbox(str(CHAT), 454, "item", brown, text="card")
     _reply(db, s, bot, "25", to=454)
-    marks = [p for m, p in bot.calls if m == "editMessageReplyMarkup"]
-    assert marks and "needs a size" in str(marks[-1]) and "queued" not in str(marks[-1])
-    assert bot.texts()[-1] == "✓ $25 — it goes up once you reply 'size …' to its card"
+    # WO43: the card is edited in place — the size rows stay, the price button reads "✓ $25 — tap a size to list it"
+    edits = [p for m, p in bot.calls if m in ("editMessageCaption", "editMessageMedia", "editMessageReplyMarkup")]
+    assert edits and "tap a size to list it" in str(edits[-1]) and "queued" not in str(edits[-1])
+    assert bot.texts()[-1] == "✓ $25 — it goes up once a size is tapped on its card"
 
 
 # ---------------------------------------------------------------- a refused form
@@ -315,7 +316,7 @@ def test_an_item_waiting_for_a_size_gets_one_message_and_a_reply_to_it_sets_the_
     for mp in ("poshmark", "depop", "vinted"):
         db.upsert_listing(brown, mp, status="skipped", error="skipped: no size on the item")
     assert approve.ask_sizes(s, db) == 1
-    assert bot.texts() == [f"Waiting for a size: {BROWN} — reply 'size …' to this message"]
+    assert bot.texts() == [f"Waiting for a size: {BROWN} — tap one on its card (or reply 'size …' to this message)"]
     assert approve.ask_sizes(s, db) == 0                                     # once, never repeated
     mid = bot.next_id
     _reply(db, s, bot, "size S", to=mid)
