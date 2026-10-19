@@ -315,11 +315,7 @@ class SizeShown(Contains):
     def matches(self, seen) -> bool:
         return super().matches(seen) or any(Contains(a).matches(seen) for a in self.aliases)
 
-    def __eq__(self, other) -> bool:
-        return isinstance(other, SizeShown) and self.want == other.want
-
-    def __hash__(self) -> int:
-        return hash(("size", self.want))
+    # equality and hash are Contains': SizeShown("7.5") == Contains("7.5") (the evidence and the older tests)
 
     def __repr__(self) -> str:                      # the evidence JSON: Contains' words, the abbreviation named
         return f"contains {self.want!r}" + (f" (or {', '.join(map(repr, self.aliases))})" if self.aliases else "")
