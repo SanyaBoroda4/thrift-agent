@@ -298,7 +298,7 @@ ID_SKEW_S = 600                  # a listing id created this long before the run
 FIND_TRIES, FIND_WAIT_MS = 3, 10_000   # the closet check after a sleep: looks, and the wait between them (WO28)
 POLL_MS = 250
 PANEL_WAIT_MS = 8_000            # WO37: the Share Listing panel's Promote section, drawn a moment after the panel
-SIZE_REPICKS = 2                 # WO37: a size menu that closed with no size is opened again, twice at most
+SIZE_REPICKS = 3                 # WO37: a size menu that closed with no size is opened again (WO45 follow-up: 3 ways)
 UPDATE_TIMEOUT_MS = 15_000       # WO33: Update on the edit page, then the page leaving it
 PUBLIC_CHECK_S, PUBLIC_EVERY_S = 20.0, 4.0   # ... then the public listing read until it agrees, every this often
 ROOT_TEXT_MAX = 300              # a dropdown "root" showing more text than this holds more than one field
@@ -459,6 +459,7 @@ class PoshmarkPoster(Poster):
         self._roots: dict[str, ElementHandle | None] = {}   # dropdown -> the element that shows its choice
         self._state: dict = {}                             # what fill() saw for read_back: thumbnails, Smart Sell
         self._render: Render | None = None
+        self._trace_dir: Path | None = None                # WO45 follow-up: a dry run's size-menu trace (Poster.post)
         self._closet_before: set[str] = set()              # the closet's listing ids before this post
         self._started = 0.0                                # when this post started (epoch s): new ids are younger
         # The supervised first publish: an async (render, panel text) -> bool, True only when the owner typed LIST.
@@ -648,19 +649,53 @@ class PoshmarkPoster(Poster):
             raise PosterError(f"the subcategory menu has no 'None'{_offer(options)}")
         await settle(page, 0.3, 0.8)
 
+    async def _trace(self, page: Page, label: str) -> None:
+        """WO45 follow-up (the Bags menu's "One Size", live: three failures and nothing to read but the end): a DRY
+        RUN records the size menu after each step — the page (png) and what the size field, the tiles, the Done
+        buttons and the focus show (json) — as `<sku>-poshmark-trace-<nn>-<label>.*` in failed/shots. Never in a
+        publish; best effort."""
+        if not self._trace_dir:
+            return
+        self._trace_n = getattr(self, "_trace_n", 0) + 1
+        base = self._trace_dir / f"{self._render.sku}-poshmark-trace-{self._trace_n:02d}-{label}"
+        try:
+            await page.screenshot(path=str(base.with_suffix(".png")), full_page=True, timeout=10_000)
+            state = await page.evaluate("""() => {
+                const f = document.querySelector('[data-test="size"]');
+                const root = f && f.closest('[data-test="dropdown"]');
+                const menu = root && root.querySelector('.dropdown__menu');
+                const vis = (e) => !!(e && (e.offsetWidth || e.offsetHeight));
+                const tiles = [...document.querySelectorAll('button.multi-size-selector__button')]
+                    .map(b => ({text: b.textContent.trim(), cls: b.className, li: b.closest('li')?.className,
+                                visible: vis(b)}));
+                const done = [...document.querySelectorAll('button[data-et-name="apply"]')]
+                    .map(b => ({on: b.getAttribute('data-et-on-name'), cls: b.className, visible: vis(b)}));
+                const a = document.activeElement;
+                return {field: f ? f.textContent.trim() : null, field_cls: f ? f.className : null,
+                        root_cls: root ? root.className : null, menu_cls: menu ? menu.className : null,
+                        menu_visible: vis(menu), tiles, done,
+                        active: a ? `${a.tagName}#${a.id}.${a.className}` : null};
+            }""")
+            base.with_suffix(".json").write_text(json.dumps(state, indent=1), encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass
+
     async def _size(self, page: Page, r: Render) -> None:
         choice = size_choice(r)
         if choice is None:                             # WO37 (live: the Clarks): Poshmark's size is required — Next
             raise Skipped("no size on the item")       # would only show "Required"; nothing is saved
         where = f"{r.department}/{r.category}" + (f" ({choice.tab})" if choice.tab else "")
         await SEL["size_open"](page).click()
+        await self._trace(page, "menu-opened")
         if choice.tab:
             picked, tabs = await self._choose(page, SEL["size_tabs"](page), choice.tab)
             if picked:
                 await settle(page, 0.3, 0.8)
             elif choice.verified and tabs:             # no tabs at all: a category with one menu (Women's shoes)
                 self.guesses.append(f"size tab '{choice.tab}' not offered{_offer(tabs)}: picked from the menu shown")
+            await self._trace(page, "tab")
         picked, sizes = await self._choose(page, SEL["size_buttons"](page), choice.button, loose=choice.loose)
+        await self._trace(page, "picked")
         if not picked:
             if not sizes:
                 raise PosterError(f"the size menu for {where} shows no sizes")
@@ -709,12 +744,16 @@ class PoshmarkPoster(Poster):
                 await el.focus()
                 await page.keyboard.press("Space")
                 self.notes.append(f"size '{choice.button}' picked again with the keyboard")
-            elif container is not None:
+            elif repicked == 2 and container is not None:
                 await _click(container)
                 self.notes.append(f"size '{choice.button}' picked again on its tile's container")
+            elif repicked >= 3:                        # the last word: the button's own click(), never a menu item's
+                await el.evaluate("e => e.click()")
+                self.notes.append(f"size '{choice.button}' picked again with the button's own click")
             else:
                 await _click(el)
                 self.notes.append(f"size '{choice.button}' picked again")
+            await self._trace(page, f"repick-{repicked}")
             closed_since = None
 
         def how(menu: str) -> str:
@@ -727,6 +766,7 @@ class PoshmarkPoster(Poster):
                 except PlaywrightTimeout:              # the menu closed under it: looked at again below
                     pass
                 else:
+                    await self._trace(page, "done-pressed")
                     for _ in range(4):                 # the size field follows the press
                         if Contains(choice.button).matches(await shown_now()):
                             break
@@ -747,6 +787,7 @@ class PoshmarkPoster(Poster):
             elif waited - closed_since >= 1_000 and repicked < SIZE_REPICKS:
                 await pick_again()                     # closed a second ago with no size on the form
             if waited >= MENU_TIMEOUT_MS * (1 + repicked):
+                await self._trace(page, "given-up")
                 raise PosterError(f"after picking '{choice.button}' the size menu neither showed Done nor closed with "
                                   f"that size on the form (the size field shows '{shown}')")
             await page.wait_for_timeout(POLL_MS)

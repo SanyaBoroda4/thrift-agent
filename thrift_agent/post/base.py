@@ -313,6 +313,7 @@ class Poster(ABC):
         self.notes, self.guesses = [], []
         try:
             shots.mkdir(parents=True, exist_ok=True)
+            self._trace_dir = shots if dry_run else None    # WO45 follow-up: a dry run traces the size menu
             page = await ctx.new_page()
             await self.check_account(page)
             await page.goto(self.create_url)
