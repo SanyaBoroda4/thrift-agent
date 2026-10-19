@@ -58,6 +58,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from playwright.async_api import BrowserContext, ElementHandle, Locator, Page
+from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from thrift_agent import brands
@@ -769,27 +770,33 @@ class PoshmarkPoster(Poster):
             # click never registered): the second pick presses the tile with the keyboard (focus, Space), the third
             # clicks its own container (div.multi-size-selector__button__container, the live markup) — each a real
             # event; the read-back keeps the last word
-            el, _ = await self._pick(page, sizes, choice.button, loose=choice.loose)
-            container = None
-            if el is not None and repicked >= 2:
-                parent = (await el.evaluate_handle("e => e.parentElement")).as_element()
-                if parent is not None and "button__container" in (await parent.get_attribute("class") or ""):
-                    container = parent
-            if el is None:
+            try:
+                el, _ = await self._pick(page, sizes, choice.button, loose=choice.loose)
+                container = None
+                if el is not None and repicked >= 2:
+                    parent = (await el.evaluate_handle("e => e.parentElement")).as_element()
+                    if parent is not None and "button__container" in (await parent.get_attribute("class") or ""):
+                        container = parent
+                if el is None:
+                    await self._choose(page, sizes, choice.button, loose=choice.loose)
+                elif repicked == 1:
+                    await el.focus()
+                    await page.keyboard.press("Space")
+                    self.notes.append(f"size '{choice.button}' picked again with the keyboard")
+                elif repicked == 2 and container is not None:
+                    await _click(container)
+                    self.notes.append(f"size '{choice.button}' picked again on its tile's container")
+                elif repicked >= 3:                    # the last word: the button's own click(), never a menu item's
+                    await el.evaluate("e => e.click()")
+                    self.notes.append(f"size '{choice.button}' picked again with the button's own click")
+                else:
+                    await _click(el)
+                    self.notes.append(f"size '{choice.button}' picked again")
+            except PlaywrightError as e:               # the tile was drawn again under us (CI, macOS): a plain pick
+                if "not attached" not in str(e) and "detached" not in str(e):
+                    raise
                 await self._choose(page, sizes, choice.button, loose=choice.loose)
-            elif repicked == 1:
-                await el.focus()
-                await page.keyboard.press("Space")
-                self.notes.append(f"size '{choice.button}' picked again with the keyboard")
-            elif repicked == 2 and container is not None:
-                await _click(container)
-                self.notes.append(f"size '{choice.button}' picked again on its tile's container")
-            elif repicked >= 3:                        # the last word: the button's own click(), never a menu item's
-                await el.evaluate("e => e.click()")
-                self.notes.append(f"size '{choice.button}' picked again with the button's own click")
-            else:
-                await _click(el)
-                self.notes.append(f"size '{choice.button}' picked again")
+                self.notes.append(f"size '{choice.button}' picked again (the tile had been redrawn)")
             await self._trace(page, f"repick-{repicked}")
             closed_since = None
 

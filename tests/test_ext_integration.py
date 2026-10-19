@@ -337,6 +337,11 @@ def test_a_wrong_token_is_refused(tmp_path):
         try:
             ok = await connected(b, seconds=3)
             state = await sw.evaluate("chrome.storage.local.get('bridge_state')")
+            for _ in range(40):              # CI (windows 3.14, twice): read before the extension had knocked
+                if "no token yet" not in (state.get("bridge_state") or {}).get("link", "no token yet"):
+                    break
+                await asyncio.sleep(0.25)
+                state = await sw.evaluate("chrome.storage.local.get('bridge_state')")
             return ok, state
         finally:
             await close(b, pw, ctx)
