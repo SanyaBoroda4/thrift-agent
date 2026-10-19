@@ -299,6 +299,30 @@ FIND_TRIES, FIND_WAIT_MS = 3, 10_000   # the closet check after a sleep: looks, 
 POLL_MS = 250
 PANEL_WAIT_MS = 8_000            # WO37: the Share Listing panel's Promote section, drawn a moment after the panel
 SIZE_REPICKS = 3                 # WO37: a size menu that closed with no size is opened again (WO45 follow-up: 3 ways)
+# WO45 follow-up (recorded live 2026-10-18, the Marc Jacobs bag): the form's size field abbreviates some sizes —
+# Women › Bags shows the preselected "One Size" as "OS". The read-back takes either spelling.
+SIZE_SHOWN = {"one size": ("OS",)}
+
+
+class SizeShown(Contains):
+    """The size as the form may show it: the size itself, or the form's own abbreviation of it (SIZE_SHOWN)."""
+
+    def __init__(self, want: str):
+        super().__init__(want)
+        self.want = want
+        self.aliases = tuple(SIZE_SHOWN.get(_key(want), ()))
+
+    def matches(self, seen) -> bool:
+        return super().matches(seen) or any(Contains(a).matches(seen) for a in self.aliases)
+
+    def __eq__(self, other) -> bool:
+        return isinstance(other, SizeShown) and self.want == other.want
+
+    def __hash__(self) -> int:
+        return hash(("size", self.want))
+
+    def __repr__(self) -> str:                      # the evidence JSON: Contains' words, the abbreviation named
+        return f"contains {self.want!r}" + (f" (or {', '.join(map(repr, self.aliases))})" if self.aliases else "")
 UPDATE_TIMEOUT_MS = 15_000       # WO33: Update on the edit page, then the page leaving it
 PUBLIC_CHECK_S, PUBLIC_EVERY_S = 20.0, 4.0   # ... then the public listing read until it agrees, every this often
 ROOT_TEXT_MAX = 300              # a dropdown "root" showing more text than this holds more than one field
@@ -694,6 +718,23 @@ class PoshmarkPoster(Poster):
             elif choice.verified and tabs:             # no tabs at all: a category with one menu (Women's shoes)
                 self.guesses.append(f"size tab '{choice.tab}' not offered{_offer(tabs)}: picked from the menu shown")
             await self._trace(page, "tab")
+        # WO45 follow-up (recorded live 2026-10-18, the Marc Jacobs bag, traced): Women › Bags PRESELECTS its one
+        # tile — the menu opens with "One Size" selected and the field reading "OS" — and a click on a selected tile
+        # toggles it OFF (the menu closes, the field says "Select Size"): three live failures. A size the form shows
+        # already is kept: Done pressed when it is there, the tile never touched.
+        shown = re.sub(r"\s+", " ", await SEL["size_open"](page).inner_text()).strip()
+        if SizeShown(choice.button).matches(shown):
+            self.notes.append(f"size '{choice.button}' was preselected by Poshmark (the field shows '{shown}')")
+            await self._trace(page, "preselected")
+            done = SEL["size_done"](page)
+            if await done.count():
+                try:
+                    await done.first.click(timeout=2_000)
+                except PlaywrightTimeout:              # the menu closed under it: the size stays on the form
+                    pass
+            self._state["size_menu"] = "preselected"
+            await settle(page, 0.3, 0.8)
+            return
         picked, sizes = await self._choose(page, SEL["size_buttons"](page), choice.button, loose=choice.loose)
         await self._trace(page, "picked")
         if not picked:
@@ -768,16 +809,16 @@ class PoshmarkPoster(Poster):
                 else:
                     await self._trace(page, "done-pressed")
                     for _ in range(4):                 # the size field follows the press
-                        if Contains(choice.button).matches(await shown_now()):
+                        if SizeShown(choice.button).matches(await shown_now()):
                             break
                         await page.wait_for_timeout(POLL_MS)
-                    if Contains(choice.button).matches(await shown_now()) or repicked >= SIZE_REPICKS:
+                    if SizeShown(choice.button).matches(await shown_now()) or repicked >= SIZE_REPICKS:
                         self._state["size_menu"] = how("Done")      # (the read-back has the last word)
                         return
                     await pick_again()                 # Done, and still no size: the pick hadn't registered
                     continue
             shown = await shown_now()
-            if not await sizes.count() and Contains(choice.button).matches(shown):
+            if not await sizes.count() and SizeShown(choice.button).matches(shown):
                 self._state["size_menu"] = how("closed by itself")   # (a) the menu closed with the size on the form
                 return
             if await sizes.count():
@@ -1088,7 +1129,7 @@ class PoshmarkPoster(Poster):
         if sub := chosen.get("subcategory", r.subcategory):
             exp["subcategory"] = Contains(sub)
         if choice := size_choice(r):
-            exp["size"] = Contains(chosen.get("size", choice.button))
+            exp["size"] = SizeShown(chosen.get("size", choice.button))     # "One Size" reads back as "OS" (WO45 f-up)
         if colors := chosen.get("colors", [c for c in r.colors if c][:2]):
             exp["colors"] = Contains(*colors)
         return exp

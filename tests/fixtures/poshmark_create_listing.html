@@ -542,21 +542,36 @@
     if (dept === 'kids' && cat === 'Shoes')
       return {tabs: {Baby: halves(0, 7), Girls: kids('Girl'), Boys: kids('Boy'), Custom: []}};
     if (dept === 'women' && cat === 'Shoes') return {system: true, tabs: {Standard: halves(5, 12), Custom: []}};
+    if (cfg.oneSizeMenu) return {system: true, tabs: {Standard: ['One Size'], Custom: []}};   // Women > Bags (live)
     return {tabs: {
       Standard: ['00', '0', '2', '4', '6', '8', '10', '12', '14', 'XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL'],
       Plus: ['0X', '1X', '2X', '3X'], Petite: ['XXSP', 'XSP', 'SP', 'MP'], Juniors: ['XS', 'S', 'M'],
       Maternity: ['S', 'M', 'L'], Custom: []}};
   }
   let chosenSize = null;
+  // WO45 follow-up (recorded live 2026-10-18, the Marc Jacobs bag): Women > Bags preselects its one "One Size" tile —
+  // the field reads "OS" from the category on — and a click on the selected tile toggles it OFF (the menu closes)
+  if (cfg.oneSizeMenu) { chosenSize = 'One Size'; label($('[data-test="size"]'), 'OS'); }
+  const shownSize = s => (cfg.oneSizeMenu && s === 'One Size') ? 'OS' : s;
   function renderSizeTab(menu, tab) {
     const box = $('#size-buttons');
     box.innerHTML = '';
     for (const s of menu.tabs[tab]) {
       const b = make('button', {type: 'button', id: `size-${s}`, class: 'multi-size-selector__button'}, s);
+      if (cfg.oneSizeMenu && s === chosenSize) b.classList.add('selected', 'btn--secondary--burgundy-v2');
       b.addEventListener('click', () => {
         if (cfg.sizeLostOnce && !window.__sizeLost) {                 // WO37: the pick lost, the menu closed
           window.__sizeLost = true;
           events.push('size-lost');
+          later(() => show($('#size-menu'), false));
+          return;
+        }
+        if (cfg.oneSizeMenu) {                                        // a toggle: off when it was on, and the menu closes
+          const on = !b.classList.contains('selected');
+          b.classList.toggle('selected', on); b.classList.toggle('btn--secondary--burgundy-v2', on);
+          chosenSize = on ? s : null;
+          label($('[data-test="size"]'), on ? 'OS' : 'Select Size');
+          events.push(on ? `size:${s}` : 'size-toggled-off');
           later(() => show($('#size-menu'), false));
           return;
         }
@@ -593,7 +608,7 @@
   });
   $('#size-apply').addEventListener('click', () => {
     show($('#size-menu'), false);
-    if (chosenSize) { label($('[data-test="size"]'), chosenSize); events.push(`size:${chosenSize}`); touch(); }
+    if (chosenSize) { label($('[data-test="size"]'), shownSize(chosenSize)); events.push(`size:${chosenSize}`); touch(); }
   });
 
   // ---- condition (the snapshot: code on the item, label over a description) ----

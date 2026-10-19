@@ -1126,6 +1126,26 @@ def test_a_size_pick_that_closed_the_menu_with_no_size_is_picked_again(chrome, p
     assert seen["size_menu"] == "Done (picked 2×)"
 
 
+def test_a_size_poshmark_preselected_is_kept_not_toggled_off(chrome, posh, photos):
+    """Recorded live 2026-10-18 (the Marc Jacobs bag, traced): Women › Bags opens its size menu with "One Size"
+    selected and the field reading "OS"; a click on the selected tile toggles it OFF — three live failures."""
+    r = render(photos, title="Marc Jacobs Leather Hobo Bag", category="Bags", subcategory=None,
+               size="One Size", size_tab="Standard", size_value="One Size")
+    seen, events = fill_and_read(chrome, posh, r, steps=["_category", "_size"], oneSizeMenu=True)
+    assert seen["size"] == "OS" and seen["size_menu"] == "preselected" and diff_on(seen, r, posh, "size") == {}
+    assert "size-toggled-off" not in events
+    assert any("preselected by Poshmark" in n for n in posh.notes)
+
+
+def test_the_size_as_the_form_shows_it():
+    SizeShown = poshmark.SizeShown
+    assert SizeShown("One Size").matches("OS") and SizeShown("One Size").matches("One Size")
+    assert not SizeShown("One Size").matches("Select Size") and not SizeShown("8").matches("8.5")
+    assert SizeShown("8").matches("8") and SizeShown("One Size") == SizeShown("One Size")
+    assert SizeShown("7.5") != SizeShown("7") and repr(SizeShown("7.5")) == "contains '7.5'"
+    assert repr(SizeShown("One Size")) == "contains 'One Size' (or 'OS')"
+
+
 def test_the_promote_part_drawn_after_the_panel_is_waited_for(chrome, posh, photos, tmp_path):
     """Live 2026-10-12 (the UGG Tazz): the panel was read before its Promote My Closet part was drawn."""
     out, site, shown = publish(chrome, posh, render(photos), tmp_path / "shots", promoteLate=True)

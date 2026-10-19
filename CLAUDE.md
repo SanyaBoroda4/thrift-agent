@@ -1266,9 +1266,16 @@ item goes up on all three sites or she is told why (§7); she only taps (§8); e
   JSON once a day. (3) A share folder gone while the Mac reads it (live 2026-10-12, 6:02 PM) → the batch `failed`
   "the share folder vanished…", the ledger's outcome, ONE private line — never a traceback (`vanished_share`). (4) The
   iCloud copy of a `?test=1` share: the API's word marks the inbox copy `_test` (`uploads._settle_known`); a copy
-  taken before that is told; the doc has the test Shortcut save its iCloud copy under `Posh/test/`. (5) Poshmark's
-  Bags size menu (the Marc Jacobs bag, three failures): the "One Size" tile's click didn't register — the repicks
-  now click its container, then press it with the keyboard (`_confirm_size.pick_again`); recorded live below.
+  taken before that is told; the doc has the test Shortcut save its iCloud copy under `Posh/test/`. (5) **Poshmark's
+  Bags size menu, recorded live 2026-10-18 (the Marc Jacobs bag, four failures, then a step-by-step trace):** Women ›
+  Bags PRESELECTS its one tile — the menu opens with "One Size" selected (`btn--secondary--burgundy-v2`) and the
+  size field reading **"OS"** — and a click on a selected tile toggles it OFF (the menu closes, the field says
+  "Select Size"); every repick toggled it back and forth. A size the field shows already is kept (`_size`: Done
+  pressed, the tile never touched, `size_menu` "preselected"), and the read-back takes the form's abbreviation
+  (`SizeShown`, `SIZE_SHOWN`: "One Size" ↔ "OS"). A DRY RUN traces the size menu after each step (`_trace`:
+  `<sku>-poshmark-trace-<nn>-<label>.png/.json` in failed/shots — the field, the tiles' classes, the Done buttons,
+  the focus); the cover dialog's checkmark on the first thumb is waited for (it came a moment after the 11th
+  thumbnail), and a cover dialog still open when the form is left is cancelled first. Stand-in: `oneSizeMenu`.
 
 ## Size buttons, the photo memory, no "share it again", a listing's department changed (WO43, 2026-10-17)
 That evening: three items shared at 3:18 PM stayed on the iPhone (5G); WO42's "share it again" line went out; the
