@@ -212,6 +212,7 @@ SEL = {
     "cover_selected": lambda thumb: thumb.locator("svg.icon-green-checkmark"),
     "cover_crop": lambda d: d.locator(".croppie-container"),
     "cover_apply": lambda d: d.locator('[data-test="modal-footer"] button[data-et-name="apply"]'),
+    "cover_cancel": lambda d: d.locator('[data-test="modal-footer"] button[data-et-name="cancel"]'),   # WO45 f-up
     "any_dialog": lambda p: p.locator('[data-test="modal-container"]:visible, [role="dialog"]:visible'),
     # The form's photo tiles: 6 for 6 photos in the Mac's form stage (2026-10-02).
     "photo_thumbs": lambda p: p.locator('#imagePlaceholder img:visible, img[src^="blob:"]:visible'),
@@ -284,6 +285,7 @@ DRAFT_NEEDS = frozenset({"draft_saved"})
 
 THUMB_TIMEOUT_MS = 90_000        # 16 photos over home Wi-Fi can take a while
 THUMB_POLL_MS = 500
+CHECKMARK_TIMEOUT_MS = 15_000    # WO45 follow-up: the cover dialog's checkmark on the first thumb, after the last thumb
 MENU_TIMEOUT_MS = 8_000          # a menu or dialog to open; a list to show the wanted option
 SUGGEST_TIMEOUT_MS = 8_000       # brand suggestions after typing
 TAG_TIMEOUT_MS = 3_000           # a curated style tag to be offered
@@ -577,8 +579,14 @@ class PoshmarkPoster(Poster):
                     raise PosterError(f"Poshmark's cover dialog lists {have} of {n_photos} photos")
                 await page.wait_for_timeout(THUMB_POLL_MS)
                 waited += THUMB_POLL_MS
-            if not await SEL["cover_selected"](thumbs.first).count():
-                raise PosterError("Poshmark's cover dialog did not preselect the first photo (the cover)")
+            # WO45 follow-up (live 2026-10-18, the Marc Jacobs bag's 11 photos): the green checkmark on the first thumb
+            # comes a moment after the last thumbnail is listed — it is waited for, never read once
+            waited = 0
+            while not await SEL["cover_selected"](thumbs.first).count():
+                if waited >= CHECKMARK_TIMEOUT_MS:
+                    raise PosterError("Poshmark's cover dialog did not preselect the first photo (the cover)")
+                await page.wait_for_timeout(THUMB_POLL_MS)
+                waited += THUMB_POLL_MS
         self._state["cover_dialog"] = {"photos": have, "crop": "Poshmark's default",
                                        **({"variant": "one photo: no title, no thumbnails"} if single else {})}
         await settle(page, 0.5, 1.2)
@@ -1053,6 +1061,11 @@ class PoshmarkPoster(Poster):
         for the form. Anything short of a Discard click is reported."""
         try:
             await self._close_share_panel(page)
+            dialog = SEL["cover_dialog"](page)           # WO45 follow-up: a failure inside the cover dialog (live, the
+            if await dialog.count():                     # Marc Jacobs bag) left it open — its backdrop took the Cancel
+                await SEL["cover_cancel"](dialog.first).first.click(timeout=LEAVE_TIMEOUT_MS)
+                await dialog.first.wait_for(state="hidden", timeout=LEAVE_TIMEOUT_MS)
+                self.notes.append("the cover dialog was still open: cancelled before leaving")
             button = SEL["discard"](page).first
             if not await button.is_visible():          # the review stage may have opened the dialog already
                 await SEL["leave"](page).first.click(timeout=LEAVE_TIMEOUT_MS)

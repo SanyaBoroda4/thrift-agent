@@ -597,6 +597,13 @@ def test_a_cover_dialog_that_lists_the_photos_slowly_is_waited_for(chrome, posh,
     assert events == ["cover-apply"] and seen["cover_dialog"]["photos"] == 3 and seen["photos"] == 3
 
 
+def test_a_cover_dialog_whose_checkmark_comes_late_is_waited_for(chrome, posh, photos):
+    """Live 2026-10-18 (the Marc Jacobs bag, 11 photos): the first thumb's green checkmark was drawn a moment after the
+    last thumbnail — read once, "did not preselect the first photo"."""
+    seen, events = fill_and_read(chrome, posh, render(photos), steps=["_photos"], coverCheckLate=True)
+    assert events == ["cover-apply"] and seen["cover_dialog"]["photos"] == 3 and seen["photos"] == 3
+
+
 def test_no_cover_dialog_is_fine(chrome, posh, photos):
     async def scenario(ctx, site):
         page = await open_form(ctx, posh)
@@ -614,6 +621,20 @@ def test_no_cover_dialog_is_fine(chrome, posh, photos):
 def test_a_dialog_unlike_the_recorded_one_fails_the_item(chrome, posh, photos, variant, why):
     err, _ = fill_expecting(chrome, posh, render(photos), PosterError, steps=["_photos"], **variant)
     assert not isinstance(err, Skipped) and str(err) == why
+
+
+def test_a_failure_inside_the_cover_dialog_leaves_through_discard(chrome, posh, photos):
+    """Live 2026-10-18 (the Marc Jacobs bag): the cover dialog stayed open after the failure and its backdrop took the
+    Cancel click — "left the form without Poshmark's Discard dialog". The dialog is cancelled first."""
+    async def scenario(ctx, site):
+        page = await open_form(ctx, posh)
+        with pytest.raises(PosterError):
+            await posh._photos(page, render(photos))
+        note = await posh.discard(page)
+        return note, page.url, posh.notes
+    note, url, notes = drive(chrome, scenario, coverSecondSelected=True)
+    assert note is None and url.endswith("/feed?discarded=1")           # Discard Changes was pressed, no draft
+    assert "the cover dialog was still open: cancelled before leaving" in notes
 
 
 def test_an_unrecorded_dialog_fails_the_dry_run_with_the_evidence(chrome, posh, photos, tmp_path):

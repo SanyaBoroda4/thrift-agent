@@ -420,12 +420,20 @@
   const addThumb = (u, i) => {
     const thumb = make('div', {class: 'image-edit-modal__thumb'});
     const selected = cfg.coverSecondSelected ? i === 1 : i === 0;
-    if (selected) thumb.appendChild(document.createElementNS('http://www.w3.org/2000/svg', 'svg'))
-      .setAttribute('class', 'icon-green-checkmark');
+    const check = () => {
+      thumb.querySelector('.gray-cover')?.remove();
+      thumb.prepend(document.createElementNS('http://www.w3.org/2000/svg', 'svg'));
+      thumb.firstChild.setAttribute('class', 'icon-green-checkmark');
+    };
+    if (selected && !cfg.coverCheckLate) check();
     else thumb.appendChild(make('i', {class: 'gray-cover'}));
     thumb.appendChild(make('img', {src: u, alt: 'thumb'}));
     $('#cover-thumbs').appendChild(thumb);
+    // WO45 follow-up (live, the Marc Jacobs bag's 11 photos): the checkmark comes a moment after the last thumbnail
+    if (selected && cfg.coverCheckLate) lateCheck = check;
+    if (cfg.coverCheckLate && i === urls.length - 1 && lateCheck) setTimeout(lateCheck, 900);
   };
+  let lateCheck = null;
   $('#img-file-input').addEventListener('change', ev => {
     urls = [...ev.target.files].map(f => URL.createObjectURL(f));
     touch();
@@ -442,7 +450,9 @@
     show($('#cover-modal'), false); show($('#cover-backdrop'), false);
     later(renderTiles);
   });
-  $('#cover-cancel').addEventListener('click', () => { events.push('cover-cancel'); show($('#cover-modal'), false); });
+  $('#cover-cancel').addEventListener('click', () => {
+    events.push('cover-cancel'); show($('#cover-modal'), false); show($('#cover-backdrop'), false);
+  });
   $('#cover-zoom').addEventListener('input', () => events.push('cover-zoom'));
   $('#cover-rotate').addEventListener('click', () => events.push('cover-rotate'));
 
