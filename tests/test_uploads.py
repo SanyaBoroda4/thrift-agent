@@ -166,15 +166,108 @@ def test_the_icloud_copy_that_came_first_is_never_doubled(env, where, name):
     folder = s.path(where) / name
     folder.mkdir()
     (folder / "IMG_1.jpeg").write_bytes(JPEG)
+    if where == "inbox":                                                                # WO46: whole in the inbox
+        (folder / "IMG_2.HEIC").write_bytes(HEIC)
     (folder / "_done.txt").write_text("done 2")
+    here = sorted(p.name for p in folder.iterdir())
     assert uploads.fetch_new(s, db, api, NOW) == [SID]
-    assert sorted(p.name for p in folder.iterdir()) == ["IMG_1.jpeg", "_done.txt"]        # untouched, no _source.txt
+    assert sorted(p.name for p in folder.iterdir()) == here                             # untouched, no _source.txt
     assert not (s.path("inbox") / SID).exists() or where == "inbox" and name == SID
     assert sorted(p.name for p in s.path("inbox").iterdir()) == ([name] if where == "inbox" else [])
     assert api.posts == [(f"/shares/{SID}/fetched", {"names": ["IMG_1.jpeg", "IMG_2.HEIC"]})]
     assert events(db, "share_same_as_icloud") == [{"share_id": SID, "folder": name,
                                                    "photos": ["IMG_1.jpeg", "IMG_2.HEIC"], "test": False}]
     assert events(db, "share_fetched") == [] and api.fetches == []                      # nothing downloaded
+
+
+@pytest.mark.parametrize("state", ["short", "cloud_only", "no_mark"])
+def test_an_icloud_copy_not_whole_gives_way_to_a_whole_upload(env, state):
+    """WO46 (her Shortcut saves the iCloud copy first, then uploads): the iCloud folder is on the Mac before the upload
+    ends, its photos short, cloud-only or without the end mark (live 2026-10-17: the folder and _done, never a photo).
+    The whole upload is taken; the iCloud copy is set aside in the archive, untouched, never the share."""
+    s, db = env
+    api = FakeApi()
+    share(api)
+    folder = s.path("inbox") / SID
+    folder.mkdir()
+    (folder / "IMG_1.jpeg").write_bytes(JPEG)
+    if state == "cloud_only":
+        (folder / ".IMG_2.HEIC.icloud").write_bytes(b"placeholder")
+    if state != "no_mark":
+        (folder / "_done.txt").write_text("done 2")
+    assert uploads.fetch_new(s, db, api, NOW) == [SID]
+    taken = s.path("inbox") / SID
+    assert (taken / "IMG_2.HEIC").read_bytes() == HEIC and (taken / "_source.txt").read_text() == "azure"
+    aside = [p for p in s.path("archive").iterdir()]
+    assert [p.name for p in aside] == [f"{datetime.now():%Y%m%d}_{SID}-icloud"]
+    assert (aside[0] / "IMG_1.jpeg").read_bytes() == JPEG and not (aside[0] / "_source.txt").exists()
+    ev = events(db, "share_icloud_set_aside")
+    assert len(ev) == 1 and ev[0]["folder"] == SID and ev[0]["photos_here"] == 1 and ev[0]["uploaded"] == 2
+    assert events(db, "share_fetched")[0]["icloud_set_aside"] == SID and events(db, "share_same_as_icloud") == []
+    assert api.posts == [(f"/shares/{SID}/fetched", {"names": ["IMG_1.jpeg", "IMG_2.HEIC"]})]
+    assert uploads.known_folder(s, SID) == taken                                     # the set-aside copy is never it
+    from thrift_agent import shares
+    assert shares.share_id_of(aside[0]) == SID and shares.share_id_of(f"{SID} 2") == SID
+
+
+def test_an_icloud_copy_already_taken_or_a_short_upload_stays_the_share(env):
+    s, db = env
+    api = FakeApi()
+    share(api)
+    folder = s.path("inbox") / SID
+    folder.mkdir()
+    (folder / "IMG_1.jpeg").write_bytes(JPEG)
+    (folder / "_done.txt").write_text("done 2")
+    db.add_batch(str(folder), 1)                                                     # the intake took it already
+    assert uploads.fetch_new(s, db, api, NOW) == [SID]
+    assert events(db, "share_same_as_icloud") and not events(db, "share_icloud_set_aside") and api.fetches == []
+    s2, db2 = s, DB(s.path("db").with_name("other.db"))
+    api2 = FakeApi()
+    share(api2, sid="2026-10-18_160000_1111", count=3, last=NOW - timedelta(minutes=5))   # ended, short, quiet
+    other = s2.path("inbox") / "2026-10-18_160000_1111"
+    other.mkdir()
+    (other / "IMG_1.jpeg").write_bytes(JPEG)
+    assert uploads.fetch_new(s2, db2, api2, NOW) == ["2026-10-18_160000_1111"]
+    assert events(db2, "share_same_as_icloud") and not events(db2, "share_icloud_set_aside")
+
+
+def test_an_upload_never_lands_inside_a_folder_icloud_put_back(env, monkeypatch):
+    """Set aside, and iCloud makes the folder again at once: the upload goes beside it as '<id> 2', never into it."""
+    s, db = env
+    api = FakeApi()
+    share(api)
+    folder = s.path("inbox") / SID
+    folder.mkdir()
+    (folder / "_done.txt").write_text("done 2")
+    real = uploads.set_aside
+
+    def and_back(*a, **k):
+        out = real(*a, **k)
+        (s.path("inbox") / SID).mkdir()
+        return out
+    monkeypatch.setattr(uploads, "set_aside", and_back)
+    assert uploads.fetch_new(s, db, api, NOW) == [SID]
+    assert (s.path("inbox") / f"{SID} 2" / "IMG_2.HEIC").read_bytes() == HEIC
+    assert list((s.path("inbox") / SID).iterdir()) == []
+    assert events(db, "share_fetched")[0]["folder"] == f"{SID} 2"
+
+
+def test_an_icloud_copy_that_cant_be_moved_keeps_the_upload_waiting(env, monkeypatch):
+    s, db = env
+    api = FakeApi()
+    share(api)
+    folder = s.path("inbox") / SID
+    folder.mkdir()
+    (folder / "_done.txt").write_text("done 2")
+
+    def refuse(*a, **k):
+        raise OSError(11, "Resource deadlock avoided")
+    monkeypatch.setattr(uploads.shutil, "move", refuse)
+    assert uploads.fetch_new(s, db, api, NOW) == [] and api.posts == []
+    assert "Resource deadlock avoided" in events(db, "share_icloud_set_aside_failed")[0]["error"]
+    assert (s.path("work") / "uploads" / SID / "IMG_2.HEIC").read_bytes() == HEIC    # staged for the next poll
+    monkeypatch.undo()
+    assert uploads.fetch_new(s, db, api, NOW) == [SID] and (s.path("inbox") / SID / "_source.txt").exists()
 
 
 def test_the_api_down_is_one_quiet_event(env):

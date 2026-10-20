@@ -99,11 +99,17 @@ def takeable(share: dict, now: datetime) -> bool:
 
 
 def take(s: Settings, db: DB, client, share: dict, sid: str) -> bool:
-    """One share: the folder in the inbox (or the iCloud copy found), the API told. False when it must wait."""
+    """One share: the folder in the inbox (or the iCloud copy found), the API told. False when it must wait.
+
+    WO46 (her Shortcut saves the iCloud copy FIRST, then uploads): the iCloud folder is usually on the Mac before the
+    upload ends — often with its photos still cloud-only, or not all there (live 2026-10-17: the folder and its
+    `_done` came at once, the photos never). Such a copy, not taken yet, never wins over a WHOLE upload
+    (`icloud_behind`): it is set aside in the archive (`set_aside`, a rename inside iCloud Drive) and the upload is
+    taken. A whole iCloud copy, or one already taken, is the share as before."""
     names = [n for n in (safe_name(p.get("name")) for p in share.get("photos") or [] if isinstance(p, dict)) if n]
     test = bool(share.get("test"))
     found = known_folder(s, sid)
-    if found is not None:
+    if found is not None and not icloud_behind(s, db, found, share):
         _settle_known(db, client, sid, found, names, test)
         return True
     staging = s.path("work") / STAGING / sid
@@ -111,16 +117,80 @@ def take(s: Settings, db: DB, client, share: dict, sid: str) -> bool:
         return False
     write_marks(staging, share)
     found = known_folder(s, sid)                      # the iCloud copy may have landed during the download
-    if found is not None:
+    if found is not None and not icloud_behind(s, db, found, share):
         shutil.rmtree(staging, ignore_errors=True)
         _settle_known(db, client, sid, found, names, test)
         return True
-    target = s.path("inbox") / sid
+    if found is not None and set_aside(s, db, sid, found, share) is None:
+        return False                                  # the download stays staged; the next poll tries again
+    target = free_name(s.path("inbox") / sid)          # iCloud may have put its folder back meanwhile: never into it
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(staging), str(target))
-    db.log(sid, "share_fetched", {"share_id": sid, "photos": names, "test": test, "folder": target.name})
+    db.log(sid, "share_fetched", {"share_id": sid, "photos": names, "test": test, "folder": target.name,
+                                  **({"icloud_set_aside": found.name} if found is not None else {})})
     client.post(f"/shares/{sid}/fetched", {"names": names})
     return True
+
+
+ASIDE = "-icloud"                       # the archive name of an iCloud copy set aside for the upload (WO46)
+
+
+def icloud_behind(s: Settings, db: DB, found: Path, share: dict) -> bool:
+    """WO46: the share's iCloud folder is in the inbox, not taken yet, and not whole — files still cloud-only, no end
+    mark, or fewer photos (with their companions) than the Shortcut counted — while the upload is whole (ended, every
+    photo in). Then the upload is the copy to take. Anything else: the iCloud copy stands (WO42's rules)."""
+    if found.parent != s.path("inbox") or source_of(found) == "azure":
+        return False
+    if db.conn.execute("SELECT 1 FROM batches WHERE src_dir=?", (str(found),)).fetchone():
+        return False                                  # taken already: it is the share
+    count, received = share.get("count"), int(share.get("received") or 0)
+    if not share.get("ended") or not isinstance(count, int) or count <= 0 or received < count:
+        return False                                  # the upload is short too: the iCloud copy's own rules decide
+    from thrift_agent import pipeline
+    from thrift_agent.ingest import prep
+    try:
+        if prep.icloud_placeholders(found):
+            return True
+        files = [f for f in found.iterdir() if not f.name.startswith(".")]
+        marker = pipeline.marker_of(found, s["inbox"]["done_marker"])
+    except OSError:
+        return True                                   # iCloud still coordinating it: the upload is whole now
+    photos = [f for f in files if prep.is_photo(f)]
+    media = [f for f in files if f.is_file() and f.suffix.lower() in pipeline.MEDIA_EXT]
+    return marker is None or len(photos) + len(media) < count
+
+
+def set_aside(s: Settings, db: DB, sid: str, found: Path, share: dict) -> Path | None:
+    """The iCloud copy moved out of the inbox to `archive/<date>_<folder>-icloud` (a rename inside iCloud Drive, its
+    files cloud-only or not): kept, never taken, never watched for late photos, never told (the upload is the share).
+    None when it can't be moved now (the share waits for the next poll)."""
+    from thrift_agent.ingest import prep
+    try:
+        here = sum(1 for f in found.iterdir() if prep.is_photo(f))
+        cloud = len(prep.icloud_placeholders(found))
+    except OSError:
+        here, cloud = None, None
+    dest = free_name(s.path("archive") / f"{datetime.now():%Y%m%d}_{found.name}{ASIDE}", sep="_")
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(found), str(dest))
+    except OSError as e:
+        db.log(sid, "share_icloud_set_aside_failed", {"share_id": sid, "folder": found.name,
+                                                      "error": f"{type(e).__name__}: {e}"[:200]})
+        return None
+    db.log(sid, "share_icloud_set_aside", {"share_id": sid, "folder": found.name, "dest": dest.name,
+                                           "photos_here": here, "cloud_only": cloud, "uploaded": share.get("received"),
+                                           "count": share.get("count")})
+    return dest
+
+
+def free_name(path: Path, sep: str = " ") -> Path:
+    """`path`, else `path 2`, `path 3` … (iCloud's own way of naming a second folder), the first that doesn't exist."""
+    out, n = path, 1
+    while out.exists():
+        n += 1
+        out = path.with_name(f"{path.name}{sep}{n}")
+    return out
 
 
 def _settle_known(db: DB, client, sid: str, found: Path, names: list[str], test: bool) -> None:
@@ -152,6 +222,8 @@ def known_folder(s: Settings, sid: str) -> Path | None:
         except OSError:
             continue
         for folder in folders:
+            if folder.name.endswith(ASIDE) or re.search(ASIDE + r"_\d+$", folder.name):
+                continue                              # WO46: an iCloud copy set aside for the upload is not the share
             if folder.name.startswith(sid) or re.match(r"\d{8}_" + re.escape(sid), folder.name):
                 return folder
     return None

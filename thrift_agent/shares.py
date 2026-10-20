@@ -29,7 +29,8 @@ def share_id_of(folder: str | Path) -> str:
     m = _ARCHIVE.match(name)
     if m:
         name = m["id"]
-    return name.removesuffix("-late")
+    name = re.sub(r" \d{1,2}$", "", name)        # WO46: iCloud's second folder of one name ("<id> 2") is that share
+    return name.removesuffix("-icloud").removesuffix("-late")
 
 
 def seen(db: DB, sid: str, source: str = "icloud", expected: int | None = None, received: int | None = None,

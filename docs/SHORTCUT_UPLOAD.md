@@ -2,7 +2,9 @@
 
 What it does: saves the photos to iCloud Drive `Posh/inbox/<share id>/` exactly as the current Shortcut does (the
 safety copy, saved first), then sends each photo straight to thrift-api, then the end of the share. The Mac takes
-whichever arrives first; the share id names both, so nothing is listed twice.
+whichever copy is WHOLE first; the share id names both, so nothing is listed twice. The iCloud folder usually reaches
+the Mac before the upload ends, often with its photos still cloud-only: a whole upload then wins over it, and the
+iCloud folder is moved aside to `Posh/archive/<date>_<share id>-icloud`, untouched.
 
 Before you start, you need two things:
 - `<API_URL>` — the API's address. On the PC it is the `API_URL` line of `var/azure/keys.txt` (looks like

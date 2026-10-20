@@ -1277,6 +1277,19 @@ item goes up on all three sites or she is told why (§7); she only taps (§8); e
   the focus); the cover dialog's checkmark on the first thumb is waited for (it came a moment after the 11th
   thumbnail), and a cover dialog still open when the form is left is cancelled first. Stand-in: `oneSizeMenu`.
 
+## Her first real upload shares (WO46, 2026-10-19)
+The upload Shortcut went live on her phone that evening (no test run). It saves the iCloud copy FIRST, then uploads, so
+the iCloud folder reaches the Mac before the upload ends — usually with its photos cloud-only or short (live
+2026-10-17: the folder and its `_done` at once, the photos never). Before this, `uploads.take` saw any folder of that
+share id and threw the upload away (`_settle_known`): the upload never helped. Now (`uploads.icloud_behind`): an iCloud
+copy in the inbox, not taken yet (no batch on it), and not whole — cloud-only files, no end mark, or fewer photos (with
+their companions) than the Shortcut counted — gives way to a WHOLE upload (ended, received ≥ count): it is moved aside
+to `archive/<date>_<id>-icloud` (`set_aside`, a rename inside iCloud Drive; event `share_icloud_set_aside`; never
+taken, never watched by `late_photos`, skipped by `known_folder`) and the upload goes into the inbox (beside a folder
+iCloud put back, as `<id> 2` — `free_name`; `shares.share_id_of` reads "<id> 2" and "-icloud" as the share). A whole
+iCloud copy, one already taken, or a short upload: the iCloud copy is the share, as before. A move refused (iCloud
+coordinating) leaves the download staged and the share pending for the next poll. Tests in `tests/test_uploads.py`.
+
 ## Size buttons, the photo memory, no "share it again", a listing's department changed (WO43, 2026-10-17)
 That evening: three items shared at 3:18 PM stayed on the iPhone (5G); WO42's "share it again" line went out; the
 re-share at 7:26 PM and the phone's late upload of the first share both landed at 7:47 PM — six folders holding three
