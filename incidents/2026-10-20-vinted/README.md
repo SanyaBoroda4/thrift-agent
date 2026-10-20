@@ -355,4 +355,36 @@ take-down, no re-check there — until the line goes back to `true` for the back
   Thursday Boot Co → Thursday Boot Company.
 - Tests: 6 new jsdom cases (the dialog with and without a reload left, the short count, the late and the after-pick
   recommendation, the brand key, the request observer) — 102 pass; Python: the Mismatch cap, the words, the card, the
-  brand suffix, the safety nets — the touched files pass (370 tests), the full suite's run is in the report.
+  brand suffix, the safety nets — the full suite 1983 passed, 10 skipped (16 min on the PC).
+
+## 13. Phases 6–7 done (2026-10-20, 11:08–12:07 ET, with Alex's go): the deploy and the backlog
+
+- 11:08 the branch committed (b4e8917), pushed, fast-forwarded into main and pushed; 11:09 the poster stopped idle;
+  the six Vinted rows HELD (`skipped: not published automatically - held for the Vinted backlog…`, a reason both
+  safety nets keep) and the Tory Burch's unconfirmed state set to `retry` (the poster's last look by exact title right
+  before it posts); the two-point dry-run summary to Alex's private chat; 11:10–11:17 `deploy.ps1 -NoPush`: the Mac
+  on b4e8917, its own suite 1979 passed, 22 skipped (6:45), the worker restarted (pid 58381), rollback not needed.
+- 11:18 the poster started with Vinted paused ("Poster started (LIVE) — poshmark, depop · parallel", pid 58472); the
+  proofs that Poshmark and Depop still post: a Depop dry run of the Zara blouse (the form filled, 5/5 photos, 7.0 s,
+  nothing published) and a price-drop dry run that filled the Poshmark edit page (11:18:30) and the Depop edit page
+  (11:18:56) without saving — both within a minute.
+- 11:35 the poster stopped idle; `marketplaces.vinted.enabled` back to `true`; the stray Vinted dry row cancelled; her
+  Vinted wardrobe read through the extension (112 items, 3 hidden, 18 closed, **no drafts**, no espadrille listing —
+  the three Tory Burch items are older ones; the exact-title look: absent); 11:36 "Poster started (LIVE) — poshmark,
+  depop, vinted · parallel" (pid 60939), the window's block and streak clear, nothing pending (all held).
+- The backlog, one `thrift requeue <item> --marketplace vinted` at a time, 2–5 min apart, a private line with the link
+  after each, the brake (3 in a row) left on as the safety:
+
+| # | item | requeued | live on Vinted | time to live | photos | notes |
+|---|---|---|---|---|---|---|
+| 1 | Thursday Boot Co combat boots (i_261019_09053e) | 11:36:37 | [10459549584](https://www.vinted.com/items/10459549584) 11:37:05 | 28 s | 8/8 | the morning's photo failure: fixed path, no dialog |
+| 2 | Larroudé slide sandals (i_261019_51cd24) | 11:52:21 | [10459802402](https://www.vinted.com/items/10459802402) 11:52:52 | 31 s | 6/6 | package MEDIUM, no diff; the package step 1.9 s (the settle and the watch), no override this time |
+| 3 | Hunter Chelsea rain boots (i_261019_5499b2) | 11:55:50 | [10459852245](https://www.vinted.com/items/10459852245) 11:55:57 | ~1 min | — | |
+| 4 | AllSaints Bales biker jacket (i_261019_def149) | 11:59:24 | [10459914207](https://www.vinted.com/items/10459914207) 11:59:49 | 25 s | — | |
+| 5 | H&M houndstooth pea coat (i_261019_77057e) | 12:02:52 | [10459968757](https://www.vinted.com/items/10459968757) 12:03:14 | 22 s | — | |
+| 6 | Tory Burch espadrille flats (i_261019_3ba524) | 12:06:21 | [10460028951](https://www.vinted.com/items/10460028951) 12:07:02 | 41 s | 7/7 | the last look at 12:06:40 (the wardrobe's newest 40, exact title): absent → posted once |
+
+- No new failure; `crosslist_failures` vinted 0, no block; the poster LIVE on all three sites, the extension connected.
+  The photo check reads each listing 10 minutes after it posts (the Larroudé's row read at 12:04).
+- Left as it is: the Mac's memory (the owner's Safari tabs — Alex's call), the `failed/shots` evidence folder (1.4 GB,
+  outside WO47's policy).
