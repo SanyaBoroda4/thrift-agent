@@ -1371,8 +1371,14 @@ shares**: archive and work folders after 7 days; (6) the photo memory (fingerpri
 once a day from the worker's inbox look (`cleanup.tick`: `sales._claim` 24 h), by hand `thrift cleanup [--dry-run |
 --sizes]`; everything removed is in the event `cleanup` (path, kind, why, bytes) and ONE private line "🧹 Cleanup:
 freed 1.6 GB — 9 share folders older than 7 days (archive), 2 duplicates, 1 sold item's photos, 12 prep copies.";
-kv `cleanup_last` in `thrift status` with the disk. Never touched: a share in flight, a work copy an item still
-needs (the archive copy is then kept, said in the plan's notes), `failed/shots` (evidence), the database. **The
+kv `cleanup_last` in `thrift status` with the disk; (8) **the evidence** (`failed/shots`, Alex, 2026-10-20): files
+older than 14 days (`EVIDENCE_DAYS`) go — except an item's while a problem of it is still open (`cleanup.open_problems`:
+a listing queued / posting / failed, or skipped for a reason that still waits — never "shared again", "already live",
+"sold", "not published automatically"; an item failed or parked; a price change, a listing edit or a take-down not
+done; an unconfirmed publish) — one Removal per item (its files; a file is tied to an item by its name, `<item id>-…`
+or a Poshmark listing id of ours), the kept ones said in the plan's notes, the line "… 123 evidence files older than
+14 days (11 items)". Never touched: a share in flight, a work copy an item still needs (the archive copy is then
+kept, said in the plan's notes), the database. **The
 disk** (`cleanup.disk_watch`, every 10 min from the same tick): under 20 GB free → ONE private line naming thrift's
 own folders; "✓ … free again" above 22 GB; `thrift status` shows "disk: X free of Y". Tests: `tests/test_cleanup.py`.
 

@@ -22,14 +22,19 @@ The rules, and where each is done:
 7. `run` once a day from the worker (`tick`, the first look at the inbox 24 h after the last run), `thrift cleanup`
    by hand (`--dry-run` to see the plan, `--sizes` to measure); everything removed is in the event `cleanup` and
    ONE private line; and ONE private line when the Mac's free space drops under LOW_GB (`disk_watch`).
-Never touched: the inbox folder of a share in flight, a work copy an item still needs, `failed/shots` (evidence,
-not photos of items), the database.
+8. The evidence (`failed/shots`: the posters' screenshots, page HTML and job traces) older than EVIDENCE_DAYS goes
+   (Alex, 2026-10-20) — except an item's while a problem of it is still open (`open_problems`: a listing queued,
+   posting, failed, or skipped for a reason that still waits; an item failed or parked; a price change, a listing
+   edit or a take-down not done; an unconfirmed publish): that item's evidence stays whatever its age, said in the
+   plan's notes. A file is tied to an item by its name (`<item id>-…`, or a Poshmark listing id of ours).
+Never touched: the inbox folder of a share in flight, a work copy an item still needs, the database.
 """
 from __future__ import annotations
 
 import json
 import re
 import shutil
+import sqlite3
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -40,6 +45,10 @@ from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
 
 KEEP_DAYS = 7                      # the archive copy of a share, a failed / repeat / empty / test share's folders
+EVIDENCE_DAYS = 14                 # the evidence in failed/shots (Alex, 2026-10-20) — an open problem's stays
+SETTLED_SKIPS = ("shared again", "already live", "sold", "not published automatically")   # skips that wait for no one
+_ITEM_FILE = re.compile(r"^(i_\d{6}_[0-9a-f]{6})[-.]")      # "i_261019_09053e-vinted-20261020-080011.png"
+_LISTING_FILE = re.compile(r"^([0-9a-f]{24})-")              # Poshmark's listing id: "6ad6d53a…-poshmark-…-price-dry.png"
 LOW_GB = 20.0                      # ONE private line when the Mac's free space drops under this …
 LOW_CLEAR_GB = 22.0                # … said again only after it was back above this
 DAILY = "cleanup_at"               # kv: the daily run's stamp (sales._claim)
@@ -60,7 +69,7 @@ BACK_LINE = "✓ The Mac has {free:.1f} GB free again."
 @dataclass
 class Removal:
     path: str
-    kind: str                      # duplicate | archive | work_all | work_batch | staging | sold | unknown
+    kind: str                      # duplicate | archive | work_all | work_batch | staging | sold | unknown | evidence
     why: str
     bytes: int
     ref: str | None = None         # the batch, share or item it belongs to
@@ -237,7 +246,78 @@ def plan(s: Settings, db: DB, now: datetime | None = None, api=None) -> tuple[li
                 and (pipeline.registered_names(db, b["id"]) is not None or made < cutoff):
             removals.append(Removal(str(allp), "work_all", "the preparation's copy of the share's photos (the items "
                                     "keep theirs)", folder_bytes(allp), b["id"]))
+
+    # 8. the evidence: files older than EVIDENCE_DAYS, except an item's while a problem of it is still open
+    removals += evidence_plan(s, db, now, kept)
     return removals, kept
+
+
+def open_problems(db: DB) -> dict[str, str]:
+    """{item id: why} for every item with a problem still open (Alex, 2026-10-20: its evidence stays whatever its
+    age): a listing queued / posting / failed, or skipped for a reason that still waits (her 'retry', a size); an
+    item failed or parked; a price change, a listing edit or a take-down not done; an unconfirmed publish."""
+    out: dict[str, str] = {}
+
+    def note(iid, why: str) -> None:
+        if iid and iid not in out:
+            out[str(iid)] = why
+    for r in db.conn.execute("SELECT item_id, marketplace, status, error FROM listings WHERE status IN "
+                             "('queued', 'posting', 'failed', 'skipped')"):
+        if r["status"] == "skipped" and any(k in (r["error"] or "") for k in SETTLED_SKIPS):
+            continue
+        note(r["item_id"], f"its {r['marketplace']} listing is {r['status']}")
+    for r in db.conn.execute("SELECT id, status FROM items WHERE status IN ('failed', 'needs_owner')"):
+        note(r["id"], f"the item is {r['status']}")
+    for table, label, states in (("price_changes", "a price change", "'pending', 'saving', 'unconfirmed', 'failed'"),
+                                 ("listing_edits", "a listing edit", "'pending', 'saving', 'unconfirmed', 'failed'"),
+                                 ("takedowns", "a take-down", "'pending', 'waiting', 'running', 'failed', 'manual'")):
+        try:
+            for r in db.conn.execute(f"SELECT item_id, status FROM {table} WHERE status IN ({states})"):
+                note(r["item_id"], f"{label} is {r['status']}")
+        except sqlite3.OperationalError:               # a table from before its work order
+            continue
+    for key in (loads(db.kv_get("unconfirmed_state")) or {}):
+        note(str(key).partition(":")[0], "a publish is unconfirmed")
+    return out
+
+
+def evidence_plan(s: Settings, db: DB, now: datetime, kept: list[str]) -> list[Removal]:
+    """Rule 8: the files in failed/shots older than EVIDENCE_DAYS, one Removal per item (its files), the files no item
+    of ours is named in together under ref None; an item with an open problem keeps every file, said once in `kept`."""
+    shots = s.path("failed") / "shots"
+    cutoff = now - timedelta(days=EVIDENCE_DAYS)
+    try:
+        old = [p for p in shots.iterdir() if p.is_file() and _mtime(p) < cutoff]
+    except OSError as e:
+        kept.append(f"the evidence folder can't be read now ({type(e).__name__})")
+        return []
+    if not old:
+        return []
+    opened = open_problems(db)
+    by_listing: dict[str, str] = {}
+    for r in db.conn.execute("SELECT listing_id, item_id FROM listings WHERE listing_id IS NOT NULL"):
+        by_listing[str(r["listing_id"])] = r["item_id"]
+    groups: dict[str | None, list[Path]] = {}
+    held: dict[str, int] = {}
+    for p in sorted(old):
+        ref = None
+        if m := _ITEM_FILE.match(p.name):
+            ref = m[1]
+        elif m := _LISTING_FILE.match(p.name):
+            ref = by_listing.get(m[1])
+        if ref in opened:
+            held[ref] = held.get(ref, 0) + 1
+            continue
+        groups.setdefault(ref, []).append(p)
+    for ref, n in sorted(held.items()):
+        kept.append(f"{ref}: {n} evidence file{'s' if n != 1 else ''} older than {EVIDENCE_DAYS} days kept — "
+                    f"{opened[ref]}")
+    out = []
+    for ref, files in sorted(groups.items(), key=lambda kv: kv[0] or ""):
+        why = f"evidence older than {EVIDENCE_DAYS} days" + ("" if ref else " (no item of ours in its name)")
+        out.append(Removal(str(shots), "evidence", why, sum(folder_bytes(p) for p in files), ref,
+                           [str(p) for p in files]))
+    return out
 
 
 def _why_archive(b, items, shipped: dict) -> str:
@@ -339,7 +419,7 @@ def run(s: Settings, db: DB, dry: bool = False, now: datetime | None = None, api
         p = Path(r.path)
         if not dry:
             try:
-                if r.kind == "sold":
+                if r.kind in ("sold", "evidence"):      # the files named, the folder stays
                     for f in r.files:
                         Path(f).unlink(missing_ok=True)
                 else:
@@ -377,6 +457,11 @@ def line(removed: list[Removal], freed: int) -> str:
         n = counts.get(kind)
         if n:
             parts.append(f"{n} {words[kind][0 if n == 1 else 1].format(d=KEEP_DAYS)}")
+    if counts.get("evidence"):
+        files = sum(len(r.files) for r in removed if r.kind == "evidence")
+        items = sum(1 for r in removed if r.kind == "evidence" and r.ref)
+        parts.append(f"{files} evidence file{'s' if files != 1 else ''} older than {EVIDENCE_DAYS} days"
+                     + (f" ({items} item{'s' if items != 1 else ''})" if items else ""))
     return f"🧹 Cleanup: freed {human(freed)} — " + ", ".join(parts) + "."
 
 

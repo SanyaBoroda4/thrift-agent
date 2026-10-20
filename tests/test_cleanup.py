@@ -289,3 +289,58 @@ def test_sizes_and_human(env):
     z = cleanup.sizes(s)
     assert z["archive"] > 0 and z["work_items"] > 0 and z["work_all"] > 0 and z["inbox"] == 0 and z["db"] > 0
     assert cleanup.human(900) == "900 B" and cleanup.human(1536) == "2 KB" and cleanup.human(1.5 * 1024 ** 3) == "1.5 GB"
+
+
+# ---------------------------------------------------------------- rule 8 (Alex, 2026-10-20): the evidence folder
+
+def test_evidence_older_than_14_days_goes_except_an_items_with_a_problem_still_open(env):
+    import os
+    s, db, said = env
+    shots = s.path("failed") / "shots"
+    shots.mkdir(parents=True, exist_ok=True)
+    _, _, [settled, stuck, idle] = batch(s, db, "2026-10-01_100000_1111", "split", OLD, items=3)
+    for iid in (settled, stuck, idle):
+        db.set_item(iid, status="posted")
+    for mp in ("poshmark", "depop", "vinted"):
+        db.upsert_listing(settled, mp, status="posted", url=f"https://x/{mp}/{settled}",
+                          listing_id="6ad6d53a105c58b9598c5eff" if mp == "poshmark" else None)
+        if mp == "vinted":
+            db.upsert_listing(stuck, mp, status="failed", error="Mismatch: photos 0 of 8 on the form")
+        else:
+            db.upsert_listing(stuck, mp, status="posted", url=f"https://x/{mp}/{stuck}",
+                              listing_id="6ad6d53a105c58b9598c5e00" if mp == "poshmark" else None)
+    ancient, young = NOW - timedelta(days=20), NOW - timedelta(days=5)
+
+    def shot(name: str, when: datetime) -> Path:
+        p = shots / name
+        p.write_bytes(b"x" * 100)
+        os.utime(p, (when.timestamp(), when.timestamp()))
+        return p
+    gone = [shot(f"{settled}-vinted-20261001-120000.png", ancient), shot(f"{settled}-vinted-20261001-120000.json", ancient),
+            shot("6ad6d53a105c58b9598c5eff-poshmark-20261001-120000-price-dry.png", ancient),   # its Poshmark listing id
+            shot("orders-probe-20261001.html", ancient)]                                            # no item in its name
+    kept_ = [shot(f"{stuck}-vinted-20261001-120000.png", ancient),                                 # a problem still open
+             shot("6ad6d53a105c58b9598c5e00-poshmark-20261001-120000.png", ancient),               # the same item, by id
+             shot(f"{settled}-depop-20261015-120000.png", young)]                                  # within 14 days
+    assert cleanup.open_problems(db) == {stuck: "its vinted listing is failed"}
+    removals, notes = cleanup.plan(s, db, NOW)
+    ev = [r for r in removals if r.kind == "evidence"]
+    assert sorted(r.ref or "" for r in ev) == ["", settled]
+    assert sorted(Path(f).name for r in ev for f in r.files) == sorted(p.name for p in gone)
+    assert all(r.bytes == 100 * len(r.files) for r in ev)
+    assert any(n.startswith(f"{stuck}: 2 evidence files older than 14 days kept") and "vinted listing is failed" in n
+               for n in notes), notes
+    out = cleanup.run(s, db, now=NOW)
+    assert all(not p.exists() for p in gone) and all(p.exists() for p in kept_)
+    assert "4 evidence files older than 14 days (1 item)" in said[-1], said
+    assert shots.is_dir()
+    # settled skips keep nothing open; a listing edit, a price change, a take-down or an unconfirmed publish do
+    db.upsert_listing(stuck, "vinted", status="skipped", error="skipped: shared again as i_x")
+    assert cleanup.open_problems(db) == {}
+    db.upsert_listing(stuck, "vinted", status="skipped", error="skipped: no size on the item")
+    assert cleanup.open_problems(db) == {stuck: "its vinted listing is skipped"}
+    db.upsert_listing(stuck, "vinted", status="posted", url="https://x/v/1")
+    db.conn.execute("INSERT INTO takedowns (id, item_id, marketplace, listing_url, status, attempts, fetched_at) "
+                    "VALUES ('t1', ?, 'depop', 'https://x', 'waiting', 1, '2026-10-19')", (idle,))
+    db.kv_set("unconfirmed_state", json.dumps({f"{settled}:vinted": {"stage": "wait"}}))
+    assert cleanup.open_problems(db) == {idle: "a take-down is waiting", settled: "a publish is unconfirmed"}

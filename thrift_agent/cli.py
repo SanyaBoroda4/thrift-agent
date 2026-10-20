@@ -1335,7 +1335,9 @@ def cleanup_cmd(dry_run: bool = typer.Option(False, "--dry-run", help="Show what
         return
     out = cleanup.run(s, db, dry=dry_run, say=not dry_run)
     for r in out["removals"]:
-        print(f"  {'would remove' if dry_run else 'removed'} [{r.kind}] {Path(r.path).name} ({cleanup.human(r.bytes)}): "
+        what = f"{r.ref or 'other'}, {len(r.files)} file{'s' if len(r.files) != 1 else ''}" if r.kind == "evidence" \
+            else Path(r.path).name
+        print(f"  {'would remove' if dry_run else 'removed'} [{r.kind}] {what} ({cleanup.human(r.bytes)}): "
               f"{escape(r.why)}")
     for f in out["failures"]:
         print(f"  [red]not removed[/] {Path(f['path']).name}: {escape(f['error'])}")
