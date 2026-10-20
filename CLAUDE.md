@@ -1271,7 +1271,10 @@ item goes up on all three sites or she is told why (§7); she only taps (§8); e
   Bags PRESELECTS its one tile — the menu opens with "One Size" selected (`btn--secondary--burgundy-v2`) and the
   size field reading **"OS"** — and a click on a selected tile toggles it OFF (the menu closes, the field says
   "Select Size"); every repick toggled it back and forth. A size the field shows already is kept (`_size`: Done
-  pressed, the tile never touched, `size_menu` "preselected"), and the read-back takes the form's abbreviation
+  pressed, the tile never touched, `size_menu` "preselected"); a pick that didn't register is picked again four ways
+  at most — a plain click, the keyboard (focus + Space), the tile's container, the button's own click
+  (`SIZE_REPICKS`; CI's macOS runners: the keyboard press on a tile just redrawn doesn't always register, so the
+  plain click comes first) — and the read-back takes the form's abbreviation
   (`SizeShown`, `SIZE_SHOWN`: "One Size" ↔ "OS"). A DRY RUN traces the size menu after each step (`_trace`:
   `<sku>-poshmark-trace-<nn>-<label>.png/.json` in failed/shots — the field, the tiles' classes, the Done buttons,
   the focus); the cover dialog's checkmark on the first thumb is waited for (it came a moment after the 11th

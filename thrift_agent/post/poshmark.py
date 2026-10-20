@@ -299,7 +299,8 @@ ID_SKEW_S = 600                  # a listing id created this long before the run
 FIND_TRIES, FIND_WAIT_MS = 3, 10_000   # the closet check after a sleep: looks, and the wait between them (WO28)
 POLL_MS = 250
 PANEL_WAIT_MS = 8_000            # WO37: the Share Listing panel's Promote section, drawn a moment after the panel
-SIZE_REPICKS = 3                 # WO37: a size menu that closed with no size is opened again (WO45 follow-up: 3 ways)
+SIZE_REPICKS = 4                 # WO37: a size menu that closed with no size is picked again — a plain click, the
+#                                  keyboard, the tile's container, the button's own click (WO45 follow-up)
 # WO45 follow-up (recorded live 2026-10-18, the Marc Jacobs bag): the form's size field abbreviates some sizes —
 # Women › Bags shows the preselected "One Size" as "OS". The read-back takes either spelling.
 SIZE_SHOWN = {"one size": ("OS",)}
@@ -773,25 +774,25 @@ class PoshmarkPoster(Poster):
             try:
                 el, _ = await self._pick(page, sizes, choice.button, loose=choice.loose)
                 container = None
-                if el is not None and repicked >= 2:
+                if el is not None and repicked >= 3:
                     parent = (await el.evaluate_handle("e => e.parentElement")).as_element()
                     if parent is not None and "button__container" in (await parent.get_attribute("class") or ""):
                         container = parent
                 if el is None:
                     await self._choose(page, sizes, choice.button, loose=choice.loose)
-                elif repicked == 1:
+                elif repicked == 1:                    # first a plain click again (CI's macOS: the keyboard press
+                    await _click(el)                   # on a tile just redrawn doesn't always register)
+                    self.notes.append(f"size '{choice.button}' picked again")
+                elif repicked == 2:
                     await el.focus()
                     await page.keyboard.press("Space")
                     self.notes.append(f"size '{choice.button}' picked again with the keyboard")
-                elif repicked == 2 and container is not None:
+                elif repicked == 3 and container is not None:
                     await _click(container)
                     self.notes.append(f"size '{choice.button}' picked again on its tile's container")
-                elif repicked >= 3:                    # the last word: the button's own click(), never a menu item's
+                else:                                  # the last word: the button's own click(), never a menu item's
                     await el.evaluate("e => e.click()")
                     self.notes.append(f"size '{choice.button}' picked again with the button's own click")
-                else:
-                    await _click(el)
-                    self.notes.append(f"size '{choice.button}' picked again")
             except PlaywrightError as e:               # the tile was drawn again under us (CI, macOS): a plain pick
                 if "not attached" not in str(e) and "detached" not in str(e):
                     raise
