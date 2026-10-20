@@ -501,11 +501,13 @@ def register(s: Settings, db: DB, folder: Path) -> str | None:
         # same name, taken and archived already) — is the same share: archived without a word, never a repeat line
         old = db.conn.execute("SELECT * FROM batches WHERE src_dir=?", (str(folder),)).fetchone()
         if old is not None and old["status"] in ("split", "failed", "joined") and folder.is_dir():
+            from thrift_agent import cleanup
             db.log(old["id"], "batch_same_share", {"folder": folder.name, "photos": len(photos), "copy": True})
             shares.seen(db, sid, share_source(folder), None, len(photos), batch_id=old["id"])
             shares.outcome(db, sid, "same_share", "the share's other copy came after it was taken",
                            batch_id=old["id"])
-            archive_share(s, db, old["id"], folder)
+            cleanup.delete_copy(s, db, sid, folder, "the share's other copy came after it was taken (WO47: no "
+                                                    "duplicates)")        # not taken now: the next look tries again
         return None
     if is_test_share(folder):
         db.set_batch(bid, test=1)
@@ -666,10 +668,12 @@ def repeat_share(s: Settings, db: DB, bid: str, src: Path, known_as: dict[str, s
     items = list(dict.fromkeys(v for v in known_as.values() if v and not v.startswith("batch:")))
     sid = shares.share_id_of(src)
     if same_share:
+        from thrift_agent import cleanup
         db.set_batch(bid, status="failed", reasons=["the same share again (its other copy was taken)"])
         db.log(bid, "batch_same_share", {"folder": src.name, "items": items, "photos": sorted(known_as)})
         shares.outcome(db, sid, "same_share", "the share's other copy was taken", batch_id=bid)
-        archive_share(s, db, bid, src)
+        if not cleanup.delete_copy(s, db, sid, src, "the same share again (WO47: no duplicates)"):
+            archive_share(s, db, bid, src)             # iCloud still holding it: out of the inbox at least
         return
     titles = [photomem.title_of(db, iid) for iid in items] or ["photos already taken"]
     db.set_batch(bid, status="failed", reasons=[f"repeat share: same photos as {', '.join(items) or 'an earlier share'}"])

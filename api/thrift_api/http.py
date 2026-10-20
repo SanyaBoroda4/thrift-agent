@@ -183,7 +183,7 @@ def _share_photo_get(db, body, query, params, now):
 
 
 def _share_fetched(db, body, query, params, now):
-    return 200, uploads.mark_fetched(db, params["share_id"], body, now)
+    return 200, uploads.mark_fetched(db, params["share_id"], body, now, uploads.store())   # WO47: the blobs go too
 
 
 Route = tuple[str, re.Pattern, Callable, bool]          # method, path, handler, needs the database; a fifth element

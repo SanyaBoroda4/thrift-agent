@@ -16,7 +16,7 @@ from rich import print
 from rich.markup import escape
 from rich.table import Table
 
-from thrift_agent import alerts, approve, config, daily, notify, photomem, pipeline, power, runlock, uploads
+from thrift_agent import alerts, approve, cleanup, config, daily, notify, photomem, pipeline, power, runlock, uploads
 from thrift_agent.config import settings
 from thrift_agent.db import DB, loads
 
@@ -112,6 +112,7 @@ def _scan_inbox(s, db) -> int:
             pipeline.late_photos(s, db)
         except OSError as e:                              # the archive in iCloud, busy or refused: next time
             db.log(None, "late_photos_skipped", f"{type(e).__name__}: {e}")
+    cleanup.tick(s, db)                                   # WO47: the disk watched, the photo policy once a day
     return n
 
 
@@ -701,6 +702,14 @@ def login(site: str = "poshmark") -> None:
 def status() -> None:
     """What's in the pipeline."""
     db = _db()
+    try:                                                  # WO47: the disk and the last cleanup, first
+        free, total = cleanup.disk_free(settings())
+        last = loads(db.kv_get(cleanup.LAST)) or {}
+        print(f"disk: {cleanup.human(free)} free of {cleanup.human(total)}"
+              + (f" · last cleanup {str(last.get('at', ''))[:16].replace('T', ' ')} UTC freed "
+                 f"{cleanup.human(last.get('freed', 0))}" if last else " · no cleanup yet"))
+    except OSError:
+        pass
     t = Table("item", "status", "title", "price", "gate", "listings")
     for row in db.conn.execute("SELECT * FROM items ORDER BY created_at DESC LIMIT 30"):
         renders, gate, pr = loads(row["renders"]) or {}, loads(row["gate"]) or {}, loads(row["price"]) or {}
@@ -1303,6 +1312,32 @@ def replay_cmd(case: Path = typer.Argument(None, help="a golden case folder (sha
         failed += bool(out["mismatches"])
     if failed:
         raise typer.Exit(code=1)
+
+
+@app.command("cleanup")
+def cleanup_cmd(dry_run: bool = typer.Option(False, "--dry-run", help="Show what the policy would remove; remove nothing."),
+                sizes_only: bool = typer.Option(False, "--sizes", help="Only measure thrift's folders and the disk.")) -> None:
+    """WO47: the owner's photo storage policy — one copy of each photo, no duplicates, sold and failed shares gone.
+    Runs once a day from the worker; here by hand (see what it would do with --dry-run)."""
+    s, db = settings(), _db()
+    z = cleanup.sizes(s)
+    free, total = cleanup.disk_free(s)
+    print(f"disk: {cleanup.human(free)} free of {cleanup.human(total)}")
+    print(f"archive {cleanup.human(z['archive'])} (iCloud Drive) · inbox {cleanup.human(z['inbox'])} (iCloud Drive) · "
+          f"work copies {cleanup.human(z['work_items'])} · prep copies {cleanup.human(z['work_all'])} · upload staging "
+          f"{cleanup.human(z['staging'])} · evidence {cleanup.human(z['shots'])} · database {cleanup.human(z['db'])}")
+    if sizes_only:
+        return
+    out = cleanup.run(s, db, dry=dry_run, say=not dry_run)
+    for r in out["removals"]:
+        print(f"  {'would remove' if dry_run else 'removed'} [{r.kind}] {Path(r.path).name} ({cleanup.human(r.bytes)}): "
+              f"{escape(r.why)}")
+    for f in out["failures"]:
+        print(f"  [red]not removed[/] {Path(f['path']).name}: {escape(f['error'])}")
+    for note in out["notes"]:
+        print(f"  kept: {escape(note)}")
+    print(f"{'would free' if dry_run else 'freed'} {cleanup.human(out['freed'])} in {out['removed']} removal"
+          f"{'s' if out['removed'] != 1 else ''}" + (f"; {out['failed']} failed" if out["failed"] else ""))
 
 
 @app.command("shares")

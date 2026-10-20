@@ -4,7 +4,8 @@ What it does: saves the photos to iCloud Drive `Posh/inbox/<share id>/` exactly 
 safety copy, saved first), then sends each photo straight to thrift-api, then the end of the share. The Mac takes
 whichever copy is WHOLE first; the share id names both, so nothing is listed twice. The iCloud folder usually reaches
 the Mac before the upload ends, often with its photos still cloud-only: a whole upload then wins over it, and the
-iCloud folder is moved aside to `Posh/archive/<date>_<share id>-icloud`, untouched.
+iCloud folder is deleted from the inbox (the owner's rule: no duplicates). The upload's photos are deleted from Azure
+the moment the Mac has the share; the Mac keeps one copy of each item's photos while it is for sale.
 
 Before you start, you need two things:
 - `<API_URL>` — the API's address. On the PC it is the `API_URL` line of `var/azure/keys.txt` (looks like

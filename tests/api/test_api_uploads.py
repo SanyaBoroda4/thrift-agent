@@ -88,9 +88,13 @@ def test_a_raw_photo_round_trip(db, blobs):
     assert end(db, count=2)[1] == {"ok": True, "received": 2, "count": 2}
     assert pending(db)[0]["ended"] is True
     status, answer, _ = call(db, "POST", f"/shares/{SID}/fetched", {"names": ["IMG_1293.HEIC", "IMG_1294.jpeg"]})
-    assert (status, answer["ok"], answer["received"]) == (200, True, 2)
+    assert (status, answer["ok"], answer["received"], answer["blobs_deleted"]) == (200, True, 2, 2)
     assert call(db, "GET", "/shares/pending")[1] == {"shares": []}
-    assert call(db, "POST", f"/shares/{SID}/fetched", {"names": []})[0] == 200          # again: fine
+    assert blobs.blobs == {}                                                            # WO47: no copy in Azure
+    assert http.handle("GET", share["photos"][0]["path"], {}, b"", now=NOW, db=db)[0] == 404
+    assert db.one("SELECT COUNT(*) AS n FROM share_uploads WHERE share_id = ?", (SID,))["n"] == 2   # the ledger stays
+    status, answer, _ = call(db, "POST", f"/shares/{SID}/fetched", {"names": []})          # again: fine, nothing left
+    assert (status, answer["blobs_deleted"]) == (200, 0)
 
 
 def test_a_form_body_with_one_file_field(db):

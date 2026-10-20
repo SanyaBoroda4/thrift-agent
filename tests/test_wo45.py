@@ -305,9 +305,10 @@ def test_the_second_copy_of_a_share_is_the_same_share_not_a_repeat(env):
     again = _folder(s, clock, "2026-10-18_121154", marker="done 1", photos=1, at=T0 + 10 * MIN)   # iCloud's copy
     clock["now"] = T0 + 12 * MIN
     assert pipeline.take_share(s, db, again) is None
-    assert not again.exists() and len(list(s.path("archive").iterdir())) == 2
+    assert not again.exists() and len(list(s.path("archive").iterdir())) == 1   # WO47: the copy deleted, not archived
     row = db.conn.execute("SELECT * FROM shares WHERE id='2026-10-18_121154'").fetchone()
     assert row["outcome"] == "same_share" and row["source"] == "both"
+    assert db.conn.execute("SELECT COUNT(*) FROM events WHERE kind='share_copy_deleted'").fetchone()[0] == 1
     assert photomem.say_skipped(db) is None and said == [] and group == []
 
 

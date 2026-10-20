@@ -328,8 +328,10 @@ def photo(db: Database, blobs, share_id: str, name: str) -> tuple[bytes, str]:
     return found[0], row["content_type"] or found[1]
 
 
-def mark_fetched(db: Database, share_id: str, body: dict, now: datetime) -> dict:
-    """The Mac has the share: fetched_at set (again is fine), the names it took accepted for the record."""
+def mark_fetched(db: Database, share_id: str, body: dict, now: datetime, blobs=None) -> dict:
+    """The Mac has the share: fetched_at set (again is fine), the names it took accepted for the record — and, WO47
+    rule 2 (the owner: no copy in Azure once the Mac has the share, whichever copy it took), the share's blobs
+    deleted now (the rows stay for the ledger and the dashboard; `photo` answers 404 for them)."""
     share_id = share_id_of(share_id)
     names = body.get("names") if isinstance(body, dict) else None
     if names is not None and not isinstance(names, list):
@@ -338,8 +340,15 @@ def mark_fetched(db: Database, share_id: str, body: dict, now: datetime) -> dict
     if row is None:
         raise NotFound("no such share")
     db.execute("UPDATE shares_in SET fetched_at = COALESCE(fetched_at, ?) WHERE share_id = ?", (iso(now), share_id))
+    deleted = 0
+    if blobs is not None:
+        for upload in db.query("SELECT name FROM share_uploads WHERE share_id = ?", (share_id,)):
+            try:
+                deleted += 1 if blobs.delete(f"{share_id}/{upload['name']}") else 0
+            except Exception as e:  # noqa: BLE001 — the blob stays for the lifecycle rule; the Mac has the share
+                log.warning("uploads: blob not deleted (%s)", type(e).__name__)
     return {"ok": True, "share_id": share_id, "received": int(row["received"] or 0),
-            "fetched_at": row["fetched_at"] or iso(now)}
+            "fetched_at": row["fetched_at"] or iso(now), "blobs_deleted": deleted}
 
 
 def cleanup(db: Database, now: datetime) -> int:

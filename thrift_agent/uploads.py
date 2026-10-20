@@ -30,7 +30,7 @@ from pathlib import Path
 
 import httpx
 
-from thrift_agent import notify, sales
+from thrift_agent import cleanup, notify, sales
 from thrift_agent.config import Settings
 from thrift_agent.db import DB
 
@@ -121,18 +121,19 @@ def take(s: Settings, db: DB, client, share: dict, sid: str) -> bool:
         shutil.rmtree(staging, ignore_errors=True)
         _settle_known(db, client, sid, found, names, test)
         return True
-    if found is not None and set_aside(s, db, sid, found, share) is None:
+    if found is not None and not cleanup.delete_copy(s, db, sid, found, "the upload is whole; the iCloud copy "
+                                                                        "wasn't (WO47: no duplicates)"):
         return False                                  # the download stays staged; the next poll tries again
     target = free_name(s.path("inbox") / sid)          # iCloud may have put its folder back meanwhile: never into it
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(staging), str(target))
     db.log(sid, "share_fetched", {"share_id": sid, "photos": names, "test": test, "folder": target.name,
-                                  **({"icloud_set_aside": found.name} if found is not None else {})})
+                                  **({"icloud_deleted": found.name} if found is not None else {})})
     client.post(f"/shares/{sid}/fetched", {"names": names})
     return True
 
 
-ASIDE = "-icloud"                       # the archive name of an iCloud copy set aside for the upload (WO46)
+ASIDE = "-icloud"                       # WO46's archive name of an iCloud copy set aside (WO47 deletes it instead)
 
 
 def icloud_behind(s: Settings, db: DB, found: Path, share: dict) -> bool:
@@ -160,30 +161,6 @@ def icloud_behind(s: Settings, db: DB, found: Path, share: dict) -> bool:
     return marker is None or len(photos) + len(media) < count
 
 
-def set_aside(s: Settings, db: DB, sid: str, found: Path, share: dict) -> Path | None:
-    """The iCloud copy moved out of the inbox to `archive/<date>_<folder>-icloud` (a rename inside iCloud Drive, its
-    files cloud-only or not): kept, never taken, never watched for late photos, never told (the upload is the share).
-    None when it can't be moved now (the share waits for the next poll)."""
-    from thrift_agent.ingest import prep
-    try:
-        here = sum(1 for f in found.iterdir() if prep.is_photo(f))
-        cloud = len(prep.icloud_placeholders(found))
-    except OSError:
-        here, cloud = None, None
-    dest = free_name(s.path("archive") / f"{datetime.now():%Y%m%d}_{found.name}{ASIDE}", sep="_")
-    try:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(found), str(dest))
-    except OSError as e:
-        db.log(sid, "share_icloud_set_aside_failed", {"share_id": sid, "folder": found.name,
-                                                      "error": f"{type(e).__name__}: {e}"[:200]})
-        return None
-    db.log(sid, "share_icloud_set_aside", {"share_id": sid, "folder": found.name, "dest": dest.name,
-                                           "photos_here": here, "cloud_only": cloud, "uploaded": share.get("received"),
-                                           "count": share.get("count")})
-    return dest
-
-
 def free_name(path: Path, sep: str = " ") -> Path:
     """`path`, else `path 2`, `path 3` … (iCloud's own way of naming a second folder), the first that doesn't exist."""
     out, n = path, 1
@@ -200,6 +177,11 @@ def _settle_known(db: DB, client, sid: str, found: Path, names: list[str], test:
     before the API was asked is told to the owner (its card is a real one: 'same item' retires it)."""
     if source_of(found) != "azure":
         db.log(sid, "share_same_as_icloud", {"share_id": sid, "folder": found.name, "photos": names, "test": test})
+        try:
+            from thrift_agent import shares
+            shares.seen(db, sid, "azure", received=len(names), test=test or None)     # the ledger: both copies came
+        except Exception as e:  # noqa: BLE001 — the ledger is a record
+            db.log(sid, "share_ledger_failed", f"{type(e).__name__}: {e}")
         if test:
             if found.parent.name != "archive" and not (found / "_test").exists():
                 try:

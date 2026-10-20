@@ -1277,6 +1277,31 @@ item goes up on all three sites or she is told why (§7); she only taps (§8); e
   the focus); the cover dialog's checkmark on the first thumb is waited for (it came a moment after the 11th
   thumbnail), and a cover dialog still open when the form is left is cancelled first. Stand-in: `oneSizeMenu`.
 
+## Photo storage (WO47, the owner's policy, 2026-10-19 — `thrift_agent/cleanup.py`, `thrift cleanup`)
+Where a share's photos live: her iCloud Drive inbox (the Shortcut's copy), thrift-api's blob container `shares` (the
+upload), the Mac's work folder (`work/<batch>/item_NN/photos` + cover — THE copy kept; `work/<batch>/all` the prep
+copy), and the archive `Posh/archive/<date>_<share id>` (the share folder moved out of the inbox — inside iCloud Drive,
+so it counts against her iCloud storage; it stays there because iCloud lands a share's late photos in the renamed
+folder, WO43). The rules: (1) **no duplicates, ever** — the second copy of a share (the iCloud folder after the upload,
+or the other way round) is DELETED from the iCloud inbox the moment it is recognised (`cleanup.delete_copy` from
+`uploads.take`, `pipeline.register`, `pipeline.repeat_share`; event `share_copy_deleted`; iCloud still holding it →
+the next look), never archived (WO46's `set_aside` is gone; the daily run sweeps iCloud's "<id> 2" folders, a folder
+that came back, and the "-icloud" folders set aside before); (2) **Azure**: a share's blobs are deleted when the Mac
+says it has the share (`POST /shares/<id>/fetched` → `uploads.mark_fetched(…, blobs)`; the rows stay; the 30-day
+lifecycle rule is the backstop); (3) **items for sale keep ONE copy**, the work copy: the archive copy of a split share
+goes KEEP_DAYS (7) after the share once every item has its work copy (late photos land within 2 days; `redo`, [Wrong
+photos] and `requeue` need the folder — a week covers them), `work/<batch>/all` goes as soon as the share is split;
+(4) **sold items**: the work photos (photos/, cover.jpg) go as soon as thrift-api's sale shows shipped (`shipped_at`)
+or done (`GET /sales?state=all`; never with a listing still queued / posting); (5) **repeat, empty, failed and test
+shares**: archive and work folders after 7 days; (6) the photo memory (fingerprints) is untouched; (7) `cleanup.run`
+once a day from the worker's inbox look (`cleanup.tick`: `sales._claim` 24 h), by hand `thrift cleanup [--dry-run |
+--sizes]`; everything removed is in the event `cleanup` (path, kind, why, bytes) and ONE private line "🧹 Cleanup:
+freed 1.6 GB — 9 share folders older than 7 days (archive), 2 duplicates, 1 sold item's photos, 12 prep copies.";
+kv `cleanup_last` in `thrift status` with the disk. Never touched: a share in flight, a work copy an item still
+needs (the archive copy is then kept, said in the plan's notes), `failed/shots` (evidence), the database. **The
+disk** (`cleanup.disk_watch`, every 10 min from the same tick): under 20 GB free → ONE private line naming thrift's
+own folders; "✓ … free again" above 22 GB; `thrift status` shows "disk: X free of Y". Tests: `tests/test_cleanup.py`.
+
 ## Her first real upload shares (WO46, 2026-10-19)
 The upload Shortcut went live on her phone that evening (no test run). It saves the iCloud copy FIRST, then uploads, so
 the iCloud folder reaches the Mac before the upload ends — usually with its photos cloud-only or short (live
