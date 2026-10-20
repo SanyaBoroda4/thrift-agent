@@ -27,3 +27,7 @@ api/local.settings.json
 api/.python_packages/
 api/.venv/
 data/brand_aliases.learned.json
+
+# incident evidence (the seller's account pages, logs): never in the repo
+incidents/*/shots/
+incidents/*/logs/
