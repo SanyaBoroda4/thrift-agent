@@ -47,6 +47,7 @@ LAST = "cleanup_last"              # kv: the last run's summary (thrift status)
 DISK_AT = "disk_checked_at"        # kv: the disk looked at every DISK_EVERY seconds
 DISK_SAID = "disk_low_said"        # kv: the low-disk line is out (cleared above LOW_CLEAR_GB)
 DISK_EVERY = 600
+ENABLED = True                     # the worker's tick runs the watch and the policy; the test suite turns it off
 ASIDE = "-icloud"                  # WO46's set-aside iCloud copies (a day's worth): duplicates
 _ARCHIVED = re.compile(r"^\d{8}_")
 _SECOND = re.compile(r"^(?P<base>.+?) (?P<n>\d{1,2})$")       # iCloud's second folder of one name: "<id> 2"
@@ -421,8 +422,9 @@ def due(db: DB, force: bool = False) -> bool:
 
 def tick(s: Settings, db: DB) -> None:
     """From the worker's look at the inbox: the disk every DISK_EVERY seconds, the policy once a day. Never raises.
-    The Mac's only (the dev machine's worker is a test's: its disk and folders are not the policy's)."""
-    if not s.is_prod:
+    The Mac's only (the dev machine's worker is a test's: its disk and folders are not the policy's); off in the
+    test suite (ENABLED, tests/conftest.py), whose prod-like tests run the worker's tick on a real disk."""
+    if not ENABLED or not s.is_prod:
         return
     try:
         disk_watch(s, db)

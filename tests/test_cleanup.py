@@ -212,6 +212,7 @@ def test_a_removal_that_fails_is_logged_and_the_rest_goes_on(env, monkeypatch):
 
 def test_due_once_a_day_and_the_tick_runs_it_on_the_mac_only(env, monkeypatch):
     s, db, said = env
+    monkeypatch.setattr(cleanup, "ENABLED", True)                                       # off for every other test
     assert cleanup.due(db) and not cleanup.due(db)
     monkeypatch.setattr(cleanup, "disk_free", lambda _s: (100 * 1024 ** 3, 228 * 1024 ** 3))
     runs = []

@@ -81,6 +81,14 @@ def no_telegram(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_cleanup_tick(monkeypatch):
+    """WO47: the worker's cleanup tick (the disk watch, the daily policy) is off in every test — the Mac's own
+    pre-deploy run is on a laptop with 10 GB free, and a prod-like test running the worker's tick got the low-disk
+    line. tests/test_cleanup.py turns it on where it tests the tick itself."""
+    monkeypatch.setattr("thrift_agent.cleanup.ENABLED", False)
+
+
+@pytest.fixture(autouse=True)
 def no_thrift_chrome(monkeypatch):
     """WO32: no test ever starts the Mac's Thrift Chrome (services.sh start chrome) — the suite runs there at deploy."""
     monkeypatch.setattr("thrift_agent.post.runner.start_thrift_chrome", lambda s: "not in a test")
