@@ -1681,3 +1681,44 @@ test("the site's requests after the click come from an observer, never the 250-e
   none.watchAfterClick();
   assert.deepEqual(plain(none.requestsAfterClick()), []);
 });
+
+// ---------------------------------------------------------------- 2026-10-20, the leggings: Depop's late package choice, a lost photo upload
+
+test("Depop: a package size Depop moves after the tidy is set back right before the Post click (live 2026-10-20: the leggings)", async () => {
+  // at 13:01 Depop's own Medium landed after the tidy's set-back and the form read back Medium for our Small; now the
+  // click is preceded by one last look
+  const p = page("depop", undefined, undefined, { sizeLag: 150, brandDelay: 100, ai: false });
+  const job = { ...DEPOP_JOB, job_id: "depop-pkg", mode: "publish" };
+  const done = run(p, job);
+  await until(() => p.events().some((e) => e.event === "ready"));
+  const before = p.fetches.length;
+  p.d.getElementById("shippingMethods-input").value = "Medium";       // Depop's own choice, landing late
+  p.tell({ type: "submit", job_id: job.job_id });
+  await done;
+  assert.equal(p.fetches.length, before + 1);                          // clicked once — with our size back on
+  assert.match(p.d.getElementById("shippingMethods-input").value, /^Large/);
+  assert.ok(p.events().some((e) => e.event === "progress"
+                                  && /package size had moved to 'Medium' before the click: Large chosen again/.test(e.what)),
+            JSON.stringify(p.events().filter((e) => e.event === "progress")));
+});
+
+test("Depop: a photo count short of the files has the missing ones attached once more, then the step says so (live 2026-10-20)", async () => {
+  const p = page("depop", undefined, undefined, { sizeLag: 150, brandDelay: 100, ai: false, loseFirstAttach: true });
+  p.w.Thrift.timeoutScale = 0.02;                       // the waits for the lost tiles, short
+  const two = [PHOTO, { ...PHOTO, name: "photo-2.jpg" }];
+  await p.w.Thrift.run({ job: DEPOP_JOB, selectors: SELECTORS, photos: two, pace: "fast" });
+  const r = p.last();
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(plain(r.seen).photos, "2");
+  assert.ok(plain(r.notes).some((n) => /photos: 0 of 2 shown — the missing 2 attached again/.test(n)), JSON.stringify(r.notes));
+  // a publish whose second attach shows nothing either ends at the photo step, nothing else filled
+  const q = page("depop", undefined, undefined, { sizeLag: 150, brandDelay: 100, ai: false, loseAttaches: 2 });
+  q.w.Thrift.timeoutScale = 0.02;
+  await q.w.Thrift.run({ job: { ...DEPOP_JOB, job_id: "depop-nophotos", mode: "publish" }, selectors: SELECTORS,
+                         photos: two, pace: "fast" });
+  const e = q.last();
+  assert.equal(e.event, "error", JSON.stringify(e));
+  assert.equal(e.stage, "photos");
+  assert.match(e.message, /^0 of 2 photos shown after a second attach/);
+  assert.ok(!q.events().some((x) => x.event === "step" && x.name === "category"));   // nothing else filled
+});

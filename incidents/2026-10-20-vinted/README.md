@@ -402,7 +402,23 @@ take-down, no re-check there — until the line goes back to `true` for the back
 - A second sign in the worker's logs: "[notify] sendMessage failed: ConnectError: nodename nor servname provided"
   (a DNS failure around the 11:17 restart) and the long poll's "connection reset by peer" — not the cause today
   (DNS and HTTPS to Telegram and the model API worked at 12:53), but a queue that can't send was silent too.
-- The fix (same branch, deployed after): two lanes in the queue — a test share's messages never hold the group's
-  queue, nor the reverse (`approve.lane_of`, `queue(db, lane)`, `open_message(db, lane=)`, `pump` and
-  `resend_pending` per lane) — and a tripwire: past 10 minutes of failed sends ONE private line names the error and
-  how many cards wait (`approve.note_send_failure`, cleared by the next send). Tests in `tests/test_queue.py`.
+- The fix (same branch, deployed 18:5x as 9754b4e: the Mac's suite 1981 passed, worker restarted): two lanes in the
+  queue — a test share's messages never hold the group's queue, nor the reverse (`approve.lane_of`, `queue(db,
+  lane)`, `open_message(db, lane=)`, `pump` and `resend_pending` per lane) — and a tripwire: past 10 minutes of
+  failed sends ONE private line names the error and how many cards wait (`approve.note_send_failure`, cleared by the
+  next send). Tests in `tests/test_queue.py`. Her nine items were priced by 13:03 and posted.
+
+## 15. The same evening: the leggings on Depop (i_261020_88d284, 2 photos) — two failures, their fixes
+
+Alex: "we need to debug it. I need everything to get posted what she shares." The item (one of the nine) went up on
+Poshmark and Vinted with both photos; on Depop:
+
+| attempt | what the trace shows | cause | fix |
+|---|---|---|---|
+| 13:01 | photos 2/2, every field ✓, tidy ✓; `package_choice` Small; the form read back **Medium** → `Mismatch: package Medium (plan starts with Small)`, cancelled before the click | Depop's own package choice landed AFTER the tidy's set-back (the tidy's second look covered the colour chips only) — the same race as Vinted's recommendation this morning | the tidy looks at the package once more after its settle; `submit` takes one last look right before the Post click and sets a moved size back (never one the menu lacks) |
+| 18:20 | the job began 20 s after the Mac woke (18:19:33 "woke, lid closed"; the worker's Telegram poll failed with a DNS error at 18:19:34; the window began 18:20:31); photos **0/2** in 110 s, Depop's suggestions "none came" (they come once the photos are up), the fill went on for 137 s → `Mismatch: photos 0 of 2 on the form` | the network still coming up right after the wake (Wi-Fi, the VPN, DNS); the files are intact (`item_03/photos/00.jpg`, `01.jpg`, 1.3 and 1.4 MB) and had uploaded fine at 13:01 | Depop's photo step re-attaches the missing files once and then fails the attempt with the upload calls seen (nothing else filled); every site's first listing after a wake waits until 45 s have passed since it (`parallel.settle_after_wake`, event `awake_grace`) |
+
+The row is at attempt 2 of 3 (Mismatch rows now get three windows): the deploy's worker restart opens a window and
+the poster (restarted idle) takes it again with the fixes in place; a third failure would ask Alex with the ⏭ line.
+Tests: `tests/js/content.test.mjs` (the Depop package before the click, the lost photo attach), `tests/test_parallel.py`
+(the wake grace).

@@ -283,6 +283,7 @@ async def _poshmark_turn(s, db, ps, ctx, dry, stage, state, awake, failures, mar
         state.idle("poshmark")
         return False
     iid, mp, render, mode = job
+    await settle_after_wake(db, "poshmark")
     if not db.claim_listing(iid, mp):
         return True
     state.set("poshmark", iid)
@@ -337,6 +338,24 @@ async def _cross_worker(s, db, ps, mp, dry, stop, state, awake, takedowns) -> No
         await _rest(stop, gap - (time.monotonic() - started))
 
 
+AWAKE_GRACE = 45    # seconds after the Mac wakes before the first listing (live 2026-10-20, the leggings on Depop: the
+#                     job began 20 s after the wake, the network still coming up — 0 of 2 photos showed in 110 s)
+
+
+async def settle_after_wake(db, mp: str, now: float | None = None) -> float:
+    """A listing started right after a wake meets a network still coming up (Wi-Fi, the VPN, DNS — the worker's own
+    Telegram poll failed with a DNS error at the same moment). The first job after a wake waits until AWAKE_GRACE
+    seconds have passed since it. Returns the seconds waited."""
+    woke = power.last_wake()
+    now = now if now is not None else time.time()
+    if woke is None or now - woke >= AWAKE_GRACE or now < woke:
+        return 0.0
+    wait = AWAKE_GRACE - (now - woke)
+    db.log(None, "awake_grace", {"mp": mp, "seconds": round(wait, 1)})
+    await asyncio.sleep(wait)
+    return wait
+
+
 async def _cross_turn(s, db, ps, mp, dry, state, awake, takedowns) -> bool:
     """One Depop / Vinted turn: take-downs, then one listing. True when it listed (or tried to)."""
     poster = ps[mp]
@@ -364,6 +383,7 @@ async def _cross_turn(s, db, ps, mp, dry, state, awake, takedowns) -> bool:
         state.idle(mp)
         return False
     iid = job[0]
+    await settle_after_wake(db, mp)
     state.set(mp, iid)
     awake.hold(True)
     try:

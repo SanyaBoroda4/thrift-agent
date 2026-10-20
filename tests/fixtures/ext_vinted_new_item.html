@@ -231,7 +231,9 @@ document.addEventListener("keydown", (e) => {        // Escape closes a panel â€
 });
 document.querySelector('[data-testid="add-photos-input"]').addEventListener("change", (e) => {
   // live 2026-10-20 08:00: Vinted's own "critical error" dialog over the photo area instead of the thumbnails
-  if (F.loseFirstAttach && !window.__lostAttach) { window.__lostAttach = true; return; }   // no tile for the first files
+  // 2026-10-20: no tile for the first attach (loseFirstAttach), or the first N attaches (loseAttaches: N)
+  const lose = F.loseAttaches ?? (F.loseFirstAttach ? 1 : 0);
+  if (lose && (window.__lostAttach = (window.__lostAttach || 0) + 1) <= lose) return;
   if (F.photosError) {
     const d = document.createElement("div");
     d.setAttribute("data-testid", "item-upload-critical-error-dialog");

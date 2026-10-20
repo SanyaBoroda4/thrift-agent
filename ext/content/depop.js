@@ -521,12 +521,28 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
       await T.step("photos", st, async () => {         // all at once; up to 120 s for the thumbnails to show
         const input = await T.need(S().photos.selectors, "photos", { visible: false });
         const n = Math.min(files.length, 8);
+        const asked = T.watchRequests();                // Depop's own upload calls, with their HTTP statuses
         st.attached = await T.attach(input, files.slice(0, 8), S().photos.drop);
         await T.waitCount(S().photos.thumbs, n, 60000);
         st.photosLoaded = await T.waitLoaded(S().photos.thumbs, n, 50000);
+        // live 2026-10-20 (the leggings, 20 s after the Mac woke): 0 of 2 thumbnails in 110 s and the fill went on for
+        // 137 s behind it — the missing ones are attached once more, then the step fails with the calls seen (a
+        // publish ends here; a dry run records it and goes on)
+        if (st.photosLoaded < n) {
+          const have = T.$$(S().photos.thumbs).length;
+          st.notes.push(`photos: ${st.photosLoaded} of ${n} shown — the missing ${n - have} attached again`);
+          await T.attach(input, files.slice(have, 8), S().photos.drop);
+          await T.until(() => (T.$$(S().photos.thumbs).length >= n ? true : null), 30000);
+          st.photosLoaded = await T.waitLoaded(S().photos.thumbs, n, 20000);
+        }
         await T.screenshot("photos");
+        if (st.photosLoaded < n) {
+          const calls = asked();
+          throw new Error(`${st.photosLoaded} of ${n} photos shown after a second attach`
+                          + (calls.length ? ` (its calls: ${calls.join(", ")})` : " (no upload call seen)"));
+        }
         return `${st.photosLoaded}/${n} shown`;
-      }, { limit: 120000 });
+      }, { limit: 150000 });
       // Depop fills colours, the brand and a package size by itself once the photos are up (recorded 2026-10-06). At
       // the fast pace its suggestions could land after our own picks and replace them (live 2026-10-07: the package
       // set to Medium after ours): they are waited for (8 s at most) and for the page to settle; ours go over them.
@@ -625,6 +641,14 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
         if (await chipsOurs(st, f) + await addBack(st, f)) {
           st.notes.push("Depop changed the form again after the tidy: set back once more");
           await T.quiet(800, 4000);
+        }
+        // live 2026-10-20 (the leggings): Depop's own package choice landed AFTER the set-back above and the form read
+        // back Medium for our Small — looked at once more after the settle, set back once more (the size chosen for
+        // this form, never one the menu lacks)
+        if (pkgWant && pkg && !T.norm(pkg.value).startsWith(T.norm(pkgWant))) {
+          st.notes.push(`Depop changed the package size to '${pkg.value}' after the tidy: set back to ${pkgWant}`);
+          await packageSize(st, ids.package, pkgWant);
+          await T.quiet(600, 3000);
         }
       }, { limit: 60000 });                                 // the checks, a size read again, the page left to settle
     },
@@ -734,6 +758,22 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
       }
       if (boosts().some((b) => b.checked)) {
         return T.emit({ event: "error", job_id: job.job_id, stage: "submit", page: "form", message: "Boost is on" });
+      }
+      // one last look at the package size right before the click (live 2026-10-20: Depop's own choice landed after
+      // the tidy) — a size Depop moved is chosen again, never published as Depop's
+      const ids = S().combo.ids;
+      const pkg = document.getElementById(ids.package);
+      const pkgWant = st.packageChoice || (job.fields && job.fields.package_size);
+      if (pkg && pkgWant && !T.norm(pkg.value).startsWith(T.norm(pkgWant))) {
+        const was = pkg.value;
+        try {
+          await packageSize(st, ids.package, pkgWant);
+          T.emit({ event: "progress", job_id: job.job_id,
+                   what: `the package size had moved to '${was}' before the click: ${pkg.value} chosen again` });
+        } catch (e) {
+          return T.emit({ event: "error", job_id: job.job_id, stage: "submit", page: "form",
+                          message: `the package size moved to '${was}' before the click and couldn't be set back: ${String(e && e.message ? e.message : e).slice(0, 200)}` });
+        }
       }
       T.emit({ event: "step", job_id: job.job_id, name: "submit", ok: true, clicked: true });
       await T.click(buttons[0]);                                        // exactly once

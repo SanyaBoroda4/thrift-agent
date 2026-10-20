@@ -307,3 +307,27 @@ def test_the_crosslist_dry_run_fills_the_extension_sites_together(tmp_path, monk
     # (0.75: Windows' clock ticks in ~16 ms steps — two 0.4 s sleeps have measured 0.797 s)
     assert timings[False] >= 0.75 and timings[True] < timings[False] - 0.25, timings   # the slower site, not the sum
     assert "depop: form open" in out and "together" in out and "one after another" in out
+
+
+# ---------------------------------------------------------------- 2026-10-20: the first listing after a wake waits for the network
+
+def test_the_first_listing_after_a_wake_waits_for_the_network(monkeypatch, tmp_path):
+    """Live 2026-10-20 (the leggings on Depop): the job began 20 s after the Mac woke, the network still coming up (the
+    worker's own Telegram poll failed with a DNS error at the same moment) — 0 of 2 photos showed in 110 s."""
+    import asyncio as _asyncio
+
+    from thrift_agent.db import DB as _DB
+    from thrift_agent.post import parallel as _parallel
+    db = _DB(tmp_path / "state.db")
+    slept = []
+
+    async def fake_sleep(sec):
+        slept.append(sec)
+    monkeypatch.setattr(_parallel.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(_parallel.power, "last_wake", lambda: 1000.0)
+    assert _asyncio.run(_parallel.settle_after_wake(db, "depop", now=1020.0)) == 25.0 and slept == [25.0]
+    assert _asyncio.run(_parallel.settle_after_wake(db, "depop", now=1100.0)) == 0.0 and slept == [25.0]
+    assert _asyncio.run(_parallel.settle_after_wake(db, "depop", now=900.0)) == 0.0          # a clock set back: no wait
+    monkeypatch.setattr(_parallel.power, "last_wake", lambda: None)
+    assert _asyncio.run(_parallel.settle_after_wake(db, "vinted", now=1020.0)) == 0.0
+    assert [r[0] for r in db.conn.execute("SELECT kind FROM events")].count("awake_grace") == 1

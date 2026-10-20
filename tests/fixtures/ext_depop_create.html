@@ -147,6 +147,9 @@ document.querySelector('[data-testid="brandButton__clear"]').addEventListener("c
   delete window.__picked["brand-input"];
 });
 document.getElementById("upload-input__input").addEventListener("change", (e) => {
+  // 2026-10-20: no tile for the first attach (loseFirstAttach), or the first N attaches (loseAttaches: N)
+  const lose = F.loseAttaches ?? (F.loseFirstAttach ? 1 : 0);
+  if (lose && (window.__lostAttach = (window.__lostAttach || 0) + 1) <= lose) return;
   let n = 0;
   for (const f of e.target.files) {
     const k = ++n;

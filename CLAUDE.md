@@ -1328,6 +1328,15 @@ it, git-ignored: `incidents/*/shots/`, `incidents/*/logs/`). What the code does 
   held — `skipped: not published automatically - held for the Vinted backlog…`, a reason both safety nets keep — and
   freed one at a time with `thrift requeue <item> --marketplace vinted`, 2–5 min apart; all six live by 12:07); the
   Thrift Chrome relaunched that morning (Chrome 155; the Mac's memory is the owner's own Safari tabs, not ours).
+- **Depop, the same evening (the leggings i_261020_88d284, 2 photos):** two Depop failures on one item. 13:01 —
+  Depop's own package choice (Medium) landed AFTER the tidy's set-back and the form read back Medium for our Small
+  (`Mismatch: package Medium (plan starts with Small)`): the tidy looks at the package once more after its settle,
+  and `submit` takes one last look right before the Post click (as Vinted's) — a size Depop moved is chosen again.
+  18:20 — the job began 20 s after the Mac woke (the worker's Telegram poll had just failed with a DNS error) and 0
+  of 2 photos showed in 110 s while the fill went on for 137 s: Depop's photo step re-attaches the missing files once
+  and then FAILS the attempt with the upload calls seen (`T.watchRequests`), nothing else filled; and the first
+  listing after a wake waits until `parallel.AWAKE_GRACE` (45 s) have passed since it (`settle_after_wake`, event
+  `awake_grace`, every site). Stand-in hooks `loseFirstAttach` / `loseAttaches: N` in both fixtures.
 - **Two lanes in the Telegram queue (the same day, 11:37–12:55 live):** a 🧪 test share's card (WO45 §2, the private
   chat — the WO48 pager test's) left open counted as THE open message, and her two real shares (9 items, priced by
   11:46) got no card for an hour and a quarter (the API's ⏳ line said "stuck at grouped"). `approve.lane_of`: a
