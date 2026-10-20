@@ -1277,6 +1277,16 @@ item goes up on all three sites or she is told why (§7); she only taps (§8); e
   the focus); the cover dialog's checkmark on the first thumb is waited for (it came a moment after the 11th
   thumbnail), and a cover dialog still open when the form is left is cancelled first. Stand-in: `oneSizeMenu`.
 
+## The price pager (WO48, the owner, 2026-10-20)
+Under the eight price buttons, above [Later] [Change] [Wrong photos]: ONE row "‹ lower · higher ›"
+(`approve.item_buttons`, callbacks `prices:<item>:-1|1`), like the size pager. "higher ›" moves all eight buttons up by
+$80 on the same card ($20–$90 → $100–$170; `PRICE_SHIFT`, `price_options(price, shift=)`), "‹ lower" back down; $10
+steps stay; ⭐ stays on the suggestion whenever it is in view (only the first window has it); "‹ lower" is hidden
+when the window below would hold a button under $5 (`can_lower`; the first window never goes under $5 as before). A
+shift tap never prices anything (the card is EDITED in place, `refresh_card`; the window kept in kv `price_page` until
+the price is set — `forget_price_page` in `_set_price`); a tap on any shown price lists it as before; a typed price
+still works. Tests: the WO48 part of `tests/test_wo43.py`.
+
 ## Photo storage (WO47, the owner's policy, 2026-10-19 — `thrift_agent/cleanup.py`, `thrift cleanup`)
 Where a share's photos live: her iCloud Drive inbox (the Shortcut's copy), thrift-api's blob container `shares` (the
 upload), the Mac's work folder (`work/<batch>/item_NN/photos` + cover — THE copy kept; `work/<batch>/all` the prep
@@ -1767,4 +1777,6 @@ fields, which they reject. `tests/test_llm.py` has a fake client that answers fo
 Python 3.11+, pydantic v2, pathlib everywhere (Windows + macOS). Pure functions for anything testable
 (gate, price, scheduler, segmentation checks, corrections). `pytest -q` must pass before deploy.
 Tests never read `config/settings.local.yaml`, `private/` or `.env` (tests/conftest.py isolates them); a test that
-needs prod behaviour or private data opts in with the `settings_override` fixture.
+needs prod behaviour or private data opts in with the `settings_override` fixture. Nor the machine's own disk,
+clock or network: the Mac's pre-deploy run is on a laptop with 10 GB free (WO47's disk watch fired inside an alerts
+test there and rolled the deploy back) — anything that reads them is faked in the test or guarded by `is_prod`.

@@ -546,3 +546,50 @@ def test_the_card_names_the_department_when_unsure_or_not_womens(env, tmp_path):
     caption, _ = approve.item_caption(unsure, db.item(unsure))
     assert "Category: Women › Shoes › Sneakers — my best reading; reply 'men' or 'women' to change it" in caption
     assert "men / women" in approve.CORRECT_HINT
+
+
+# ---------------------------------------------------------------- WO48: "‹ lower · higher ›" under the prices
+
+def test_the_price_window_shifts_by_eighty_keeps_the_star_and_never_goes_under_five(env, tmp_path):
+    s, db, bot, said, group = env
+    iid = "i_x"
+    assert approve.price_options(20) == [10, 20, 30, 40, 50, 60, 70, 80]
+    assert approve.price_options(20, shift=80) == [90, 100, 110, 120, 130, 140, 150, 160]
+    rows = approve.item_buttons(iid, 20)
+    assert [b["text"] for b in rows[0]] == ["$10", "⭐$20", "$30", "$40"]
+    assert [b["text"] for b in rows[2]] == ["higher ›"] and rows[2][0]["callback_data"] == f"prices:{iid}:1"
+    assert [b["text"] for b in rows[3]] == ["Later", "Change", "Wrong photos"]
+    rows = approve.item_buttons(iid, 20, shift=80)
+    assert [b["text"] for b in rows[0]] == ["$90", "$100", "$110", "$120"]
+    assert not any("⭐" in b["text"] for r in rows for b in r)
+    assert [b["text"] for b in rows[2]] == ["‹ lower", "higher ›"] and rows[2][0]["callback_data"] == f"prices:{iid}:-1"
+    assert rows[0][1]["callback_data"] == f"approve:{iid}:100"                 # a tap on a shifted price lists it
+    rows = approve.item_buttons(iid, 3, shift=80)                                # $3 suggested: the first window
+    assert [b["text"] for b in rows[0]] == ["$83", "$93", "$103", "$113"]        # starts at $3 — never shown again
+    assert [b["text"] for b in rows[2]] == ["higher ›"]                          # "‹ lower" hidden: $3 is under $5
+    assert approve.item_buttons(iid, 20, no_brand=True, shift=80)[3][0]["text"] == approve.NO_BRAND_BUTTON
+    assert approve.item_buttons(iid, 20, priced=25) == [[{"text": "✓ $25 — queued", "callback_data": approve.NOOP}]]
+
+
+def test_the_shift_taps_edit_the_card_in_place_and_never_price(env, tmp_path):
+    s, db, bot, said, group = env
+    iid = _item(db, tmp_path, shoe_facts(size_us=Ev(value="8", source="photo", confidence=0.95)), size="8", price=20)
+    db.add_outbox(str(CHAT), 11, "item", iid, "the card")
+    assert handle_update(s, db, bot, _callback(f"prices:{iid}:1")) == f"prices {iid}: shifted 1"
+    assert approve.price_shift(db, iid) == 80 and db.item(iid)["owner_price"] is None
+    assert any(m.startswith("editMessage") for m, p in bot.calls) and bot.calls[-1][0] == "answerCallbackQuery"
+    rows = approve.card_buttons(db, iid, db.item(iid), 20)
+    assert [b["text"] for b in rows[0]] == ["$90", "$100", "$110", "$120"]
+    assert [b["text"] for b in rows[2]] == ["‹ lower", "higher ›"]
+    assert handle_update(s, db, bot, _callback(f"prices:{iid}:1")) == f"prices {iid}: shifted 1"
+    assert [b["text"] for b in approve.card_buttons(db, iid, db.item(iid), 20)[0]] == ["$170", "$180", "$190", "$200"]
+    assert handle_update(s, db, bot, _callback(f"prices:{iid}:-1")) == f"prices {iid}: shifted -1"
+    assert handle_update(s, db, bot, _callback(f"prices:{iid}:-1")) == f"prices {iid}: shifted -1"
+    assert [b["text"] for b in approve.card_buttons(db, iid, db.item(iid), 20)[0]] == ["$10", "⭐$20", "$30", "$40"]
+    assert handle_update(s, db, bot, _callback(f"prices:{iid}:-1")) == f"prices {iid}: at the bottom"
+    assert bot.calls[-1][1].get("text") == "No lower prices" and db.item(iid)["owner_price"] is None
+    handle_update(s, db, bot, _callback(f"prices:{iid}:1"))
+    assert handle_update(s, db, bot, _callback(f"approve:{iid}:100")).startswith(f"price {iid}: $100")
+    assert db.item(iid)["owner_price"] == 100 and approve.price_shift(db, iid) == 0
+    assert approve.card_buttons(db, iid, db.item(iid), 20) == [[{"text": "✓ $100 — queued", "callback_data": approve.NOOP}]]
+    assert handle_update(s, db, bot, _callback(f"prices:{iid}:1")) == f"prices {iid}: nothing to shift"

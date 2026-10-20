@@ -420,7 +420,10 @@ def due(db: DB, force: bool = False) -> bool:
 
 
 def tick(s: Settings, db: DB) -> None:
-    """From the worker's look at the inbox: the disk every DISK_EVERY seconds, the policy once a day. Never raises."""
+    """From the worker's look at the inbox: the disk every DISK_EVERY seconds, the policy once a day. Never raises.
+    The Mac's only (the dev machine's worker is a test's: its disk and folders are not the policy's)."""
+    if not s.is_prod:
+        return
     try:
         disk_watch(s, db)
     except Exception as e:  # noqa: BLE001

@@ -714,14 +714,53 @@ PRICE_STEP = 10          # WO32b: the card's price buttons go in $10 steps from 
 LOWEST_BUTTON = 5        # ... and none under $5
 
 
-def price_options(price: int, step: int = PRICE_STEP) -> list[int]:
+PRICE_SHIFT = 80         # WO48: "‹ lower · higher ›" moves the eight buttons by this much (two rows of $10 steps)
+PRICE_PAGE = "price_page"   # kv: {item: the shift in dollars} — the card's window, kept for its next render
+
+
+def price_options(price: int, step: int = PRICE_STEP, shift: int = 0) -> list[int]:
     """The card's eight one-tap prices (WO32b, the owner's request — mostly up): $10 below the suggestion, the
     suggestion, then six $10 steps above it; the steps start from the suggestion ($35: 25 · 35 · 45 … 95). No low
-    button when $10 below would be under $5: then the suggestion and seven steps up. Any typed number still works."""
+    button when $10 below would be under $5: then the suggestion and seven steps up. Any typed number still works.
+    WO48: `shift` moves the whole window (a "higher ›" tap: +$80 — $20–$90 becomes $100–$170)."""
     low = price - step
     out = [low] if low >= LOWEST_BUTTON else []
     out += [price + k * step for k in range(0, 8 - len(out))]
-    return out
+    return [p + shift for p in out]
+
+
+def price_shift(db: DB, iid: str) -> int:
+    """The card's price window as the owner left it (WO48): 0, or +$80 a "higher ›" tap."""
+    pages = loads(db.kv_get(PRICE_PAGE)) or {}
+    try:
+        return max(0, int(pages.get(iid) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def can_lower(price: int, shift: int) -> bool:
+    """Is there a window below this one with no button under $5 (WO48: "‹ lower" is hidden otherwise)?"""
+    return shift > 0 and min(price_options(price, shift=shift - PRICE_SHIFT)) >= LOWEST_BUTTON
+
+
+def shift_prices(db: DB, iid: str, price: int, direction: int) -> int | None:
+    """"‹ lower" / "higher ›" (WO48): the window moved by PRICE_SHIFT and kept in kv for the card's next render; None
+    when it can't move that way (nothing under $5, never below the first window)."""
+    cur = price_shift(db, iid)
+    if direction < 0 and not can_lower(price, cur):
+        return None
+    new = max(0, cur + direction * PRICE_SHIFT)
+    pages = loads(db.kv_get(PRICE_PAGE)) or {}
+    pages[iid] = new
+    db.kv_set(PRICE_PAGE, json.dumps(pages))
+    return new
+
+
+def forget_price_page(db: DB, iid: str) -> None:
+    pages = loads(db.kv_get(PRICE_PAGE)) or {}
+    if iid in pages:
+        del pages[iid]
+        db.kv_set(PRICE_PAGE, json.dumps(pages))
 
 
 def asks_brand(gate: dict) -> bool:
@@ -730,12 +769,14 @@ def asks_brand(gate: dict) -> bool:
 
 
 def item_buttons(iid: str, price: int | None, no_brand: bool = False, sizes: list[list[dict]] | None = None,
-                 priced: int | None = None, needs_size_tap: bool = False) -> list[list[dict]]:
+                 priced: int | None = None, needs_size_tap: bool = False, shift: int = 0) -> list[list[dict]]:
     """WO43: the size rows first (when the card offers sizes) — right above the prices. Then eight prices in two rows
-    of four — $10 below, ⭐ the suggestion, $10 steps up (WO32b) — / [No brand] (when the brand is asked, WO25) /
+    of four — $10 below, ⭐ the suggestion, $10 steps up (WO32b) — then WO48's "‹ lower · higher ›" (the window moved
+    by $80 in place; "‹ lower" only when no button would go under $5) / [No brand] (when the brand is asked, WO25) /
     [Later] [Change] [Wrong photos]; or, once the price is in (`priced`), one inert "✓ $25 — queued" / "✓ $25 — tap a
-    size to list it". Every price button sets that price (approve:<item>:<amount>); [No brand] leaves Poshmark's brand
-    empty (nobrand:<item>); [Wrong photos] reopens the batch's grouping (regroup:<item>, WO20b)."""
+    size to list it". Every price button sets that price (approve:<item>:<amount>); the shift taps never price
+    (prices:<item>:-1|1); [No brand] leaves Poshmark's brand empty (nobrand:<item>); [Wrong photos] reopens the
+    batch's grouping (regroup:<item>, WO20b)."""
     rows = list(sizes or [])
     if priced:
         rows.append([{"text": f"✓ ${priced} — " + ("tap a size to list it" if needs_size_tap else "queued"),
@@ -743,8 +784,11 @@ def item_buttons(iid: str, price: int | None, no_brand: bool = False, sizes: lis
         return rows
     if price:
         buttons = [{"text": f"⭐${p}" if p == price else f"${p}", "callback_data": f"approve:{iid}:{p}"}
-                   for p in price_options(price)]
+                   for p in price_options(price, shift=shift)]
         rows += [buttons[:4], buttons[4:]]
+        nav = [{"text": "‹ lower", "callback_data": f"prices:{iid}:-1"}] if can_lower(price, shift) else []
+        nav.append({"text": "higher ›", "callback_data": f"prices:{iid}:1"})
+        rows.append(nav)
     if no_brand:
         rows.append([{"text": NO_BRAND_BUTTON, "callback_data": f"nobrand:{iid}"}])
     rows.append([{"text": "Later", "callback_data": f"later:{iid}"}, {"text": "Change", "callback_data": f"change:{iid}"},
@@ -781,7 +825,7 @@ def card_buttons(db: DB, iid: str, it, price: int | None) -> list[list[dict]]:
         if (o := sizebuttons.offer(db, it)) is not None:
             rows = sizebuttons.buttons(iid, o, it["owner_size"] if it["owner_size"] else None)
     return item_buttons(iid, price, asks_brand(gate), sizes=rows, priced=it["owner_price"] or None,
-                        needs_size_tap=wants)
+                        needs_size_tap=wants, shift=price_shift(db, iid))
 
 
 def sent_before(db: DB, chat_id: str, kind: str, ref: str):
@@ -1317,6 +1361,7 @@ def _set_price(s: Settings, db: DB, bot: Bot, iid: str, amount: int, reply_to: i
     except ValueError as e:
         _tell(bot, reply_to, str(e))
         return f"price {iid}: rejected ${amount}: {e}"
+    forget_price_page(db, iid)                         # WO48: the window starts afresh for any later card
     if status in OWNER_WAITING:                        # still open: a re-share hold, or Girls/Boys not answered yet
         gate = loads(db.item(iid)["gate"]) or {}
         _ack(db, bot, "item", iid, f"✓ ${amount} recorded")
@@ -1377,6 +1422,18 @@ def _handle_callback(s: Settings, db: DB, bot: Bot, cq: dict) -> str:
         result = _tap_size(s, db, bot, parts[1], parts[2])
         bot.answer_callback(cid, f"Size {parts[2]}" if "rejected" not in result else "Can't change the size now")
         return result
+    if parts[0] == "prices" and len(parts) == 3 and parts[2] in ("-1", "1"):  # WO48: ‹ lower · higher ›
+        it = db.item(parts[1])
+        price = item_caption(parts[1], it)[1] if it is not None else None
+        if it is None or it["owner_price"] or it["status"] not in SIZE_OFFERED or not price:
+            bot.answer_callback(cid, "Nothing to shift")
+            return f"prices {parts[1]}: nothing to shift"
+        if shift_prices(db, parts[1], int(price), int(parts[2])) is None:
+            bot.answer_callback(cid, "No lower prices")
+            return f"prices {parts[1]}: at the bottom"
+        refresh_card(s, db, parts[1])
+        bot.answer_callback(cid)
+        return f"prices {parts[1]}: shifted {parts[2]}"
     if parts[0] == "sizes" and len(parts) == 3 and parts[2] in ("-1", "1"):   # ‹ smaller · bigger ›
         it = db.item(parts[1])
         o = sizebuttons.offer(db, it) if it is not None and it["status"] in SIZE_OFFERED else None

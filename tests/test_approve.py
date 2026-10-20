@@ -186,6 +186,7 @@ def test_send_item_caption_buttons_and_outbox(env, tmp_path, facts):
              for n in range(75, 146, 10)]
     assert p["reply_markup"] == {"inline_keyboard": [          # WO32b: $10 below, ⭐ the suggestion, $10 steps up
         price[:4], price[4:],
+        [{"text": "higher ›", "callback_data": f"prices:{iid}:1"}],          # WO48: the window's pager
         [{"text": "Later", "callback_data": f"later:{iid}"}, {"text": "Change", "callback_data": f"change:{iid}"},
          {"text": "Wrong photos", "callback_data": f"regroup:{iid}"}]]}
     (row,) = _outbox(db, iid)

@@ -210,16 +210,22 @@ def test_a_removal_that_fails_is_logged_and_the_rest_goes_on(env, monkeypatch):
     assert "Resource deadlock avoided" in out["failures"][0]["error"]
 
 
-def test_due_once_a_day_and_the_tick_runs_it(env, monkeypatch):
+def test_due_once_a_day_and_the_tick_runs_it_on_the_mac_only(env, monkeypatch):
     s, db, said = env
     assert cleanup.due(db) and not cleanup.due(db)
     monkeypatch.setattr(cleanup, "disk_free", lambda _s: (100 * 1024 ** 3, 228 * 1024 ** 3))
     runs = []
     monkeypatch.setattr(cleanup, "run", lambda *a, **k: runs.append(1))
-    cleanup.tick(s, db)
+    prod = Settings({**s.data, "machine_role": "prod"})
+    cleanup.tick(prod, db)
     assert runs == []                                                                   # claimed a moment ago
     db.kv_set(cleanup.DAILY, iso(NOW - timedelta(days=2)))
     cleanup.tick(s, db)
+    assert runs == [] and cleanup.due(db)                                               # dev: the tick does nothing
+    cleanup.tick(prod, db)
+    assert runs == [] and not cleanup.due(db)                                           # the dev tick above claimed?
+    db.kv_set(cleanup.DAILY, iso(NOW - timedelta(days=2)))
+    cleanup.tick(prod, db)
     assert runs == [1]
 
 

@@ -304,6 +304,7 @@ def test_the_card_has_eight_prices_later_change_and_wrong_photos(env, tmp_path, 
     approve.pump(s, db)
     rows = bot.calls[-1][1]["reply_markup"]["inline_keyboard"]
     assert [[b["text"] for b in row] for row in rows] == [["$35", "⭐$45", "$55", "$65"], ["$75", "$85", "$95", "$105"],
+                                                          ["higher ›"],                       # WO48: the window's pager
                                                           ["Later", "Change", "Wrong photos"]]
     assert {b["callback_data"] for b in rows[0] + rows[1]} == {f"approve:{a1}:{p}" for p in range(35, 106, 10)}
 
