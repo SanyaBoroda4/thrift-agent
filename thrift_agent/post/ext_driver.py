@@ -45,6 +45,29 @@ from thrift_agent.schema import Render
 SELECTORS = bridge_mod.EXT_DIR / "selectors.json"
 PUBLISH_NEEDS = frozenset({"submit"})                       # the supervised `--publish-first`
 AUTOPUBLISH_NEEDS = frozenset({"submit", "after_publish"})  # the unattended loop: the landing page recorded too
+
+
+def describe_diff(diff: dict) -> str:
+    """The pre-publish diff in words a person reads in the ❌ line and the group's ⏭ line (the Vinted incident of
+    2026-10-20: "{'photos': ('8', '0'), 'photos_loaded': ('8', '0')}" named no step): "photos 0 of 8 on the form;
+    package LARGE (plan MEDIUM)". The raw diff stays in the job's JSON."""
+    parts = []
+    for k, (want, got) in diff.items():
+        plan = str(want)
+        for prefix in ("one of ", "picked "):
+            if plan.startswith(prefix):
+                plan = plan[len(prefix):]
+        alternatives = [p.strip().strip("[]").replace("'", "").strip(", ") for p in plan.split(" or ")]
+        plan = " or ".join(p for p in alternatives if p) or "nothing"
+        shown = "nothing" if got in (None, "", [], "[]") else str(got).strip("[]").replace("'", "")
+        if k == "photos":
+            parts.append(f"photos {shown} of {plan} on the form")
+        elif k == "photos_loaded":
+            if "photos" not in diff:
+                parts.append(f"photos loaded {shown} of {plan}")
+        else:
+            parts.append(f"{k.replace('_', ' ')} {shown} (plan {plan})")
+    return "; ".join(parts) or "the form read back other than planned"
 # WO33: Vinted's Hide; Depop's DELETE (the owner's decision, 2026-10-08: its page offers no Mark as sold)
 DELIST_NEEDS = {"vinted": frozenset({"hide"}), "depop": frozenset({"delete_button", "delete_dialog", "delete_confirm"})}
 STOP_PAGES = ("login", "block", "captcha", "verify")
@@ -422,7 +445,7 @@ class ExtensionPoster(Poster):
         if diff:
             if not dry_run:
                 bridge.command(job, "cancel")
-            return Outcome("failed", screenshot=screenshot, diff=diff, error=f"Mismatch: form doesn't match plan: {diff}",
+            return Outcome("failed", screenshot=screenshot, diff=diff, error=f"Mismatch: {describe_diff(diff)}",
                            note=_joined(self.notes), guesses=list(self.guesses))
         if dry_run:
             return Outcome("dryrun", screenshot=screenshot, note=_joined(self.notes), guesses=list(self.guesses))

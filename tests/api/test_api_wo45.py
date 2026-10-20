@@ -131,9 +131,15 @@ def test_the_evening_line_goes_once_in_the_21_hour(db, live, sent):
 
 def test_a_repost_task_answered_changes_no_listing(db, live, sent):
     _priced_item(db)
+    # a refused form is the Mac's own re-check's, never chased (live 2026-10-20: the net re-queued the Tory Burch
+    # before that re-check could run)
     core.sync(db, {"items": [], "listings": [{"item_id": "i_1", "marketplace": "vinted", "status": "failed",
                                               "error": "Vinted refused the form: x",
                                               "updated_at": (NOW - timedelta(hours=2)).isoformat()}]}, NOW)
+    assert watch.unposted(db, NOW, "live") == {"asked": [], "said": []}
+    core.sync(db, {"items": [], "listings": [{"item_id": "i_1", "marketplace": "vinted", "status": "failed",
+                                              "error": "vinted photos: the form wasn't done in 3 min",
+                                              "updated_at": (NOW - timedelta(hours=1, minutes=5)).isoformat()}]}, NOW)
     assert watch.unposted(db, NOW, "live")["asked"] == ["i_1|vinted"]
     [task] = core.take_tasks(db, ["vinted"], NOW)
     out = core.task_result(db, task["id"], "not_found", error="no such listing here", now=NOW)

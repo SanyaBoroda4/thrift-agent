@@ -76,6 +76,22 @@ def test_brand_keys_ignore_case_spaces_dots_hyphens_apostrophes_and_and():
     assert brands.key("Levi's") == brands.key("Levis") != brands.key("Levi")
 
 
+def test_a_company_suffix_is_one_word_thursday_boot_co_is_thursday_boot_company():
+    """Live 2026-10-20: Poshmark's Brand left empty and Depop's "Other" for "Thursday Boot Co", which both list as
+    "Thursday Boot Company" — a suffix is one word however the site writes it; "AllSaints" ↔ "All Saints" as before."""
+    from thrift_agent import brands
+    assert brands.key("Thursday Boot Co") == brands.key("Thursday Boot Company") == "thursdaybootco"
+    assert brands.key("Thursday Boot Co.") == "thursdaybootco" and brands.key("Hollister Co.") == "hollisterco"
+    assert brands.words("Thursday Boot Company") == ["thursday", "boot", "co"]
+    assert brands.pick_any(["Thursday Boot Co"], ["Thursday", "Thursday Boot Company", "Dr. Martens"], "Poshmark") \
+        == ("Thursday Boot Company", "brand set to 'Thursday Boot Company' (from 'Thursday Boot Co')")
+    assert brands.pick_any(["AllSaints"], ["All Saints", "Allsaints Spitalfields"]) \
+        == ("All Saints", "brand set to 'All Saints' (from 'AllSaints')")
+    assert brands.key("Solid") != brands.key("Solid & Striped") and brands.key("Levi's") == "levis"
+    assert brands.exact("Thursday Boot Co", ["Thursday Boot Company"]) == "Thursday Boot Company"
+    assert not brands.extends("Thursday Boot Co", "Thursday Boot Company")     # the same name, not a longer one
+
+
 def test_resolved_spellings_are_learned_and_used(tmp_path, monkeypatch):
     monkeypatch.setattr(brands, "SEED", {"J.Crew": "J. Crew"})
     aliases = brands.Aliases(tmp_path / "data" / "brand_aliases.learned.json", curated=None)

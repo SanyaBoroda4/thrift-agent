@@ -1,0 +1,45 @@
+== dry run (c1): Thursday boots i_261019_09053e on the RELAUNCHED Thrift Chrome (155.0.8059.85), Tue Oct 20 10:23:19 EDT 2026
+Waiting for the Thrift Chrome extension…
+  extension connected (1.0 s)
+vinted: tab opened
+vinted: page loaded
+vinted: page script running
+vinted: photos 8/8
+vinted: title ✓
+vinted: description ✓
+vinted: category ✓
+vinted: brand ✓
+vinted: size ✓
+vinted: condition ✓
+vinted: color ✓
+vinted: price ✓
+vinted: package ✓
+vinted: check ✓
+vinted: filled in 15.6 s
+vinted: dryrun in 27.5 s — 
+/Users/tatiana_sorokina/thrift/var/failed/shots/i_261019_09053e-vinted-20261020-
+102327.png
+== done Tue Oct 20 10:23:55 EDT 2026
+
+== dry run (c2): Larroude i_261019_51cd24, Tue Oct 20 10:23:55 EDT 2026
+Waiting for the Thrift Chrome extension…
+  extension connected (1.0 s)
+vinted: tab opened
+vinted: page loaded
+vinted: page script running
+vinted: photos 6/6
+vinted: title ✓
+vinted: description ✓
+vinted: category ✓
+vinted: brand ✓
+vinted: size ✓
+vinted: condition ✓
+vinted: color ✓
+vinted: price ✓
+vinted: package ✓
+vinted: check ✓
+vinted: filled in 15.7 s
+vinted: dryrun in 27.3 s — 
+/Users/tatiana_sorokina/thrift/var/failed/shots/i_261019_51cd24-vinted-20261020-
+102357.png
+== done Tue Oct 20 10:24:25 EDT 2026

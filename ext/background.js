@@ -521,7 +521,8 @@ async function onNavigatedMidJob(j) {
     await send({ event: "progress", job_id: j.job_id, what: `the page reloaded (${pathOf(tab.url)}) — ` +
                  (j.mode === "delist" ? "the take-down handed to it again" : "filling it again") });
     const photos = ["dry_run", "publish", "photos"].includes(j.job.mode) ? await fetchPhotos(j.job.photos || []) : [];
-    const job = j.mode === "delist" ? { ...j.job, pressed: !!j.pressed } : j.job;
+    // the page learns how many reloads it has had: Vinted's photo-upload error asks for a fresh page twice at most
+    const job = j.mode === "delist" ? { ...j.job, pressed: !!j.pressed } : { ...j.job, reloads: j.reloads };
     await toTab(j.tabId, { type: "job", job, selectors: sel, photos, pace: j.job.pace }, REACH_MS, j.site, j);
     await restore();
     const now = byId(j.job_id);

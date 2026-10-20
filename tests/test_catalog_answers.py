@@ -820,8 +820,9 @@ def test_the_copy_names_the_brand_as_shops_list_it(env, facts, monkeypatch):
 
 
 def test_a_form_that_read_back_otherwise_waits_and_the_group_hears_nothing(env, facts, monkeypatch):
-    """WO36 §4: a Depop / Vinted form whose read-back differed is never published; it waits — tried again each window,
-    whatever its attempts — and only the ops chat hears why. Another failure still ends in the group's ⏭ after three."""
+    """WO36 §4: a Depop / Vinted form whose read-back differed is never published; it waits, tried again next window,
+    and only the ops chat hears why. Since the Vinted incident of 2026-10-20 (the owner): three windows like any other
+    failure, then the group's ⏭ line naming the step — never "later" for good."""
     from thrift_agent import crosslist
     s, db, bot = env
     monkeypatch.setattr("thrift_agent.brain.llm.ask", _model({"facts": lambda: facts()}))
@@ -831,9 +832,20 @@ def test_a_form_that_read_back_otherwise_waits_and_the_group_hears_nothing(env, 
     db.upsert_listing(iid, "depop", status="failed", error="Mismatch: form doesn't match plan: {'brand-input': "
                                                           "('Tory Burch', 'Halogen')}")
     db.upsert_listing(iid, "vinted", status="failed", error="PosterError: the page went away")
-    db.conn.execute("UPDATE listings SET attempts=3 WHERE item_id=?", (iid,))
+    db.conn.execute("UPDATE listings SET attempts=2 WHERE item_id=?", (iid,))
     assert crosslist.new_window(s, db)
-    assert db.listing(iid, "depop")["status"] == "queued"                 # waits: tried again, never skipped
+    assert db.listing(iid, "depop")["status"] == "queued"                 # waits: tried again next window
+    assert db.listing(iid, "vinted")["status"] == "queued"
+    assert bot.sent()[sent:] == []                                        # the group hears nothing yet
+    db.upsert_listing(iid, "depop", status="failed", error="Mismatch: form doesn't match plan: {'brand-input': "
+                                                          "('Tory Burch', 'Halogen')}")
+    db.upsert_listing(iid, "vinted", status="failed", error="PosterError: the page went away")
+    db.conn.execute("UPDATE listings SET attempts=3 WHERE item_id=?", (iid,))
+    db.kv_set(crosslist.daily.SESSION_KEY, "the-window-after")
+    assert crosslist.new_window(s, db)
+    assert db.listing(iid, "depop")["status"] == "skipped"                # the third window: the ⏭ line, the step named
     assert db.listing(iid, "vinted")["status"] == "skipped"
     told = [p.get("text") or p.get("caption") for p in bot.sent()[sent:]]
-    assert len(told) == 1 and "Vinted" in told[0] and "Depop" not in told[0], told
+    assert len(told) == 2, told
+    assert any("Depop" in t and "brand-input" in t and "'retry'" in t for t in told), told
+    assert any("Vinted" in t and "the page went away" in t for t in told), told

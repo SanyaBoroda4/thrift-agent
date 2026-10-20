@@ -1557,3 +1557,108 @@ test("Depop: the shop read in bulk from its products JSON with the page's token;
   assert.deepEqual(r.listings, [{ id: "7", slug: "tetiana-shirt-24cb", price: "40.0", sold: false, photos: 2,
                                   url: "https://www.depop.com/products/tetiana-shirt-24cb/" }]);
 });
+
+// ---------------------------------------------------------------- the Vinted incident of 2026-10-20
+
+test("Vinted: its system-error dialog during the photo upload ends the step with its words once no fresh page is left (live 2026-10-20: 0 of 8)", async () => {
+  // the last allowed reload is spent (background.js counts them): a publish job ends at the photo step, nothing else filled
+  const p = page("vinted", undefined, undefined, { photosError: true });
+  await run(p, { ...VINTED_JOB, mode: "publish", reloads: 2 });
+  const r = p.last();
+  assert.equal(r.event, "error", JSON.stringify(r));
+  assert.equal(r.stage, "photos");
+  assert.match(r.message, /^Vinted's system error during the photo upload: Sorry, something went wrong/);
+  assert.ok(p.sent.some((m) => m.type === "screenshot" && m.label === "photos"
+                               && m.html.includes("item-upload-critical-error-dialog")));
+  assert.equal(p.d.querySelector("[data-testid='title--input']").value, "");
+  const step = p.events().find((e) => e.event === "step" && e.name === "photos");
+  assert.equal(step.ok, false);
+  assert.match(step.detail, /system error during the photo upload/);
+  // a dry run records the failed step and goes on (WO30's rule), so the evidence shows the whole form
+  const d = page("vinted", undefined, undefined, { photosError: true });
+  await run(d, { ...VINTED_JOB, reloads: 2 });
+  const dr = d.last();
+  assert.equal(dr.event, "result", JSON.stringify(dr));
+  assert.match(plain(dr.failed)[0], /^photos: Vinted's system error during the photo upload/);
+  assert.equal(plain(dr.seen).photos, "0");
+});
+
+test("Vinted: its system-error dialog during the photo upload asks for a fresh page after a pause while a reload is left", async () => {
+  const q = page("vinted", undefined, undefined, { photosError: true });
+  const reloads = [];
+  q.w.Thrift.photosRetryPauseMs = 10;
+  q.w.Thrift.reloadPage = () => reloads.push(Date.now());
+  run(q, { ...VINTED_JOB, mode: "publish" });          // never settles: the page is on its way out
+  await until(() => reloads.length === 1);
+  const progress = q.events().filter((e) => e.event === "progress").map((e) => e.what);
+  assert.ok(progress.some((w) => /Vinted's system error during the photo upload .* 2 tries left/.test(w)), JSON.stringify(progress));
+  assert.ok(!q.events().some((e) => e.event === "error"), JSON.stringify(q.events()));
+  assert.ok(q.sent.some((m) => m.type === "screenshot" && m.label === "photos"));
+  const one = page("vinted", undefined, undefined, { photosError: true });
+  const again = [];
+  one.w.Thrift.photosRetryPauseMs = 10;
+  one.w.Thrift.reloadPage = () => again.push(1);
+  run(one, { ...VINTED_JOB, mode: "publish", reloads: 1 });
+  await until(() => again.length === 1);
+  assert.ok(one.events().some((e) => e.event === "progress" && /1 try left/.test(e.what)));
+  q.w.close();
+  one.w.close();
+});
+
+test("Vinted: a photo count short of the files has the missing ones attached once more, then the step says so", async () => {
+  // the stand-in draws a tile per file, but loses the first attach entirely: the second attach brings them
+  const p = page("vinted", undefined, undefined, { loseFirstAttach: true });
+  p.w.Thrift.timeoutScale = 0.02;                       // the waits for the lost tiles, short
+  const two = [PHOTO, { ...PHOTO, name: "photo-2.jpg" }];
+  await p.w.Thrift.run({ job: VINTED_JOB, selectors: SELECTORS, photos: two, pace: "fast" });
+  const r = p.last();
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(plain(r.seen).photos, "2");
+  assert.ok(plain(r.notes).some((n) => /photos: 0 of 2 shown — the missing 2 attached again/.test(n)), JSON.stringify(r.notes));
+});
+
+test("Vinted: its Recommended package size landing after our pick is put back once, and one landing before it is waited out (live 2026-10-20)", async () => {
+  // after our click on Large the page moves to Medium (its recommendation): Large chosen again, said in the notes
+  const p = page("vinted", undefined, undefined, { recommendAfterPick: 5, recommendTo: 2 });
+  await run(p, { ...VINTED_JOB, fields: { ...VINTED_JOB.fields, package_sizes: ["LARGE"] } });
+  const r = p.last();
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(plain(r.seen).package, "LARGE");
+  assert.equal(p.d.querySelector("#package-size-3").getAttribute("role"), "presentation");
+  assert.ok(plain(r.notes).some((n) => /package size read 'MEDIUM' .*large chosen again|package size read 'MEDIUM' at the check: chosen again/.test(n)),
+            JSON.stringify(r.notes));
+  // the recommendation (Large) comes right after the price, before our pick: waited out, Medium stays ours
+  const q = page("vinted", undefined, undefined, { recommendLate: 40, recommendTo: 3 });
+  await run(q, { ...VINTED_JOB, fields: { ...VINTED_JOB.fields, package_sizes: ["MEDIUM"] } });
+  const s = q.last();
+  assert.equal(s.event, "result", JSON.stringify(s));
+  assert.equal(plain(s.seen).package, "MEDIUM");
+  assert.equal(q.d.querySelector("#package-size-2").getAttribute("role"), "presentation");
+  assert.equal(q.d.querySelector("[data-testid='package-size-suggestion-badge-id-3']").textContent, "Recommended");
+});
+
+test("the brand key reads a company suffix as one word: Thursday Boot Co is Thursday Boot Company (live 2026-10-20)", () => {
+  const T = page("vinted").w.Thrift;
+  assert.equal(T.brandKey("Thursday Boot Co"), T.brandKey("Thursday Boot Company"));
+  assert.equal(T.brandKey("Thursday Boot Co."), "thursdaybootco");
+  assert.deepEqual(plain(T.strictPick("Thursday Boot Co", ["Thursday", "Thursday Boot Company"])),
+                   { choice: "Thursday Boot Company", guess: "brand set to 'Thursday Boot Company' (from 'Thursday Boot Co')" });
+  assert.equal(T.brandKey("AllSaints"), T.brandKey("All Saints"));
+  assert.notEqual(T.brandKey("Solid"), T.brandKey("Solid & Striped"));
+  assert.equal(T.brandKey("Hollister Co."), "hollisterco");
+});
+
+test("the site's requests after the click come from an observer, never the 250-entry buffer (live 2026-10-20: a refusal with no request kept)", () => {
+  const p = page("vinted");
+  let cb = null;
+  p.w.PerformanceObserver = class { constructor(fn) { cb = fn; } observe() {} disconnect() {} };
+  const T = p.w.Thrift;
+  T.watchAfterClick();
+  cb({ getEntries: () => [{ name: "https://www.vinted.com/api/v2/items", initiatorType: "fetch", responseStatus: 500 },
+                          { name: "https://www.vinted.com/assets/app.js", initiatorType: "script", responseStatus: 200 },
+                          { name: "https://www.vinted.com/api/v2/photos", initiatorType: "xmlhttprequest", responseStatus: 0 }] });
+  assert.deepEqual(plain(T.requestsAfterClick()), ["/api/v2/items 500", "/api/v2/photos ?"]);
+  const none = page("vinted").w.Thrift;             // no observer in this browser: the buffer's entries, if any
+  none.watchAfterClick();
+  assert.deepEqual(plain(none.requestsAfterClick()), []);
+});

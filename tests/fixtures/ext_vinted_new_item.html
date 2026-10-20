@@ -100,6 +100,13 @@ function level(node) {
   }
 }
 document.getElementById("category").addEventListener("click", () => level(TREE));
+// live 2026-10-20: Vinted's Recommended package size comes from its server a moment after the price
+document.getElementById("price").addEventListener("input", () => {
+  if (F.recommendLate && !window.__recommendedLate) {
+    window.__recommendedLate = true;
+    setTimeout(() => recommend(F.recommendTo || 3), F.recommendLate);
+  }
+});
 // Package sizes: a cell each; Vinted chooses a Recommended one by itself (Small, then Medium once a size is set).
 function packages() {
   const box = document.getElementById("package_size");
@@ -111,7 +118,14 @@ function packages() {
     c.innerHTML = '<div data-testid="' + n + '-package-size--cell--title"><div class="badge"></div><span>' + name +
                   '</span></div><label><input type="radio" id="package_type_selector_' + n + '" aria-labelledby="package-size-' +
                   n + '" name="package_type_selector_' + n + '"></label>';
-    c.addEventListener("click", () => choosePackage(n));
+    c.addEventListener("click", () => {
+      choosePackage(n);
+      // live 2026-10-20: Vinted's own Recommended choice landed AFTER our click and was put over it, once
+      if (F.recommendAfterPick && !window.__recommended) {
+        window.__recommended = true;
+        setTimeout(() => recommend(F.recommendTo || 3), F.recommendAfterPick);
+      }
+    });
     box.appendChild(c);
   });
   choosePackage(1);
@@ -122,6 +136,16 @@ function choosePackage(n) {
     c.setAttribute("role", on ? "presentation" : "button");
     c.querySelector("input").checked = on;
   });
+}
+// Vinted's "Recommended" badge (package-size-suggestion-badge-id-<n>) drawn on a cell, and that cell chosen — what
+// its server answer does a moment after the details (live 2026-10-20).
+function recommend(n) {
+  document.querySelectorAll('[data-testid$="-package-size--cell"] .badge').forEach((b) => { b.innerHTML = ""; });
+  const cell = document.getElementById("package-size-" + n);
+  if (!cell) return;
+  cell.querySelector(".badge").innerHTML = '<div data-testid="package-size-suggestion-badge-id-' + n +
+    '"><div data-testid="package-size-suggestion-badge-id-' + n + '--content">Recommended</div></div>';
+  choosePackage(n);
 }
 // Each field's toggle with its chevron (recorded: <field>-chevron-up while its panel is open, -chevron-down closed).
 function chevron(name, open) {
@@ -206,6 +230,16 @@ document.addEventListener("keydown", (e) => {        // Escape closes a panel �
   }
 });
 document.querySelector('[data-testid="add-photos-input"]').addEventListener("change", (e) => {
+  // live 2026-10-20 08:00: Vinted's own "critical error" dialog over the photo area instead of the thumbnails
+  if (F.loseFirstAttach && !window.__lostAttach) { window.__lostAttach = true; return; }   // no tile for the first files
+  if (F.photosError) {
+    const d = document.createElement("div");
+    d.setAttribute("data-testid", "item-upload-critical-error-dialog");
+    d.innerHTML = '<div data-testid="item-upload-critical-error-dialog--overlay"></div><h2>Sorry, something went wrong</h2>' +
+                  "<p>We’re working to solve this system error now. Try refreshing the page.</p><button>Refresh page</button>";
+    document.body.appendChild(d);
+    return;
+  }
   let k = 0;
   for (const f of e.target.files) {
     const n = k++;

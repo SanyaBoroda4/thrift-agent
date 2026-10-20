@@ -179,17 +179,45 @@ def new_window(s: Settings, db: DB) -> bool:
         if refused(row["error"]):
             continue                                    # WO39: never the same form again by itself — her 'retry'
         iid, mp = row["item_id"], row["marketplace"]
-        # WO36 §4: a form that read back other than planned waits (nothing was published) — the ops chat said why;
-        # it never turns into the group's "⏭ … wasn't listed"
-        if row["attempts"] < MAX_ATTEMPTS or (row["error"] or "").startswith(MISMATCH):
+        # A form that read back other than planned (a "Mismatch": nothing was published) had waited for ever, one try
+        # a window (WO36 §4). Since the Vinted incident of 2026-10-20 (the owner): MAX_ATTEMPTS windows like any other
+        # failure, then the group's ⏭ line naming the step — "later" never repeats silently for good.
+        if row["attempts"] < MAX_ATTEMPTS:
             db.upsert_listing(iid, mp, status="queued")
             db.log(iid, "crosslist_retry", {"mp": mp, "attempts": row["attempts"]})
         else:
             db.upsert_listing(iid, mp, status="skipped", error=SKIPPED + f"{MAX_ATTEMPTS} attempts: {row['error']}")
             notify.say(f"⏭ {LABEL[mp]} skipped for {iid} after {MAX_ATTEMPTS} attempts: {row['error']}")
             from thrift_agent.post import runner
-            runner.ask_skipped(db, iid, mp, _title_of(db, iid), f"{MAX_ATTEMPTS} tries didn't go through")
+            runner.ask_skipped(db, iid, mp, _title_of(db, iid), f"{MAX_ATTEMPTS} tries — {step_text(row['error'])}")
     return True
+
+
+def step_text(error: str | None) -> str:
+    """The failing step in a person's words, from a listing row's error (the ❌ line, the ⏭ line): "photos 0 of 8 on
+    the form; package LARGE (plan MEDIUM)" (a Mismatch), "photos: Vinted's system error during the photo upload: …"
+    (a step that failed) — the prefixes ("Mismatch: ", "PosterError: ", the site's name) off, 140 characters at most."""
+    e = (error or "").strip()
+    for prefix in (MISMATCH, "PosterError: "):
+        if e.startswith(prefix):
+            e = e[len(prefix):].strip()
+    for mp in ORDER:
+        if e.lower().startswith(f"{mp} "):
+            e = e[len(mp) + 1:]
+    e = e.replace("form doesn't match plan: ", "")
+    return (e[:139] + "…") if len(e) > 140 else (e or "no reason recorded")
+
+
+def step_name(error: str | None) -> str:
+    """A few words for the group's card: "photos", "the package size", "the brand", "the upload" (a refused form),
+    else "the listing"."""
+    first = step_text(error).lower().split(":")[0].split(" (")[0]
+    for key, name in (("photos", "photos"), ("package", "the package size"), ("brand", "the brand"),
+                      ("condition", "the condition"), ("category", "the category"), ("price", "the price"),
+                      ("size", "the size"), ("refused", "the upload")):
+        if key in first:
+            return name
+    return "the listing"
 
 
 def blocked(db: DB, mp: str) -> str | None:
@@ -318,12 +346,18 @@ def record(s: Settings, db: DB, iid: str, mp: str, title: str, out, fields: dict
             set_unconf(db, iid, mp, stage=None)
             say_refused(db, iid, mp, title, error, shot)
     elif out.status == "failed":
+        # the step and the next try, in words (the Vinted incident of 2026-10-20: "it waits, tried again next window"
+        # named neither); a Mismatch published nothing (WO36 §4) and the group hears nothing until the ⏭ line
         row = db.listing(iid, mp)
-        if (error or "").startswith(MISMATCH):          # WO36 §4: nothing published; it waits, the group hears nothing
-            again = "nothing was published — it waits, tried again next window"
+        attempts = (row["attempts"] if row else 0) or 0
+        what = "nothing was published; " if (error or "").startswith(MISMATCH) else ""
+        if attempts < MAX_ATTEMPTS:
+            again = (f"{what}attempt {attempts} of {MAX_ATTEMPTS} — the next try the next time the Mac wakes or "
+                     f"restarts, inside its posting hours")
         else:
-            again = "retried next window" if row and row["attempts"] < MAX_ATTEMPTS else "no more attempts: skipped next window"
-        notify.ops_photo(shot, f"❌ {LABEL[mp]} failed ({iid}): {title}\n{error}{note}\n({again})")
+            again = (f"{what}attempt {attempts} of {MAX_ATTEMPTS} — no more by itself: next window the group's ⏭ line "
+                     f"asks for 'retry'")
+        notify.ops_photo(shot, f"❌ {LABEL[mp]} failed ({iid}): {title}\n{step_text(error)}{note}\n({again})")
     elif out.status == "skipped" and NO_SIZE in (out.error or ""):
         say_no_size(title)
     elif out.status == "skipped":
@@ -538,7 +572,12 @@ def card_text(s: Settings, db: DB, iid: str, last: str | None = None) -> str:
                                              and row["error"].startswith(UNCONFIRMED)
                                              and (unconf_state(db, iid, mp) or {}).get("stage") == "given_up") \
                 and not (row["status"] == "dryrun" and not (s is not None and live(s, mp))):
-            lines.append(f"⏳ {LABEL.get(mp, mp)} — later")     # a dry run on a site that won't publish: left out
+            if row["status"] == "failed" and row["error"] and not row["error"].startswith(UNCONFIRMED):
+                # the Vinted incident of 2026-10-20 (the owner): a failed site names its step and the next try
+                lines.append(f"⏳ {LABEL.get(mp, mp)} — {step_name(row['error'])} failed, next try when the Mac is "
+                             f"next open")
+            else:
+                lines.append(f"⏳ {LABEL.get(mp, mp)} — later")     # a dry run on a site that won't publish: left out
     if last:
         lines.append(last)
     return "\n\n".join(lines)

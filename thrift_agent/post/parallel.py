@@ -344,8 +344,9 @@ async def _cross_turn(s, db, ps, mp, dry, state, awake, takedowns) -> bool:
     if takedowns is not None and reachable and may_take_down(s, db, mp) and await takedowns(mp, poster, db, None):
         return True
     # WO35 §4: an unconfirmed publish looked for again by the site's own data (quiet; any hour, never with the lid
-    # closed or the site stopped)
-    if (reachable and may_take_down(s, db, mp) and not crosslist.blocked(db, mp)
+    # closed or the site stopped by what it showed — a read runs on a site stopped by our own failures in a row:
+    # live 2026-10-20 the refused Tory Burch's re-check never ran behind the brake)
+    if (reachable and may_take_down(s, db, mp) and not crosslist.account_blocked(db, mp)
             and await runner.recheck_unconfirmed(s, db, ps, mp)):
         return True
     if (reachable and not dry and not crosslist.blocked(db, mp) and not runner._paused(db)

@@ -34,16 +34,20 @@ CURATED = ROOT / "data" / "brand_aliases.json"     # tracked: the well-known sho
 SEED = {"J.Crew": "J. Crew"}
 
 
+# A company suffix is one word however a site writes it: "Thursday Boot Co" = "Thursday Boot Company" (live
+# 2026-10-20: Poshmark's Brand left empty and Depop's "Other" for a brand both list as "Thursday Boot Company").
+SUFFIX = {"company": "co", "corporation": "corp", "incorporated": "inc", "limited": "ltd"}
+
+
 def key(name: str | None) -> str:
-    """Comparison form: case, spaces, punctuation and accents ignored, "&" = "and"."""
-    s = unicodedata.normalize("NFKD", str(name or "")).encode("ascii", "ignore").decode().lower()
-    return re.sub(r"[^a-z0-9]", "", s.replace("&", " and "))
+    """Comparison form: case, spaces, punctuation and accents ignored, "&" = "and", "Company" = "Co"."""
+    return "".join(words(name))
 
 
 def words(name: str | None) -> list[str]:
-    """A name's words as key() reads them ("Levi's" → levis, "H&M" → h and m)."""
+    """A name's words as key() reads them ("Levi's" → levis, "H&M" → h and m, "Boot Company" → boot co)."""
     s = unicodedata.normalize("NFKD", str(name or "")).encode("ascii", "ignore").decode().lower()
-    return re.findall(r"[a-z0-9]+", re.sub(r"['’`]", "", s.replace("&", " and ")))
+    return [SUFFIX.get(w, w) for w in re.findall(r"[a-z0-9]+", re.sub(r"['’`]", "", s.replace("&", " and ")))]
 
 
 def exact(ours: str, options: list[str]) -> str | None:

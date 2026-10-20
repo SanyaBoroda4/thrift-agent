@@ -1,0 +1,8 @@
+== Depop + Vinted login check (the sell pages opened in the relaunched Thrift Chrome), 10:25:50
+✓ Depop: logged in — its sell form opens in the Thrift Chrome
+✓ Vinted: logged in — its sell form opens in the Thrift Chrome
+
+== Poshmark: the sold-orders read in the GUI session (read-only, nothing clicked), 10:25:56
+Poshmark: 10 orders read (2 cancelled, 7 completed, 1 shipped) — sent to the API
+== exit code 0
+== done 10:26:12

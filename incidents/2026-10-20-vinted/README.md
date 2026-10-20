@@ -291,3 +291,68 @@ it live and stop the poster at the first new failure.
   CAPTCHA. Photos: the extension fetches the prepared JPEGs from the bridge and sets them on the form's file input as
   Files, all at once; Vinted's page uploads them. The form is read back and diffed against the plan before the one
   Upload click; the new listing is confirmed by the landing page or Vinted's wardrobe JSON.
+
+## 11. Phase 4 (2026-10-20, 10:19–10:27 ET, with Alex's OK): the dry runs, the Chrome relaunch, the pause
+
+Order as decided: the poster stopped while idle (10:19, off in 10 s) → the Thursday boots on the current Chrome →
+the Thrift Chrome relaunched → the boots again and the Larroudé → the logins checked → the pause line → the poster
+back. Every run `thrift crosslist --dry-run <item> --marketplace vinted` (the CLI's own bridge, the form stage only,
+nothing clicked, no row changed). Output: `dryrun-a-boots-current-chrome.txt`, `dryrun-c-relaunched-chrome.txt`,
+`login-checks-after-relaunch.txt`; the traces in `shots/dryrun-a-current-chrome/` and `shots/dryrun-c-relaunched-chrome/`.
+
+| run | item | Chrome | photos | package | whole fill | diff |
+|---|---|---|---|---|---|---|
+| this morning 08:00:11 (live) | Thursday boots | 154, up since Oct 6 | **0/8** after 110 s, Vinted's system-error dialog; a reload mid-fill | LARGE (0 ms, preselected) | 137.6 s | photos 8 vs 0 |
+| (a) 10:20:17 | Thursday boots | the same process | 8/8 in 5.0 s | LARGE (0 ms) | 17.7 s | none |
+| (c1) 10:23:27 | Thursday boots | 155, relaunched 10:21:54 | 8/8 in 3.4 s | LARGE (0 ms) | 15.6 s | none |
+| this morning 08:02:50 (live) | Larroudé sandals | 154 | 6/6 in 4.6 s | our Medium clicked (1 ms); read back **LARGE**, the Recommended badge on Large | 24.3 s | package |
+| (c2) 10:23:57 | Larroudé sandals | 155 | 6/6 in 3.8 s | MEDIUM (0 ms: **Medium recommended and preselected** this time) | 15.7 s | none |
+
+What changed between the two boots runs (the morning's live one and (a), same Chrome, 2 h 20 min apart): nothing in
+our code or the browser — the photo upload simply worked, 8 of 8 in five seconds, no dialog, no reload. So the 08:00
+failure was Vinted's upload call failing at that moment (its "system error" dialog), not a lasting condition of the
+Chrome: cause (a) is confirmed as transient on Vinted's side, and the code's part — passing a 0-photo step on, no
+retry, no record of the call — is what the fix changes. Between (a) and (c1), the relaunch changed nothing visible
+either (8/8 both times). For the Larroudé, Vinted recommended **Large** this morning and **Medium** at 10:23 for the
+same item and fields: its recommendation is not fixed per category, it lands from its server after the details, and
+the 08:02 run shows it landing after our click and winning — cause (b) confirmed as "Vinted's late recommendation over
+our pick, and our check never looking at the package again".
+
+The Thrift Chrome relaunch (10:21:48–10:22:35): `services.sh stop chrome` (launchd's SIGTERM, gone in 10 s, no
+process left) → `start chrome` → pid 50742, Chrome 155.0.8059.85 (the profile's "Last Version" moved from 154.0.8037.98).
+Before it, the automation check: the extension needs no driver (Chrome's own extension APIs, no DevTools), and
+Poshmark's Playwright 1.63.0 poster already drives this same Chrome 155 binary (`channel="chrome"`) — six Poshmark
+listings this morning. After it, all three logged in: Depop ✓ and Vinted ✓ (`thrift crosslist --check-login`, the sell
+forms open in the Thrift Chrome), Poshmark ✓ (the sold-orders read in the GUI session: 10 orders). Memory: 7.47 GB
+used, 150 MB unused and 10.66 GB of swap before; 7.45 GB, 177 MB and 11.02 GB after — the Thrift Chrome was not the
+hog. The hogs: the owner's own Safari (eight WebKit content processes of 0.7–2.1 GB, almost all compressed),
+WindowServer 1.5 GB, Telegram 0.8 GB, a VPN app 0.6 GB; the worker is 22 MB. A reboot needs a login at the Mac
+(FileVault on, no auto-login); after it the worker, the poster and the Thrift Chrome come back by launchd (RunAtLoad),
+the Chrome logins persist in their profiles, Telegram and the VPN are the owner's login items. Not done: quitting Safari
+(or closing its tabs) frees most of it without a reboot — Alex's call.
+
+The pause (10:26:46): `marketplaces.vinted.enabled: false` in `config/settings.local.yaml` on the Mac (the owner's OK;
+the file as it was: `~/thrift/var/settings.local.yaml.bak-20261020-1027`), then the poster started: "Poster started
+(LIVE) — poshmark, depop · parallel" (pid 51517, `poster_started` 14:26:48 UTC). Vinted stays off — no listing, no
+take-down, no re-check there — until the line goes back to `true` for the backlog.
+
+## 12. Phase 6 (the branch, not deployed): the fixes and their tests
+
+- `ext/content/vinted.js`: the photo step fails the attempt on a short count — Vinted's critical-error dialog → a
+  fresh page after a pause (`T.photosRetryPauseMs` 25 s; `background.js` hands the job to the new page and now passes
+  `job.reloads`, twice at most), the last time the step fails with the dialog's words and the upload calls seen; a short
+  count without the dialog → the missing files attached once more, then the step fails. `packageSize`: the panel settles
+  before the pick, the pick is watched after and chosen again once (a note); `check` compares the package whatever else
+  was fixed.
+- `ext/content/common.js`: `T.watchRequests` (a PerformanceObserver; the statuses in the photo step's error and the
+  refusal's), `T.reloadPage`, `T.photosRetryPauseMs`; the brand key reads Co/Company/Corp/Inc/Ltd as one word.
+- `ext/selectors.json`: photos.error (the dialog), the package note. `ext/background.js`: `reloads` on the re-handed job.
+- `thrift_agent/crosslist.py`: Mismatch rows get three windows then the ⏭ line naming the step (`step_text`,
+  `step_name`); the ❌ line says the step and the attempt/next try; the card says "⏳ Vinted — photos failed, next try
+  when the Mac is next open". `thrift_agent/post/ext_driver.py`: `describe_diff`. `thrift_agent/post/parallel.py`: the
+  refused re-check runs behind a failures-only brake. `thrift_agent/sales.py`, `api/thrift_api/watch.py`: "refused
+  the form" kept for the Mac's own re-check. `thrift_agent/brands.py`: the suffix map; `data/brand_aliases.json`:
+  Thursday Boot Co → Thursday Boot Company.
+- Tests: 6 new jsdom cases (the dialog with and without a reload left, the short count, the late and the after-pick
+  recommendation, the brand key, the request observer) — 102 pass; Python: the Mismatch cap, the words, the card, the
+  brand suffix, the safety nets — the touched files pass (370 tests), the full suite's run is in the report.

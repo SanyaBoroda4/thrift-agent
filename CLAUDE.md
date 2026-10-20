@@ -1290,6 +1290,44 @@ shift tap never prices anything (the card is EDITED in place, `refresh_card`; th
 the price is set — `forget_price_page` in `_set_price`); a tap on any shown price lists it as before; a typed price
 still works. Tests: the WO48 part of `tests/test_wo43.py`.
 
+## Vinted, 2026-10-20: the photo upload, the package size, a silent Upload (the incident)
+Six items priced after 23:00 went up on Poshmark and Depop at 08:00; Vinted's first three jobs of the day failed three
+different ways and the "3 in a row" brake stopped it for the window; the other three were never tried. The whole
+investigation, the timeline and the evidence index: `incidents/2026-10-20-vinted/README.md` (the raw evidence beside
+it, git-ignored: `incidents/*/shots/`, `incidents/*/logs/`). What the code does since:
+- **Photos (vinted.js):** Vinted's own "Sorry, something went wrong … system error" dialog over the photo area
+  (`item-upload-critical-error-dialog`, `selectors.json` photos.error; live: 0 of 8 photos, the fill went on behind it
+  and only the read-back caught it) instead of the thumbnails → a fresh page after `T.photosRetryPauseMs` (25 s) and
+  the form filled again (background.js hands the job to the new page and passes `job.reloads`: twice at most), the
+  last time the step fails with the dialog's words and the upload calls seen; a count short of the files has the
+  missing ones attached once more, then the step fails ("N of M photos shown after a second attach") — a publish ends
+  there, nothing else filled; a dry run records it and goes on. Before, "0/8 shown" passed as a step.
+- **Package (vinted.js `packageSize`):** Vinted's "Recommended" size comes from its server a moment after the price and
+  is applied over whatever is chosen then (live: our Medium, clicked 43 ms after the price, read back Large with the
+  badge on Large; the same item at 10:23 got Medium recommended and preselected) — the panel settles before the pick
+  (`T.quiet`), the pick is watched for a moment after and chosen again once (a note), and `check` compares the package
+  whatever else was fixed (it had only after another fix).
+- **Evidence (common.js `T.watchRequests`):** the site's /api/ calls with their HTTP statuses from a
+  PerformanceObserver — the refusal of 2026-10-20 came back with no request at all: `getEntriesByType` reads a
+  250-entry buffer a sell page fills before the form is touched — in the photo step's error and the refusal's.
+- **Retries and words:** a "Mismatch" row (the form read back other than planned) gets `MAX_ATTEMPTS` windows like any
+  failure (WO36 §4 had it wait for ever, one try a window), then `skipped` and the group's ⏭ line naming the step
+  (`crosslist.step_text`); the ❌ private line says the step and "attempt N of 3 — the next try the next time the Mac
+  wakes or restarts"; the group card says "⏳ Vinted — photos failed, next try when the Mac is next open"
+  (`step_name`) for a failed site, "— later" for one still queued; `ext_driver.describe_diff` writes the diff in
+  words ("photos 0 of 8 on the form; package LARGE (plan MEDIUM)"). A refused form (WO39) is left to the Mac's own
+  re-check by the API's safety net and `sales.repost` ("refused the form" in both KEEP_REASONS; live: the net
+  re-queued the Tory Burch before the re-check could run), and the re-check runs on a site stopped by failures in a
+  row (`parallel._cross_turn`: `account_blocked`, not `blocked` — it is a read).
+- **Brands:** a company suffix is one word however the site writes it (`brands.SUFFIX`, the same in `common.js`):
+  "Thursday Boot Co" = "Thursday Boot Company" (live: Poshmark's Brand left empty, Depop "Other"); the alias too.
+- **The pause:** `marketplaces.vinted.enabled: false` in the Mac's `config/settings.local.yaml` (the owner's OK,
+  2026-10-20, a backup in `~/thrift/var/`) until the backlog goes; the Thrift Chrome relaunched that morning (Chrome
+  155; the Mac's memory is the owner's own Safari tabs, not ours). Stand-in hooks `photosError`, `loseFirstAttach`,
+  `recommendLate`, `recommendAfterPick` in `tests/fixtures/ext_vinted_new_item.html`; tests: the 2026-10-20 part of
+  `tests/js/content.test.mjs`, `tests/test_crosslist_flow.py`, `tests/test_never_ask.py`, `tests/test_wo45.py`,
+  `tests/api/test_api_wo45.py`, `tests/test_catalog_answers.py`.
+
 ## Photo storage (WO47, the owner's policy, 2026-10-19 — `thrift_agent/cleanup.py`, `thrift cleanup`)
 Where a share's photos live: her iCloud Drive inbox (the Shortcut's copy), thrift-api's blob container `shares` (the
 upload), the Mac's work folder (`work/<batch>/item_NN/photos` + cover — THE copy kept; `work/<batch>/all` the prep

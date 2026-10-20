@@ -247,18 +247,29 @@
   // The first package size of ours this item's category offers. The sizes come from Vinted's server after the details
   // (live 2026-10-10, WO35: none drawn yet 4 ms after the price, twice — "package MEDIUM not offered ()"): waited for,
   // 10 s at most.
-  async function packageSize(f) {
+  // Vinted's own "Recommended" choice comes from its server a moment after the cells (and after the price): it is
+  // applied over whatever is chosen then (live 2026-10-20: our Medium, clicked 43 ms after the price, read back as
+  // Large — the badge on Large). So: the panel left to settle before the pick, and the pick watched for a moment
+  // after — a size Vinted moved is chosen again, once (`st.notes` says so).
+  async function packageSize(f, st = null) {
     await T.until(() => packageCells().length > 0, 10000);
+    await T.quiet(300, 2500);
     const cells = packageCells();
     for (const code of f.package_sizes || []) {
       const cell = cells.find((c) => cellName(c) === PACKAGE[code]);
       if (!cell) continue;
       const radio = T.$(S().package.radio, cell);
-      if (!(radio && radio.checked)) await T.click(cell);
-      if (radio && !(await T.until(() => radio.checked, 3000))) {
-        throw new Error(`the package size ${PACKAGE[code]} didn't take`);
+      for (let round = 0; ; round++) {
+        if (!(radio && radio.checked)) await T.click(cell);
+        if (radio && !(await T.until(() => radio.checked, 3000))) {
+          throw new Error(`the package size ${PACKAGE[code]} didn't take`);
+        }
+        await T.quiet(300, 1500);
+        if (!radio || radio.checked) return;
+        if (round >= 1) throw new Error(`the package size ${PACKAGE[code]} is moved to '${chosenPackage()}' by the page`);
+        st?.notes.push(`the package size read '${chosenPackage()}' right after the pick (Vinted's own choice): `
+                       + `${PACKAGE[code]} chosen again`);
       }
-      return;
     }
     throw new Error(`package ${f.package_sizes} not offered (${cells.map(cellName).join(", ")})`);
   }
@@ -295,9 +306,11 @@
       await brand(st, f);
       fixed.push("brand");
     }
-    if (fixed.length && (f.package_sizes || []).length && !(f.package_sizes || []).includes(chosenPackage())) {
-      st.notes.push(`the package size read '${chosenPackage()}' after the fix: chosen again`);   // a size re-pick may
-      await packageSize(f);                                                                      // change it
+    // the package is read back whatever else was fixed (live 2026-10-20: Vinted's late "Recommended" had put Large
+    // over our Medium, and nothing else had needed a fix, so it was never looked at again)
+    if ((f.package_sizes || []).length && packageCells().length && !(f.package_sizes || []).includes(chosenPackage())) {
+      st.notes.push(`the package size read '${chosenPackage()}' at the check: chosen again`);
+      await packageSize(f, st);
       fixed.push("package");
     }
     await closeAll(st);
@@ -311,10 +324,46 @@
       await T.step("photos", st, async () => {         // the file input is hidden (u-hidden): found, not "visible"
         const input = await T.need(S().photos.selectors, "photos", { visible: false });
         const n = Math.min(files.length, 20);
+        const asked = T.watchRequests();                // Vinted's own upload calls, with their HTTP statuses
         st.attached = await T.attach(input, files.slice(0, 20), S().photos.drop);
-        await T.waitCount(S().photos.thumbs, n, 60000);
+        // The thumbnails — or Vinted's own "Sorry, something went wrong … system error" dialog over the photo area
+        // (live 2026-10-20 08:00: 0 of 8 photos, the fill went on behind it and only the read-back caught it). The
+        // dialog: a fresh page and the form filled again, twice at most, after a pause (background.js counts the
+        // reloads: `job.reloads`); the last time, the step fails with the dialog's words and the upload calls seen.
+        const dialog = () => T.$$(S().photos.error?.selectors || []).find(T.visible) || null;
+        await T.until(() => (T.$$(S().photos.thumbs).length >= n || dialog() ? true : null), 60000);
+        const shown = dialog();
+        if (shown) {
+          await T.screenshot("photos");
+          const words = (shown.textContent || "").replace(/\s+/g, " ").trim().slice(0, 160);
+          const calls = asked();
+          const left = 2 - (job.reloads || 0);
+          if (left > 0) {
+            T.emit({ event: "progress", job_id: job.job_id,
+                     what: `Vinted's system error during the photo upload ("${words.slice(0, 60)}") — a fresh page in `
+                           + `${Math.round(T.photosRetryPauseMs / 1000)} s, ${left} ${left === 1 ? "try" : "tries"} left`
+                           + (calls.length ? ` (its calls: ${calls.join(", ")})` : "") });
+            await T.sleep(T.photosRetryPauseMs);
+            T.reloadPage();                                                   // the job is handed to the new page
+            await new Promise(() => {});                                      // this page is on its way out
+          }
+          throw new Error(`Vinted's system error during the photo upload: ${words}`
+                          + (calls.length ? ` (its calls: ${calls.join(", ")})` : " (no upload call seen)"));
+        }
         st.photosLoaded = await T.waitLoaded(S().photos.thumbs, n, 50000);
+        if (st.photosLoaded < n) {                       // short: the missing ones attached once more, then counted
+          const have = T.$$(S().photos.thumbs).length;
+          st.notes.push(`photos: ${st.photosLoaded} of ${n} shown — the missing ${n - have} attached again`);
+          await T.attach(input, files.slice(have, 20), S().photos.drop);
+          await T.until(() => (T.$$(S().photos.thumbs).length >= n ? true : null), 30000);
+          st.photosLoaded = await T.waitLoaded(S().photos.thumbs, n, 20000);
+        }
         await T.screenshot("photos");
+        if (st.photosLoaded < n) {
+          const calls = asked();
+          throw new Error(`${st.photosLoaded} of ${n} photos shown after a second attach`
+                          + (calls.length ? ` (its calls: ${calls.join(", ")})` : " (no upload call seen)"));
+        }
         return `${st.photosLoaded}/${n} shown`;
       }, { limit: 120000 });
       await T.step("title", st, async () => T.type(await T.need(S().title.selectors, "title"), job.copy.title));
@@ -357,7 +406,7 @@
       }
       if (f.skirt_length) await T.step("skirt_length", st, async () => pick(st, "skirt_length", f.skirt_length));
       await T.step("price", st, async () => T.type(await T.need(S().price.selectors, "price"), String(job.price)));
-      await T.step("package", st, async () => packageSize(f));
+      await T.step("package", st, async () => packageSize(f, st));
       await T.dismiss(S().promo_close.selectors);
       await closeAll(st);
       await T.step("check", st, async () => check(st, f));   // WO36 §4: the form read back, fixed once

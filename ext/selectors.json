@@ -57,7 +57,14 @@
         "thumbs": [
           "[data-testid='media-upload-grid'] img"
         ],
-        "how": "the input is hidden (class u-hidden): found without the visible test, files set on it; the thumbnails counted in the upload grid",
+        "error": {
+          "selectors": [
+            "[data-testid='item-upload-critical-error-dialog']"
+          ],
+          "text": "Sorry, something went wrong",
+          "seen": "2026-10-20 08:00, the Thursday boots (live): Vinted's own dialog over the photo area — 'Sorry, something went wrong / We're working to solve this system error now. Try refreshing the page. [Refresh page]' (data-testid item-upload-critical-error-dialog, --overlay) — 0 of 8 photos in the grid; the fill went on behind it"
+        },
+        "how": "the input is hidden (class u-hidden): found without the visible test, files set on it; the thumbnails counted in the upload grid; Vinted's critical-error dialog instead of them: a fresh page (twice at most, after a pause), then the step fails with its words",
         "verified": true,
         "seen": "2026-10-06, the first extension dry run on the Mac: input[data-testid=add-photos-input].u-hidden (accept jpeg/gif/png/webp, multiple), [data-testid=dropzone], an empty [data-testid=media-upload-grid]; 2026-10-06, the second extension dry run on the Mac: 6 of 6 photos in the grid; 2026-10-06, the fourth extension dry run on the Mac: the whole form read back as planned, 6 of 6 photos displayed"
       },
@@ -198,7 +205,7 @@
         ],
         "how": "the cell whose title span is the size name; its radio's checked state is the choice",
         "verified": true,
-        "seen": "2026-10-06, the third extension dry run on the Mac: div#package-size-<n>[data-testid=<n>-package-size--cell] with a 'Recommended' badge and input#package_type_selector_<n>; Small / Medium / Large; Vinted moved its own choice Small → Medium (the chosen cell is role=presentation); 2026-10-06, the fourth extension dry run on the Mac: the whole form read back as planned, 6 of 6 photos displayed (Medium, Vinted's own Recommended choice, one of ours: left as it was)"
+        "seen": "2026-10-06, the third extension dry run on the Mac: div#package-size-<n>[data-testid=<n>-package-size--cell] with a 'Recommended' badge and input#package_type_selector_<n>; Small / Medium / Large; Vinted moved its own choice Small → Medium (the chosen cell is role=presentation); 2026-10-06, the fourth extension dry run on the Mac: the whole form read back as planned, 6 of 6 photos displayed (Medium, Vinted's own Recommended choice, one of ours: left as it was); 2026-10-20 08:02 (live, the Larroudé sandals): the badge [data-testid=package-size-suggestion-badge-id-<n>] 'Recommended' on Large landed after our click on Medium and Large was the chosen cell at the read-back — the same item at 10:23 got Medium recommended and preselected: Vinted's own choice comes from its server a moment after the price"
       },
       "promo_close": {
         "selectors": [

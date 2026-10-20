@@ -186,13 +186,42 @@
     }
   };
 
+  // ---- the site's own requests, with their HTTP statuses (the Vinted incident of 2026-10-20: a refusal came back
+  // with no request at all — `performance.getEntriesByType` reads a 250-entry buffer a sell page fills before the
+  // form is touched). A PerformanceObserver sees every entry from here on; the buffer is the fallback. Returns a
+  // function giving the /api/ fetch / XHR calls made since, "<path> <status>", the last 8.
+  T.watchRequests = () => {
+    const t0 = performance.now();
+    const got = [];
+    let po = null;
+    try {
+      po = new PerformanceObserver((list) => { for (const e of list.getEntries()) got.push(e); });
+      po.observe({ type: "resource", buffered: false });
+    } catch (e) { po = null; }
+    const ours = (e) => ["fetch", "xmlhttprequest"].includes(e.initiatorType) && /\/api\//.test(e.name);
+    return () => {
+      const entries = po ? got : (typeof performance?.getEntriesByType === "function"
+        ? performance.getEntriesByType("resource").filter((e) => e.startTime >= t0) : []);
+      return entries.filter(ours)
+        .map((e) => { try { return `${new URL(e.name).pathname} ${e.responseStatus || "?"}`; } catch (x) { return null; } })
+        .filter(Boolean).slice(-8);
+    };
+  };
+  // A fresh page after Vinted's system error during the photo upload (the job is handed to it by background.js,
+  // twice at most); the pause before it. Both are hooks so the tests see the reload instead of jsdom's "not implemented".
+  T.photosRetryPauseMs = 25000;
+  T.reloadPage = () => location.reload();
+
   // ---- the brand (WO36, the owner's rules of 2026-10-11 and 2026-10-12): our names in order — the brand as shops list
   // it, the label's text, the alias file's names, the two parts of a name like "MNG (Mango)" (the job's candidates,
   // brands.candidates) — each picked EXACTLY (case, spaces, punctuation and accents aside, "&" = "and"); else the ONE
   // option that is a whole name of ours followed by more words ("alo" → "Alo Yoga"; whole words: never "ALOHAS"). Never
   // the other way round ("Solid & Striped" never lands on "Solid"), never a similar name.
+  // A company suffix is one word however the site writes it ("Thursday Boot Co" = "Thursday Boot Company": live
+  // 2026-10-20, Poshmark's Brand left empty and Depop's "Other" for a brand both list; brands.py says the same).
+  const SUFFIX = { company: "co", corporation: "corp", incorporated: "inc", limited: "ltd" };
   const words = (s) => (String(s ?? "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
-    .replace(/&/g, " and ").replace(/['\u2019`]/g, "").match(/[a-z0-9]+/g) || []);
+    .replace(/&/g, " and ").replace(/['\u2019`]/g, "").match(/[a-z0-9]+/g) || []).map((w) => SUFFIX[w] || w);
   const key = (s) => words(s).join("");
   T.brandKey = key;
   T.brandNames = (f) => [...new Set([...(f.brand_candidates || []), f.brand].filter(Boolean))];
@@ -650,7 +679,7 @@
   // goes away, a field marked aria-invalid anywhere on the form — and the site's own requests after the click with
   // their HTTP status (the page's resource timing: nothing is asked again). Said as "refused: …" with all of it.
   T.watchAfterClick = () => {
-    const seen = { t0: performance.now(), errors: [] };
+    const seen = { t0: performance.now(), errors: [], requests: T.watchRequests() };
     T.afterClick = seen;
     let queued = false;
     const grab = () => {
@@ -664,15 +693,7 @@
       setTimeout(() => mo.disconnect(), 240000);
     } catch (e) { /* no observer: the errors on the page when asked are still read */ }
   };
-  T.requestsAfterClick = () => {
-    const t0 = T.afterClick?.t0;
-    if (t0 == null || typeof performance?.getEntriesByType !== "function") return [];
-    return performance.getEntriesByType("resource")
-      .filter((e) => e.startTime >= t0 && ["fetch", "xmlhttprequest"].includes(e.initiatorType)
-              && /\/api\//.test(e.name))
-      .map((e) => { try { return `${new URL(e.name).pathname} ${e.responseStatus || "?"}`; } catch (x) { return null; } })
-      .filter(Boolean).slice(-6);
-  };
+  T.requestsAfterClick = () => (T.afterClick?.requests ? T.afterClick.requests() : []);
   T.refusalErrors = () => {
     const now = T.errorsShown(12);
     return [...now, ...(T.afterClick?.errors || []).filter((e) => !now.includes(e))].slice(0, 6);

@@ -1,0 +1,23 @@
+playwright: Version: 1.63.0
+== dry run (a): Thursday boots i_261019_09053e on the CURRENT Thrift Chrome (154.0.8037.98, up since Oct 6), Tue Oct 20 10:20:15 EDT 2026
+Waiting for the Thrift Chrome extension…
+  extension connected (0.8 s)
+vinted: tab opened
+vinted: page loaded
+vinted: page script running
+vinted: photos 8/8
+vinted: title ✓
+vinted: description ✓
+vinted: category ✓
+vinted: brand ✓
+vinted: size ✓
+vinted: condition ✓
+vinted: color ✓
+vinted: price ✓
+vinted: package ✓
+vinted: check ✓
+vinted: filled in 17.7 s
+vinted: dryrun in 32.9 s — 
+/Users/tatiana_sorokina/thrift/var/failed/shots/i_261019_09053e-vinted-20261020-
+102017.png
+== done Tue Oct 20 10:20:50 EDT 2026

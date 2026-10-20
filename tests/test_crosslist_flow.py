@@ -548,6 +548,58 @@ def test_a_new_window_lifts_blocks_and_never_retries_an_unconfirmed_publish(tmp_
     assert crosslist.pending(s, db) == [(iid, "vinted")]
 
 
+def test_a_mismatch_row_gets_three_windows_then_the_groups_line_naming_the_step(tmp_path, monkeypatch):
+    """The Vinted incident of 2026-10-20 (the owner): a form that read back other than planned had waited for ever,
+    one try a window and only "⏳ Vinted — later" on the card. Now MAX_ATTEMPTS windows like any failure, then the
+    group's ⏭ line names the step."""
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid = _item(db)
+    said = []
+    monkeypatch.setattr(runner, "ask_skipped", lambda db_, i, mp, title, why: said.append((i, mp, why)))
+    db.upsert_listing(iid, "vinted", status="failed", error="Mismatch: photos 0 of 8 on the form", attempts=2)
+    db.kv_set(daily.SESSION_KEY, "w1")
+    assert crosslist.new_window(s, db) and db.listing(iid, "vinted")["status"] == "queued"
+    db.upsert_listing(iid, "vinted", status="failed", error="Mismatch: photos 0 of 8 on the form", attempts=3)
+    db.kv_set(daily.SESSION_KEY, "w2")
+    assert crosslist.new_window(s, db)
+    row = db.listing(iid, "vinted")
+    assert row["status"] == "skipped" and row["error"].startswith("skipped: 3 attempts: Mismatch: photos 0 of 8")
+    assert said == [(iid, "vinted", "3 tries — photos 0 of 8 on the form")]
+
+
+def test_the_failing_step_in_words_for_the_lines_and_the_card():
+    from thrift_agent.post.ext_driver import describe_diff
+    diff = {"photos": ("8", "0"), "photos_loaded": ("8", "0"), "package": ("one of ['MEDIUM']", "LARGE")}
+    assert describe_diff(diff) == "photos 0 of 8 on the form; package LARGE (plan MEDIUM)"
+    assert describe_diff({"brand_shown": ("one of ['Tory Burch'] or ['List without brand', '']", "H&M")}) \
+        == "brand shown H&M (plan Tory Burch or List without brand)"
+    assert crosslist.step_text("Mismatch: photos 0 of 8 on the form") == "photos 0 of 8 on the form"
+    assert crosslist.step_text("vinted photos: Vinted's system error during the photo upload: Sorry, something went wrong") \
+        == "photos: Vinted's system error during the photo upload: Sorry, something went wrong"
+    assert crosslist.step_text("PosterError: the form wasn't done in 3 min") == "the form wasn't done in 3 min"
+    assert crosslist.step_text(None) == "no reason recorded" and len(crosslist.step_text("x" * 200)) == 140
+    assert crosslist.step_name("Mismatch: photos 0 of 8 on the form") == "photos"
+    assert crosslist.step_name("Mismatch: package LARGE (plan MEDIUM)") == "the package size"
+    assert crosslist.step_name("Vinted refused the form: no error shown on the form") == "the upload"
+    assert crosslist.step_name("vinted brand: no 'List without brand' in Vinted's brand menu") == "the brand"
+    assert crosslist.step_name("PosterError: the form wasn't done in 3 min") == "the listing"
+
+
+def test_the_card_names_a_failed_sites_step_and_the_next_try(tmp_path):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid = _item(db)
+    db.upsert_listing(iid, "poshmark", status="posted", url="https://poshmark.com/listing/x")
+    db.upsert_listing(iid, "depop", status="queued")
+    db.upsert_listing(iid, "vinted", status="failed", error="Mismatch: photos 0 of 8 on the form", attempts=1)
+    text = crosslist.card_text(s, db, iid)
+    assert "⏳ Depop — later" in text
+    assert "⏳ Vinted — photos failed, next try when the Mac is next open" in text
+    db.upsert_listing(iid, "vinted", status="failed", error="unconfirmed publish: x", attempts=1)
+    assert "⏳ Vinted — later" in crosslist.card_text(s, db, iid)     # settled by the site's own data, as before
+
+
 def test_an_asked_for_dry_run_never_stops_the_poster(tmp_path, loop, monkeypatch):
     """Live on the Mac (WO30 deploy): Depop logged out in the poster's profile raised AccountBlocked out of the asked-for
     dry run and the poster process ended. Now: Depop stopped for the window with the group's one plain line, Vinted

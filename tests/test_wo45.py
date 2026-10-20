@@ -403,6 +403,10 @@ def test_the_api_safety_net_asks_for_one_retry_and_reasons_of_the_owners_stay(en
     sales.repost(db, {"id": "t2", "item_id": iid, "marketplace": "vinted", "kind": "repost"})
     assert db.listing(iid, "vinted")["status"] == "skipped" and calls[-1][0] == "/tasks/t2"
     assert "left as it is" in calls[-1][1]["error"]
+    # a refused form is the Mac's own re-check's (WO39; live 2026-10-20 the net re-queued one before that could run)
+    db.upsert_listing(iid, "vinted", status="failed", error="Vinted refused the form: no error shown on the form")
+    sales.repost(db, {"id": "t4", "item_id": iid, "marketplace": "vinted", "kind": "repost"})
+    assert db.listing(iid, "vinted")["status"] == "failed" and "left as it is" in calls[-1][1]["error"]
     sales.repost(db, {"id": "t3", "item_id": "i_nope", "marketplace": "vinted", "kind": "repost"})
     assert calls[-1][1]["result"] == "not_found"
 
