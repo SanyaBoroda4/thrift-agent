@@ -6,6 +6,7 @@ at 7:26 PM and the phone's late upload of the first share both landed at 7:47 PM
 repeats. The On Cloudsurfer Max sneakers (men's) went up under Women."""
 import json
 import uuid
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -339,6 +340,37 @@ def test_known_photos_plus_new_ones_join_the_item_as_late_photos_with_no_card(en
     assert db.conn.execute("SELECT COUNT(*) FROM items WHERE batch_id=?", (bid2,)).fetchone()[0] == 0
     assert said and said[-1].startswith("📸 1 photos of ") and "came with a repeat share" in said[-1]
     assert db.conn.execute("SELECT COUNT(*) FROM events WHERE ref=? AND kind='late_photos'", (bid2,)).fetchone()[0] == 1
+
+
+def test_many_new_photos_beside_known_ones_are_a_share_of_their_own(env, tmp_path, monkeypatch):
+    """WO46 (live 2026-10-19, 10:55 PM): a 42-photo share of several items carried the 9 photos of the Hunter boots'
+    share just before it — the other 33 were joined to the boots as "late photos". Many new photos beside known ones
+    are a share of their own; the known ones are dropped, one private line says so."""
+    from thrift_agent.ingest.segment import Group, SegOut
+    s, db, bot, said, group = env
+    d1, _ = _share(s, "2026-10-17_192558", ["red"], exif_time=True)
+    bid1 = pipeline.register(s, db, d1)
+    pipeline.process_batch(s, db, bid1)
+    [item] = db.conn.execute("SELECT id FROM items WHERE batch_id=?", (bid1,)).fetchall()
+    d2, paths = _share(s, "2026-10-17_200000", ["red", "green", "blue", "yellow", "white"], exif_time=True)
+    with Image.open(next(s.path("archive").iterdir()) / "IMG_1.jpeg") as im:
+        im.save(paths[0], exif=im.getexif().tobytes())                         # the known photo, as a copy
+    seen = {}
+
+    def segment(photos, *a, **k):
+        seen["n"] = len(photos)
+        return SegOut(groups=[Group(photos=[0, 1], summary="green top", full_item_photos=[0], confidence=0.95),
+                              Group(photos=[2, 3], summary="yellow skirt", full_item_photos=[2], confidence=0.95)])
+    monkeypatch.setattr(pipeline.seg, "segment", segment)
+    bid2 = pipeline.register(s, db, d2)
+    pipeline.process_batch(s, db, bid2)
+    assert db.batch(bid2)["status"] == "split" and seen["n"] == 4               # the known one dropped, 4 grouped
+    assert db.conn.execute("SELECT COUNT(*) FROM items WHERE batch_id=?", (bid2,)).fetchone()[0] == 2
+    assert len(list((Path(db.item(item["id"])["dir"]) / "photos").glob("*.jpg"))) == 1   # the first item: untouched
+    assert said[-1].startswith("📸 1 of the 8:00 PM share's photos were ") and "go on as a share of their own" in said[-1]
+    assert db.conn.execute("SELECT COUNT(*) FROM events WHERE ref=? AND kind='photos_known_dropped'",
+                           (bid2,)).fetchone()[0] == 1
+    assert db.conn.execute("SELECT COUNT(*) FROM events WHERE ref=? AND kind='late_photos'", (bid2,)).fetchone()[0] == 0
 
 
 def test_the_outbox_never_sends_a_second_card_for_the_same_photos(env, tmp_path):

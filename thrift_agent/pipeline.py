@@ -704,6 +704,16 @@ def known_photos_dropped(s: Settings, db: DB, bid: str, src: Path, known_as: dic
     if len(items) != 1 or not new:
         return None
     iid = items[0]
+    if len(new) > LATE_SHARE_PHOTOS:
+        # WO46 (live 2026-10-19, 10:55 PM): a 42-photo share of several items carried the 9 photos of the share just
+        # before it (the Hunter boots) — the other 33 were taken for the boots' late photos and joined to them. A
+        # few photos beside known ones are late photos; many are a share of their own (the known ones dropped).
+        names = ", ".join(sorted(known_as)[:3]) + ("…" if len(known_as) > 3 else "")
+        db.log(bid, "photos_known_dropped", {"folder": src.name, "known": sorted(known_as), "item": iid,
+                                             "new": len(new), "how": "the new photos go on as a share of their own"})
+        notify.say(f"📸 {len(known_as)} of the {share_time(src)} share's photos were {photomem.title_of(db, iid)}'s "
+                   f"again ({names}) — dropped; the other {len(new)} go on as a share of their own.")
+        return None
     added = add_photos_to_item(s, db, iid, new, keys or {})
     names = ", ".join(p.name for p in new[:6])
     notify.say(f"📸 {len(new)} photos of {photomem.title_of(db, iid)} came with a repeat share ({names}) — "
