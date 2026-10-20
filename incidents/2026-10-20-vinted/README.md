@@ -418,7 +418,9 @@ Poshmark and Vinted with both photos; on Depop:
 | 13:01 | photos 2/2, every field ✓, tidy ✓; `package_choice` Small; the form read back **Medium** → `Mismatch: package Medium (plan starts with Small)`, cancelled before the click | Depop's own package choice landed AFTER the tidy's set-back (the tidy's second look covered the colour chips only) — the same race as Vinted's recommendation this morning | the tidy looks at the package once more after its settle; `submit` takes one last look right before the Post click and sets a moved size back (never one the menu lacks) |
 | 18:20 | the job began 20 s after the Mac woke (18:19:33 "woke, lid closed"; the worker's Telegram poll failed with a DNS error at 18:19:34; the window began 18:20:31); photos **0/2** in 110 s, Depop's suggestions "none came" (they come once the photos are up), the fill went on for 137 s → `Mismatch: photos 0 of 2 on the form` | the network still coming up right after the wake (Wi-Fi, the VPN, DNS); the files are intact (`item_03/photos/00.jpg`, `01.jpg`, 1.3 and 1.4 MB) and had uploaded fine at 13:01 | Depop's photo step re-attaches the missing files once and then fails the attempt with the upload calls seen (nothing else filled); every site's first listing after a wake waits until 45 s have passed since it (`parallel.settle_after_wake`, event `awake_grace`) |
 
-The row is at attempt 2 of 3 (Mismatch rows now get three windows): the deploy's worker restart opens a window and
-the poster (restarted idle) takes it again with the fixes in place; a third failure would ask Alex with the ⏭ line.
+The row went up by itself at 18:56 on its third attempt (the window the queue-lane deploy's worker restart opened;
+the tidy's first look set the package back that time): https://www.depop.com/products/tetianaso9okina-victoria-secret-brand-gray-df9a/.
+At 19:16 the Mac was on ea91fb7 (its suite 1982 passed) and the poster restarted idle on all three sites; all nine of
+the day's items are posted on Poshmark, Depop and Vinted and no listing row anywhere is queued, posting or failed.
 Tests: `tests/js/content.test.mjs` (the Depop package before the click, the lost photo attach), `tests/test_parallel.py`
 (the wake grace).
