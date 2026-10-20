@@ -436,3 +436,49 @@ def test_the_poster_waits_while_a_batch_is_being_fixed(env, tmp_path, facts):
     assert runner.next_job(s, db, ["poshmark"], dry=True)[0] == i2
     pipeline.start_regroup(s, db, i1)
     assert runner.next_job(s, db, ["poshmark"], dry=True) is None
+
+
+# ---------------------------------------------------------------- 2026-10-20: two lanes, and a queue that can't send
+
+def test_a_test_shares_open_card_never_holds_the_groups_queue(env, tmp_path, facts):
+    """Live 2026-10-20: a 🧪 test card (WO45 §2, the private chat) left open held nine real cards for an hour and a
+    quarter. The queue has two lanes now — the group's and the test shares' — each with its own open message."""
+    s, db, bot = env
+    b = _batch(db, EARLY)
+    t = _item(db, tmp_path, facts, b, 1, title="Tan Item")
+    db.conn.execute("UPDATE items SET test=1 WHERE id=?", (t,))
+    db.conn.commit()
+    real = _item(db, tmp_path, facts, b, 2, title="Real Item")
+    assert approve.queue(db) == [("item", real)] and approve.queue(db, lane="test") == [("item", t)]
+    assert [ref for _, ref in approve.queue(db, lane=None)] == [t, real]
+    assert approve.lane_of(db, "item", t) == "test" and approve.lane_of(db, "item", real) == "real"
+    assert approve.pump(s, db) == f"item {real}"                 # both lanes sent: the group's first
+    assert _open(db) == ("item", real) and approve.open_message(db, lane="test")["ref"] == t
+    assert sorted(bot.questions()) == sorted(["Real Item", "🧪 TEST — nothing will be listed"])
+    assert approve.pump(s, db) is None                           # one open per lane: nothing more
+    # the test card stays unanswered; the group's queue goes on by itself once its own card is answered
+    real2 = _item(db, tmp_path, facts, b, 3, title="Second Real Item")
+    assert _open(db) == ("item", real)
+    handle_update(s, db, bot, _reply("40", 11))                  # the real card was message 11: priced
+    assert db.item(real)["status"] == "ready" and _open(db) == ("item", real2)
+    assert approve.open_message(db, lane="test")["ref"] == t      # untouched, still open in its own lane
+    assert approve.queue(db) == [("item", real2)]                # the status message's count: no test card in it
+    assert approve.resend_pending(s, db) == [] and _open(db) == ("item", real2)
+
+
+def test_a_queue_that_cannot_send_for_ten_minutes_says_so_once(env, monkeypatch):
+    """Live 2026-10-20: "[notify] sendMessage failed: ConnectError: nodename nor servname provided" and the worker
+    kept quiet. Past 10 minutes of failed sends ONE private line says so; a send that works clears it."""
+    s, db, bot = env
+    said = []
+    monkeypatch.setattr(approve.notify, "say", lambda text: said.append(text))
+    t0 = datetime(2026, 10, 20, 16, 0, tzinfo=timezone.utc)
+    assert approve.note_send_failure(db, "ConnectError: nodename nor servname", t0) is None
+    assert approve.note_send_failure(db, "ConnectError: nodename nor servname", t0 + timedelta(minutes=5)) is None
+    line = approve.note_send_failure(db, "ConnectError: nodename nor servname", t0 + timedelta(minutes=11))
+    assert line and line.startswith("⚠️ The next card couldn't be sent for 11 min (ConnectError") and said == [line]
+    assert "0 waiting" in line
+    assert approve.note_send_failure(db, "ConnectError: x", t0 + timedelta(minutes=30)) is None   # once per episode
+    approve.note_send_ok(db)
+    assert not db.kv_get(approve.SEND_FAILED_KEY)
+    assert approve.note_send_failure(db, "boom", t0 + timedelta(hours=2)) is None   # a new episode starts quiet

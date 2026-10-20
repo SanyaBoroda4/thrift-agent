@@ -342,8 +342,10 @@ take-down, no re-check there — until the line goes back to `true` for the back
   fresh page after a pause (`T.photosRetryPauseMs` 25 s; `background.js` hands the job to the new page and now passes
   `job.reloads`, twice at most), the last time the step fails with the dialog's words and the upload calls seen; a short
   count without the dialog → the missing files attached once more, then the step fails. `packageSize`: the panel settles
-  before the pick, the pick is watched after and chosen again once (a note); `check` compares the package whatever else
-  was fixed.
+  before the pick, the pick is watched after and chosen again once (a note); `check` lets the panel settle (≤ 3 s) and
+  compares the package whatever else was fixed; `submit` looks at the package once more right before the Upload click
+  and sets a moved one back (CI's Linux runners showed the recommendation landing after the check — the same gap would
+  publish Vinted's size live).
 - `ext/content/common.js`: `T.watchRequests` (a PerformanceObserver; the statuses in the photo step's error and the
   refusal's), `T.reloadPage`, `T.photosRetryPauseMs`; the brand key reads Co/Company/Corp/Inc/Ltd as one word.
 - `ext/selectors.json`: photos.error (the dialog), the package note. `ext/background.js`: `reloads` on the re-handed job.
@@ -388,3 +390,19 @@ take-down, no re-check there — until the line goes back to `true` for the back
   The photo check reads each listing 10 minutes after it posts (the Larroudé's row read at 12:04).
 - Left as it is: the Mac's memory (the owner's Safari tabs — Alex's call), the `failed/shots` evidence folder (1.4 GB,
   outside WO47's policy).
+
+## 14. The same afternoon: her shares got no card (11:37–12:55 ET) — a second bug, and its fix
+
+- 11:37 two shares (10 and 38 photos) came through the upload; the worker had split them by 11:40 and priced all 9
+  items by 11:46 (`awaiting_price`). No card went to the group: the one-message-at-a-time queue took my 🧪 test card
+  of the morning (the WO48 pager test, in Alex's private chat, message 728, never answered) for THE open message, and
+  the queue waited behind it. The API's watchdog said "⏳ Share 11:37 AM (38 photos) stuck at grouped since 11:40";
+  the status message counted "10 cards waiting". At 12:55 I settled the test card (`thrift price` on the test item,
+  which is never listed) and her cards flowed at once (the first answered within 20 s).
+- A second sign in the worker's logs: "[notify] sendMessage failed: ConnectError: nodename nor servname provided"
+  (a DNS failure around the 11:17 restart) and the long poll's "connection reset by peer" — not the cause today
+  (DNS and HTTPS to Telegram and the model API worked at 12:53), but a queue that can't send was silent too.
+- The fix (same branch, deployed after): two lanes in the queue — a test share's messages never hold the group's
+  queue, nor the reverse (`approve.lane_of`, `queue(db, lane)`, `open_message(db, lane=)`, `pump` and
+  `resend_pending` per lane) — and a tripwire: past 10 minutes of failed sends ONE private line names the error and
+  how many cards wait (`approve.note_send_failure`, cleared by the next send). Tests in `tests/test_queue.py`.

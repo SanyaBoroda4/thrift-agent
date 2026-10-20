@@ -176,12 +176,17 @@ def _safe_poll(s, db, bot, timeout: int) -> int:
 
 
 def _safe_pump(s, db) -> None:
-    """Send the next question if none is open; an error (Telegram down) is logged and retried on the next turn."""
+    """Send the next question if none is open; an error (Telegram down) is logged and retried on the next turn — and
+    past 10 minutes of it, ONE private line says the queue can't send (the owner, 2026-10-20: never a silent queue)."""
     try:
         approve.pump(s, db)
     except Exception as e:  # noqa: BLE001
         db.log(None, "error", traceback.format_exc())
         print(f"[telegram] send failed: {type(e).__name__}: {e}")
+        try:
+            approve.note_send_failure(db, f"{type(e).__name__}: {e}")
+        except Exception:  # noqa: BLE001 — the note never stops the worker
+            pass
 
 
 def _worker_iteration(s, db, interval: int, window: daily.Window | None = None) -> None:

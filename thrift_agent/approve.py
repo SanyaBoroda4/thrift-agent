@@ -305,41 +305,59 @@ def _item_kind(status: str, gate: dict) -> str:
     return "category" if gate.get("ask_category") else "kids" if gate.get("ask_kids") else "item"
 
 
-def queue(db: DB) -> list[tuple[str, str]]:
+LANES = ("real", "test")      # the group's queue, and the test shares' (WO45 §2: their cards go to the private chat)
+
+
+def lane_of(db: DB, kind: str, ref: str) -> str:
+    """Which queue a message belongs to: "test" for a test share's batch or item (WO45 §2: `?test=1`, the cards in the
+    private chat), else "real" (the group's). Each lane holds one open message at a time and never the other's — live
+    2026-10-20: a 🧪 test card left open in the private chat held nine real cards for an hour and a quarter."""
+    row = db.batch(ref) if kind in ("batch", "regroup", NEW_BATCH) else db.item(ref)
+    return "test" if row is not None and "test" in row.keys() and row["test"] else "real"
+
+
+def queue(db: DB, lane: str | None = "real") -> list[tuple[str, str]]:
     """Everything that waits for the owner, in the order they are asked: [(kind, ref)]. The oldest batch first — its
     contact sheet, then its items in photo order, each item's questions before its price card (one entry per item:
     what it waits for now) — then the next batch. An item put off with [Later] goes behind everything that was queued
     when the owner tapped it. NEW_BATCH / NEW_ITEM entries are still being processed: the queue holds there, so nothing
-    behind them jumps ahead. A pure read."""
+    behind them jumps ahead. `lane`: the group's queue ("real", the default), the test shares' ("test"), or both
+    (None: the worker's processing order). A pure read."""
     # Sort key: (when it joined the queue, the batch's insertion order, -1 for the contact sheet / the photo order,
     # id). The insertion order keeps each batch's messages together when two batches were registered in the same
     # second (created_at has whole seconds).
     entries = []
     kinds = {"needs_confirm": "batch", "regroup": "regroup", "new": NEW_BATCH}
-    for b in db.conn.execute("SELECT rowid AS n, id, status, created_at FROM batches "
+    for b in db.conn.execute("SELECT rowid AS n, id, status, created_at, COALESCE(test, 0) AS test FROM batches "
                              "WHERE status IN ('new', 'needs_confirm', 'regroup')"):
+        if lane is not None and ("test" if b["test"] else "real") != lane:
+            continue
         entries.append(((b["created_at"], b["n"], -1, b["id"]), kinds[b["status"]], b["id"]))
     marks = ",".join("?" * len(QUEUED_ITEMS))
     # The items of a batch whose photos are being fixed ([Wrong photos]) wait, unasked and unprocessed, until the fix.
     rows = db.conn.execute(
-        "SELECT i.id, i.status, i.seq, i.gate, i.deferred_at, COALESCE(b.created_at, i.created_at) AS since, "
+        "SELECT i.id, i.status, i.seq, i.gate, i.deferred_at, COALESCE(i.test, 0) AS test, "
+        "COALESCE(b.created_at, i.created_at) AS since, "
         f"COALESCE(b.rowid, 0) AS n FROM items i LEFT JOIN batches b ON b.id = i.batch_id WHERE i.status IN ({marks}) "
         "AND COALESCE(b.status, '') != 'regroup'", QUEUED_ITEMS)
     for r in rows:
+        if lane is not None and ("test" if r["test"] else "real") != lane:
+            continue
         entries.append(((r["deferred_at"] or r["since"], r["n"], r["seq"], r["id"]),
                         _item_kind(r["status"], loads(r["gate"]) or {}), r["id"]))
     return [(kind, ref) for _, kind, ref in sorted(entries)]
 
 
 def processing_order(db: DB) -> list[tuple[str, str]]:
-    """The batches and items still to be processed, in the queue's order: the worker takes them in this order, so the
-    card the owner needs next is the one ready first (an item reprocessed after an answer jumps ahead)."""
-    return [(kind, ref) for kind, ref in queue(db) if kind in (NEW_BATCH, NEW_ITEM)]
+    """The batches and items still to be processed, in the queue's order (both lanes): the worker takes them in this
+    order, so the card the owner needs next is the one ready first (an item reprocessed after an answer jumps ahead)."""
+    return [(kind, ref) for kind, ref in queue(db, lane=None) if kind in (NEW_BATCH, NEW_ITEM)]
 
 
-def next_up(db: DB) -> tuple[str, str] | None:
-    """The message to send next: the head of the queue, or None (nothing waits, or the head is still processed)."""
-    q = queue(db)
+def next_up(db: DB, lane: str = "real") -> tuple[str, str] | None:
+    """The message to send next on `lane`: the head of its queue, or None (nothing waits, or the head is still being
+    processed)."""
+    q = queue(db, lane)
     if not q or q[0][0] in (NEW_BATCH, NEW_ITEM):
         return None
     return q[0]
@@ -359,14 +377,16 @@ def _waits(db: DB, kind: str, ref: str) -> bool:
     return _item_kind(it["status"], loads(it["gate"]) or {}) == kind
 
 
-def open_message(db: DB, settle: bool = True):
-    """The one message that waits for the owner's answer (an outbox row), or None: the newest unresolved queue message
-    whose batch/item still waits for that answer. Every other unresolved queue message is resolved on the way —
-    answered elsewhere (a CLI command, a button on an older copy), moved on (reprocessing, dropped), or superseded (a
-    re-send, or the flood of messages from before the queue). Their buttons keep working."""
+def open_message(db: DB, settle: bool = True, lane: str = "real"):
+    """The one message of `lane` that waits for the owner's answer (an outbox row), or None: the newest unresolved
+    queue message whose batch/item still waits for that answer. Every other unresolved queue message of the lane is
+    resolved on the way — answered elsewhere (a CLI command, a button on an older copy), moved on (reprocessing,
+    dropped), or superseded (a re-send, or the flood of messages from before the queue). Their buttons keep working.
+    The other lane's messages are never looked at (a test share's card never counts as the group's open message)."""
     marks = ",".join("?" * len(QUEUE_KINDS))
-    rows = db.conn.execute(f"SELECT rowid AS n, * FROM outbox WHERE resolved_at IS NULL AND kind IN ({marks}) "
-                           "ORDER BY rowid DESC", QUEUE_KINDS).fetchall()
+    rows = [r for r in db.conn.execute(f"SELECT rowid AS n, * FROM outbox WHERE resolved_at IS NULL AND kind IN "
+                                       f"({marks}) ORDER BY rowid DESC", QUEUE_KINDS).fetchall()
+            if lane_of(db, r["kind"], r["ref"]) == lane]
     found = None
     for r in rows:
         if found is not None and (r["kind"], r["ref"]) == (found["kind"], found["ref"]):
@@ -445,24 +465,66 @@ def _send(s: Settings, db: DB, kind: str, ref: str) -> None:
 
 
 def pump(s: Settings, db: DB) -> str | None:
-    """Send the next message if none is open (one question at a time). Called after every processing step and every
-    answer, and by the worker's loops. Returns "kind ref" for what was sent; None when nothing was: one is open,
-    nothing waits, the head of the queue is still being processed, or another sender holds the lock (it sends)."""
+    """Send the next message of each lane if none of that lane is open (one question at a time, the group's queue and
+    the test shares' each on its own). Called after every processing step and every answer, and by the worker's loops.
+    Returns "kind ref" for what was sent (the group's first); None when nothing was: one is open, nothing waits, the
+    head of the queue is still being processed, or another sender holds the lock (it sends)."""
     if db.conn.in_transaction:
         return None                                   # never inside a caller's transaction; the worker pumps soon
     token = _lock(db)
     if token is None:
         return None
     try:
-        if open_message(db) is not None:
-            return None
-        _note_round(db)
-        if (head := next_up(db)) is None:
-            return None
-        _send(s, db, *head)
-        return " ".join(head)
+        sent = None
+        for lane in LANES:
+            if open_message(db, lane=lane) is not None:
+                continue
+            if lane == "real":
+                _note_round(db)
+            if (head := next_up(db, lane)) is None:
+                continue
+            _send(s, db, *head)
+            note_send_ok(db)
+            sent = sent or " ".join(head)
+        return sent
     finally:
         _unlock(db, token)
+
+
+SEND_FAILED_KEY = "queue_send_failed"   # kv: {"since", "said", "error"} — the next card couldn't be sent since then
+SEND_FAILED_SAY_AFTER = 600             # seconds of failed sends before the one private line (the owner, 2026-10-20)
+
+
+def note_send_failure(db: DB, error: str, now: datetime | None = None) -> str | None:
+    """The next message couldn't be sent (Telegram unreachable, a DNS failure — live 2026-10-20, "nodename nor servname
+    provided"): remembered; past SEND_FAILED_SAY_AFTER of it, ONE private line says so (the owner never has to notice a
+    silent queue by himself). Returns the line said, else None. note_send_ok() clears it."""
+    now = now or datetime.now(timezone.utc)
+    state = loads(db.kv_get(SEND_FAILED_KEY)) or {}
+    since = state.get("since") or now.isoformat(timespec="seconds")
+    state = {"since": since, "said": bool(state.get("said")), "error": str(error)[:200]}
+    db.kv_set(SEND_FAILED_KEY, json.dumps(state))
+    try:
+        started = datetime.fromisoformat(since)
+    except ValueError:
+        started = now
+    if state["said"] or (now - started).total_seconds() < SEND_FAILED_SAY_AFTER:
+        return None
+    waiting = len([1 for kind, _ in queue(db) if kind not in (NEW_BATCH, NEW_ITEM)])
+    line = (f"⚠️ The next card couldn't be sent for {int((now - started).total_seconds() // 60)} min "
+            f"({state['error'][:120]}) — {waiting} waiting; I keep trying every turn.")
+    state["said"] = True
+    db.kv_set(SEND_FAILED_KEY, json.dumps(state))
+    db.log(None, "queue_send_failed", state)
+    notify.say(line)
+    return line
+
+
+def note_send_ok(db: DB) -> None:
+    """A message went out: the failure note is cleared (a new episode says once again)."""
+    if db.kv_get(SEND_FAILED_KEY):
+        db.conn.execute("DELETE FROM kv WHERE key=?", (SEND_FAILED_KEY,))
+        db.conn.commit()
 
 
 # ---------- outgoing ----------
@@ -1882,12 +1944,13 @@ def resend_pending(s: Settings, db: DB) -> list[str]:
     if token is None:
         return []
     try:
-        row = open_message(db)
-        if row is None:
-            _note_round(db)
-            if head := next_up(db):
-                _send(s, db, *head)
-            return []
+        for lane in LANES:            # each lane on its own: the group's queue, the test shares' (2026-10-20)
+            if open_message(db, lane=lane) is None:
+                if lane == "real":
+                    _note_round(db)
+                if head := next_up(db, lane):
+                    _send(s, db, *head)
+                    note_send_ok(db)
         return []                     # WO37: a card is sent once — never again after hours (it stays where it is)
     finally:
         _unlock(db, token)

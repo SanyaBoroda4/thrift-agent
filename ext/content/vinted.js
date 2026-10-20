@@ -306,12 +306,15 @@
       await brand(st, f);
       fixed.push("brand");
     }
-    // the package is read back whatever else was fixed (live 2026-10-20: Vinted's late "Recommended" had put Large
-    // over our Medium, and nothing else had needed a fix, so it was never looked at again)
-    if ((f.package_sizes || []).length && packageCells().length && !(f.package_sizes || []).includes(chosenPackage())) {
-      st.notes.push(`the package size read '${chosenPackage()}' at the check: chosen again`);
-      await packageSize(f, st);
-      fixed.push("package");
+    // the package is read back whatever else was fixed, once the panel has settled (live 2026-10-20: Vinted's late
+    // "Recommended" had put Large over our Medium, and nothing else had needed a fix, so it was never looked at again)
+    if ((f.package_sizes || []).length && packageCells().length) {
+      await T.quiet(600, 3000);
+      if (!(f.package_sizes || []).includes(chosenPackage())) {
+        st.notes.push(`the package size read '${chosenPackage()}' at the check: chosen again`);
+        await packageSize(f, st);
+        fixed.push("package");
+      }
     }
     await closeAll(st);
     return fixed.length ? `fixed: ${fixed.join(", ")}` : "as planned";
@@ -503,6 +506,20 @@
       if (buttons.length !== 1) {
         return T.emit({ event: "error", job_id: job.job_id, stage: "submit", page: "form",
                         message: `${buttons.length} Upload buttons: never a guess` });
+      }
+      // one last look at the package right before the click: Vinted's Recommended choice can land after the check
+      // (live 2026-10-20) — a size it moved is chosen again, never published as Vinted's
+      const sizes = (job.fields && job.fields.package_sizes) || [];
+      const was = chosenPackage();
+      if (sizes.length && packageCells().length && !sizes.includes(was)) {
+        try {
+          await packageSize({ package_sizes: sizes }, st);
+          T.emit({ event: "progress", job_id: job.job_id,
+                   what: `the package size had moved to '${was}' before the click: ${chosenPackage()} chosen again` });
+        } catch (e) {
+          return T.emit({ event: "error", job_id: job.job_id, stage: "submit", page: "form",
+                          message: `the package size moved before the click and couldn't be set back: ${String(e && e.message ? e.message : e).slice(0, 200)}` });
+        }
       }
       T.emit({ event: "step", job_id: job.job_id, name: "submit", ok: true, clicked: true });   // before: it navigates
       await T.click(buttons[0]);                                        // exactly once

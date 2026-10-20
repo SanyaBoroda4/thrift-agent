@@ -1627,7 +1627,8 @@ test("Vinted: its Recommended package size landing after our pick is put back on
   assert.equal(p.d.querySelector("#package-size-3").getAttribute("role"), "presentation");
   assert.ok(plain(r.notes).some((n) => /package size read 'MEDIUM' .*large chosen again|package size read 'MEDIUM' at the check: chosen again/.test(n)),
             JSON.stringify(r.notes));
-  // the recommendation (Large) comes right after the price, before our pick: waited out, Medium stays ours
+  // the recommendation (Large) comes 40 ms after the price — before our pick, or during the check's settle: the check
+  // sees it and Medium is chosen again, whatever the machine's pace (CI's Linux runners saw Large here before the settle)
   const q = page("vinted", undefined, undefined, { recommendLate: 40, recommendTo: 3 });
   await run(q, { ...VINTED_JOB, fields: { ...VINTED_JOB.fields, package_sizes: ["MEDIUM"] } });
   const s = q.last();
@@ -1635,6 +1636,24 @@ test("Vinted: its Recommended package size landing after our pick is put back on
   assert.equal(plain(s.seen).package, "MEDIUM");
   assert.equal(q.d.querySelector("#package-size-2").getAttribute("role"), "presentation");
   assert.equal(q.d.querySelector("[data-testid='package-size-suggestion-badge-id-3']").textContent, "Recommended");
+});
+
+test("Vinted: a Recommended package size landing after the check is put back right before the Upload click (live 2026-10-20)", async () => {
+  // Vinted's choice (Large) lands 400 ms after the price: past the check, while the form waits for the go-ahead
+  const p = page("vinted", undefined, undefined, { recommendLate: 400, recommendTo: 3 });
+  const job = { ...VINTED_JOB, job_id: "vinted-pkg", mode: "publish",
+                fields: { ...VINTED_JOB.fields, package_sizes: ["MEDIUM"] } };
+  const done = run(p, job);
+  await until(() => p.events().some((e) => e.event === "ready"));
+  await new Promise((r) => setTimeout(r, 600));                        // its late choice has landed by now
+  assert.equal(p.d.querySelector("#package-size-3").getAttribute("role"), "presentation");
+  p.tell({ type: "submit", job_id: job.job_id });
+  await done;
+  assert.deepEqual(plain(p.fetches), ["/api/upload-click"]);          // clicked once — with our size back on
+  assert.equal(p.d.querySelector("#package-size-2").getAttribute("role"), "presentation");
+  assert.ok(p.events().some((e) => e.event === "progress"
+                                  && /package size had moved to 'LARGE' before the click: MEDIUM chosen again/.test(e.what)),
+            JSON.stringify(p.events().filter((e) => e.event === "progress")));
 });
 
 test("the brand key reads a company suffix as one word: Thursday Boot Co is Thursday Boot Company (live 2026-10-20)", () => {

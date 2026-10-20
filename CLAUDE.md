@@ -1305,8 +1305,10 @@ it, git-ignored: `incidents/*/shots/`, `incidents/*/logs/`). What the code does 
 - **Package (vinted.js `packageSize`):** Vinted's "Recommended" size comes from its server a moment after the price and
   is applied over whatever is chosen then (live: our Medium, clicked 43 ms after the price, read back Large with the
   badge on Large; the same item at 10:23 got Medium recommended and preselected) — the panel settles before the pick
-  (`T.quiet`), the pick is watched for a moment after and chosen again once (a note), and `check` compares the package
-  whatever else was fixed (it had only after another fix).
+  (`T.quiet`), the pick is watched for a moment after and chosen again once (a note), `check` lets the panel settle
+  (≤ 3 s) and compares the package whatever else was fixed (it had only after another fix), and `submit` looks once
+  more right before the Upload click — a size Vinted moved meanwhile is chosen again, never published as Vinted's
+  (CI's Linux runners showed the recommendation landing after the check).
 - **Evidence (common.js `T.watchRequests`):** the site's /api/ calls with their HTTP statuses from a
   PerformanceObserver — the refusal of 2026-10-20 came back with no request at all: `getEntriesByType` reads a
   250-entry buffer a sell page fills before the form is touched — in the photo step's error and the refusal's.
@@ -1322,8 +1324,20 @@ it, git-ignored: `incidents/*/shots/`, `incidents/*/logs/`). What the code does 
 - **Brands:** a company suffix is one word however the site writes it (`brands.SUFFIX`, the same in `common.js`):
   "Thursday Boot Co" = "Thursday Boot Company" (live: Poshmark's Brand left empty, Depop "Other"); the alias too.
 - **The pause:** `marketplaces.vinted.enabled: false` in the Mac's `config/settings.local.yaml` (the owner's OK,
-  2026-10-20, a backup in `~/thrift/var/`) until the backlog goes; the Thrift Chrome relaunched that morning (Chrome
-  155; the Mac's memory is the owner's own Safari tabs, not ours). Stand-in hooks `photosError`, `loseFirstAttach`,
+  2026-10-20, a backup in `~/thrift/var/`) until the backlog went (lifted 11:35 the same day: the six Vinted rows
+  held — `skipped: not published automatically - held for the Vinted backlog…`, a reason both safety nets keep — and
+  freed one at a time with `thrift requeue <item> --marketplace vinted`, 2–5 min apart; all six live by 12:07); the
+  Thrift Chrome relaunched that morning (Chrome 155; the Mac's memory is the owner's own Safari tabs, not ours).
+- **Two lanes in the Telegram queue (the same day, 11:37–12:55 live):** a 🧪 test share's card (WO45 §2, the private
+  chat — the WO48 pager test's) left open counted as THE open message, and her two real shares (9 items, priced by
+  11:46) got no card for an hour and a quarter (the API's ⏳ line said "stuck at grouped"). `approve.lane_of`: a
+  test batch's or item's messages are the "test" lane, everything else the "real" lane (the group's); `queue(db,
+  lane)`, `next_up(db, lane)`, `open_message(db, lane=)` look at one lane only, `pump` / `resend_pending` serve each
+  lane on its own (one open message per lane), `processing_order` takes both; `daily.work` and `thrift status` count
+  the group's lane. **A queue that can't send says so** (`approve.note_send_failure` from `cli._safe_pump`: past 10
+  minutes of failed sends — Telegram unreachable, a DNS failure — ONE private line "⚠️ The next card couldn't be sent
+  for N min (…) — M waiting; I keep trying every turn.", cleared by the next send, `note_send_ok`). The owner, that
+  day: never a silent queue he has to notice himself. Tests: the 2026-10-20 part of `tests/test_queue.py`. Stand-in hooks `photosError`, `loseFirstAttach`,
   `recommendLate`, `recommendAfterPick` in `tests/fixtures/ext_vinted_new_item.html`; tests: the 2026-10-20 part of
   `tests/js/content.test.mjs`, `tests/test_crosslist_flow.py`, `tests/test_never_ask.py`, `tests/test_wo45.py`,
   `tests/api/test_api_wo45.py`, `tests/test_catalog_answers.py`.
