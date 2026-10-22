@@ -222,6 +222,28 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
   // is kept (st.packageChoice) so the tidy sets THAT back, not the one the menu lacks.
   const PACKAGE_ORDER = ["extra small", "small", "medium", "large", "extra large"];
   const packageRank = (t) => PACKAGE_ORDER.findIndex((p) => T.norm(t).startsWith(T.norm(p)));
+  // 2026-10-22 (the owner, after the dress i_261021_93bd13 — the third listing the package race stopped in five days:
+  // the Polo tee, the leggings, the dress): Depop suggests a package size by itself once the photos are up and again
+  // after any change to the chips or the brand, and its choice can land after ANY look of ours — a timed set-back
+  // can't win that. So the rule, not the timing: Depop's own choice is KEPT when it is at least ours (its shipping
+  // estimate for the item; a maxi dress isn't under 8 oz), ours goes in only when the field is empty or Depop's is
+  // smaller, and a size the form shows is never a failure (the driver takes any of Depop's five; one still below the
+  // plan at the click is said in the notes — never a cancelled listing).
+  const packageBelow = (shown, want) => packageRank(shown) < packageRank(want);     // empty or unknown: below
+  async function packageAtLeast(st, cid, want, when) {
+    const current = (document.getElementById(cid)?.value || "").trim();
+    if (current && !packageBelow(current, want)) {
+      if (packageRank(current) > packageRank(want) && !st.packageKept) {
+        st.packageKept = current;
+        st.notes.push(`package: Depop's '${current}' kept (ours would be ${want})`);
+      }
+      T.picked(st, cid, want, current);
+      return "kept";
+    }
+    if (current) st.notes.push(`Depop's package size '${current}' ${when} is below ours: ${want} chosen`);
+    await packageSize(st, cid, want);
+    return "set";
+  }
   async function packageSize(st, cid, want) {
     try {
       await choose(st, cid, want, { prefix: true });
@@ -584,8 +606,9 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
         await T.sleep(150);
       });
       await T.step("package", st, async () => {
-        await packageSize(st, ids.package, f.package_size);
+        const how = await packageAtLeast(st, ids.package, f.package_size, "before ours");
         st.package = document.getElementById(ids.package)?.value || null;
+        return `${st.package || "none"} (${how})`;
       });
       // Boost is paid: never on. One that is on by itself is turned off, with a real click.
       for (const b of boosts().filter((x) => x.checked)) {
@@ -619,14 +642,15 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
           st.notes.push(`Depop changed the brand to '${brandBox.value}': set back to Other`);
           await brandOther(st, f.brand || null);
         }
-        // A single choice Depop replaced after ours (its suggestions came late): ours again — the size chosen for
-        // this form (WO45: the nearest offered when Depop's menu has no "Extra small"), never one the menu lacks
+        // A single choice Depop replaced after ours (its suggestions came late) with a SMALLER one: ours again — the
+        // size chosen for this form (WO45: the nearest offered when Depop's menu has no "Extra small"), never one the
+        // menu lacks; a bigger one of Depop's is kept (2026-10-22, the rule above packageAtLeast)
         const pkg = document.getElementById(ids.package);
         const pkgWant = st.packageChoice || f.package_size;
         if (pkgWant && pkg) {
           await T.until(() => ((pkg.value || "").trim() ? true : null), 3000);   // Depop redraws it after a chip change
-          if (!T.norm(pkg.value).startsWith(T.norm(pkgWant))) {
-            st.notes.push(`Depop changed the package size to '${pkg.value}': set back to ${pkgWant}`);
+          if (packageBelow(pkg.value, pkgWant)) {
+            st.notes.push(`Depop changed the package size to '${pkg.value}' (below ${pkgWant}): set back`);
             await packageSize(st, ids.package, pkgWant);
           }
         }
@@ -643,10 +667,10 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
           await T.quiet(800, 4000);
         }
         // live 2026-10-20 (the leggings): Depop's own package choice landed AFTER the set-back above and the form read
-        // back Medium for our Small — looked at once more after the settle, set back once more (the size chosen for
-        // this form, never one the menu lacks)
-        if (pkgWant && pkg && !T.norm(pkg.value).startsWith(T.norm(pkgWant))) {
-          st.notes.push(`Depop changed the package size to '${pkg.value}' after the tidy: set back to ${pkgWant}`);
+        // back Medium for our Small — looked at once more after the settle; one below ours is set back once more (the
+        // size chosen for this form, never one the menu lacks), a bigger one of Depop's stays
+        if (pkgWant && pkg && packageBelow(pkg.value, pkgWant)) {
+          st.notes.push(`Depop changed the package size to '${pkg.value}' after the tidy (below ${pkgWant}): set back`);
           await packageSize(st, ids.package, pkgWant);
           await T.quiet(600, 3000);
         }
@@ -760,22 +784,38 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
         return T.emit({ event: "error", job_id: job.job_id, stage: "submit", page: "form", message: "Boost is on" });
       }
       // one last look at the package size right before the click (live 2026-10-20: Depop's own choice landed after
-      // the tidy) — a size Depop moved is chosen again, never published as Depop's
+      // the tidy) — a size Depop moved BELOW ours is chosen again (twice at most: its own may land once more on the
+      // pick), a bigger one of Depop's stays; 2026-10-22: a size that can't be set back no longer stops the listing —
+      // the form's own (non-empty) size goes, said in the notes (a note event: the row's "check:" line)
       const ids = S().combo.ids;
       const pkg = document.getElementById(ids.package);
       const pkgWant = st.packageChoice || (job.fields && job.fields.package_size);
-      if (pkg && pkgWant && !T.norm(pkg.value).startsWith(T.norm(pkgWant))) {
-        const was = pkg.value;
-        try {
-          await packageSize(st, ids.package, pkgWant);
-          T.emit({ event: "progress", job_id: job.job_id,
-                   what: `the package size had moved to '${was}' before the click: ${pkg.value} chosen again` });
-        } catch (e) {
-          return T.emit({ event: "error", job_id: job.job_id, stage: "submit", page: "form",
-                          message: `the package size moved to '${was}' before the click and couldn't be set back: ${String(e && e.message ? e.message : e).slice(0, 200)}` });
+      const text = (e) => String(e && e.message ? e.message : e).slice(0, 200);
+      if (pkg && pkgWant) {
+        for (let look = 0; look < 2 && packageBelow(pkg.value, pkgWant); look++) {
+          const was = (pkg.value || "").trim() || "nothing";
+          try {
+            await packageSize(st, ids.package, pkgWant);
+            T.emit({ event: "progress", job_id: job.job_id,
+                     what: `the package size had moved to '${was}' before the click: ${pkg.value} chosen again` });
+            await T.quiet(800, 3000);
+          } catch (e) {
+            if (!(pkg.value || "").trim()) {
+              return T.emit({ event: "error", job_id: job.job_id, stage: "submit", page: "form",
+                              message: `the package size is empty before the click and couldn't be set: ${text(e)}` });
+            }
+            T.emit({ event: "progress", job_id: job.job_id,
+                     what: `the package size moved to '${was}' before the click and couldn't be set back (${text(e)})` });
+            break;
+          }
+        }
+        if (packageBelow(pkg.value, pkgWant)) {
+          T.emit({ event: "note", job_id: job.job_id,
+                   text: `package '${pkg.value}' at the click, below the plan (${pkgWant}) — Depop's own choice; check the label when it sells` });
         }
       }
-      T.emit({ event: "step", job_id: job.job_id, name: "submit", ok: true, clicked: true });
+      T.emit({ event: "step", job_id: job.job_id, name: "submit", ok: true, clicked: true,
+               detail: pkg ? `package ${(pkg.value || "").trim() || "none"}` : null });
       await T.click(buttons[0]);                                        // exactly once
     },
 

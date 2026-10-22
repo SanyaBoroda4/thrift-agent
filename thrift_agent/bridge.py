@@ -326,7 +326,7 @@ class Bridge:
             self._keep_shot(job, ev)
         elif kind == "step":
             job.steps.append({k: ev.get(k) for k in ("name", "ok", "detail", "clicked", "ms")})
-        if kind in ("step", "progress") and job.listener is not None:
+        if kind in ("step", "progress", "note") and job.listener is not None:   # note: a line for the row's notes
             try:
                 job.listener(ev)
             except Exception as e:  # noqa: BLE001 — a listener never breaks the job

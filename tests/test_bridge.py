@@ -1135,8 +1135,9 @@ def test_a_change_the_site_refuses_is_reported_as_nothing_saved():
 
 def test_a_package_size_the_menu_lacked_is_read_back_as_the_one_the_page_chose(tmp_path, selectors, monkeypatch):
     """WO45 (live 2026-10-18, the Polo tee, three times): Depop's menu offered no "Extra small"; the page takes the
-    smallest bigger size it offers and reports it as `package_choice` — the read-back expects that one, never the one
-    the menu lacks; a page that reports no choice still has to show ours."""
+    smallest bigger size it offers and reports it as `package_choice`. 2026-10-22: a page that reports no choice and
+    shows a bigger size than ours (Depop's own, landed after every look — the dress i_261021_93bd13) passes too, with
+    no note: a size the form shows is never a failure."""
     import ext_fake
     real = ext_fake.seen_for
     monkeypatch.setattr(ext_fake, "seen_for", lambda job: {**real(job), "package": "Medium", "package_choice": "Medium"})
@@ -1146,4 +1147,47 @@ def test_a_package_size_the_menu_lacked_is_read_back_as_the_one_the_page_chose(t
     monkeypatch.setattr(ext_fake, "seen_for", lambda job: {**real(job), "package": "Medium"})
     out, fake, _ = run(_with_fake([Outcome("dryrun")], mp="depop", selectors_path=selectors.path, dry=True,
                                   tmp=tmp_path))
-    assert out.status == "failed" and "package" in out.diff
+    assert out.status == "dryrun", (out.error, out.diff)                 # the plan was Small: Depop's Medium is fine
+    assert "below the plan" not in (out.note or "")
+
+
+def test_a_package_size_below_the_plan_is_no_failure_but_a_note(tmp_path, selectors, monkeypatch):
+    """2026-10-22 (the owner, after three listings stopped by the package race in five days): the form showing a
+    package size under the plan's — Depop's own choice landed after the page's last look — passes the read-back; a
+    dry run notes it (a publish says it at the click, through the page's note event); an empty one still fails."""
+    import ext_fake
+    real = ext_fake.seen_for
+    monkeypatch.setattr(ext_fake, "seen_for", lambda job: {**real(job), "package": "Extra smallUnder 4oz"})
+    out, fake, _ = run(_with_fake([Outcome("dryrun")], mp="depop", selectors_path=selectors.path, dry=True,
+                                  tmp=tmp_path))
+    assert out.status == "dryrun", (out.error, out.diff)
+    assert "package 'Extra smallUnder 4oz' on the form, below the plan (Small)" in (out.note or ""), out.note
+    assert "check the label when it sells" in out.note
+    monkeypatch.setattr(ext_fake, "seen_for", lambda job: {**real(job), "package": ""})
+    out, fake, _ = run(_with_fake([Outcome("dryrun")], mp="depop", selectors_path=selectors.path, dry=True,
+                                  tmp=tmp_path))
+    assert out.status == "failed" and "package" in out.diff, (out.error, out.diff)
+
+
+def test_the_page_s_note_event_lands_in_the_row_s_note(tmp_path, selectors, monkeypatch):
+    """2026-10-22: the page's `note` event (the package at the click, below the plan) is a line of the row's note —
+    once — and a routine package note stays out of the owner's "check:" line."""
+    from thrift_agent import crosslist
+    from thrift_agent.post import ext_driver
+    p = ext_driver.ExtensionPoster.__new__(ext_driver.ExtensionPoster)
+    p.notes, p.lines = [], []
+    p._say = lambda text: p.lines.append(text)
+    text = "package 'Medium' at the click, below the plan (Large) — Depop's own choice; check the label when it sells"
+    p._listen({"event": "note", "text": text})
+    p._listen({"event": "note", "text": text})
+    p._listen({"event": "note", "text": "  "})
+    assert p.notes == [text] and p.lines == [text]
+    assert crosslist.noteworthy("; ".join(["package: Depop's 'Medium' kept (ours would be Small)",
+                                            "Depop's package size 'Small' before ours is below ours: Large chosen",
+                                            "Depop changed the package size to 'Medium' (below Large): set back",
+                                            text])) == text
+    assert ext_driver.package_rank("MediumUnder 1lb") == 2 and ext_driver.package_rank("Extra large") == 4
+    assert ext_driver.package_rank("extra small (up to 4 oz)") == 0 and ext_driver.package_rank("") == -1
+    shown = ext_driver.PackageShown(["Small", "Medium"])
+    assert shown.floor == "Medium" and shown.matches("Extra small") and not shown.matches("Huge")
+    assert shown.below("Small") and not shown.below("Medium") and not shown.below("Large") and not shown.below("")

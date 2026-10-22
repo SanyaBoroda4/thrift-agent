@@ -394,7 +394,7 @@ test("Depop: a package size Depop changes after ours is set back before the read
   const result = p.last();
   assert.equal(result.event, "result", JSON.stringify(result));
   assert.match(result.seen.package, /^Large/);
-  assert.ok(result.notes.some((n) => /changed the package size to 'Medium': set back to Large/.test(n)), result.notes);
+  assert.ok(result.notes.some((n) => /changed the package size to 'Medium' \(below Large\): set back/.test(n)), result.notes);
 });
 
 test("Depop: a colour Depop puts back after the tidy is taken out again before the read-back (WO37)", async () => {
@@ -1721,4 +1721,91 @@ test("Depop: a photo count short of the files has the missing ones attached once
   assert.equal(e.stage, "photos");
   assert.match(e.message, /^0 of 2 photos shown after a second attach/);
   assert.ok(!q.events().some((x) => x.event === "step" && x.name === "category"));   // nothing else filled
+});
+
+// 2026-10-22 (the owner, after the dress i_261021_93bd13 — the third listing the package race stopped in five days):
+// Depop's package size is a rule, not a timing: its own choice is kept when it is at least ours, ours goes in only over
+// an empty field or a smaller one, and a size the form shows is never a failure.
+test("Depop: its own package size is kept when it is at least ours — nothing clicked over it (2026-10-22, the dress)", async () => {
+  const p = page("depop", undefined, undefined, DEPOP_FIX);          // Depop's own suggestions after the photos: Medium
+  await run(p, { ...DEPOP_JOB, fields: { ...DEPOP_JOB.fields, package_size: "Small" } });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.deepEqual(r.failed, []);
+  assert.equal(r.seen.package, "Medium");                            // Depop's, not our Small
+  assert.ok(r.notes.some((n) => /^package: Depop's 'Medium' kept \(ours would be Small\)/.test(n)), r.notes);
+  assert.ok(!r.notes.some((n) => /set back/.test(n)), r.notes);
+  const step = p.events().find((e) => e.event === "step" && e.name === "package");
+  assert.equal(step.detail, "Medium (kept)");
+  assert.equal(p.w.__picked["shippingMethods-input"], undefined);  // the menu was never opened for it
+});
+
+test("Depop: its package choice landing after the tidy, right before the read-back, is no failure when at least ours (the dress, live 2026-10-21)", async () => {
+  const p = page("depop", undefined, undefined, { ...DEPOP_FIX, ai: false });
+  const send = p.w.chrome.runtime.sendMessage;
+  p.w.chrome.runtime.sendMessage = (m) => {
+    if (m.type === "event" && m.event === "step" && m.name === "tidy") {
+      p.d.getElementById("shippingMethods-input").value = "Medium";    // Depop's own, after every look of the tidy
+    }
+    return send(m);
+  };
+  await run(p, { ...DEPOP_JOB, fields: { ...DEPOP_JOB.fields, package_size: "Small" } });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.deepEqual(r.failed, []);
+  assert.equal(r.seen.package, "Medium");                            // read back as Depop left it: the driver takes it
+  assert.equal(r.seen.package_choice, "Small");
+});
+
+test("Depop: a package size moved below ours before the click is chosen again; one that can't be is posted as Depop's, said in a note", async () => {
+  const late = (p) => {
+    const send = p.w.chrome.runtime.sendMessage;
+    p.w.chrome.runtime.sendMessage = (m) => {
+      if (m.type === "event" && m.event === "step" && m.name === "tidy") {
+        p.d.getElementById("shippingMethods-input").value = "Medium";  // Depop's own, after the tidy: below our Large
+      }
+      return send(m);
+    };
+  };
+  const p = page("depop", undefined, undefined, { ...DEPOP_FIX, ai: false });
+  late(p);
+  const job = { ...DEPOP_JOB, job_id: "depop-pkg-back", mode: "publish" };
+  const done = run(p, job);
+  await until(() => p.events().some((e) => e.event === "ready"));
+  assert.equal(plain(p.events().find((e) => e.event === "ready").seen.package), "Medium");
+  p.tell({ type: "submit", job_id: job.job_id });
+  await done;
+  await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(plain(p.fetches), ["/api/post-click"]);           // clicked once, with Large back on the form
+  assert.equal(p.d.getElementById("shippingMethods-input").value, "Large");
+  assert.ok(p.sent.some((m) => m.type === "event" && m.event === "progress"
+    && /^the package size had moved to 'Medium' before the click: Large chosen again/.test(m.what)), plain(p.sent.filter((m) => m.event === "progress")));
+  assert.ok(!p.sent.some((m) => m.type === "event" && m.event === "note"));
+  // Depop insists: it puts Medium back after every set-back of ours — two looks, then Depop's Medium goes, the note
+  // says so (the row's "check:" line), and the click still happens once
+  const q = page("depop", undefined, undefined, { ...DEPOP_FIX, ai: false });
+  let insist = null;
+  const sendQ = q.w.chrome.runtime.sendMessage;
+  q.w.chrome.runtime.sendMessage = (m) => {
+    if (m.type === "event" && m.event === "step" && m.name === "tidy" && !insist) {
+      const pkg = q.d.getElementById("shippingMethods-input");
+      pkg.value = "Medium";                                            // at once, then again and again
+      insist = setInterval(() => { if (pkg.value !== "Medium") pkg.value = "Medium"; }, 30);
+    }
+    return sendQ(m);
+  };
+  const job2 = { ...DEPOP_JOB, job_id: "depop-pkg-depops", mode: "publish" };
+  const done2 = run(q, job2);
+  await until(() => q.events().some((e) => e.event === "ready"));
+  q.tell({ type: "submit", job_id: job2.job_id });
+  await done2;
+  clearInterval(insist);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(plain(q.fetches), ["/api/post-click"]);
+  const again = q.sent.filter((m) => m.type === "event" && m.event === "progress" && /chosen again/.test(m.what));
+  assert.equal(again.length, 2, JSON.stringify(plain(q.sent.filter((m) => ["progress", "note", "error"].includes(m.event)))));          // twice at most, a settle between
+  const note = q.sent.find((m) => m.type === "event" && m.event === "note");
+  assert.ok(note, JSON.stringify(plain(q.sent.filter((m) => m.event === "note" || m.event === "progress"))));
+  assert.match(note.text, /^package 'Medium' at the click, below the plan \(Large\) — Depop's own choice; check the label when it sells/);
+  assert.ok(q.events().some((e) => e.event === "step" && e.name === "submit" && e.clicked));
 });

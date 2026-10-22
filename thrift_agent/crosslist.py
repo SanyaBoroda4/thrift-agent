@@ -121,7 +121,8 @@ def listing_gap(s: Settings, mp: str) -> float:
 # Post for a listing that IS live (Depop's "There was a problem listing your product", nine times on 2026-10-12)
 ROUTINE = re.compile(r"^(?:category menu:|removed '|'[^']*' was gone from|Depop changed the |closed the open |"
                      r"after the click: form page: refused: |Boost was on: turned off|the (?:size|condition|category) "
-                     r"read |\w+ read '.*': set to )", re.I)
+                     r"read |\w+ read '.*': set to |package: Depop's '[^']*' kept|Depop's package size '[^']*' .* is "
+                     r"below ours)", re.I)     # 2026-10-22: Depop's bigger package kept / a smaller one set back: routine
 
 
 def noteworthy(note: str | None) -> str | None:

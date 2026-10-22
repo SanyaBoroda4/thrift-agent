@@ -135,16 +135,35 @@ class OneOf:
         return f"one of {self.values}"
 
 
-class PackageOf(OneOf):
-    """WO45: Depop's package size as the form shows it ("Medium") against the plan or the page's choice — an option's
-    text may carry its weight line ("MediumUnder 1lb"): the one is the other's first word(s)."""
+PACKAGE_ORDER = ("extra small", "small", "medium", "large", "extra large")   # Depop's, smallest first
+
+
+def package_rank(text) -> int:
+    """Where a Depop package size stands, by the text's first words ("Medium", "MediumUnder 1lb", "Small (up to 12
+    oz)"); -1 for nothing or an unknown text."""
+    t = " ".join(str(text or "").lower().split())
+    return next((i for i, p in enumerate(PACKAGE_ORDER) if t.startswith(p)), -1)
+
+
+class PackageShown(OneOf):
+    """Depop's package size as the form shows it. 2026-10-22 (the owner, after the dress i_261021_93bd13 — the third
+    listing the package race stopped in five days): ANY of Depop's five sizes passes — Depop suggests one by itself,
+    again after any change to the form, and its choice can land after every look of the page's; a size the form shows
+    is never a failure. The plan (and the page's WO45 choice when the menu lacked the plan) is the floor: `below(seen)`
+    says when the form's is under it, for the row's note. Before: the plan or the page's choice, else "Mismatch"."""
+
+    def __init__(self, values):
+        super().__init__(values)
+        self.floor = str(values[-1]) if values else ""   # the page's choice when it made one, else the plan
 
     def matches(self, seen) -> bool:
-        s = str(seen or "").upper().strip()
-        return bool(s) and any(v == s or v.startswith(s) or s.startswith(v) for v in self.values)
+        return package_rank(seen) >= 0
+
+    def below(self, seen) -> bool:
+        return 0 <= package_rank(seen) < package_rank(self.floor)
 
     def __repr__(self) -> str:
-        return f"package {self.values}"
+        return f"package (any of Depop's; the plan {self.floor})"
 
 
 class BrandOf:
@@ -279,10 +298,11 @@ class ExtensionPoster(Poster):
             for name, values in (f.attributes or {}).items():
                 want[f"attributes.{name}-input"] = Chosen(ours(f"attributes.{name}-input", values))
             # WO45 (live 2026-10-18, the Polo tee): Depop's menu had no "Extra small" — the page took the smallest
-            # bigger size it offered (its `package_choice`, said in the check line); the read-back is that one
+            # bigger size it offered (its `package_choice`, said in the check line). 2026-10-22: any size the form
+            # shows passes (PackageShown); the plan, or that choice, is only the floor the note is measured against
             choice = (seen or {}).get("package_choice")
-            if choice and getattr(f, "package_size", None) and str(choice).upper() != str(f.package_size).upper():
-                want["package"] = PackageOf([f.package_size, choice])
+            if getattr(f, "package_size", None):
+                want["package"] = PackageShown([f.package_size] + ([choice] if choice else []))
             for key in (seen or {}):                   # any other multi-select on the form (an occasion…): empty
                 if key.endswith("-input") and key not in want and key not in DEPOP_SINGLE:
                     want[key] = Chosen([])
@@ -376,6 +396,12 @@ class ExtensionPoster(Poster):
         """A job's step or progress event as one line: "tab opened", "photos 6/6", "category ✓", "size ✗ <why>"."""
         if ev.get("event") == "progress":
             return self._say(str(ev.get("what") or ""))
+        if ev.get("event") == "note":                  # 2026-10-22: a line for the row's note (the "check:" message)
+            text = str(ev.get("text") or "").strip()
+            if not text or text in self.notes:
+                return None
+            self.notes.append(text)
+            return self._say(text)
         name = str(ev.get("name") or "")
         if name in ("submit_seen", "submit") or not name:
             return None
@@ -447,6 +473,10 @@ class ExtensionPoster(Poster):
                 bridge.command(job, "cancel")
             return Outcome("failed", screenshot=screenshot, diff=diff, error=f"Mismatch: {describe_diff(diff)}",
                            note=_joined(self.notes), guesses=list(self.guesses))
+        pk = want.get("package")
+        if dry_run and isinstance(pk, PackageShown) and pk.below(seen.get("package")):   # a publish says it at the click
+            self.notes.append(f"package '{seen.get('package')}' on the form, below the plan ({pk.floor}) — Depop's own "
+                              "choice; check the label when it sells")
         if dry_run:
             return Outcome("dryrun", screenshot=screenshot, note=_joined(self.notes), guesses=list(self.guesses))
         # ---- publish: the gate, the confirmation, then exactly one go-ahead

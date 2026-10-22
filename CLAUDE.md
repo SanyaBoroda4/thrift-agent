@@ -1351,6 +1351,29 @@ it, git-ignored: `incidents/*/shots/`, `incidents/*/logs/`). What the code does 
   `tests/js/content.test.mjs`, `tests/test_crosslist_flow.py`, `tests/test_never_ask.py`, `tests/test_wo45.py`,
   `tests/api/test_api_wo45.py`, `tests/test_catalog_answers.py`.
 
+## Depop's package size is a rule, not a timing (2026-10-22, the owner: "fix it finally")
+The dress i_261021_93bd13 was the third Depop listing in five days stopped by the package race (the Polo tee ×3 on
+10-17/18, the leggings 10-20, the dress 10-21: `Mismatch: package Medium (plan starts with Small)`, nothing published,
+the ❌ line). Depop suggests a package size by itself once the photos are up and AGAIN after any change to the chips or
+the brand (the tidy's own), and its choice can land after any look of ours — ea91fb7's three timed looks didn't win.
+- **The rule** (`depop.js packageAtLeast` / `packageBelow`, `ext_driver.PackageShown`): Depop's own choice is KEPT
+  when it is at least ours by Depop's order (Extra small < Small < Medium < Large < Extra large) — its shipping estimate
+  for the item; a maxi dress isn't under 8 oz (our "light" class → Small); ours goes in only when the field is empty or
+  Depop's is smaller (then as WO45: the exact size, else the smallest offered that is at least ours, else the largest).
+  The tidy's two looks and `submit`'s last look set back only a size BELOW ours (twice at most before the click, a
+  settle between), never a bigger one of Depop's.
+- **Never a failure:** the driver's read-back takes ANY of Depop's five sizes (`PackageShown.matches`); the plan (or
+  WO45's `package_choice`) is only the floor. A size still below the plan at the click goes as Depop's own, said in the
+  row's note through the page's `note` event ("package 'Medium' at the click, below the plan (Large) — Depop's own
+  choice; check the label when it sells" → the owner's "Check — <title>:" line); a dry run notes it from the read-back.
+  An EMPTY package before the click that can't be set is the one error left (Depop would refuse the form anyway).
+  Routine (never in the "Check" line): "package: Depop's 'Medium' kept (ours would be Small)", "Depop's package size
+  'X' before ours is below ours: Y chosen", "Depop changed the package size to 'X' (below Y): set back".
+- The bridge hands `note` events to the job's listener like steps and progress (`ExtensionPoster._listen`: the row's
+  notes, once). Vinted's package rule (10-20: ours over its Recommended, set back before the click) is unchanged.
+- Tests: the 2026-10-22 part of `tests/js/content.test.mjs` (kept, late before the read-back, below ours before the
+  click — chosen again / posted as Depop's with the note), `tests/test_bridge.py` (the read-back, the note event).
+
 ## Photo storage (WO47, the owner's policy, 2026-10-19 — `thrift_agent/cleanup.py`, `thrift cleanup`)
 Where a share's photos live: her iCloud Drive inbox (the Shortcut's copy), thrift-api's blob container `shares` (the
 upload), the Mac's work folder (`work/<batch>/item_NN/photos` + cover — THE copy kept; `work/<batch>/all` the prep
