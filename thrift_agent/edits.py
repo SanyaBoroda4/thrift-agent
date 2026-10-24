@@ -272,6 +272,10 @@ async def run_one(s: Settings, db: DB, site: str, poster, ctx, sites: list[str],
     if dry:
         _update(db, row["id"], status="done" if out.get("ok") else "failed", done_at=_iso(_now()),
                 error=out.get("error"), evidence=evidence)
+        # the event log keeps what the page showed — the private chat may be out of reach (live 2026-10-24)
+        db.log(iid, "listing_edit_dry", {"site": site, "kind": row["kind"], "ok": bool(out.get("ok")),
+                                         "error": out.get("error"), "mismatch": out.get("mismatch"),
+                                         "seen": out.get("seen"), "evidence": Path(evidence).name if evidence else None})
         kind = {"photos": "Photos", "text": "Title"}.get(row["kind"], "Category")
         notify.say(f"{kind} dry run on {label} — {title} → {what}: "
                    + ("filled in on the edit page, not saved" if out.get("ok") else f"not filled: {out.get('error')}")
@@ -376,8 +380,9 @@ def queue_text(db: DB, iid: str, title: str | None = None, sites: list[str] | No
                descriptions: dict[str, str] | None = None, dry: bool = False) -> list[str]:
     """WO50: one "text" edit per site the item is live on — the new title (Poshmark and Vinted: their title; Depop:
     its description's first line, the rest kept) and/or a new description per site (`descriptions`). Each carries the
-    text the site should show now (`expect_title` / `expect_first_line`): a listing she changed by hand is left as it
-    is (`run_one`). Returns the rows made."""
+    text the site should show now (`expect_title` / `expect_first_line`, and `expect_description` wherever a description
+    is typed — on Depop always, its whole description is typed again): a listing she changed by hand is left as it is
+    (`run_one`). Returns the rows made."""
     it = db.item(iid)
     posh = ((loads(it["renders"]) or {}).get("poshmark") or {}) if it is not None else {}
     payloads: dict[str, dict] = {}
@@ -393,17 +398,20 @@ def queue_text(db: DB, iid: str, title: str | None = None, sites: list[str] | No
                 p["title"] = title
             if desc is not None:
                 p["description"] = desc
+                p["expect_description"] = posh.get("description")    # her own wording on the site is never overwritten
         elif site == "vinted":
             p = {"expect_title": fields.get("title")}
             if title:
                 p["title"] = title
             if desc is not None:
                 p["description"] = desc
+                p["expect_description"] = fields.get("description")
         else:                                                     # Depop: the first line is the title
             body = desc if desc is not None else str(fields.get("description") or "")
             old_first = str(fields.get("description") or "").split("\n", 1)[0]
             first, sep, rest = body.partition("\n")
-            p = {"expect_first_line": old_first, "description": f"{title}{sep}{rest}" if title else body}
+            p = {"expect_first_line": old_first, "description": f"{title}{sep}{rest}" if title else body,
+                 "expect_description": str(fields.get("description") or "")}
             if title:
                 p["first_line"] = title                           # the title, for the lines (Depop has no field)
         if p.get("title") is not None or p.get("description") is not None:

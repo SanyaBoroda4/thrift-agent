@@ -874,7 +874,8 @@ class ExtensionPoster(Poster):
         job = bridge.submit(self.name, "text", {"fields": fields or {}, "copy": {}, "price": None, "photos": [],
                                                 "listing_url": url, "edit_url": edit, "dry": dry,
                                                 **{k: v for k, v in payload.items()
-                                                   if k in ("title", "description", "expect_title", "expect_first_line")}},
+                                                   if k in ("title", "description", "expect_title", "expect_first_line",
+                                                            "expect_description")}},
                             shot=self.shot)
         job.listener = self._listen
         try:

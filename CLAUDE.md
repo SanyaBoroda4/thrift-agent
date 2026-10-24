@@ -1389,8 +1389,11 @@ skipped on all three sites though every menu had M.
   set_text` (the edit page's title / description, Update → List This Item for THIS edit, the public JSON read until it
   shows the title), Depop / Vinted `ExtensionPoster.set_text` (the extension's "text" job, `T.textSet`: Depop's title
   is its description's first line; its blank edit-page fields refilled first), Save once, read back (`read_text`).
-  Each payload carries the text the site should show now (`expect_title` / `expect_first_line`): a title she changed
-  by hand is left as it is ("changed by hand? Left as it is."). The records follow (`edits._mirror`).
+  Each payload carries the text the site should show now (`expect_title` / `expect_first_line`, and
+  `expect_description` wherever a description is typed — on Depop always, its whole description is typed again): a
+  title or description she changed by hand is left as it is ("changed by hand? Left as it is."). The records follow
+  (`edits._mirror`). A dry run is kept in the event log too (`listing_edit_dry`, what the page showed): the private
+  chat may be out of reach. §0 ran as dry runs on all three sites first (2026-10-24), then for real.
 - **Dual sizes always map** (`post/fallback.menu_size`, one order for every site): 1. the exact value; 2. the bigger of
   a dual label ("S/M", "M/L", "XS/S", "0/2", "7/8", "8-10", "One Size (S–L)" — `dual_parts`, `bigger_of`); 3. the
   nearest in the same system, one step at most; 4. One Size only for a one-size item (robes, scarves, bags, hats…).

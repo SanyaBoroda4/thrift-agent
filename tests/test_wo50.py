@@ -279,3 +279,40 @@ def test_an_old_poshmark_title_is_fixed_before_the_form_opens(tmp_path, monkeypa
     job = runner.next_job(s, db, ["poshmark"], dry=False)
     assert job is not None and job[2].title == "Farm Rio Zodiac Print Maxi Dress Black Red size M"
     assert json.loads(db.item(iid)["renders"])["poshmark"]["title"] == job[2].title
+
+
+def test_a_description_edit_carries_the_description_we_posted(tmp_path):
+    """Her own wording on a site is never overwritten (live 2026-10-24, the robe's size line): every edit that types a
+    description carries the one we posted, and a Depop title edit — its whole description typed again — always does."""
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid = _live(db)
+    edits.queue_text(db, iid, None, descriptions={"poshmark": "New body.", "vinted": "New body.",
+                                                  "depop": f"{BAG}\n\nNew body."})
+    p = {r["marketplace"]: json.loads(r["payload"]) for r in
+         db.conn.execute("SELECT marketplace, payload FROM listing_edits WHERE kind='text'")}
+    assert p["poshmark"]["expect_description"] == "BCBGMAXAZRIA bag."
+    assert "expect_description" in p["vinted"]                    # the posted one (none recorded here)
+    assert p["depop"]["expect_description"] == f"{BAG}\n\nBCBGMAXAZRIA bag.\n\n#bcbg"
+    db.conn.execute("DELETE FROM listing_edits")
+    edits.queue_text(db, iid, "BCBG Max Azria Black Slouchy Shoulder Bag")
+    p = {r["marketplace"]: json.loads(r["payload"]) for r in
+         db.conn.execute("SELECT marketplace, payload FROM listing_edits WHERE kind='text'")}
+    assert "expect_description" not in p["poshmark"] and "expect_description" not in p["vinted"]   # a title only
+    assert p["depop"]["expect_description"] == f"{BAG}\n\nBCBGMAXAZRIA bag.\n\n#bcbg"
+
+
+def test_a_dry_text_edit_is_kept_in_the_event_log(tmp_path, monkeypatch):
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid = _live(db)
+    monkeypatch.setattr(edits.notify, "say", lambda *a, **k: None)
+    monkeypatch.setattr(edits, "may_edit", lambda *a, **k: True)
+    edits.queue_text(db, iid, "BCBG Max Azria Black Slouchy Shoulder Bag", sites=["poshmark"], dry=True)
+
+    class Dry(TextPoster):
+        async def set_text(self, *args, **kw):
+            return {"ok": True, "saved": False, "shot": None, "seen": {"title_before": BAG}}
+    asyncio.run(edits.run_one(s, db, "poshmark", Dry(), None, ["poshmark"]))
+    ev = db.conn.execute("SELECT detail FROM events WHERE kind='listing_edit_dry'").fetchone()
+    assert ev and json.loads(ev["detail"])["ok"] is True and json.loads(ev["detail"])["seen"]["title_before"] == BAG

@@ -1375,3 +1375,11 @@ def test_wo50_a_title_she_changed_by_hand_is_never_overwritten(chrome, posh, tmp
     payload = {"title": NEW_TITLE, "expect_title": "BCBGMAXAZRIA New Black Slouchy Shoulder Bag"}
     out = run(chrome, text_site, lambda ctx: posh.set_text(ctx, URL, payload, shots=tmp_path))
     assert out["mismatch"] == "Her own BCBG bag title" and text_site.saves == []
+
+
+def test_wo50_a_description_she_changed_by_hand_is_never_overwritten(chrome, posh, tmp_path, text_site):
+    text_site.desc = "Her own description."
+    payload = {"description": "BCBG Max Azria bag.", "expect_title": "BCBGMAXAZRIA New Black Slouchy Shoulder Bag",
+               "expect_description": "BCBGMAXAZRIA bag."}
+    out = run(chrome, text_site, lambda ctx: posh.set_text(ctx, URL, payload, shots=tmp_path))
+    assert "mismatch" in out and text_site.saves == [] and text_site.desc == "Her own description."

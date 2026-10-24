@@ -807,7 +807,8 @@
                                 mismatch: !!st.priceMismatch, refilled: st.refilled || [] });
 
   // ---- WO50: a listing's title and/or description changed on its edit page (the owner's shop-window titles): the page
-  // must still show what we posted (`expect_title` / `expect_first_line`: a text she changed by hand is never overwritten
+  // must still show what we posted (`expect_title` / `expect_first_line` / `expect_description`: a text she changed by
+  // hand is never overwritten
   // — nothing typed), Depop's fields its edit page left blank filled first (as the price job, WO41), the new text typed
   // and read back; a `read_only` job only reads (the check after Save). Save is the bridge's go-ahead; nothing else on
   // the listing is touched. Depop has no title: its description's first line is the title.
@@ -816,14 +817,16 @@
     const squash = (x) => String(x || "").split(/\s+/).join(" ").trim();
     const titleBox = steps.title && (job.title != null || job.expect_title != null || job.read_only)
       ? await T.need(steps.title.selectors, "title") : null;
-    const descBox = job.description != null || job.expect_first_line != null || job.read_only
+    const descBox = job.description != null || job.expect_first_line != null || job.expect_description != null
+      || job.read_only
       ? await T.need(steps.description.selectors, "description") : null;
     await T.until(() => ((titleBox ? titleBox.value : descBox && descBox.value) ? true : null), 10000);
     st.titleBefore = titleBox ? titleBox.value : null;
     st.descBefore = descBox ? descBox.value : null;
     const first = (v) => squash(String(v || "").split("\n")[0]);
     if ((job.expect_title != null && titleBox && squash(titleBox.value) !== squash(job.expect_title))
-        || (job.expect_first_line != null && descBox && first(descBox.value) !== squash(job.expect_first_line))) {
+        || (job.expect_first_line != null && descBox && first(descBox.value) !== squash(job.expect_first_line))
+        || (job.expect_description != null && descBox && squash(descBox.value) !== squash(job.expect_description))) {
       st.textMismatch = true;
       st.notes.push("the page shows another text than we posted: nothing typed (changed by hand?)");
       return;

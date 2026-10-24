@@ -1838,3 +1838,15 @@ test("Vinted and Depop: a 'text' job types the new title / first line, never ove
   assert.equal(r.event, "result", JSON.stringify(r));
   assert.equal(r.seen.description, `${NEW}\n\nA bag.`);
 });
+
+test("a 'text' job never types over a description changed by hand (WO50, expect_description)", async () => {
+  const d = page("depop", undefined, undefined, { ...DEPOP_FIX, ai: false });
+  d.d.querySelector("textarea#description").value = "BCBGMAXAZRIA New Black Slouchy Shoulder Bag\n\nHer own words.";
+  await run(d, { job_id: "depop-text-3", site: "depop", mode: "text", dry: true,
+                 description: "BCBG Max Azria Black Slouchy Shoulder Bag\n\nA bag.",
+                 expect_first_line: "BCBGMAXAZRIA New Black Slouchy Shoulder Bag",
+                 expect_description: "BCBGMAXAZRIA New Black Slouchy Shoulder Bag\n\nA bag.", fields: {}, copy: {} });
+  const r = plain(d.last());
+  assert.equal(r.seen.mismatch, true, JSON.stringify(r));
+  assert.equal(d.d.querySelector("textarea#description").value, "BCBGMAXAZRIA New Black Slouchy Shoulder Bag\n\nHer own words.");
+});
