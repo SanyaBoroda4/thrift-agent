@@ -375,3 +375,11 @@ def test_a_listing_taken_down_or_sold_is_never_posted_again(env, monkeypatch):
     for status in ("delisted", "sold"):
         _listing(db, "i_261021_382586", "poshmark", status=status)
         assert runner.next_job(s, db, ["poshmark"], dry=False) is None, status
+
+
+def test_poshmarks_sold_status_is_an_order_to_ship():
+    """The probe of 2026-10-24: Poshmark's sales JSON calls a just-sold order "Sold" (the page draws "Awaiting
+    Shipment") — unknown before, every fresh Poshmark sale was dropped by the sweep."""
+    assert orders.status_of("poshmark", "Sold") == "to_ship"
+    assert orders.poshmark_order({"id": "6ad952fa64399b4c7bed7e55", "title": "FARM Rio", "display_status": "Sold",
+                                  "total_price_amount": {"val": "145.00"}})["status"] == "to_ship"

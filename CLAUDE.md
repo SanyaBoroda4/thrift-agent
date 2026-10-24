@@ -1375,9 +1375,11 @@ morning waited 71 minutes; the worker was "restarted for a 21-hour stall" the mo
   sale" or a 404 only when seen again 10+ minutes later (kv `photocheck_gone_seen`; a for-sale reading between forgets
   it): one odd answer never takes anything down. And a listing row `delisted` or `sold` is never posted again by the
   queue (`runner.next_job` skips them, as it skips failed and skipped ones — found while testing this WO).
-- **The Poshmark order sweep never saw a new sale**: it kept the FIRST `/orders/sales` answer the seller hub loads,
-  a list that only ever held shipped / delivered / complete / cancelled orders (the Alo set's order appeared only once
-  it shipped). Every sales answer of the page is read now (`orders.read_poshmark`, `MORE_ANSWERS`), rows merged by id.
+- **The Poshmark order sweep never saw a new sale**: the sales JSON calls a just-sold order **"Sold"** (the page
+  draws "Awaiting Shipment"; recorded by the read-only probe of 2026-10-24) and that word wasn't in
+  `orders.POSHMARK_STATUS` — every fresh sale was dropped as "no known status"; only shipped / delivered / complete /
+  cancelled orders ever reached the API (the Alo set's order appeared only once it shipped). "Sold" → to_ship now.
+  The reader also takes every sales answer the page loads (`MORE_ANSWERS`), rows merged by id.
 - **"Gone already" keeps the rows true:** a take-down that finds the listing gone marks it `delisted` here too (the
   dress's and the Alo set's Depop rows had stayed `posted`); `sales.repair_gone` fixes such rows at the poster's start.
   **Depop's delete judged by the address:** a job that ends in an error (Depop reloads the page as it deletes — "the

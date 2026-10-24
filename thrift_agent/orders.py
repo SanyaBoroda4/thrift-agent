@@ -298,7 +298,9 @@ SEND = ("order_id", "status", "status_text", "title", "price", "sold_at", "listi
 
 # What each site's status words mean (WO38 §1): Poshmark's display_status (and its unit status), Depop's list words,
 # Vinted's sentences — anything else is unknown: those orders are left as they are, and the words told once.
-POSHMARK_STATUS = {"awaiting shipment": "to_ship", "shipped": "shipped", "in transit": "shipped",
+# WO49 (the probe of 2026-10-24): the sales JSON's display_status of a just-sold order is "Sold" — the page draws it as
+# "Awaiting Shipment"; unknown here, every fresh Poshmark sale was dropped by the sweep ("no known status")
+POSHMARK_STATUS = {"sold": "to_ship", "awaiting shipment": "to_ship", "shipped": "shipped", "in transit": "shipped",
                    "delivered": "delivered", "order complete": "completed", "order completed": "completed",
                    "completed": "completed", "order cancelled": "cancelled", "cancelled": "cancelled",
                    "canceled": "cancelled", "returned": "returned"}
