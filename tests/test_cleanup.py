@@ -330,7 +330,7 @@ def test_evidence_older_than_14_days_goes_except_an_items_with_a_problem_still_o
     assert all(r.bytes == 100 * len(r.files) for r in ev)
     assert any(n.startswith(f"{stuck}: 2 evidence files older than 14 days kept") and "vinted listing is failed" in n
                for n in notes), notes
-    out = cleanup.run(s, db, now=NOW)
+    cleanup.run(s, db, now=NOW)
     assert all(not p.exists() for p in gone) and all(p.exists() for p in kept_)
     assert "4 evidence files older than 14 days (1 item)" in said[-1], said
     assert shots.is_dir()

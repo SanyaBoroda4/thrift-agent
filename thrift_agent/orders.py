@@ -482,27 +482,35 @@ def furthest(*statuses: str | None) -> str | None:
     return max(known, key=RANK.index) if known else None
 
 
+MORE_ANSWERS = 3.0                 # WO49: after the first sales answer, the page's other ones this long
+
+
 async def read_poshmark(ctx, yield_to=None, timeout: float = 25.0) -> list[dict]:
     """Poshmark's sold orders, read only, in a NEW page of its own browser (never a posting page): the seller hub's
     own sales JSON as the page receives it (nothing is asked again), then the open orders' own pages (≤ DETAILS) for
     their exact times and our SKU. A login page → Stopped; a CAPTCHA → Stopped; `yield_to()` true between loads (a
     posting job is waiting) → Yielded."""
     page = await ctx.new_page()
-    got: dict = {}
+    got: list = []
 
     def on_response(resp) -> None:
-        if "/orders/sales" in resp.url and "json" in (resp.headers.get("content-type") or "") and "resp" not in got:
-            got["resp"] = resp
+        # WO49 (live 2026-10-21 → 24: three Poshmark sales never seen — every order the sweep ever read was shipped,
+        # delivered, complete or cancelled, an order appearing only once it shipped): EVERY sales answer the page
+        # receives is read, not just the first, and their rows merged by order id
+        if "/orders/sales" in resp.url and "json" in (resp.headers.get("content-type") or ""):
+            got.append(resp)
 
     page.on("response", on_response)
     try:
         await page.goto(URLS["poshmark"], wait_until="domcontentloaded")
         end = time.monotonic() + timeout
-        while "resp" not in got and time.monotonic() < end:
+        while not got and time.monotonic() < end:
             if re.search(r"/(login|signup)\b", page.url):
                 raise Stopped("login")
             await asyncio.sleep(0.25)
-        if "resp" not in got:
+        if got:                                           # the page's other sales calls (its tabs) a moment later
+            await asyncio.sleep(MORE_ANSWERS)
+        if not got:
             try:
                 state = parse_state(await page.content())
             except ValueError:
@@ -510,9 +518,17 @@ async def read_poshmark(ctx, yield_to=None, timeout: float = 25.0) -> list[dict]
             if state.get("showCaptcha") is True or state.get("showOneTimeLoginCaptcha") is True:
                 raise Stopped("captcha")
             raise RuntimeError(f"Poshmark's sales list didn't load in {timeout:.0f} s ({page.url})")
-        data = await got["resp"].json()
-        rows = ((data.get("data") or {}).get("sales_summary") or []) if isinstance(data, dict) else []
-        orders = [o for o in (poshmark_order(r) for r in rows if isinstance(r, dict)) if o and _recent(o)]
+        rows, ids = [], set()
+        for resp in got:
+            try:
+                data = await resp.json()
+            except Exception:  # noqa: BLE001 — an answer that can't be read is only skipped
+                continue
+            for r in ((data.get("data") or {}).get("sales_summary") or []) if isinstance(data, dict) else []:
+                if isinstance(r, dict) and r.get("id") not in ids:
+                    ids.add(r.get("id"))
+                    rows.append(r)
+        orders = [o for o in (poshmark_order(r) for r in rows) if o and _recent(o)]
         for order in [o for o in orders if o["status"] not in ("completed", "cancelled")][:DETAILS]:
             if yield_to is not None and yield_to():
                 raise Yielded

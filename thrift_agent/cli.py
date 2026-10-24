@@ -68,41 +68,54 @@ def _tick(s, db) -> int:
         # the daily window's estimate (WO28 §2) is the median of these
         db.log(ref, "worked", {"kind": "batch" if kind == approve.NEW_BATCH else "item",
                                "seconds": round(time.monotonic() - started, 1)})
+        alerts.progress(db, f"{'batch' if kind == approve.NEW_BATCH else 'item'} {ref}")      # WO49: the watcher
         n += 1
     return n
 
 
 def _scan_inbox(s, db) -> int:
-    """Register what the iPhone shared. A read of the iCloud inbox that macOS refuses or interrupts (python3.14 still
-    waiting for its iCloud Drive permission) is not an error to report each time (WO22): it is retried quietly on the
-    next tick, and the owner gets one message if it lasts (alerts.inbox_trouble). The start and the end of each look
-    are recorded: the Telegram thread notices a look stuck on the permission prompt, deploy that the worker got
-    through one. Processing of the items already split goes on either way. iCloud still downloading a share
-    (EDEADLK, WO29) is quieter still: retried, and only the ops chat hears if it lasts 10 minutes."""
+    """Register what the iPhone shared. WO49 (live 2026-10-24: one iCloud folder in "Resource deadlock avoided" made
+    every look fail for 71 minutes — her other share, whole on the Mac, and a 20-photo upload waited behind it):
+
+    1. the direct uploads first, and never through iCloud: fetched from thrift-api into a LOCAL folder
+       (`uploads.intake`, on the Mac's own disk) and taken from there;
+    2. then the iCloud inbox, ONE FOLDER AT A TIME: a folder macOS can't read now (busy, dataless, refused) is skipped
+       for this look and retried on the next ones, quietly (`alerts.busy` per folder: the ops chat hears once if it
+       lasts 10 minutes) — never a reason to drop the other folders.
+
+    A read of the inbox itself that macOS refuses or interrupts (python3.14 still waiting for its iCloud Drive
+    permission) is not an error to report each time (WO22): retried quietly on the next tick, one message if it
+    lasts (alerts.inbox_trouble); iCloud busy with the whole inbox (EDEADLK, WO29) is quieter still. The start and
+    the end of each look are recorded: a finished look is the watcher's progress (WO49). Processing of the items
+    already split goes on either way."""
     alerts.scan_started(db)
     n, empty = 0, []
     try:
         if uploads.due(db):                                   # WO45 §2: the shares the iPhone sent straight to the API
-            uploads.fetch_new(s, db)                          # (never raises; into the inbox as a folder each)
-        for folder in pipeline.ready_folders(s, db):
-            taken = pipeline.take_share(s, db, folder)       # WO42/43: ready, partial (a private line), empty, stale
-            if taken is None:
-                continue
-            if taken[0] in ("empty", "stale"):               # stale: archived; its private line, if never said
-                empty.append((folder, taken[1]))
-            else:
-                n += 1
-        pipeline.say_waiting(s, db, empty)                    # WO43: "still on the iPhone", once per share
-        photomem.say_skipped(db)                              # WO43: the repeat shares skipped in this look, one line
-    except OSError as e:
-        alerts.beat(db)                                       # the watcher ran, whatever iCloud answered
+            uploads.fetch_new(s, db)                          # (never raises; WO49: into the local intake folder)
+    except Exception as e:  # noqa: BLE001 — the uploads never stop the look
+        db.log(None, "error", traceback.format_exc())
+        print(f"[uploads] {type(e).__name__}: {e}")
+    for folder in pipeline.upload_folders(s):                # WO49: on the Mac's own disk — iCloud can't hold them
+        n += _take_one(s, db, folder, empty)
+    try:
+        icloud = pipeline.ready_folders(s, db)                # per folder: one that can't be read is skipped (WO49)
+    except OSError as e:                                      # the inbox ITSELF couldn't be listed
+        alerts.look_ended(db)                                 # the watcher: the loop is alive, it looks again
         if alerts.icloud_busy(e):
             alerts.busy(db, "the inbox", f"{type(e).__name__}: {e}")
-            return 0
+            return n
         if not alerts.inbox_unreadable(e):
             raise
         alerts.inbox_trouble(db, f"{type(e).__name__}: {e}")
-        return 0
+        return n
+    for folder in icloud:
+        n += _take_one(s, db, folder, empty)
+    try:
+        pipeline.say_waiting(s, db, empty)                    # WO43: "still on the iPhone", once per share
+        photomem.say_skipped(db)                              # WO43: the repeat shares skipped in this look, one line
+    except OSError as e:
+        db.log(None, "share_lines_skipped", f"{type(e).__name__}: {e}")
     alerts.scan_done(db)
     alerts.inbox_ok(db)
     alerts.not_busy(db, "the inbox")
@@ -114,6 +127,28 @@ def _scan_inbox(s, db) -> int:
             db.log(None, "late_photos_skipped", f"{type(e).__name__}: {e}")
     cleanup.tick(s, db)                                   # WO47: the disk watched, the photo policy once a day
     return n
+
+
+def _take_one(s, db, folder, empty: list) -> int:
+    """One share folder taken (WO42/43: ready, partial, empty, stale). WO49: an OSError from THIS folder (iCloud busy
+    with it, a dataless file, a folder gone meanwhile) skips it for this look — the others go on; iCloud's busy word
+    is quiet (the ops chat hears once after 10 minutes), anything else is logged and tried again next look."""
+    what = f"share {folder.name}"
+    try:
+        taken = pipeline.take_share(s, db, folder)
+    except OSError as e:
+        if alerts.icloud_busy(e):
+            alerts.busy(db, what, f"{type(e).__name__}: {e}")
+        else:
+            db.log(None, "share_folder_skipped", {"folder": folder.name, "error": f"{type(e).__name__}: {e}"[:300]})
+        return 0
+    alerts.not_busy(db, what)
+    if taken is None:
+        return 0
+    if taken[0] in ("empty", "stale"):                       # stale: archived; its private line, if never said
+        empty.append((folder, taken[1]))
+        return 0
+    return 1
 
 
 def _safe_tick(s, db) -> int:
@@ -206,6 +241,8 @@ def _worker_iteration(s, db, interval: int, window: daily.Window | None = None) 
         _safe_pump(s, db)
         _safe_window(db, window.update if window else None)
         _safe_sales(db, force_beat=bool(began))         # WO33: the changes to thrift-api, the heartbeat on a wake
+    else:
+        alerts.idle(db)                                  # WO49: the lid closed is no stall (nothing is owed)
     time.sleep(interval)
 
 
@@ -213,9 +250,23 @@ def _safe_sales(db, force_beat: bool = False) -> None:
     """Sales tracking's turn (WO33): never the reason the worker stops (the API away is a quiet event)."""
     from thrift_agent import sales
     try:
-        sales.tick(db, force_beat=force_beat)
+        sales.tick(db, force_beat=force_beat, info=beat_info(db))
     except Exception as e:  # noqa: BLE001
         db.log(None, "error", f"sales tick: {type(e).__name__}: {e}")
+
+
+def beat_info(db) -> dict:
+    """WO49: what the heartbeat to thrift-api carries — the worker's PROGRESS, not only that it is alive (live
+    2026-10-24: the heartbeat said "online" for 71 minutes while no share could be taken): the last finished look,
+    the last progress, the last upload poll, and the day's cleanup (the 9 PM summary says it, not a line of its own)."""
+    def kv(key: str):
+        value = db.kv_get(key)
+        try:
+            return json.loads(value) if value and value[:1] in "{[" else value
+        except ValueError:
+            return value
+    return {"inbox_look": kv(alerts.SCAN_DONE), "progress": kv(alerts.PROGRESS), "uploads_poll": kv(uploads.LAST_POLL),
+            "cleanup": kv(cleanup.LAST)}
 
 
 def _safe_window(db, fn) -> None:
@@ -701,6 +752,16 @@ def login(site: str = "poshmark") -> None:
         await pw.stop()
 
     asyncio.run(go())
+
+
+@app.command()
+def doctor() -> None:
+    """WO49: the agent's health on one screen — the worker's progress, what waits (iCloud, the local upload intake,
+    Azure), the extension, each site, the take-downs still open, today's shares. Read only. Also a reply "doctor" in
+    the private chat."""
+    from thrift_agent import doctor as doctor_mod
+    for line in doctor_mod.report(settings(), _db()):
+        print(escape(line))
 
 
 @app.command()

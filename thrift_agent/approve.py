@@ -1120,10 +1120,15 @@ def _route_ops(s: Settings, db: DB, update: dict) -> str:
             return _reply_unconfirmed(s, db, bot, row["ref"], text, mid)
         if row is not None and row["kind"] in ("refused", "skipped"):     # WO39: a refused form — 'retry'
             return _reply_skipped(s, db, bot, row["ref"], text, mid, kind=row["kind"])
+    if text.lower().strip(" /!.?") == "doctor":       # WO49: the health check, on the phone
+        from thrift_agent import doctor
+        bot.send_message(doctor.text(s, db), reply_to=mid)
+        return "ops: doctor"
     m = UNMATCHED_LINE.search(quoted)
     if m is None or not text:
         bot.send_message("Replies here act on an 'Unmatched sale' message (reply with words from the item's title) or "
-                         "a '⚠️ … can't confirm' one ('posted <link>' or 'retry')", reply_to=mid)
+                         "a '⚠️ … can't confirm' one ('posted <link>' or 'retry'); 'doctor' shows the agent's health",
+                         reply_to=mid)
         return "ops: hint"
     sale_id, words = m[2], [w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 1]
     hits = []

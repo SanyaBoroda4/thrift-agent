@@ -156,12 +156,15 @@ def plan(s: Settings, db: DB, now: datetime | None = None, api=None) -> tuple[li
             removals.append(Removal(str(d), "sold", f"sold on {sale['site']}, shipped {sale['when']}: its photos",
                                     sum(folder_bytes(p) for p in files), iid, [str(p) for p in files]))
 
-    # 1. and 3./5. the archive
+    # 1. and 3./5. the archive — and WO49's local archive of the direct uploads (same rules)
     try:
         folders = sorted(p for p in archive.iterdir() if p.is_dir())
     except OSError as e:
         kept.append(f"the archive can't be read now ({type(e).__name__})")
         folders = []
+    local = work / "_uploads" / "archive"
+    if local.is_dir():
+        folders += sorted(p for p in local.iterdir() if p.is_dir())
     for d in folders:
         if d.name.endswith(ASIDE) or re.search(re.escape(ASIDE) + r"[ _]\d+$", d.name):
             removals.append(Removal(str(d), "duplicate", "the iCloud copy of a share the upload brought (set aside "
@@ -517,7 +520,7 @@ def tick(s: Settings, db: DB) -> None:
         db.log(None, "disk_watch_failed", f"{type(e).__name__}: {e}")
     if due(db):
         try:
-            run(s, db)
+            run(s, db, say=False)          # WO49: the 9 PM summary says it (the heartbeat carries cleanup_last)
         except Exception as e:  # noqa: BLE001
             db.log(None, "cleanup_failed", f"{type(e).__name__}: {e}")
 

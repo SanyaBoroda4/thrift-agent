@@ -807,6 +807,8 @@ def poshmark_listing(url: str) -> dict | None:
                       verify=_tls())
     except httpx.HTTPError:
         return None
+    if r.status_code in (404, 410):                   # WO49: the listing is gone (deleted) — not for sale
+        return {"for_sale": False, "status": "gone", "sold": False, "photos": None, "price": None}
     if r.status_code != 200:
         return None
     try:
@@ -827,6 +829,7 @@ def poshmark_listing(url: str) -> dict | None:
             "category": (d.get("category_v2") or {}).get("display") or d.get("category"),
             "subcategory": (features[0].get("display") if features and isinstance(features[0], dict) else None),
             "size": d.get("size"), "for_sale": status == "available" if status else None,
+            "status": status or None, "sold": "sold" in status,          # WO49: sold_out vs not_for_sale
             "photos": photos, "price": price}
 
 

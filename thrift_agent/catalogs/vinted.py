@@ -56,6 +56,20 @@ def skirt_length(view: ItemView, ask=None) -> str:
     return (ask or ask_skirt_length)(view, titles)
 
 
+CAPS_SHARE = 0.25                 # WO49: capitals over this share of a title's letters — Vinted refuses it
+
+
+def vinted_title(title: str) -> str:
+    """WO49 (live 2026-10-24: Vinted refused "BCBGMAXAZRIA New Black Slouchy Shoulder Bag Knotted Strap" — "Title
+    contains too many capital letters, try using lowercase letters"): when capitals are more than CAPS_SHARE of the
+    letters, every all-caps word of 5 letters or more is written with its first letter capital only ("Bcbgmaxazria");
+    anything else stays as it is."""
+    letters = [c for c in title if c.isalpha()]
+    if not letters or sum(c.isupper() for c in letters) / len(letters) <= CAPS_SHARE:
+        return title
+    return re.sub(r"\b[A-Z]{5,}\b", lambda m: m[0].capitalize(), title)
+
+
 def ask_skirt_length(view: ItemView, titles: tuple[str, ...]) -> str:
     from thrift_agent.brain import llm
     from thrift_agent.config import settings
@@ -114,7 +128,8 @@ def map_vinted(view: ItemView, ask=None, ask_length=None) -> VintedFields:
     known = {p.code for p in cat.package_sizes}
     if not set(packages) <= known:
         raise MappingError(f"package sizes {packages} aren't Vinted's")
-    return VintedFields(category_id=int(pick.value), category_path=leaf.path, title=r.title, description=r.description,
+    return VintedFields(category_id=int(pick.value), category_path=leaf.path, title=vinted_title(r.title),
+                        description=r.description,
                         brand=r.brand, brand_label=r.brand_label, size_id=size_id, size=size_title,
                         condition_id=cond.id, condition=cond.title,
                         color_ids=[i for i in color_ids if i is not None], colors=colors, material_ids=mat_ids,

@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from thrift_agent import catalogs, crosslist, daily, notify, orders, photocheck, power, pricedrop, sales
+from thrift_agent import alerts, catalogs, crosslist, daily, notify, orders, photocheck, power, pricedrop, sales
 from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
 from thrift_agent.post import runner
@@ -417,8 +417,15 @@ def _posh_waiting(s, db, dry) -> bool:
 async def _housekeeping(s, db, ps, cross, dry, stop, state, sites, until_idle) -> None:
     beat_live = not dry
     planned = None
+    worker = alerts.WorkerCheck() if s.is_prod else None    # WO49: the worker watched from outside its process
+    try:
+        sales.repair_gone(db)                               # WO49: rows a "gone already" take-down left 'posted'
+    except Exception as e:  # noqa: BLE001
+        db.log(None, "error", f"repair_gone: {type(e).__name__}: {e}")
     while not stop.is_set():
         try:
+            if worker is not None:
+                worker.tick(db, power.lid_closed())
             daily.poster_beat(db, pid=os.getpid(), live=beat_live, busy=state.first_busy(), next_at=None,
                               paused=runner._paused(db), stopped=None)
             if cross:

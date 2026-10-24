@@ -50,14 +50,16 @@ JOB_TIMEOUT = 180.0          # a job's whole life before its go-ahead (WO32b): 3
 PICKUP_TIMEOUT = 150.0       # no extension took the job (it reconnects within 5 s, polls every 30 s): nothing opened
 SEEN_FRESH = 90.0            # an HTTP poll this recent counts as connected
 START_CHROME_AFTER = 120.0   # the watch: no extension this long inside the window → start the Thrift Chrome
-SAY_AFTER = 300.0            # ... still nothing → one ops line
+RESTART_CHROME_AFTER = 300.0  # WO49: ... still nothing → the Thrift Chrome restarted (running, its extension asleep)
+SAY_AFTER = 600.0            # ... still nothing → one ops line (WO49: 10 minutes, was 5)
 WATCH_EVERY = 15.0           # the watch's tick
 MAX_BODY = 40 * 1024 * 1024  # a screenshot with the page's HTML fits easily
 DRAIN = 90.0                 # a job called off: the next one waits this long at most for the extension to let it go
 RELOAD_HOLD = 2.0            # an extension told of new files reloads at once: no job for its socket meanwhile
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 FINAL = ("result", "error")
-MISSING_LINE = ("🧩 The Thrift Chrome extension hasn't checked in for 5 minutes, so Depop and Vinted are waiting. On the "
+MISSING_LINE = ("🧩 The Thrift Chrome extension hasn't checked in for 10 minutes (the Thrift Chrome was restarted), so "
+                "Depop and Vinted are waiting. On the "
                 "Mac: is the second Chrome (the Thrift one) open and not minimized, the extension loaded at "
                 "chrome://extensions, its token saved in its options? (bash ~/thrift-agent/deploy/services.sh status)")
 
@@ -152,7 +154,9 @@ class Bridge:
         self.started = time.monotonic()
         self.last_seen: float | None = None     # the extension's last authenticated contact
         self.chrome_started: float | None = None
+        self.chrome_restarted: float | None = None
         self.said_missing = False
+        self.window_back: float | None = self.started     # WO49: since when the lid is open (the watch's clock)
         self.knocks = 0                         # WebSocket hellos and token-carrying requests, accepted or not
         self.refused = 0                        # ... of them with a token that isn't ours
         self.log: list[str] = []
@@ -362,19 +366,28 @@ class Bridge:
 
     # ------------------------------------------------------------ the watch
 
-    def watch_tick(self, now: float, in_window: bool, start_chrome, say) -> str | None:
-        """No extension for 2 minutes inside the window: start the Thrift Chrome; after 5: one ops line (`say`; the
-        caller keeps it to once a window). Returns what it did."""
+    def watch_tick(self, now: float, in_window: bool, start_chrome, say, restart_chrome=None) -> str | None:
+        """No extension for 2 minutes inside the window: start the Thrift Chrome; after 5 (WO49): restart it — it can
+        run with its extension asleep; after 10: one ops line (`say`; the caller keeps it to once a window). WO49 (live
+        2026-10-24: the night's maintenance wakes added up to "5 minutes" and the line came the moment the lid opened):
+        only lid-open time counts — the clock starts again when the window opens. Returns what it did."""
         if self.connected():
-            self.chrome_started, self.said_missing = None, False
+            self.chrome_started, self.chrome_restarted, self.said_missing = None, None, False
             return None
         if not in_window:
+            self.window_back = None
             return None
-        missing = now - (self.last_seen or self.started)
+        if self.window_back is None:
+            self.window_back = now
+        missing = now - max(self.last_seen or self.started, self.window_back)
         if missing >= START_CHROME_AFTER and self.chrome_started is None:
             self.chrome_started = now
             start_chrome()
             return "chrome started"
+        if restart_chrome is not None and missing >= RESTART_CHROME_AFTER and self.chrome_restarted is None:
+            self.chrome_restarted = now
+            restart_chrome()
+            return "chrome restarted"
         if missing >= SAY_AFTER and not self.said_missing:
             self.said_missing = True
             say(MISSING_LINE)
@@ -394,7 +407,8 @@ class Bridge:
                 self._hold(sock)
         return True
 
-    async def watch(self, in_window, start_chrome, say, state=None, every: float | None = None) -> None:
+    async def watch(self, in_window, start_chrome, say, state=None, every: float | None = None,
+                    restart_chrome=None) -> None:
         """Every WATCH_EVERY seconds: watch_tick(), the extension's files (announce_files), and `state(connected)` for
         thrift status and the daily window."""
         while True:
@@ -403,7 +417,7 @@ class Bridge:
                 if state is not None:
                     state(self.connected())
                 self.announce_files()
-                self.watch_tick(time.monotonic(), bool(in_window()), start_chrome, say)
+                self.watch_tick(time.monotonic(), bool(in_window()), start_chrome, say, restart_chrome)
             except Exception as e:  # noqa: BLE001 — the watch never stops the poster
                 self.log.append(f"watch: {type(e).__name__}: {e}")
 

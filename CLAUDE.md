@@ -1351,6 +1351,74 @@ it, git-ignored: `incidents/*/shots/`, `incidents/*/logs/`). What the code does 
   `tests/js/content.test.mjs`, `tests/test_crosslist_flow.py`, `tests/test_never_ask.py`, `tests/test_wo45.py`,
   `tests/api/test_api_wo45.py`, `tests/test_catalog_answers.py`.
 
+## A missed sale, a stuck share, a false stall (WO49, 2026-10-24)
+Live: the FARM Rio dress sold on POSHMARK on Oct 23 and stayed on Depop and Vinted for a day; her two shares of the
+morning waited 71 minutes; the worker was "restarted for a 21-hour stall" the moment the lid opened. Causes and fixes:
+- **Poshmark changed its sale subject** (since Oct 21: `<title> just sold to @x on Poshmark!`, no quotes) and the
+  REAL rule demanded the quotes: three Poshmark sales filed as OTHER (the dress; two hand-listed items). Now either
+  form is a SALE, the title read from the unquoted subject (`emails.REAL`, `TITLES`); "just sold to" is in `SOLD`.
+  **Poshmark's "Reminder to ship your Poshmark order: "<title>""** is a SALE too (`REMINDER_SUBJECT`): deduped
+  against the sale it is about (`core._reminded_sale`: same site and title, ≤ 14 days), else the sale itself — ship by
+  its own day, the private chat told ("💰 Found by Poshmark's reminder to ship it: …"), take-downs as usual.
+  **An email that still says "sold"** and that no rule took (not a like, an offer, a drop, a promotion:
+  `emails.maybe_sale`) → ONE private line per email ("❓ A Poshmark email may be a sale I didn't recognise: …").
+  **The ignored emails are read again** by today's rules every 15 minutes (`core.reclassify`, the last 7 days, by
+  their subject — an OTHER email's text is never kept): processed as LATE — take-downs as for any sale, "💰 Found late
+  (its email wasn't recognised): …" to the private chat, never a days-late group line. WO40's 2-hour net runs from when
+  a sale found late (recorded ≥ 1 h after it sold, `FOUND_LATE`) was recorded, so its take-downs get their chance.
+- **The sale net that needs no email** (`photocheck`, the poster's housekeeping): a listing we hold `posted` that its
+  site shows sold or no longer for sale — Poshmark's public JSON (`inventory.status`: sold_out → sold; not_for_sale or
+  404 → not for sale), Depop's / Vinted's shop data (sold / closed; hidden is never acted on) — goes to thrift-api
+  (`sales.listing_gone`: `sold_found` with THAT site, or `not_for_sale` as WO33's go-live check did) → take-downs
+  everywhere else; the row becomes `sold` / `delisted`. A take-down of ours for the item means it was us: the row only.
+  Poshmark's listings are read every 2 hours (`POSHMARK_EVERY`, was a day). The site saying SOLD acts at once; "not for
+  sale" or a 404 only when seen again 10+ minutes later (kv `photocheck_gone_seen`; a for-sale reading between forgets
+  it): one odd answer never takes anything down. And a listing row `delisted` or `sold` is never posted again by the
+  queue (`runner.next_job` skips them, as it skips failed and skipped ones — found while testing this WO).
+- **The Poshmark order sweep never saw a new sale**: it kept the FIRST `/orders/sales` answer the seller hub loads,
+  a list that only ever held shipped / delivered / complete / cancelled orders (the Alo set's order appeared only once
+  it shipped). Every sales answer of the page is read now (`orders.read_poshmark`, `MORE_ANSWERS`), rows merged by id.
+- **"Gone already" keeps the rows true:** a take-down that finds the listing gone marks it `delisted` here too (the
+  dress's and the Alo set's Depop rows had stayed `posted`); `sales.repair_gone` fixes such rows at the poster's start.
+  **Depop's delete judged by the address:** a job that ends in an error (Depop reloads the page as it deletes — "the
+  page reloaded during the take-down") is done when the address, live before, is gone now (`ExtensionPoster.delist`).
+- **One stuck iCloud folder never blocks anything** (the morning: `2026-10-24_093927_7777` in EDEADLK made every look
+  fail; `ready_folders` dropped the share it had already found ready with it): `ready_folders` and the takes go ONE
+  FOLDER AT A TIME (`_folder_unreadable`, `cli._take_one`: busy → `alerts.busy` per folder, quiet, the ops chat once
+  after 10 minutes; anything else logged), retried on the next looks.
+- **The direct uploads never touch iCloud:** fetched into `paths.work/_uploads/<share id>` (the Mac's own disk,
+  `pipeline.uploads_dir`, `upload_folders`), taken BEFORE the iCloud inbox is listed and whether or not it can be
+  (`cli._scan_inbox`), ready at once (whole by construction), archived to `_uploads/archive/` (WO47's 7 days, the
+  cleanup's archive rule); the iCloud copy is deleted at once when it can be — when iCloud holds it, the upload never
+  waits (`share_icloud_copy_left`), and the copy, once readable, is the same share by its id (`pipeline._taken_as`
+  in `register`: never a second batch).
+- **The watcher watches progress in awake time** (`alerts`): the Mac's monotonic clock (mach_absolute_time — it
+  stops while the Mac sleeps); progress = a FINISHED look (`scan_done`), a job worked, an upload fetched, or a turn
+  with the lid closed (`idle`: nothing is owed then); a look that iCloud cut short for the whole inbox keeps the loop
+  alive (`look_ended`) without moving `thrift status`'s last scan. The night is never a stall. **From outside too:**
+  the poster's housekeeping (`alerts.WorkerCheck`) restarts the worker through launchd (`kickstart -k`) when kv
+  `worker_progress` hasn't moved for 20 minutes of its own lid-open time — one private line an hour.
+- **thrift-api watches the uploads**: an upload the Mac hasn't fetched 10 minutes after its last photo while the Mac's
+  heartbeat is fresh → ONE private line, "⏳ Share 9:39 AM (20 photos) is in Azure but the Mac hasn't taken it (since
+  9:40 AM)" (`watch.uploads_watch`, the 5-minute timer); the heartbeat carries progress (`cli.beat_info`: the last
+  finished look, `worker_progress`, the upload poll, the cleanup).
+- **The extension watch counts lid-open time only** (`Bridge.watch_tick`: the clock starts again when the window
+  opens): 2 min → start the Thrift Chrome, 5 → restart it (`runner.restart_thrift_chrome`: running with its extension
+  asleep), 10 → one private line.
+- **Messages:** the daily cleanup sends no line of its own — the 9 PM summary ends "🧹 Cleanup freed 270 MB." (from the
+  Mac's heartbeat). The 8:57 burst was the lid opening after the night: the false restart and the extension line are
+  gone; "⏳ … don't close the Mac" is the ops status message, as WO29 has it.
+- **Two more stuck items of the day:** a label's two sizes ("S/M", "M-L" — the Bath & Body Works robe, skipped on all
+  three sites) are listed under the bigger one, as a set's (`pipeline.settle_dual_size`), "Label size: S/M." in the
+  description (`copy.ensure_label_size`); Vinted's title loses a shouting word when capitals are more than a quarter
+  of its letters (`catalogs.vinted.vinted_title`: "BCBGMAXAZRIA" → "Bcbgmaxazria" — Vinted refused "Title contains too
+  many capital letters").
+- **`thrift doctor`** (`doctor.py`; a reply "doctor" in the private chat): the worker's progress, the iCloud inbox /
+  local intake / Azure queues, the poster and the extension, each site (listings, stopped for the window), the
+  take-downs still open and their age, today's shares and their outcomes — one screen, read only.
+- Tests: `tests/test_wo49.py`, `tests/api/test_api_wo49.py`; WO42's watcher test rewritten for awake time; the upload
+  tests land in the local intake; the extension watch's timings.
+
 ## Depop's package size is a rule, not a timing (2026-10-22, the owner: "fix it finally")
 The dress i_261021_93bd13 was the third Depop listing in five days stopped by the package race (the Polo tee ×3 on
 10-17/18, the leggings 10-20, the dress 10-21: `Mismatch: package Medium (plan starts with Small)`, nothing published,

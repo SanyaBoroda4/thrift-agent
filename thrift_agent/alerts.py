@@ -35,9 +35,32 @@ INBOX_DOWN = "inbox_unreadable_since"        # kv: since when the inbox can't be
 INBOX_TOLD = "inbox_unreadable_told"         # kv: "1" once the owner was told
 SENT = "worker_alerts"                       # kv: {error signature: when it was last sent}
 WATCH_BEAT = "worker_inbox_beat"             # kv: the watcher's heartbeat — every look at the inbox, whatever it found (WO42)
-WATCH_STALL = 15 * 60                        # seconds without a look (and without processing) before the worker restarts
+WATCH_STALL = 15 * 60                        # seconds of AWAKE, lid-open time without progress before the worker restarts
 WATCH_RESTART_SAID = "watcher_restart_said"  # kv: when the restart was last told (at most once an hour)
-STARTED = datetime.now(timezone.utc)         # this process's start: no stall is judged in its first WATCH_STALL
+PROGRESS = "worker_progress"                 # kv: WO49 — {"at": wall time, "what": …} of the worker's last progress
+# WO49 (live 2026-10-24: the Mac slept 21 hours with the lid closed; the watcher counted it as a stall and restarted a
+# healthy worker the moment the lid opened — and while one stuck iCloud folder made every look fail for 71 minutes, it
+# saw a fresh beat and said nothing): the watcher's clock is the Mac's monotonic one (mach_absolute_time — it stops
+# while the Mac sleeps), and only real progress moves it: a FINISHED look at the inbox, an upload fetched, a batch or an
+# item worked on, or a turn with the lid closed (the worker starts nothing then, by design: no progress is expected).
+_STATE = {"started": None, "progress": None, "look": None}   # monotonic stamps of this process
+
+
+def _mono() -> float:
+    """Monotonic clock seam (tests move it); on the Mac it stops while the machine sleeps."""
+    import time
+    return time.monotonic()
+
+
+def _since(key: str) -> float:
+    if _STATE[key] is None:
+        _STATE[key] = _mono()
+    return _mono() - _STATE[key]
+
+
+_STATE["started"] = _mono()                  # this process's start: no stall is judged in its first WATCH_STALL
+OUTSIDE_STALL = WATCH_STALL + 5 * 60         # WO49: the poster's outside check acts only after the worker's own watcher
+WORKER_LABEL = "com.thriftagent.worker"
 
 _IDS = re.compile(r"\b[ib]_\d{6}_[0-9a-f]{6}\b")
 
@@ -126,35 +149,63 @@ def inbox_ok(db: DB, say=None) -> bool:
 
 def scan_started(db: DB) -> None:
     db.kv_set(SCAN_STARTED, _stamp())
+    _STATE["look"] = _mono()
 
 
 def scan_done(db: DB) -> None:
+    """A look at the inbox that finished — the watcher's progress (WO49)."""
     db.kv_set(SCAN_DONE, _stamp())
     beat(db)
+    progress(db, "inbox look")
+
+
+def look_ended(db: DB) -> None:
+    """WO49: a look that ended early on iCloud's word for the whole inbox (busy, unreadable — told by their own lines):
+    the loop is alive and will look again, so the watcher doesn't restart it; `thrift status`'s last finished scan
+    stays as it was."""
+    beat(db)
+    progress(db, "inbox look (iCloud busy)")
 
 
 def beat(db: DB) -> None:
     """The inbox watcher's heartbeat (WO42): the worker's look at the inbox ran, whatever it found or iCloud said."""
     db.kv_set(WATCH_BEAT, _stamp())
+    _STATE["look"] = None
+
+
+def progress(db: DB | None, what: str) -> None:
+    """WO49: the worker moved on — the watcher's clock starts again, and kv `worker_progress` (the poster's outside
+    check, the heartbeat to thrift-api, `thrift doctor`) says what and when."""
+    _STATE["progress"] = _mono()
+    if db is not None:
+        db.kv_set(PROGRESS, json.dumps({"at": _stamp(), "what": what}))
+
+
+def idle(db: DB | None) -> None:
+    """WO49: a turn with the lid closed — nothing is started by design, so no progress is owed (the night is no stall)."""
+    progress(db, "lid closed")
 
 
 def watcher_stalled(db: DB, now: datetime | None = None) -> str | None:
-    """WO42: why the inbox watcher looks stalled — a look that started WATCH_STALL ago and never finished, or no look
-    for WATCH_STALL while nothing is being processed either (no `worked` event in that time) — else None. Never in the
-    first WATCH_STALL of this process (the beat is the last run's until the main thread's first look). The caller
-    checks the lid: with it closed the worker starts nothing, by design."""
-    now = now or _now()
-    if (now - STARTED).total_seconds() < WATCH_STALL:
+    """WO42/WO49: why the worker looks stalled, in AWAKE lid-open time (the monotonic clock; the caller checks the
+    lid) — a look at the inbox started WATCH_STALL ago that never finished, or no progress for WATCH_STALL — else
+    None. Never in the first WATCH_STALL of this process. `now` is unused (kept for the callers' signature)."""
+    if _since("started") < WATCH_STALL:
         return None
-    started, last = db.kv_get(SCAN_STARTED), db.kv_get(WATCH_BEAT) or db.kv_get(SCAN_DONE)
-    if started and (not last or last < started) and (now - datetime.fromisoformat(started)).total_seconds() >= WATCH_STALL:
-        return f"a look at the inbox started at {started} never finished"
-    if last and (now - datetime.fromisoformat(last)).total_seconds() >= WATCH_STALL:
-        row = db.conn.execute("SELECT max(ts) FROM events WHERE kind='worked'").fetchone()
-        worked = row[0] if row else None
-        if not worked or (now - datetime.fromisoformat(worked)).total_seconds() >= WATCH_STALL:
-            return f"no look at the inbox since {last}"
+    if _STATE["look"] is not None and _mono() - _STATE["look"] >= WATCH_STALL:
+        return f"a look at the inbox started at {db.kv_get(SCAN_STARTED) or '?'} never finished"
+    if _since("progress") >= WATCH_STALL:
+        last = loads_dict(db.kv_get(PROGRESS)).get("at") or db.kv_get(SCAN_DONE) or "?"
+        return f"no progress since {last}"
     return None
+
+
+def loads_dict(text: str | None) -> dict:
+    try:
+        value = json.loads(text) if text else {}
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def restart_watcher(db: DB, why: str, leave=None) -> None:
@@ -166,6 +217,46 @@ def restart_watcher(db: DB, why: str, leave=None) -> None:
         db.kv_set(WATCH_RESTART_SAID, _stamp())
         notify.say(f"⚠️ The inbox watcher stalled ({why}) — restarting the worker. Shares are taken again in a minute.")
     (leave or os._exit)(3)
+
+
+def _kickstart_worker() -> None:
+    """launchd restarts the worker service (kill + start: `launchctl kickstart -k`). The Mac only."""
+    import platform
+    import subprocess
+    if platform.system() != "Darwin":
+        return
+    subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{WORKER_LABEL}"], check=False,
+                   capture_output=True, timeout=30)
+
+
+class WorkerCheck:
+    """WO49: the worker watched from OUTSIDE its process — the poster's housekeeping (another launchd service). The
+    worker's kv `worker_progress` unchanged for OUTSIDE_STALL of the POSTER's monotonic time with the lid open (the
+    lid closed resets it; the Mac asleep doesn't count) → launchd restarts the worker (`kickstart -k`: a thread stuck
+    in the worker can't stop that), one event, ONE private line an hour at most. The worker's own watcher (its
+    Telegram thread, WATCH_STALL) normally acts first; this one covers a worker whose threads are all stuck."""
+
+    def __init__(self, restart=None):
+        self.restart = restart or _kickstart_worker
+        self.seen: str | None = None
+        self.since: float | None = None
+
+    def tick(self, db: DB, lid_closed: bool | None) -> str | None:
+        value, now = db.kv_get(PROGRESS), _mono()
+        if lid_closed or self.since is None or value != self.seen:
+            self.seen, self.since = value, now
+            return None
+        if now - self.since < OUTSIDE_STALL:
+            return None
+        self.since = now                                 # one restart per stall window
+        why = f"no progress since {loads_dict(value).get('at') or '?'}"
+        db.log(None, "worker_restarted_from_poster", why)
+        said = db.kv_get(WATCH_RESTART_SAID)
+        if not said or _age(said) >= 3600:
+            db.kv_set(WATCH_RESTART_SAID, _stamp())
+            notify.say(f"⚠️ The worker made no progress for {OUTSIDE_STALL // 60} min ({why}) — the poster restarted it.")
+        self.restart()
+        return why
 
 
 def scan_stuck(db: DB) -> str | None:

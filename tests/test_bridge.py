@@ -360,16 +360,22 @@ def test_the_token_file(tmp_path):
 # ---------------------------------------------------------------- the watch
 
 def test_the_watch_starts_the_thrift_chrome_then_says_once():
+    """WO32b's watch, as WO49 made it: 2 min → start the Thrift Chrome, 5 → restart it, 10 → one line; only lid-open
+    time counts (live 2026-10-24: the night's maintenance wakes added up and the line came the moment the lid opened)."""
     b = bm.Bridge(TOKEN)
-    started, said = [], []
+    started, restarted, said = [], [], []
     t0 = b.started
-    tick = lambda dt, window=True: b.watch_tick(t0 + dt, window, lambda: started.append(dt), said.append)  # noqa: E731
+    tick = lambda dt, window=True: b.watch_tick(t0 + dt, window, lambda: started.append(dt), said.append,  # noqa: E731
+                                                lambda: restarted.append(dt))
     assert tick(60) is None and started == []
-    assert tick(130, window=False) is None and started == []             # the lid closed: nothing
-    assert tick(130) == "chrome started" and started == [130]
-    assert tick(200) is None and started == [130]                         # once
-    assert tick(310) == "said" and said == [bm.MISSING_LINE]
-    assert tick(900) is None and len(said) == 1
+    assert tick(130, window=False) is None and started == []             # the lid closed: nothing, the clock stops
+    assert tick(200) is None and started == []                            # the lid open again: counted from here
+    assert tick(330) == "chrome started" and started == [330]
+    assert tick(400) is None and started == [330]                         # once
+    assert tick(510) == "chrome restarted" and restarted == [510]
+    assert tick(700) is None and said == []
+    assert tick(810) == "said" and said == [bm.MISSING_LINE]
+    assert tick(2000) is None and len(said) == 1 and len(restarted) == 1
     b.last_seen = t0 + 1000                                               # it checked in: all reset
     assert b.connected() is False or True
     b.chrome_started, b.said_missing = None, False

@@ -309,7 +309,7 @@ def test_the_crosslist_dry_run_fills_the_extension_sites_together(tmp_path, monk
     assert "depop: form open" in out and "together" in out and "one after another" in out
 
 
-# ---------------------------------------------------------------- 2026-10-20: the first listing after a wake waits for the network
+# -------------------------------------------------------- 2026-10-20: the first listing after a wake waits for the network
 
 def test_the_first_listing_after_a_wake_waits_for_the_network(monkeypatch, tmp_path):
     """Live 2026-10-20 (the leggings on Depop): the job began 20 s after the Mac woke, the network still coming up (the

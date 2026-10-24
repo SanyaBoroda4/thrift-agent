@@ -388,8 +388,12 @@ def ensure_label_size(description: str, facts: Facts) -> str:
     "Label size: 4 ans / 104 cm." — the buyer sees the US size on the listing and what the garment itself says.
     Nothing when the description already quotes the label, or the size didn't come from the table."""
     printed = (facts.size_printed.value or "").strip()
-    if (facts.department != "Kids" or facts.category.strip().lower() == "shoes" or not printed
-            or kids_clothing_size(printed) is None or printed.lower() in description.lower()):
+    dual = bool(re.fullmatch(r"\s*(?:XXS|XS|S|M|L|XL|XXL|XXXL)\s*[/-]\s*(?:XXS|XS|S|M|L|XL|XXL|XXXL)\s*", printed, re.I))
+    if not printed or printed.lower() in description.lower():
+        return description
+    if dual:                                    # WO49: a label's two sizes ("S/M"), listed under the bigger one
+        return f"{description.rstrip()}\nLabel size: {printed}."
+    if facts.department != "Kids" or facts.category.strip().lower() == "shoes" or kids_clothing_size(printed) is None:
         return description
     return f"{description.rstrip()}\nLabel size: {printed}."
 

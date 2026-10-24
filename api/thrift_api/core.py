@@ -139,8 +139,42 @@ def process_email(db: Database, payload: dict, now: datetime | None = None, mode
         status = "ignored" if kind == "OTHER" else "new"
         if not _insert_event(db, event, status, now):
             return {**base, "status": "duplicate"}
+        if mode != "off" and emails.maybe_sale(marketplace, kind, subject):
+            # WO49 (live: Poshmark dropped the quotes from "just sold to", three sales filed as OTHER for three days):
+            # an email that still says "sold" is never silent — one private line per email
+            out = Outbox(now, mode)
+            out.ops(MAYBE_SALE_LINE.format(site=site_name(marketplace), subject=subject or "(no subject)",
+                                           when=local_text(parse_time(event["received_at"]) or now)))
+            out.flush()
         return {**base, "status": status, **({"handling": "off"} if status == "new" else {})}
     return _process(db, event, now, mode, fresh=True)
+
+
+MAYBE_SALE_LINE = ("❓ A {site} email may be a sale I didn't recognise: \"{subject}\" ({when}). If it's one of ours, "
+                   "it isn't taken down on the other sites yet — check it.")
+RECLASSIFY_DAYS = 7                    # WO49: ignored emails this recent are read again by today's rules
+
+
+def reclassify(db: Database, now: datetime | None = None, mode: str | None = None,
+               days: int = RECLASSIFY_DAYS) -> list[dict]:
+    """WO49: the emails filed as OTHER in the last `days` that today's rules call something else (a rule fixed after
+    they came: live, Poshmark's "just sold to" without quotes) — processed now, by their subject (an OTHER email's text
+    is never kept), as LATE: take-downs as for any sale, the message to the private chat instead of a days-late 💰
+    line in the group. Every 15 minutes; idempotent (a processed email is no longer OTHER). [results]"""
+    now, mode = _clock(now), mode or util.mode()
+    if mode == "off":
+        return []
+    since = iso(now - timedelta(days=days))
+    rows = db.query("SELECT * FROM email_events WHERE kind = 'OTHER' AND status = 'ignored' AND received_at >= ? "
+                    "AND message_id NOT LIKE ? ORDER BY received_at", (since, f"{MAC_PREFIX}%"))
+    out = []
+    for event in rows:
+        kind = emails.classify(event["marketplace"], event["subject"] or "", "")
+        if kind == "OTHER":
+            continue
+        db.execute("UPDATE email_events SET kind = ? WHERE message_id = ? AND kind = 'OTHER'", (kind, event["message_id"]))
+        out.append(_process(db, {**event, "kind": kind, "raw_text": ""}, now, mode, fresh=False, late=True))
+    return out
 
 
 SALE_WORDS = re.compile(r"\b(sold|sale|order|purchase|bought|ship|paid|payment)\b", re.I)
@@ -259,16 +293,19 @@ def _insert_event(db: Database, event: dict, status: str, now: datetime, attempt
          event["received_at"], event.get("parsed_json"), event.get("raw_text"), status, attempts, iso(now)))
 
 
-def _process(db: Database, event: dict, now: datetime, mode: str, fresh: bool) -> dict:
+def _process(db: Database, event: dict, now: datetime, mode: str, fresh: bool, late: bool = False) -> dict:
     """Parses and acts on one email in ONE transaction with its row (`fresh`: the row is inserted there too), so a crash
     leaves either the whole result or nothing, and the reader's retry starts clean. A failure is stored as `failed`
-    with the text kept (the timer retries it); it is never lost."""
+    with the text kept (the timer retries it); it is never lost. `late` (WO49, `reclassify`): an email found after the
+    fact — its sale's message goes to the private chat, not the group."""
     message_id = event["message_id"]
     received = parse_time(event["received_at"]) or now
     base = {"message_id": message_id, "kind": event["kind"], "marketplace": event["marketplace"]}
     out = Outbox(now, mode)
     try:
         parsed = _facts_of(event, received)
+        if late:
+            parsed["late"] = True
         handling = _handling(db, mode, received, now)
         with db.tx():
             if fresh and not _insert_event(db, event, "new", now):
@@ -325,11 +362,20 @@ def _sale(db: Database, mp: str, parsed: dict, message_id: str, subject: str | N
     sold_at = util.aware(parsed.get("sold_at") or now)
     item_id, how = match.match_sale(db, mp, parsed)
     same = _same_sale(db, mp, parsed.get("order_id"), item_id, parsed.get("title"), sold_at)
+    if same is None and parsed.get("reminder"):
+        same = _reminded_sale(db, mp, parsed.get("title"), sold_at)       # WO49: the sale this reminder is about
     if same is not None:
         _fill_sale(db, same, parsed)
         return {"status": "parsed", "sale_id": same["id"], "sale_status": same["status"], "item_id": same["item_id"],
                 "duplicate": True}
-    ship_day, source = deadlines.ship_by(mp, sold_at, parsed.get("ship_by_stated"))
+    late = bool(parsed.get("late") or parsed.get("reminder"))
+    if parsed.get("reminder"):
+        # WO49: a sale whose first email was missed, found by Poshmark's reminder to ship it — it sold days ago: the
+        # ship-by is the reminder's own date (or its day), never a week from the reminder
+        stated = parsed.get("ship_by_stated")
+        ship_day, source = (stated, "email") if isinstance(stated, date) else (deadlines.local(sold_at).date(), "reminder")
+    else:
+        ship_day, source = deadlines.ship_by(mp, sold_at, parsed.get("ship_by_stated"))
     sale_id = util.new_id("s_")
     first = _sale_elsewhere(db, item_id, mp) if item_id else None
     status = "unmatched" if item_id is None else "double_sale" if first else "matched"
@@ -348,6 +394,12 @@ def _sale(db: Database, mp: str, parsed: dict, message_id: str, subject: str | N
         title, site = _title(db, item_id, parsed.get("title"), parsed.get("listing_id")), site_name(mp)
         if status == "double_sale":
             _sold_twice(db, out, item_id, title, site_name(first["marketplace"]), site, now)
+        elif late:
+            # WO49: found after the fact (a rule fixed since, or the ship reminder): the private chat hears it with
+            # what was done — the group already knows from the site itself, and a days-late 💰 line would confuse
+            why = "by Poshmark's reminder to ship it" if parsed.get("reminder") else "late (its email wasn't recognised)"
+            down = f" Taking it down on {util.and_list([site_name(t['marketplace']) for t in tasks])}." if tasks else ""
+            out.ops(f"💰 Found {why}: {_sold_line(site, title, parsed.get('price'), ship_day)[2:]}{down}")
         else:
             out.group(_sold_line(site, title, parsed.get("price"), ship_day))
         if status == "unmatched":
@@ -388,6 +440,25 @@ def _first_of_pair(db: Database, mp: str, title: str | None, sold_at: datetime |
         first = parse_time(row["sold_at"])
         if same_title(row["title_seen"], title) and first and timedelta(0) <= sold_at - first <= SAME_SALE_WINDOW:
             return row
+    return None
+
+
+REMINDED_WITHIN = timedelta(days=14)     # WO49: a ship reminder is about a sale on its site this recent, same title
+
+
+def _reminded_sale(db: Database, mp: str, title: str | None, sent_at: datetime) -> dict | None:
+    """WO49: the sale a ship reminder is about — this site, the same title (case and punctuation aside), sold at most
+    REMINDED_WITHIN before the reminder, not cancelled; the newest such. None: the reminder is the sale's first word."""
+    if not title:
+        return None
+    rows = db.query("SELECT s.*, i.title AS item_title FROM sales s LEFT JOIN items i ON i.id = s.item_id "
+                    "WHERE s.marketplace = ? AND s.status NOT IN ('cancelled', 'merged') ORDER BY s.sold_at DESC", (mp,))
+    for row in rows:
+        sold = parse_time(row["sold_at"])
+        if sold is None or not (timedelta(0) <= sent_at - sold <= REMINDED_WITHIN):
+            continue
+        if same_title(row["title_seen"], title) or same_title(row["item_title"], title):
+            return {k: v for k, v in row.items() if k != "item_title"}
     return None
 
 
@@ -474,6 +545,7 @@ def _create_tasks(db: Database, sale_id: str | None, item_id: str, mp: str, now:
 # is late — without the Mac.
 STANDING = ("matched", "delisting", "done")      # a sale that stands: matched to an item, not cancelled / double / merged
 LATE_AFTER = timedelta(hours=2)
+FOUND_LATE = timedelta(hours=1)            # WO49: a sale recorded this long after it sold was found late
 LATE_SAID = "takedown_late:"                     # settings: + sale id, the late line said (once)
 REOPENED = "takedown_reopened:"                  # settings: + task id, a failed take-down handed out once more
 TAKEN_DOWN = ("done", "not_found", "sold")
@@ -532,6 +604,11 @@ def late_takedowns(db: Database, now: datetime) -> list[dict]:
         return late
     for sale in db.query(f"SELECT * FROM sales WHERE item_id IS NOT NULL AND status IN ({marks}) AND sold_at >= ? "
                          "AND sold_at <= ? ORDER BY sold_at, id", (*STANDING, since, iso(now - LATE_AFTER))):
+        # WO49: the 2 hours run from when the sale was KNOWN — a sale found late (its email read again by a fixed
+        # rule, the ship reminder, the Mac seeing it sold) gets its take-downs' chance before the group is asked
+        known, sold = parse_time(sale["created_at"]), parse_time(sale["sold_at"])
+        if known is not None and sold is not None and known - sold >= FOUND_LATE and now - known < LATE_AFTER:
+            continue
         first = _standing_sale(db, sale["item_id"], now)
         if first is None or first["id"] != sale["id"]:
             continue                                    # a later sale of the same item: the first one speaks

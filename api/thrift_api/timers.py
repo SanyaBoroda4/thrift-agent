@@ -32,7 +32,9 @@ def every_15_min(db: Database, now: datetime | None = None, mode: str | None = N
         return {"mode": mode}
     if mode == "live":
         core.go_live(db, now)                         # a live call like any request: starts the live clock if needed
-    return {"mode": mode, "reminders": reminders(db, now, mode), "gmail": gmail_watch(db, now, mode),
+    return {"mode": mode,
+            "reclassified": len(core.reclassify(db, now, mode)),   # WO49: an email a fixed rule now reads (before the
+            "reminders": reminders(db, now, mode), "gmail": gmail_watch(db, now, mode),   # take-downs' safety net)
             "mac": mac_watch(db, now, mode),
             "retried": retry_failed(db, now, mode), "late_takedowns": core.say_late_takedowns(db, now, mode),
             "unposted": watch.unposted(db, now, mode)}          # WO45 §7: an item priced but not live on a site
@@ -40,11 +42,13 @@ def every_15_min(db: Database, now: datetime | None = None, mode: str | None = N
 
 def every_5_min(db: Database, now: datetime | None = None, mode: str | None = None) -> dict:
     """WO45 §3: the share watchdog — a complete share with no outcome after 15 minutes (30 past 20 photos) while the
-    Mac is online → one private line per share."""
+    Mac is online → one private line per share. WO49: and an upload the Mac hasn't fetched 10 minutes after it ended
+    (live 2026-10-24: a 20-photo share sat in Azure 71 minutes, never watched — the watchdog saw only shares the Mac
+    had taken)."""
     now, mode = (util.aware(now) if now else util.utcnow()), mode or util.mode()
     if mode == "off":
         return {"mode": mode}
-    return {"mode": mode, "shares": watch.shares_watch(db, now, mode)}
+    return {"mode": mode, "shares": watch.shares_watch(db, now, mode), "uploads": watch.uploads_watch(db, now, mode)}
 
 
 def evening(db: Database, now: datetime | None = None, mode: str | None = None) -> dict:

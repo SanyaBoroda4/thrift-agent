@@ -121,14 +121,23 @@ def take(s: Settings, db: DB, client, share: dict, sid: str) -> bool:
         shutil.rmtree(staging, ignore_errors=True)
         _settle_known(db, client, sid, found, names, test)
         return True
-    if found is not None and not cleanup.delete_copy(s, db, sid, found, "the upload is whole; the iCloud copy "
-                                                                        "wasn't (WO47: no duplicates)"):
-        return False                                  # the download stays staged; the next poll tries again
-    target = free_name(s.path("inbox") / sid)          # iCloud may have put its folder back meanwhile: never into it
+    deleted = None
+    if found is not None and found.parent == s.path("inbox"):
+        # WO47: no duplicates — the iCloud copy goes. WO49 (live 2026-10-24: iCloud held the copy 71 minutes in
+        # "Resource deadlock avoided" and the whole upload waited behind it): the upload never waits for that — a copy
+        # iCloud holds now is deleted when it lets go (`register` knows it by its share id: never a second batch)
+        if cleanup.delete_copy(s, db, sid, found, "the upload is whole; the iCloud copy wasn't (WO47: no duplicates)"):
+            deleted = found.name
+        else:
+            db.log(sid, "share_icloud_copy_left", {"share_id": sid, "folder": found.name})
+    from thrift_agent import alerts, pipeline
+    intake = pipeline.uploads_dir(s)                   # WO49: the Mac's own disk — iCloud can never hold the upload
+    target = free_name(intake / sid)
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(staging), str(target))
     db.log(sid, "share_fetched", {"share_id": sid, "photos": names, "test": test, "folder": target.name,
-                                  **({"icloud_deleted": found.name} if found is not None else {})})
+                                  "intake": "local", **({"icloud_deleted": deleted} if deleted else {})})
+    alerts.progress(db, f"upload {sid} fetched")
     client.post(f"/shares/{sid}/fetched", {"names": names})
     return True
 
@@ -198,7 +207,9 @@ def _settle_known(db: DB, client, sid: str, found: Path, names: list[str], test:
 def known_folder(s: Settings, sid: str) -> Path | None:
     """A folder of this share in the inbox (`<share id>`, `<share id>-late` …) or the archive (`YYYYMMDD_<share id>`,
     `…_2`), else None."""
-    for base in (s.path("inbox"), s.path("archive")):
+    from thrift_agent import pipeline
+    local = pipeline.uploads_dir(s)                    # WO49: the uploads' own intake and archive, first
+    for base in (local, local / pipeline.UPLOADS_ARCHIVE, s.path("inbox"), s.path("archive")):
         try:
             folders = sorted(p for p in base.iterdir() if p.is_dir())
         except OSError:

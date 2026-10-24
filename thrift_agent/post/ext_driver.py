@@ -1247,6 +1247,16 @@ class ExtensionPoster(Poster):
         if ev.get("event") == "error" and not pressed:
             if ev.get("page") in STOP_PAGES:
                 raise self._stop(ev)
+            # WO49 (live 2026-10-24, the dress: "the page reloaded during the take-down" — Depop reloads as it
+            # deletes, and the job's end was lost with the page): the address decides — it was live before this job,
+            # gone now means this job deleted it; anything else is the failure it said
+            try:
+                after = await self._depop_state(address)
+            except PosterError:
+                after = None
+            if after == "gone":
+                self.notes.append(f"the delete job ended with '{str(ev.get('message'))[:80]}', but {address} is gone")
+                return True
             raise PosterError(f"{self.site} delete {address}: {ev.get('message')}")
         after = await self._depop_state(address)           # the page may have moved on: the address itself decides
         if after == "gone":

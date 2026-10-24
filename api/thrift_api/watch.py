@@ -83,6 +83,40 @@ def shares_watch(db: Database, now: datetime | None = None, mode: str | None = N
     return said
 
 
+UNFETCHED_AFTER = timedelta(minutes=10)    # WO49: an upload this long after its last photo, not fetched by the Mac
+UNFETCHED_SAID = "upload_unfetched:"       # settings: + share id — the ⏳ line said (once)
+
+
+def _clock(moment: datetime) -> str:
+    """"9:40 AM" (portable: no %-I)."""
+    return f"{moment.hour % 12 or 12}:{moment.minute:02d} {'AM' if moment.hour < 12 else 'PM'}"
+
+
+def uploads_watch(db: Database, now: datetime | None = None, mode: str | None = None) -> list[str]:
+    """WO49, every 5 minutes: a share the iPhone uploaded (ended, or quiet) that the Mac hasn't fetched
+    UNFETCHED_AFTER after its last photo, while the Mac's heartbeat says it is online → ONE private line per share,
+    "⏳ Share 9:39 AM (20 photos) is in Azure but the Mac hasn't taken it (since 9:40)". The Mac offline: WO42's line
+    covers it. Test shares never. Returns the share ids said now."""
+    now, mode = (util.aware(now) if now else util.utcnow()), mode or util.mode()
+    if mode == "off" or not _mac_online(db, now):
+        return []
+    out = core.Outbox(now, mode)
+    said = []
+    with db.tx():
+        for row in db.query("SELECT share_id, received, started_at, ended_at, last_received_at FROM shares_in "
+                            "WHERE fetched_at IS NULL AND COALESCE(test, 0) = 0 AND received > 0 ORDER BY started_at"):
+            last = parse_time(row["last_received_at"] or row["ended_at"] or row["started_at"])
+            if last is None or now - last < UNFETCHED_AFTER or core.setting(db, UNFETCHED_SAID + row["share_id"]):
+                continue
+            photos = int(row["received"] or 0)
+            out.ops(f"⏳ Share {_share_when(row['share_id'])} ({photos} photo{'s' if photos != 1 else ''}) is in Azure "
+                    f"but the Mac hasn't taken it (since {_clock(deadlines.local(last))})")
+            core.put_setting(db, UNFETCHED_SAID + row["share_id"], iso(now))
+            said.append(row["share_id"])
+    out.flush()
+    return said
+
+
 def shares_today(db: Database, now: datetime | None = None) -> list[dict]:
     """§3, the dashboard's Shares panel: today's shares (the local day), newest first — id, source, photos, each
     step's time, the outcome and its reason."""
@@ -157,6 +191,26 @@ def unposted(db: Database, now: datetime | None = None, mode: str | None = None)
     return result
 
 
+def _cleanup_today(db: Database, day: str) -> str:
+    """WO49: the Mac's daily cleanup (its heartbeat's `cleanup`, kv cleanup_last there) as the summary's last part —
+    " 🧹 Cleanup freed 270 MB." when it ran this local day and freed something; the Mac sends no line of its own."""
+    import json
+    beat = db.one("SELECT info FROM heartbeats WHERE source = 'mac'")
+    try:
+        info = json.loads(beat["info"]) if beat and beat["info"] else {}
+    except (TypeError, ValueError):
+        info = {}
+    last = info.get("cleanup") if isinstance(info, dict) else None
+    if not isinstance(last, dict) or last.get("dry"):
+        return ""
+    at = parse_time(last.get("at"))
+    freed = util.number(last.get("freed")) or 0
+    if at is None or deadlines.local(at).date().isoformat() != day or freed <= 0:
+        return ""
+    size = f"{freed / 1024 ** 3:.1f} GB" if freed >= 1024 ** 3 else f"{freed / 1024 ** 2:.0f} MB"
+    return f" 🧹 Cleanup freed {size}."
+
+
 def evening_line(db: Database, now: datetime | None = None, mode: str | None = None) -> str | None:
     """§9, once a local day in the 21:00 hour: "📊 Today: 7 shares → 8 items, 7 live on all 3 sites with all photos,
     1 waiting for a size." to the private chat. Returns the line, or None when it isn't the hour or it went already."""
@@ -184,7 +238,7 @@ def evening_line(db: Database, now: datetime | None = None, mode: str | None = N
     n_wait = int(waiting["n"]) if waiting else 0
     text = (f"📊 Today: {len(shares)} share{'s' if len(shares) != 1 else ''} → {len(item_ids)} item"
             f"{'s' if len(item_ids) != 1 else ''}, {live_all} live on all {len(util.SITES)} sites with all photos"
-            + (f", {n_wait} waiting for a size" if n_wait else "") + ".")
+            + (f", {n_wait} waiting for a size" if n_wait else "") + "." + _cleanup_today(db, day))
     out = core.Outbox(now, mode)
     with db.tx():
         core.put_setting(db, EVENING_DONE, day)

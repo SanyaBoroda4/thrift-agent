@@ -22,7 +22,9 @@ from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
 
 CHECK_EVERY = 6 * 3600            # a live listing read again this often (the order sweep's rhythm)
-POSHMARK_EVERY = 24 * 3600        # Poshmark's public JSON (an HTTP GET a listing): once a day is plenty
+POSHMARK_EVERY = 2 * 3600         # Poshmark's public JSON (an HTTP GET a listing). WO49: every 2 hours — it is also the
+#                                   sale safety net that needs no email (live: the dress sold on Poshmark, its email
+#                                   unrecognised, and stayed on Depop and Vinted for a day)
 SOON_AFTER = 10 * 60              # a listing posted this long ago is read for the first time
 RUN_EVERY = 5 * 60                # the housekeeping asks this often
 PER_RUN = 6                       # single reads per run (an edit-page job each on Depop / Vinted: never a storm)
@@ -232,7 +234,10 @@ async def run(s: Settings, db: DB, ps: dict, limit: int = PER_RUN) -> list[str]:
                     continue
                 if live.get("for_sale") is False:
                     record(db, iid, mp, live.get("photos"), live.get("price"))
+                    _gone(db, row, mp, f"Poshmark shows it {live.get('status') or 'not for sale'}", bool(live.get("sold")),
+                          live.get("price"))
                     continue
+                _back(db, row, mp)                             # for sale: a first 'gone' reading forgotten
                 done.append(apply(s, db, row, live))
                 continue
             poster = ps.get(mp)
@@ -245,7 +250,9 @@ async def run(s: Settings, db: DB, ps: dict, limit: int = PER_RUN) -> list[str]:
             if rec is not None:
                 if rec.get("sold") or rec.get("is_closed") or rec.get("is_hidden"):
                     record(db, iid, mp, rec.get("photos"), rec.get("price"))
-                    continue                                 # not for sale: nothing to add, nothing to say
+                    if rec.get("sold") or rec.get("is_closed"):  # WO49: sold there — its take-downs elsewhere
+                        _gone(db, row, mp, f"{mp.title()} shows it sold", True, rec.get("price"))
+                    continue                                 # hidden (by hand, or our own take-down): nothing to say
                 live = {"photos": rec.get("photos"), "price": rec.get("price")}
             elif mp in bulk:
                 db.log(iid, "photocheck_not_in_bulk", {"site": mp, "key": key})
@@ -261,12 +268,50 @@ async def run(s: Settings, db: DB, ps: dict, limit: int = PER_RUN) -> list[str]:
                         live = {**live, "photos": max(int(live.get("photos") or 0), int(tiles["count"]))}
             if live.get("photos") is None and live.get("price") is None:
                 continue
+            _back(db, row, mp)                             # for sale: a first 'gone' reading forgotten
             done.append(apply(s, db, row, live))
         except Exception as e:  # noqa: BLE001 — a reading never ends the poster
             db.log(iid, "photocheck_failed", {"site": mp, "error": f"{type(e).__name__}: {e}"[:200]})
     if done:
         db.log(None, "photocheck", {"read": done})
     return done
+
+
+GONE_SEEN = "photocheck_gone_seen"   # kv: {item|site: when a listing was first seen not for sale (not sold)}
+GONE_AGAIN = 10 * 60               # WO49: a "not for sale" / 404 reading acts only when seen again this much later
+
+
+def _back(db: DB, row, mp: str) -> None:
+    """WO49: the listing read for sale — a first "not for sale" sighting of it is forgotten."""
+    seen = loads(db.kv_get(GONE_SEEN)) or {}
+    if seen.pop(f"{row['item_id']}|{mp}", None) is not None:
+        db.kv_set(GONE_SEEN, json.dumps(seen))
+
+
+def _gone(db: DB, row, mp: str, why: str, sold: bool, price=None) -> None:
+    """WO49: a listing we hold 'posted' that its site shows sold or no longer for sale — `sales.listing_gone` tells
+    thrift-api (take-downs everywhere else) unless the take-down is ours. The site saying SOLD acts at once; "not for
+    sale" or a page that answers 404 only when seen again GONE_AGAIN later (one odd answer never takes anything
+    down). Never raises."""
+    from thrift_agent import sales
+    key = f"{row['item_id']}|{mp}"
+    if not sold:
+        seen = loads(db.kv_get(GONE_SEEN)) or {}
+        first = seen.get(key)
+        now = time.time()
+        if first is None or now - float(first) < GONE_AGAIN:
+            if first is None:
+                seen[key] = now
+                db.kv_set(GONE_SEEN, json.dumps(seen))
+            db.log(row["item_id"], "listing_gone_seen", {"site": mp, "why": why, "first": first is None})
+            return
+        seen.pop(key, None)
+        db.kv_set(GONE_SEEN, json.dumps(seen))
+    try:
+        title = ((loads((db.item(row["item_id"]) or {"renders": None})["renders"]) or {}).get("poshmark") or {}).get("title")
+        sales.listing_gone(db, row["item_id"], mp, why, sold, row["url"], title, price)
+    except Exception as e:  # noqa: BLE001 — the check goes on
+        db.log(row["item_id"], "listing_gone_failed", {"site": mp, "error": f"{type(e).__name__}: {e}"[:200]})
 
 
 def _when(ts: str | None) -> datetime | None:

@@ -49,9 +49,15 @@ def rule(kind: str, where: str, pattern: str, unless: str | None = None) -> Rule
     return Rule(kind, where, re.compile(pattern, re.I), re.compile(unless, re.I) if unless else None)
 
 
-# "You made a sale", "You sold …", "Your item has sold", "Item sold", "Your bundle was sold"
+# "You made a sale", "You sold …", "Your item has sold", "Item sold", "Your bundle was sold", "<title> just sold to @x"
 SOLD = (r"\bmade a sale\b|\byou(?:'ve| have)? (?:just )?sold\b"
-        r"|\b(?:item|listing|bundle)s? (?:has |have |was |were )?(?:just )?(?:been )?sold\b")
+        r"|\b(?:item|listing|bundle)s? (?:has |have |was |were )?(?:just )?(?:been )?sold\b|\bjust sold to\b")
+REMINDER_SUBJECT = r"^\s*reminder to ship your poshmark order\b"      # WO49: a sale's reminder, deduped by the API
+# WO49: an OTHER email whose subject still says "sold" (and isn't a like, an offer or a promotion) — the API tells the
+# owner once: a sale a changed subject hides is never silent again
+MAYBE_SALE = re.compile(r"\bsold\b", re.I)
+NOT_A_SALE = re.compile(r"\blik(?:e|ed|es)\b|\boffers?\b|\bfavou?rite|\bdrop|\bnew arrivals?\b|\bfor you\b|\bsimilar\b"
+                        r"|\bsold out\b|\bbest ?sellers?\b|\bwhat'?s sold\b|\bmost sold\b", re.I)
 
 GUARDS = (
     rule("OTHER", "subject", r"\bcancel(?:l)?ation request|\b(?:requests?|requested|wants|asked) to cancel\b"),
@@ -80,7 +86,12 @@ REAL = {
     "poshmark": (
         # '"<title>" just sold to @x on Poshmark!', 'Thank you for shipping <title>',
         # 'Please do not ship: "<title>" for @x was canceled'
-        rule("SALE", "subject", r'^\s*"[^"]{3,200}"\s+just sold to\b.*\bon poshmark\b'),
+        # WO49 (live 2026-10-21 → 24: three sales filed as OTHER, the FARM Rio dress never taken down): Poshmark dropped
+        # the quotes — '<title> just sold to @x on Poshmark!'; either form is a sale
+        rule("SALE", "subject", r'^\s*(?:"[^"]{3,200}"|[^"\s][^\n]{2,199}?)\s+just sold to\b.*\bon poshmark\b'),
+        # WO49: Poshmark's own reminder to ship an order is a sale's second word — the sale itself when its first email
+        # was missed (the API dedups it against a sale it knows: `core._sale`, `reminder`)
+        rule("SALE", "subject", REMINDER_SUBJECT),
         rule("SHIPPED", "subject", r"^\s*thank you for shipping\b"),
         rule("CANCELLED", "subject", r"^\s*please do not ship\b.*\bwas cancel(?:l)?ed\b"),
     ),
@@ -184,6 +195,8 @@ TITLES = (
     # Depop: "image" (the photo's alt text) before the title, on its own line or on the title's
     (re.compile(r"\border details\s*(?:image\b\s*)?(?P<t>\S[^\n]{2,199})", re.I), "text", False),
     (re.compile(r"^\s*thank you for shipping (?P<t>[^\n]{3,200})$", re.I), "subject", False),
+    # WO49: Poshmark's subject without its quotes, "<title> just sold to @x on Poshmark!"
+    (re.compile(r"^\s*(?P<t>[^\"\s][^\"\n]{2,199}?)\s+just sold to\b", re.I), "subject", False),
     (re.compile(r"^[ \t]*(?:item(?: name)?|title|listing|product)[ \t]*:[ \t]*(?P<t>[^\n]{3,200})$", re.I | re.M), "text",
      False),
     (re.compile(r"\"(?P<t>[^\"\n]{3,200})\""), "subject", False),
@@ -244,8 +257,18 @@ def parse(marketplace: str | None, kind: str, subject: str, text: str, received_
     if not (facts["title"] or facts["listing_id"] or facts["sku"]):
         raise ParseError("a sale email with no title, listing or SKU")
     amount = price(t)
-    return {**facts, "price": amount if amount is not None else price(s), "sold_at": aware(received_at),
-            "ship_by_stated": ship_by_stated(t, received_at) or ship_by_stated(s, received_at)}
+    out = {**facts, "price": amount if amount is not None else price(s), "sold_at": aware(received_at),
+           "ship_by_stated": ship_by_stated(t, received_at) or ship_by_stated(s, received_at)}
+    if re.search(REMINDER_SUBJECT, s, re.I):            # WO49: a ship reminder — the API dedups it (core._sale)
+        out["reminder"] = True
+    return out
+
+
+def maybe_sale(marketplace: str | None, kind: str, subject: str) -> bool:
+    """WO49: an email of a marketplace the rules filed as OTHER whose subject still says "sold" — not a like, an offer,
+    a price drop or a promotion. The API tells the owner (once per email): a sale hidden by a changed subject."""
+    return bool(marketplace) and kind == "OTHER" and bool(MAYBE_SALE.search(subject or "")) \
+        and not NOT_A_SALE.search(subject or "")
 
 
 # --- the facts, one by one ------------------------------------------------------------------------------------------

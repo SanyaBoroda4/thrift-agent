@@ -98,6 +98,19 @@ def start_thrift_chrome(s: Settings) -> str:
     return (r.stdout + r.stderr).strip()[-300:]
 
 
+def restart_thrift_chrome(s: Settings) -> str:
+    """WO49: the Thrift Chrome restarted (`launchctl kickstart -k` of its LaunchAgent; --restore-last-session brings its
+    windows back) — it can run with its extension's worker asleep. On the Mac only."""
+    if not s.is_prod or sys.platform != "darwin":
+        return "not on the Mac: the Thrift Chrome isn't restarted here"
+    try:
+        r = subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/com.thrift.chrome-cross"],
+                           capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as e:
+        return f"{type(e).__name__}: {e}"
+    return (r.stdout + r.stderr).strip()[-300:] or "restarted"
+
+
 async def open_bridge(s: Settings, db: DB | None, ps: dict, watch: bool = True, strict: bool = False):
     """WO32: the bridge for the extension-driven marketplaces, on 127.0.0.1:8765, its token from ~/thrift/var/ext_token;
     with `watch`, the 2-minute / 5-minute watch for an extension that doesn't check in. A bridge that can't start (no
@@ -139,8 +152,12 @@ async def open_bridge(s: Settings, db: DB | None, ps: dict, watch: bool = True, 
         out = start_thrift_chrome(s)
         db.log(None, "thrift_chrome_started", {"why": "no extension for 2 min", "out": out})
 
+    def restart_chrome() -> None:
+        out = restart_thrift_chrome(s)
+        db.log(None, "thrift_chrome_restarted", {"why": "no extension for 5 min", "out": out})
+
     task = asyncio.create_task(b.watch(in_window=lambda: power.lid_closed() is not True, start_chrome=start_chrome,
-                                       say=say, state=state))
+                                       say=say, state=state, restart_chrome=restart_chrome))
     return b, task
 
 
@@ -227,8 +244,9 @@ def next_job(s: Settings, db: DB, enabled: list[str], dry: bool,
             if not approved(it, renders[mp]):
                 continue        # nothing publishes without the owner's approved price
             post = db.listing(it["id"], mp)
-            if post and post["status"] in ("posted", "drafted", "posting", "failed", "skipped"):
-                continue        # 'posting' after a crash = check the closet by hand, never re-post blindly
+            if post and post["status"] in ("posted", "drafted", "posting", "failed", "skipped", "delisted", "sold"):
+                continue        # 'posting' after a crash = check the closet by hand, never re-post blindly; WO49: a
+                #                 listing taken down or sold is never posted again by itself
             if post and post["status"] == "dryrun" and dry:
                 continue
             autop = s.get(f"marketplaces.{mp}.autopublish", False) and s.is_prod

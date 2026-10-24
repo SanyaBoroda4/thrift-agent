@@ -9,7 +9,7 @@ worker waited 30 minutes, said one technical line in the private chat and the gr
 - the inbox watcher has a heartbeat; stalled 15 minutes with the lid open → one private line and a restart."""
 import json
 import subprocess
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -217,30 +217,92 @@ def _stamp(dt: datetime) -> str:
 
 
 def test_the_watcher_restarts_when_it_stalls_with_one_private_line(env, monkeypatch):
+    """WO42, as WO49 made it: the stall is AWAKE time on the monotonic clock (it stops while the Mac sleeps) without
+    progress — a finished look, a job worked, an upload fetched, a lid-closed turn — never wall time since a beat."""
     s, db, clock, said, group = env
-    now = datetime(2026, 10, 17, 19, 30, tzinfo=timezone.utc)
-    monkeypatch.setattr(alerts, "STARTED", now - timedelta(hours=1))
+    mono = {"t": 10_000.0}
+    monkeypatch.setattr(alerts, "_mono", lambda: mono["t"])
+    monkeypatch.setattr(alerts, "_STATE", {"started": mono["t"] - 3600, "progress": None, "look": None})
     lines, left = [], []
     monkeypatch.setattr(alerts.notify, "say", lines.append)
-    assert alerts.watcher_stalled(db, now) is None                         # never looked yet: nothing to judge
-    db.kv_set(alerts.WATCH_BEAT, _stamp(now - timedelta(minutes=14)))
-    assert alerts.watcher_stalled(db, now) is None
-    db.kv_set(alerts.WATCH_BEAT, _stamp(now - timedelta(minutes=16)))
-    db.conn.execute("INSERT INTO events (ts, ref, kind, detail) VALUES (?, NULL, 'worked', '{}')",
-                    (_stamp(now - timedelta(minutes=2)),))                 # busy with a batch: not stalled
-    assert alerts.watcher_stalled(db, now) is None
-    why = alerts.watcher_stalled(db, now + timedelta(minutes=16))
-    assert why and why.startswith("no look at the inbox since")
+    alerts.scan_started(db)
+    alerts.scan_done(db)                                                   # a finished look: progress
+    mono["t"] += 14 * 60
+    assert alerts.watcher_stalled(db) is None
+    alerts.progress(db, "item i_261017_abc123")                           # busy with an item: progress
+    mono["t"] += 14 * 60
+    assert alerts.watcher_stalled(db) is None
+    mono["t"] += 2 * 60
+    why = alerts.watcher_stalled(db)
+    assert why and why.startswith("no progress since")
     alerts.restart_watcher(db, why, leave=left.append)
     alerts.restart_watcher(db, why, leave=left.append)
     assert left == [3, 3] and len(lines) == 1 and lines[0].startswith("⚠️ The inbox watcher stalled")
     restarts = db.conn.execute("SELECT count(*) FROM events WHERE kind='watcher_restarted'").fetchone()[0]
     assert restarts == 2
-    db.kv_set(alerts.SCAN_STARTED, _stamp(now - timedelta(minutes=20)))   # a look that never came back
-    db.kv_set(alerts.WATCH_BEAT, _stamp(now - timedelta(minutes=25)))
-    assert alerts.watcher_stalled(db, now).startswith("a look at the inbox started")
-    monkeypatch.setattr(alerts, "STARTED", now - timedelta(minutes=5))    # just restarted: the old beat is not a stall
-    assert alerts.watcher_stalled(db, now) is None
+    alerts.progress(db, "x")
+    alerts.scan_started(db)                                                # a look that never came back
+    mono["t"] += 16 * 60
+    assert alerts.watcher_stalled(db).startswith("a look at the inbox started")
+    monkeypatch.setattr(alerts, "_STATE", {"started": mono["t"] - 5 * 60, "progress": None, "look": None})
+    assert alerts.watcher_stalled(db) is None                              # just restarted: nothing judged yet
+
+
+def test_a_night_with_the_lid_closed_is_no_stall(env, monkeypatch):
+    """WO49 (live 2026-10-24: the Mac slept 21 hours; the watcher restarted a healthy worker the moment the lid opened,
+    "no look at the inbox since 2026-10-23T16:02"): the lid-closed turns are progress (nothing is owed), and the sleep
+    itself never moves the monotonic clock."""
+    s, db, clock, said, group = env
+    mono = {"t": 50_000.0}
+    monkeypatch.setattr(alerts, "_mono", lambda: mono["t"])
+    monkeypatch.setattr(alerts, "_STATE", {"started": mono["t"] - 3600, "progress": mono["t"], "look": None})
+    for _ in range(40):                                                    # dark wakes, lid closed: 15 s turns
+        mono["t"] += 15
+        alerts.idle(db)
+    mono["t"] += 60                                                        # the lid opens: the first turn comes
+    assert alerts.watcher_stalled(db) is None
+    assert json.loads(db.kv_get(alerts.PROGRESS))["what"] == "lid closed"
+
+
+def test_a_look_that_fails_on_icloud_keeps_the_loop_alive(env, monkeypatch):
+    """WO49: a look iCloud cut short for the whole inbox (busy) still ends — the loop is alive, no restart; but only
+    a FINISHED look moves `thrift status`'s last scan."""
+    s, db, clock, said, group = env
+    mono = {"t": 90_000.0}
+    monkeypatch.setattr(alerts, "_mono", lambda: mono["t"])
+    monkeypatch.setattr(alerts, "_STATE", {"started": mono["t"] - 3600, "progress": mono["t"], "look": None})
+    for _ in range(80):                                                    # 20 minutes of busy looks
+        alerts.scan_started(db)
+        mono["t"] += 15
+        alerts.look_ended(db)
+    assert alerts.watcher_stalled(db) is None
+    assert db.kv_get(alerts.SCAN_DONE) is None
+
+
+def test_the_poster_restarts_a_worker_that_makes_no_progress(env, monkeypatch):
+    """WO49: the worker watched from OUTSIDE its process — kv worker_progress unchanged for OUTSIDE_STALL of the
+    poster's awake lid-open time → launchd restarts it, one private line an hour; the lid closed resets the clock."""
+    s, db, clock, said, group = env
+    mono = {"t": 1_000.0}
+    monkeypatch.setattr(alerts, "_mono", lambda: mono["t"])
+    lines, restarts = [], []
+    monkeypatch.setattr(alerts.notify, "say", lines.append)
+    check = alerts.WorkerCheck(restart=lambda: restarts.append(1))
+    alerts.progress(db, "inbox look")
+    assert check.tick(db, False) is None
+    mono["t"] += alerts.OUTSIDE_STALL - 60
+    assert check.tick(db, False) is None
+    mono["t"] += 30
+    assert check.tick(db, True) is None                                    # the lid closed: the clock starts again
+    mono["t"] += alerts.OUTSIDE_STALL - 60
+    assert check.tick(db, False) is None and restarts == []
+    mono["t"] += 120
+    why = check.tick(db, False)
+    assert why and why.startswith("no progress since") and restarts == [1] and len(lines) == 1
+    assert "the poster restarted it" in lines[0]
+    alerts.progress(db, "item i_261024_aaaaaa")                            # it moves again: nothing
+    mono["t"] += 60
+    assert check.tick(db, False) is None and restarts == [1]
 
 
 def test_the_telegram_thread_restarts_the_watcher_only_with_the_lid_open(env, monkeypatch):

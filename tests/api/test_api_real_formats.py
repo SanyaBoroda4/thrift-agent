@@ -48,7 +48,7 @@ DEPOP_OFFER = ("@buyer4 made you an offer", "...")
 
 @pytest.mark.parametrize("site,mail,kind", [
     ("poshmark", POSH_SALE, "SALE"), ("poshmark", POSH_SHIPPED, "SHIPPED"), ("poshmark", POSH_CANCELLED, "CANCELLED"),
-    ("poshmark", POSH_LIKED_SOLD, "OTHER"), ("poshmark", POSH_REMINDER, "OTHER"), ("poshmark", POSH_EARNINGS, "OTHER"),
+    ("poshmark", POSH_LIKED_SOLD, "OTHER"), ("poshmark", POSH_REMINDER, "SALE"), ("poshmark", POSH_EARNINGS, "OTHER"),
     ("vinted", VINTED_SALE, "SALE"), ("vinted", VINTED_LABEL, "SALE"), ("vinted", VINTED_COMPLETED, "DELIVERED"),
     ("depop", DEPOP_SALE, "SALE"), ("depop", DEPOP_DELIVERED, "DELIVERED"), ("depop", DEPOP_OFFER, "OTHER"),
 ])

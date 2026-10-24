@@ -87,19 +87,26 @@ def events(db: DB, kind: str) -> list:
             for r in db.conn.execute("SELECT detail FROM events WHERE kind=?", (kind,))]
 
 
+def intake(s):
+    """WO49: where an upload lands — the Mac's own disk (paths.work/_uploads), never the iCloud inbox."""
+    from thrift_agent import pipeline
+    return pipeline.uploads_dir(s)
+
+
 def test_a_whole_share_lands_in_the_inbox_as_a_folder(env):
     s, db = env
     api = FakeApi()
     share(api)
     assert uploads.fetch_new(s, db, api, NOW) == [SID]
-    folder = s.path("inbox") / SID
+    folder = intake(s) / SID                                                            # WO49: local, not iCloud
+    assert not (s.path("inbox") / SID).exists()
     assert (folder / "IMG_1.jpeg").read_bytes() == JPEG and (folder / "IMG_2.HEIC").read_bytes() == HEIC
     assert (folder / "_done.txt").read_text() == "done 2" and (folder / "_source.txt").read_text() == "azure"
     assert not (folder / "_test").exists() and not list(folder.glob(".*"))
     assert not (s.path("work") / "uploads" / SID).exists()                              # moved whole, nothing staged
     assert api.posts == [(f"/shares/{SID}/fetched", {"names": ["IMG_1.jpeg", "IMG_2.HEIC"]})]
     assert events(db, "share_fetched") == [{"share_id": SID, "photos": ["IMG_1.jpeg", "IMG_2.HEIC"], "test": False,
-                                            "folder": SID}]
+                                            "folder": SID, "intake": "local"}]
     assert uploads.fetch_new(s, db, api, NOW) == [SID] and len(events(db, "share_fetched")) == 1   # still pending at
     assert api.posts[-1][0] == f"/shares/{SID}/fetched" and events(db, "share_same_as_icloud") == []   # the API: told
     #                                                                                     again, our own folder, no event
@@ -109,9 +116,9 @@ def test_a_short_share_waits_until_quiet(env):
     s, db = env
     api = FakeApi()
     share(api, count=3, last=NOW - timedelta(seconds=60))
-    assert uploads.fetch_new(s, db, api, NOW) == [] and not (s.path("inbox") / SID).exists()
+    assert uploads.fetch_new(s, db, api, NOW) == [] and not (intake(s) / SID).exists()
     assert uploads.fetch_new(s, db, api, NOW + timedelta(seconds=61)) == [SID]
-    assert (s.path("inbox") / SID / "_done.txt").read_text() == "done 3"                # the Shortcut's count: iCloud
+    assert (intake(s) / SID / "_done.txt").read_text() == "done 3"                # the Shortcut's count: iCloud
     #                                                                                     may complete it (WO42's rule)
 
 
@@ -121,7 +128,7 @@ def test_a_share_never_ended_is_taken_after_ten_minutes(env):
     share(api, ended=False, started=NOW - timedelta(minutes=5))
     assert uploads.fetch_new(s, db, api, NOW) == []
     assert uploads.fetch_new(s, db, api, NOW + timedelta(minutes=5, seconds=1)) == [SID]
-    assert (s.path("inbox") / SID / "_done.txt").read_text() == "done 2"
+    assert (intake(s) / SID / "_done.txt").read_text() == "done 2"
 
 
 def test_nothing_without_photos(env):
@@ -138,7 +145,7 @@ def test_a_test_share_is_marked(env):
     api = FakeApi()
     share(api, test=True)
     assert uploads.fetch_new(s, db, api, NOW) == [SID]
-    assert (s.path("inbox") / SID / "_test").read_text() == "1"
+    assert (intake(s) / SID / "_test").read_text() == "1"
     assert events(db, "share_fetched")[0]["test"] is True
 
 
@@ -149,12 +156,12 @@ def test_a_bad_hash_is_dropped_and_fetched_again(env):
     assert uploads.fetch_new(s, db, api, NOW) == []
     assert events(db, "upload_bad_hash") == [{"share_id": SID, "name": "IMG_1.jpeg"}]
     staging = s.path("work") / "uploads" / SID
-    assert not (s.path("inbox") / SID).exists() and not (staging / "IMG_1.jpeg").exists()
+    assert not (intake(s) / SID).exists() and not (staging / "IMG_1.jpeg").exists()
     assert not list(staging.glob(".*")) and api.posts == []
     for photo in row["photos"]:
         photo["sha256"] = sha(api.blobs[photo["path"]])
     assert uploads.fetch_new(s, db, api, NOW) == [SID]
-    assert (s.path("inbox") / SID / "IMG_2.HEIC").read_bytes() == HEIC
+    assert (intake(s) / SID / "IMG_2.HEIC").read_bytes() == HEIC
 
 
 @pytest.mark.parametrize("where, name", [("inbox", SID), ("inbox", f"{SID}-late"), ("archive", f"20261018_{SID}"),
@@ -196,8 +203,9 @@ def test_an_icloud_copy_not_whole_gives_way_to_a_whole_upload(env, state):
     if state != "no_mark":
         (folder / "_done.txt").write_text("done 2")
     assert uploads.fetch_new(s, db, api, NOW) == [SID]
-    taken = s.path("inbox") / SID
+    taken = intake(s) / SID
     assert (taken / "IMG_2.HEIC").read_bytes() == HEIC and (taken / "_source.txt").read_text() == "azure"
+    assert not (s.path("inbox") / SID).exists()                                      # the iCloud copy deleted
     assert list(s.path("archive").iterdir()) == []                                   # nothing kept of the iCloud copy
     ev = events(db, "share_copy_deleted")
     assert len(ev) == 1 and ev[0]["folder"] == SID and ev[0]["photos_here"] == 1 and "upload is whole" in ev[0]["why"]
@@ -234,7 +242,8 @@ def test_an_icloud_copy_already_taken_or_a_short_upload_stays_the_share(env):
 
 
 def test_an_upload_never_lands_inside_a_folder_icloud_put_back(env, monkeypatch):
-    """Deleted, and iCloud makes the folder again at once: the upload goes beside it as '<id> 2', never into it."""
+    """Deleted, and iCloud makes the folder again at once: WO49 — the upload lands on the Mac's own disk, never in
+    the iCloud inbox, so iCloud's folder can't hold it (the folder iCloud put back is the share's other copy)."""
     s, db = env
     api = FakeApi()
     share(api)
@@ -249,12 +258,15 @@ def test_an_upload_never_lands_inside_a_folder_icloud_put_back(env, monkeypatch)
         return out
     monkeypatch.setattr(uploads.cleanup, "delete_copy", and_back)
     assert uploads.fetch_new(s, db, api, NOW) == [SID]
-    assert (s.path("inbox") / f"{SID} 2" / "IMG_2.HEIC").read_bytes() == HEIC
+    assert (intake(s) / SID / "IMG_2.HEIC").read_bytes() == HEIC
     assert list((s.path("inbox") / SID).iterdir()) == []
-    assert events(db, "share_fetched")[0]["folder"] == f"{SID} 2"
+    assert events(db, "share_fetched")[0]["folder"] == SID
 
 
-def test_an_icloud_copy_that_cant_be_deleted_keeps_the_upload_waiting(env, monkeypatch):
+def test_an_icloud_copy_that_cant_be_deleted_never_holds_the_upload(env, monkeypatch):
+    """WO49 (live 2026-10-24: iCloud held the copy 71 minutes in "Resource deadlock avoided" and the 20-photo upload,
+    whole in Azure, waited behind it): the upload is taken at once into the local intake; the iCloud copy is left for
+    when iCloud lets go — and then it is the same share by its id, never a second batch."""
     s, db = env
     api = FakeApi()
     share(api)
@@ -265,11 +277,18 @@ def test_an_icloud_copy_that_cant_be_deleted_keeps_the_upload_waiting(env, monke
     def refuse(*a, **k):
         raise OSError(11, "Resource deadlock avoided")
     monkeypatch.setattr(uploads.cleanup.shutil, "rmtree", refuse)
-    assert uploads.fetch_new(s, db, api, NOW) == [] and api.posts == []
+    assert uploads.fetch_new(s, db, api, NOW) == [SID]
+    assert api.posts == [(f"/shares/{SID}/fetched", {"names": ["IMG_1.jpeg", "IMG_2.HEIC"]})]
     assert "Resource deadlock avoided" in events(db, "share_copy_delete_failed")[0]["error"]
-    assert (s.path("work") / "uploads" / SID / "IMG_2.HEIC").read_bytes() == HEIC    # staged for the next poll
-    monkeypatch.undo()
-    assert uploads.fetch_new(s, db, api, NOW) == [SID] and (s.path("inbox") / SID / "_source.txt").exists()
+    assert events(db, "share_icloud_copy_left") == [{"share_id": SID, "folder": SID}]
+    assert (intake(s) / SID / "IMG_2.HEIC").read_bytes() == HEIC and folder.is_dir()
+    from thrift_agent import pipeline
+    bid = pipeline.register(s, db, intake(s) / SID)                                  # the upload is the share
+    assert bid is not None
+    (folder / "IMG_1.jpeg").write_bytes(JPEG)                                         # iCloud lets go of its copy
+    assert pipeline.register(s, db, folder) is None                                  # the same share: no 2nd batch
+    assert db.conn.execute("SELECT count(*) FROM batches").fetchone()[0] == 1
+    assert events(db, "batch_same_share")[-1]["by"] == "share id"
 
 
 def test_the_api_down_is_one_quiet_event(env):
@@ -287,7 +306,7 @@ def test_the_api_down_is_one_quiet_event(env):
     api.fail_after = None
     assert uploads.fetch_new(s, db, api, NOW) == [SID]
     assert api.fetches == [f"/shares/{SID}/photo/IMG_1.jpeg", f"/shares/{SID}/photo/IMG_2.HEIC"]   # not twice
-    assert (s.path("inbox") / SID / "IMG_2.HEIC").read_bytes() == HEIC and not staging.exists()
+    assert (intake(s) / SID / "IMG_2.HEIC").read_bytes() == HEIC and not staging.exists()
 
 
 def test_without_the_api_nothing_happens(env):
@@ -310,7 +329,7 @@ def test_nothing_from_the_api_is_ever_a_path(env):
           paths={"IMG_2.HEIC": "https://elsewhere.test/x.jpg"})
     assert uploads.fetch_new(s, db, api, NOW) == [SID]
     assert events(db, "upload_bad_id") == [{"share_id": "../../etc"}]
-    folder = s.path("inbox") / SID
+    folder = intake(s) / SID
     assert sorted(p.name for p in folder.iterdir()) == ["_done.txt", "_source.txt", "evil.jpg"]
     assert events(db, "upload_bad_name") == [{"share_id": SID, "name": "IMG_2.HEIC",
                                               "path": "https://elsewhere.test/x.jpg"}]

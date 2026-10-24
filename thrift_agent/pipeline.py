@@ -57,18 +57,54 @@ def ready_folders(s: Settings, db: DB | None = None) -> list[Path]:
         return []
     out, waiting = [], {}
     for d in sorted(p for p in inbox.iterdir() if p.is_dir() and not p.name.startswith(".")):
-        if db is not None:
-            _share_seen(db, d, marker)                   # WO45 §3: the ledger knows the share from its first look
-        pending = prep.icloud_placeholders(d)
-        if pending:
-            pull_from_icloud(db, d, pending)
-            waiting[str(d)] = len(pending)
-            continue
-        if share_state(s, d, marker_of(d, marker), settle) != "wait":
-            out.append(d)
+        # WO49 (live 2026-10-24: one folder in "Resource deadlock avoided" made this whole list raise for 71 minutes,
+        # and the share already found ready before it was dropped with it): ONE folder at a time — a folder macOS
+        # can't read now is skipped for this look, the others go on
+        try:
+            if db is not None:
+                _share_seen(db, d, marker)               # WO45 §3: the ledger knows the share from its first look
+            pending = prep.icloud_placeholders(d)
+            if pending:
+                pull_from_icloud(db, d, pending)
+                waiting[str(d)] = len(pending)
+                continue
+            if share_state(s, d, marker_of(d, marker), settle) != "wait":
+                out.append(d)
+        except OSError as e:
+            _folder_unreadable(db, d, e)
     if db is not None:
         _icloud_wait(db, waiting)
     return out
+
+
+UPLOADS = "_uploads"              # WO49: the direct uploads' intake, under paths.work — the Mac's own disk, never iCloud
+UPLOADS_ARCHIVE = "archive"       # … and their archive inside it (WO47's 7 days, as the iCloud archive)
+
+
+def uploads_dir(s: Settings) -> Path:
+    return s.path("work") / UPLOADS
+
+
+def upload_folders(s: Settings) -> list[Path]:
+    """WO49: the shares the direct upload brought, waiting in the local intake (whole by construction: the API handed
+    them over ended or quiet) — taken before the iCloud inbox is even listed, so iCloud can never hold them up."""
+    base = uploads_dir(s)
+    try:
+        return sorted(p for p in base.iterdir() if p.is_dir() and not p.name.startswith(".") and p.name != UPLOADS_ARCHIVE)
+    except OSError:
+        return []
+
+
+def _folder_unreadable(db: DB | None, d: Path, e: OSError) -> None:
+    """WO49: a share folder macOS can't read now — skipped for this look, retried on the next. iCloud's busy word
+    ("Resource deadlock avoided", EAGAIN, ETIMEDOUT) is quiet: the ops chat hears once if it lasts 10 minutes."""
+    if db is None:
+        return
+    from thrift_agent import alerts
+    if alerts.icloud_busy(e):
+        alerts.busy(db, f"share {d.name}", f"{type(e).__name__}: {e}")
+    else:
+        db.log(None, "share_folder_skipped", {"folder": d.name, "error": f"{type(e).__name__}: {e}"[:300]})
 
 
 def marker_of(d: Path, marker: str) -> Path | None:
@@ -188,6 +224,8 @@ def share_state(s: Settings, d: Path, marker: Path | None, settle: float, now: f
     quiet = now - max((arrived(f) for f in files), default=appeared(d)) >= settle
     want = expected_photos(marker) if marker is not None else None
     covered = marker is not None and photos and (want is None or len(photos) + len(media) >= want)
+    if covered and share_source(d) == "azure":
+        return "ready"            # WO49: an upload is whole when the Mac writes its folder — no iCloud to wait for
     if covered and quiet and now - arrived(marker) >= float(s.get("inbox.min_wait_seconds", 90) or 0):
         return "ready"
     if covered or age < PARTIAL_AFTER:      # whole: only the mark's wait is left (live 2026-10-17: "5 of 5 arrived")
@@ -494,8 +532,18 @@ def _icloud_wait(db: DB, waiting: dict[str, int]) -> None:
 def register(s: Settings, db: DB, folder: Path) -> str | None:
     from thrift_agent import shares
     photos = [p for p in folder.iterdir() if prep.is_photo(p)]
-    bid = db.add_batch(str(folder), len(photos))
     sid = shares.share_id_of(folder)
+    if (other := _taken_as(db, sid, folder)) is not None:
+        # WO49: the share's other copy — the iCloud folder of a share the upload brought first (it couldn't be
+        # deleted while iCloud held it), or the reverse: the same share, never a second batch
+        from thrift_agent import cleanup
+        db.log(other, "batch_same_share", {"folder": folder.name, "photos": len(photos), "copy": True, "by": "share id"})
+        shares.outcome(db, sid, "same_share", "the share's other copy came after it was taken", batch_id=other)
+        if s.path("inbox").resolve() in folder.resolve().parents:
+            cleanup.delete_copy(s, db, sid, folder, "the share's other copy came after it was taken (WO47: no "
+                                                    "duplicates)")        # iCloud still holding it: the next look
+        return None
+    bid = db.add_batch(str(folder), len(photos))
     if bid is None:                                   # already known (src_dir is UNIQUE)
         # WO45 §2/§4: the share's other copy — the iCloud folder of a share the direct upload brought first (the
         # same name, taken and archived already) — is the same share: archived without a word, never a repeat line
@@ -523,6 +571,19 @@ def register(s: Settings, db: DB, folder: Path) -> str | None:
     db.log(bid, "batch_registered", {"folder": folder.name, "photos": len(photos),
                                      "names": sorted(p.name for p in photos)})   # WO37: what came late is told apart
     shares.seen(db, sid, share_source(folder), None, len(photos), test=is_test_share(folder), batch_id=bid)
+    return bid
+
+
+def _taken_as(db: DB, sid: str, folder: Path) -> str | None:
+    """WO49: the batch that took this share (by its share id) from ANOTHER folder — the upload's local folder or the
+    iCloud copy — while it is in flight or done; None when the share is new, or this very folder is its batch's."""
+    row = db.conn.execute("SELECT batch_id FROM shares WHERE id=?", (sid,)).fetchone()
+    bid = row["batch_id"] if row is not None else None
+    if not bid:
+        return None
+    b = db.batch(bid)
+    if b is None or b["src_dir"] == str(folder) or b["status"] == "failed":
+        return None                                   # a failed share is taken again by its other copy (WO42)
     return bid
 
 
@@ -1174,9 +1235,17 @@ def archive_share(s: Settings, db: DB, bid: str, src: Path) -> Path | None:
     Never fatal: the items already exist in the DB, and a folder left behind is skipped by register() because
     src_dir is UNIQUE. On the Mac this is a cross-volume move (iCloud Drive to local disk), i.e. copy + delete."""
     inbox = s.path("inbox").resolve()
-    if not src.exists() or inbox not in src.resolve().parents:
+    uploads = uploads_dir(s).resolve()
+    if not src.exists():
         return None
-    base = s.path("archive") / f"{datetime.now():%Y%m%d}_{src.name}"
+    if uploads in src.resolve().parents:                   # WO49: an upload's folder: the LOCAL archive, never iCloud
+        archive = uploads / UPLOADS_ARCHIVE
+    elif inbox in src.resolve().parents:
+        archive = s.path("archive")
+    else:
+        return None
+    archive.mkdir(parents=True, exist_ok=True)
+    base = archive / f"{datetime.now():%Y%m%d}_{src.name}"
     dest, n = base, 1
     while dest.exists():                                         # never merge into an earlier archive folder
         n += 1
@@ -1485,6 +1554,28 @@ def _pieces_in(value: str | None) -> list[PieceSize]:
     return [PieceSize(piece=piece.strip(), size=size) for size, piece in found] if len(found) >= 2 else []
 
 
+DUAL_SIZE = re.compile(r"\s*(XXS|XS|S|M|L|XL|XXL|XXXL)\s*[/-]\s*(XXS|XS|S|M|L|XL|XXL|XXXL)\s*", re.I)
+
+
+def settle_dual_size(facts: Facts) -> Facts:
+    """WO49 (live 2026-10-24: a Bath & Body Works robe labelled "S/M", priced, skipped on all three sites — no menu has
+    "S/M"): a label's two sizes ("S/M", "M-L") are listed under the bigger one, as a set's (WO33, the owner's rule);
+    the label as printed stays in the description ("Label size: S/M.", copy.ensure_label_size). The owner's size
+    stands."""
+    value = (facts.size_us.value or "").strip()
+    m = DUAL_SIZE.fullmatch(value)
+    if not m or facts.size_us.source == "owner":
+        return facts
+    size = sizes.bigger_size([m[1].upper(), m[2].upper()])
+    if size is None:
+        return facts
+    update = {"size_us": Ev(value=size, photos=facts.size_us.photos, source="derived", confidence=0.95)}
+    if not (facts.size_printed.value or "").strip():
+        update["size_printed"] = Ev(value=value.upper().replace(" ", ""), photos=facts.size_us.photos, source="photo",
+                                    confidence=facts.size_us.confidence)
+    return facts.model_copy(update=update)
+
+
 def settle_set_size(facts: Facts) -> Facts:
     """A set whose pieces carry different sizes is listed under the bigger one (WO33, the owner's rule) — the size
     field and the title — with no size question (source derived, 0.95); the description says which piece is which
@@ -1583,6 +1674,7 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
         facts = facts.model_copy(update={"kids_gender": it["owner_kids_gender"], "kids_gender_confidence": 1.0})
     facts = settle_set(facts, it["owner_category"])      # a set goes under its bottom, no question (WO27)
     facts = settle_set_size(facts)                       # pieces of different sizes: the bigger one (WO33)
+    facts = settle_dual_size(facts)                      # a label's "S/M": the bigger one too (WO49)
     facts = settle_waist(facts)                          # a waist on the label is the size, not its conversion (WO37)
     facts, fit_notes, fit_questions = taxonomy.fit(facts)   # Poshmark's own category names (Kids Tops -> Shirts & Tops)
     facts = settle_shoe_kind(facts, it["owner_category"])  # loafers are Flats & Loafers, never Heels (WO37)
@@ -1966,8 +2058,8 @@ def recover_item(s: Settings, db: DB, iid: str, recheck: bool = False, relabel: 
     before = {"cover": _listed_cover(it, photos), "category": facts.category, "subcategory": facts.subcategory,
               "size": facts.size_us.value}
     was = (approve.card(iid, it), _digest(d / "cover.jpg"))
-    facts, _, _ = taxonomy.fit(settle_waist(settle_set_size(settle_set(apply_owner_answers(it, facts),
-                                                                       it["owner_category"]))))
+    settled = settle_set_size(settle_set(apply_owner_answers(it, facts), it["owner_category"]))
+    facts, _, _ = taxonomy.fit(settle_waist(settle_dual_size(settled)))           # WO49: a label's "S/M" too
     facts = settle_shoe_kind(facts, it["owner_category"])
     facts = settle_kids_size(s, facts, photos)
     stored = None if recheck else _stored_check(it)

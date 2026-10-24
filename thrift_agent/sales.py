@@ -450,6 +450,9 @@ async def run_takedown(site: str, poster, db: DB, ctx, ready=None, shots: Path |
         report(db, t["id"], "failed", error=f"{type(e).__name__}: {e}"[:300])
         return True
     if ok is None:
+        # WO49 (live: the dress's and the Alo set's Depop rows stayed 'posted' after "gone already" — the photo check,
+        # the price drops and the dashboard then took them for live): the row says what the site says
+        db.upsert_listing(iid, site, status="delisted")
         report(db, t["id"], "not_found", error="the listing is gone already")
     elif ok == "sold":                          # Depop shows it sold already: nothing deleted — it sold twice
         db.upsert_listing(iid, site, status="sold")
@@ -460,6 +463,41 @@ async def run_takedown(site: str, poster, db: DB, ctx, ready=None, shots: Path |
     else:
         report(db, t["id"], "failed", error="the take-down didn't take")
     return True
+
+
+def repair_gone(db: DB) -> list[tuple[str, str]]:
+    """WO49, once a poster start: a listing still 'posted' here whose take-down the site answered "gone already"
+    (the rows made before that result marked them) is delisted. [(item, site)]."""
+    rows = db.conn.execute(
+        "SELECT l.item_id, l.marketplace FROM listings l JOIN takedowns t ON t.item_id = l.item_id "
+        "AND t.marketplace = l.marketplace WHERE l.status = 'posted' AND t.status = 'not_found'").fetchall()
+    out = []
+    for r in rows:
+        db.upsert_listing(r["item_id"], r["marketplace"], status="delisted")
+        db.log(r["item_id"], "listing_repaired", {"site": r["marketplace"], "status": "delisted",
+                                                  "why": "its take-down found it gone"})
+        out.append((r["item_id"], r["marketplace"]))
+    return out
+
+
+def listing_gone(db: DB, iid: str, site: str, why: str, sold: bool, url: str | None, title: str | None = None,
+                 price=None) -> str:
+    """WO49, the sale safety net that needs no email: a listing this Mac has 'posted' that the site itself now shows
+    sold (or no longer for sale) — the photo check reads every live listing. A take-down of ours for the item on any
+    site means we did it (or are doing it): the row only follows. Otherwise thrift-api is told — `sold_found` (a sale on
+    that site: its take-downs everywhere else, as for a sale email) or, not for sale by hand, `not_for_sale` (take-downs
+    elsewhere, no sale; WO33's go-live rule) — and the row follows. Returns what was done."""
+    ours = db.conn.execute("SELECT 1 FROM takedowns WHERE item_id=? LIMIT 1", (iid,)).fetchone()
+    db.upsert_listing(iid, site, status="sold" if sold else "delisted")
+    if ours:
+        db.log(iid, "listing_gone_ours", {"site": site, "why": why})
+        return "ours"
+    body = ({"kind": "sold_found", "marketplace": site, "listing_url": url, "item_id": iid, "title": title,
+             "price": price} if sold else
+            {"kind": "not_for_sale", "item_id": iid, "marketplace": site, "url": url})
+    sent = call(db, "/mac-event", body)
+    db.log(iid, "listing_gone", {"site": site, "why": why, "sold": sold, "told_api": sent})
+    return "sold" if sold else "not_for_sale"
 
 
 def pending_count(db: DB) -> int:
