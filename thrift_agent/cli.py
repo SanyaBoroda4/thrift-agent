@@ -773,8 +773,12 @@ def titles(review: bool = typer.Option(False, "--review", help="every live title
         text = titles_mod.review_message(rows)
         print(escape(text))
         if send:
-            notify.say(text)
-            db.log(None, "titles_reviewed", {"items": len(rows)})
+            if notify.ops(text, once=False):              # said only when it really went (the private chat may be down)
+                db.log(None, "titles_reviewed", {"items": len(rows)})
+                print("sent to the private chat")
+            else:
+                print("NOT sent: the private chat didn't take it — run it again")
+                raise typer.Exit(code=1)
         return
     if apply:
         made = titles_mod.apply_review(s, db)

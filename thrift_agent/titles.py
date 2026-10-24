@@ -362,15 +362,26 @@ def review(db) -> list[dict]:
     return rows
 
 
+MESSAGE_MAX = 3900                     # one Telegram message (4096), with room to spare
+
+
 def review_message(rows: list[dict]) -> str:
     if not rows:
         return "✓ Every live title passes the shop-window rules."
     lines = [f"✏️ {len(rows)} live title{'s break' if len(rows) != 1 else ' breaks'} the shop-window rules — the old → "
              f"the new (the same on every site it is on):"]
-    for r in rows:
+    end = "Reply 'go titles' to change them on the sites (nothing else on the listings changes)."
+    size = len(lines[0]) + len(end) + 120              # the reply line always fits in the one message
+    for i, r in enumerate(rows):
         old = next(iter(dict.fromkeys(r["old"].values())))
-        lines.append(f"• {old}\n   → {r['new']}  ({', '.join(r['problems'])[:80]})")
-    lines.append("Reply 'go titles' to change them on the sites (nothing else on the listings changes).")
+        line = f"• {old}\n   → {r['new']}  ({', '.join(r['problems'])[:80]})"
+        if size + len(line) + 1 > MESSAGE_MAX:
+            lines.append(f"… and {len(rows) - i} more — 'go titles' changes every one of them "
+                         f"(thrift titles --review lists all).")
+            break
+        lines.append(line)
+        size += len(line) + 1
+    lines.append(end)
     return "\n".join(lines)
 
 

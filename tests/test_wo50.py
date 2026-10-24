@@ -251,7 +251,9 @@ def test_a_text_edit_is_saved_once_and_the_records_follow(tmp_path, monkeypatch)
     assert json.loads(db.item(iid)["renders"])["poshmark"]["title"] == new
     assert json.loads(db.listing(iid, "vinted")["fields_json"])["title"] == new
     assert json.loads(db.listing(iid, "depop")["fields_json"])["description"].startswith(new + "\n")
-    assert sum(1 for m in said if m.startswith("✓ ") and "is now titled" in m) == 3
+    done = [m for m in said if m.startswith("✓ ")]
+    assert len(done) == 1, said                                   # one line for the item, once its last site is done
+    assert "new title on Poshmark, Depop and Vinted" in done[0] and new in done[0]
 
 
 def test_a_title_she_changed_by_hand_is_left_as_it_is(tmp_path, monkeypatch):
@@ -316,3 +318,12 @@ def test_a_dry_text_edit_is_kept_in_the_event_log(tmp_path, monkeypatch):
     asyncio.run(edits.run_one(s, db, "poshmark", Dry(), None, ["poshmark"]))
     ev = db.conn.execute("SELECT detail FROM events WHERE kind='listing_edit_dry'").fetchone()
     assert ev and json.loads(ev["detail"])["ok"] is True and json.loads(ev["detail"])["seen"]["title_before"] == BAG
+
+
+def test_a_long_review_fits_one_telegram_message_and_keeps_its_reply_line():
+    rows = [{"item": f"i_{n}", "old": {"poshmark": "BCBGMAXAZRIA New Black Slouchy Shoulder Bag Knotted Strap " + str(n)},
+             "new": "BCBG Max Azria Black Slouchy Shoulder Bag Knotted Strap, New with Tags",
+             "problems": ["all-caps: BCBGMAXAZRIA", "capitals 38% (limit 35%)"]} for n in range(80)]
+    msg = titles.review_message(rows)
+    assert len(msg) <= 4000 and msg.startswith("✏️ 80 live titles break")
+    assert "more — 'go titles' changes every one of them" in msg and msg.endswith("nothing else on the listings changes).")

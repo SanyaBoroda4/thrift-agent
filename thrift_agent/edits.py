@@ -112,6 +112,41 @@ def _skip(db: DB, row, why: str) -> None:
     db.log(row["item_id"], "listing_edit_skipped", {"site": row["marketplace"], "why": why})
 
 
+TEXT_SAID = "text_edit_said"                       # event: the text edits already told, by row id
+
+
+def _say_done(db: DB, row, title: str, what: str, label: str, already: bool = False) -> None:
+    """The owner hears a change once the site shows it. A text edit is told once per ITEM (WO50, the owner: one line
+    per item), when its last site is done — "✓ <name>: new title on Poshmark, Depop and Vinted — “…”" — never once
+    per site; a site that failed for good has said so itself."""
+    if row["kind"] != "text":
+        notify.say(f"✓ {title} {'already shows' if already else 'is now'} {what} on {label}")
+        return
+    iid = row["item_id"]
+    if db.conn.execute("SELECT 1 FROM listing_edits WHERE item_id=? AND kind='text' AND dry=0 AND status IN "
+                       "('pending','saving','unconfirmed') LIMIT 1", (iid,)).fetchone():
+        return                                         # another site is still on its way: one line once all are done
+    said: set[str] = set()
+    for (detail,) in db.conn.execute("SELECT detail FROM events WHERE ref=? AND kind=?", (iid, TEXT_SAID)):
+        said |= set((loads(detail) or {}).get("rows") or [])
+    done = [r for r in db.conn.execute("SELECT * FROM listing_edits WHERE item_id=? AND kind='text' AND dry=0 "
+                                       "AND status='done' ORDER BY done_at", (iid,)) if r["id"] not in said]
+    if not done:
+        return
+    order = ["poshmark", "depop", "vinted"]
+    done.sort(key=lambda r: order.index(r["marketplace"]) if r["marketplace"] in order else len(order))
+    labels = [crosslist.LABEL.get(r["marketplace"], r["marketplace"]) for r in done]
+    where = labels[0] if len(labels) == 1 else f"{', '.join(labels[:-1])} and {labels[-1]}"
+    loaded = [loads(r["payload"]) or {} for r in done]
+    new = next((p.get("title") or p.get("first_line") for p in loaded if p.get("title") or p.get("first_line")), None)
+    desc = any(p.get("description") is not None and not p.get("first_line") for p in loaded)
+    change = (f"new title on {where} — “{new}”" if new and not desc
+              else f"new title and description on {where} — “{new}”" if new
+              else f"new description on {where}")
+    notify.say(f"✓ {crosslist.item_name(db, iid)}: {change}")
+    db.log(iid, TEXT_SAID, {"rows": [r["id"] for r in done]})
+
+
 def _done(db: DB, row, note: str, evidence: str | None = None) -> None:
     _update(db, row["id"], status="done", error=None, evidence=evidence, done_at=_iso(_now()))
     db.log(row["item_id"], "listing_edited", {"site": row["marketplace"], "kind": row["kind"], "note": note})
@@ -231,7 +266,7 @@ async def run_one(s: Settings, db: DB, site: str, poster, ctx, sites: list[str],
         if shown:
             _done(db, row, f"{what}: the site shows it now", row["evidence"])
             _mirror(db, iid, site, payload)
-            notify.say(f"✓ {title} is now {what} on {label}")
+            _say_done(db, row, title, what, label)
         else:
             _failed(db, row, "saved, but the site doesn't show the change", title)
         return True
@@ -290,7 +325,7 @@ async def run_one(s: Settings, db: DB, site: str, poster, ctx, sites: list[str],
         if out.get("after") is not None:                    # WO45: the count the edit page showed after Save
             payload = {**payload, "live": out["after"]}
         _mirror(db, iid, site, payload)
-        notify.say(f"✓ {title} {'already shows' if out.get('already') else 'is now'} {what} on {label}")
+        _say_done(db, row, title, what, label, already=bool(out.get("already")))
         return True
     _update(db, row["id"], status="unconfirmed", evidence=evidence, attempts=int(row["attempts"] or 0) + 1,
             error=out.get("error") or "saved; the site doesn't show it yet")
