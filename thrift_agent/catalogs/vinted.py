@@ -10,6 +10,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, create_model
 
 from thrift_agent import catalogs
+from thrift_agent import titles
 from thrift_agent.catalogs import categories
 from thrift_agent.catalogs.common import (VINTED_PACKAGES, ItemView, MappingError, colors_for, condition_key,
                                           materials_for, package_class, photos_for)
@@ -56,18 +57,10 @@ def skirt_length(view: ItemView, ask=None) -> str:
     return (ask or ask_skirt_length)(view, titles)
 
 
-CAPS_SHARE = 0.25                 # WO49: capitals over this share of a title's letters — Vinted refuses it
-
-
-def vinted_title(title: str) -> str:
-    """WO49 (live 2026-10-24: Vinted refused "BCBGMAXAZRIA New Black Slouchy Shoulder Bag Knotted Strap" — "Title
-    contains too many capital letters, try using lowercase letters"): when capitals are more than CAPS_SHARE of the
-    letters, every all-caps word of 5 letters or more is written with its first letter capital only ("Bcbgmaxazria");
-    anything else stays as it is."""
-    letters = [c for c in title if c.isalpha()]
-    if not letters or sum(c.isupper() for c in letters) / len(letters) <= CAPS_SHARE:
-        return title
-    return re.sub(r"\b[A-Z]{5,}\b", lambda m: m[0].capitalize(), title)
+def vinted_title(title: str, brand: str | None = None, condition: str | None = None) -> str:
+    """WO49/WO50: Vinted's title is the shop-window title (titles.for_site with Vinted's rules — live 2026-10-24 it
+    refused "BCBGMAXAZRIA New Black …": "Title contains too many capital letters"), the brand as a shop sign writes it."""
+    return titles.for_site(title, "vinted", brand=brand, condition=condition)
 
 
 def ask_skirt_length(view: ItemView, titles: tuple[str, ...]) -> str:
@@ -128,8 +121,10 @@ def map_vinted(view: ItemView, ask=None, ask_length=None) -> VintedFields:
     known = {p.code for p in cat.package_sizes}
     if not set(packages) <= known:
         raise MappingError(f"package sizes {packages} aren't Vinted's")
-    return VintedFields(category_id=int(pick.value), category_path=leaf.path, title=vinted_title(r.title),
-                        description=r.description,
+    brand = (view.facts.brand.value or "").strip() or None
+    return VintedFields(category_id=int(pick.value), category_path=leaf.path,
+                        title=vinted_title(r.title, brand, view.facts.condition),
+                        description=titles.display_in_text(r.description, brand),
                         brand=r.brand, brand_label=r.brand_label, size_id=size_id, size=size_title,
                         condition_id=cond.id, condition=cond.title,
                         color_ids=[i for i in color_ids if i is not None], colors=colors, material_ids=mat_ids,

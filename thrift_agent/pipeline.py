@@ -14,7 +14,7 @@ from pathlib import Path
 
 import imagehash
 
-from thrift_agent import approve, brands, notify, photomem
+from thrift_agent import approve, brands, notify, photomem, titles
 from thrift_agent.brain import copy as copywriter, cover as cover_brain, labels, premium, sizes, taxonomy
 from thrift_agent.brain.extract import extract, strip_screenshot_evidence
 from thrift_agent.brain.gate import OTHER_CATEGORY_QUESTION, SIZE_NOTE, GateResult, evaluate
@@ -1486,6 +1486,27 @@ def size_question(s: Settings, facts: Facts, choice: tuple[str, str] | None) -> 
     return None
 
 
+TITLE_HELD = "title_held_said"      # kv: [item] — the "title can't be fixed" line said (WO50)
+
+
+def shop_window_title(s: Settings, title: str, facts: Facts, it=None) -> tuple[str, str | None]:
+    """WO50: the title passes the shop-window rules before any site sees it — the deterministic fix ran already (the
+    end of premium.title_with_feature); what still breaks them gets ONE model rewrite, fixed and checked again. Still
+    failing: the title is kept, the item's record notes it, and the posters hold it (`titles.blocked`). The owner's own
+    title (WO27) is hers: left as it is. (title, the note or None)."""
+    if it is not None and it["owner_title"]:
+        return title, None
+    problems = titles.check(title)
+    if not problems:
+        return title, None
+    new = titles.rewrite(s, title, facts, problems)
+    if new:
+        again = titles.shop_window(new, facts)
+        if not titles.check(again):
+            return again, None
+    return title, f"title breaks the shop-window rules: {'; '.join(problems)}"
+
+
 def size_menu_note(facts: Facts, choice: tuple[str, str] | None) -> str | None:
     """A size read that is on none of the category's size menus (WO25): no question (WO33) — the card shows it and the
     poster takes the nearest value of the menu; a reply 'size …' changes it."""
@@ -1554,24 +1575,19 @@ def _pieces_in(value: str | None) -> list[PieceSize]:
     return [PieceSize(piece=piece.strip(), size=size) for size, piece in found] if len(found) >= 2 else []
 
 
-DUAL_SIZE = re.compile(r"\s*(XXS|XS|S|M|L|XL|XXL|XXXL)\s*[/-]\s*(XXS|XS|S|M|L|XL|XXL|XXXL)\s*", re.I)
-
-
 def settle_dual_size(facts: Facts) -> Facts:
-    """WO49 (live 2026-10-24: a Bath & Body Works robe labelled "S/M", priced, skipped on all three sites — no menu has
-    "S/M"): a label's two sizes ("S/M", "M-L") are listed under the bigger one, as a set's (WO33, the owner's rule);
-    the label as printed stays in the description ("Label size: S/M.", copy.ensure_label_size). The owner's size
-    stands."""
+    """WO49/WO50 (live 2026-10-24: a Bath & Body Works robe labelled "S/M", priced, skipped on all three sites): a
+    label's two sizes — "S/M", "M/L", "XS/S", "0/2", "7/8", "8-10", "One Size (S–L)" — are listed under the bigger one,
+    as a set's (WO33, the owner's rule); the label as printed stays in the description ("Size S/M (fits S–M).",
+    copy.ensure_label_size) and on the card ("Size M (label S/M)"). The owner's size stands."""
+    from thrift_agent.post.fallback import dual_parts
     value = (facts.size_us.value or "").strip()
-    m = DUAL_SIZE.fullmatch(value)
-    if not m or facts.size_us.source == "owner":
+    parts = dual_parts(value)
+    if not parts or facts.size_us.source == "owner":
         return facts
-    size = sizes.bigger_size([m[1].upper(), m[2].upper()])
-    if size is None:
-        return facts
-    update = {"size_us": Ev(value=size, photos=facts.size_us.photos, source="derived", confidence=0.95)}
-    if not (facts.size_printed.value or "").strip():
-        update["size_printed"] = Ev(value=value.upper().replace(" ", ""), photos=facts.size_us.photos, source="photo",
+    update = {"size_us": Ev(value=parts[1], photos=facts.size_us.photos, source="derived", confidence=0.95)}
+    if not (facts.size_printed.value or "").strip() or dual_parts(facts.size_printed.value) is None:
+        update["size_printed"] = Ev(value=f"{parts[0]}/{parts[1]}", photos=facts.size_us.photos, source="photo",
                                     confidence=facts.size_us.confidence)
     return facts.model_copy(update=update)
 
@@ -1733,6 +1749,11 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
     final.poshmark_description = copywriter.ensure_piece_sizes(final.poshmark_description, facts)  # "Pants: size XS."
     final.depop_description = copywriter.ensure_piece_sizes(final.depop_description, facts)
     final.poshmark_style_tags = []                       # none, ever (the owner, 2026-10-12: "Coord Sets" deleted)
+    final.poshmark_title, title_note = shop_window_title(s, final.poshmark_title, tfacts, it)   # WO50
+    if title_note:
+        info.append(title_note)
+    final.poshmark_description = titles.display_in_text(final.poshmark_description, tfacts.brand.value)
+    final.depop_description = titles.display_in_text(final.depop_description, tfacts.brand.value)
     problems = lint(tfacts, final, shown, known_brands(tiers))
     if not audit.unsupported:
         # The gate only sees the verifier's self-reported count. A verifier that rewrites the text but reports

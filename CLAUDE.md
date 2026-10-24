@@ -1351,6 +1351,55 @@ it, git-ignored: `incidents/*/shots/`, `incidents/*/logs/`). What the code does 
   `tests/js/content.test.mjs`, `tests/test_crosslist_flow.py`, `tests/test_never_ask.py`, `tests/test_wo45.py`,
   `tests/api/test_api_wo45.py`, `tests/test_catalog_answers.py`.
 
+## Shop-window titles every site accepts; dual sizes always map (WO50, 2026-10-24)
+The owner's rule: "imagine a shop window downtown: people walking past read the label" — short, natural, nice to read;
+no shouting capitals, no codes or SKU-like strings, no odd letters; never dropping what matters (brand, what it is, the
+one feature that sells it, colour, size). Live: Vinted refused "BCBGMAXAZRIA New Black Slouchy Shoulder Bag Knotted
+Strap" ("Title contains too many capital letters", POST /api/v2/item_upload/items 400); a robe labelled "S/M" was
+skipped on all three sites though every menu had M.
+- **One checker, one fixer** (`thrift_agent/titles.py`; every site's rules in `data/site_rules.json`, §3): `check`
+  names what breaks a rule — an all-caps word of 4+ letters that isn't an acronym (the allow-list: UGG, H&M, DKNY,
+  NYDJ, BCBG, ASOS, XL…), capitals above 35% of the letters, a code (letters and digits mixed, "RN 54867", "SKU…", our
+  item ids, 5+ digit numbers; sizes like 34DD / W32 / 2-Piece stay), a repeated word, "size size", condition words but
+  "New", HTML artefacts, emoji / odd characters, a slash, over the site's length. `fix` repairs all of it
+  deterministically, the brand written as a shop sign writes it (`data/brand_display.json`: BCBGMAXAZRIA → BCBG Max
+  Azria, FARM Rio → Farm Rio, MNG (Mango) → Mango; else an all-caps word → a capital first), fitted to 80 without
+  dropping the brand, the size, the set phrase or the colours (premium.fit_title). **NWT** (the owner's example):
+  "BCBG Max Azria Black Slouchy Shoulder Bag Knotted Strap, New with Tags" — ", New with Tags" at the end when it
+  fits; NWOT keeps "New" after the brand.
+- **Vinted's capital limit, from its own answers:** it accepted all 70 of our titles up to 29% capitals ("FRAME Le
+  High Straight Jeans …") and refused 38%: the limit lies above 29% and at or below 38%. The fixer aims for 29% or less
+  (`caps_share_safe`: connecting words lower-case); the checker blocks only above 35% (`caps_share_max`), so real
+  acronyms are never held; after Vinted's own refusal the retry goes further (sentence case beyond the brand and
+  acronyms).
+- **Where it runs:** `titles.shop_window` ends `premium.title_with_feature` (every title, every path); the copy
+  prompt carries the shop-window rules and examples from this closet (golden answers re-recorded); a title still
+  failing gets ONE model rewrite in the pipeline (`pipeline.shop_window_title`, `titles.rewrite`); Vinted's title and
+  Depop's description first line (`catalogs.vinted.vinted_title`, `map_depop`, `crosslist.strict_title` at mapping)
+  and Poshmark's title before the form opens (`runner.shop_window_render`: an item processed before WO50 fixed there)
+  — a title that still breaks the rules never reaches a site (the item waits; one private line). Descriptions get the
+  shop-sign brand too (`titles.display_in_text`). The owner's own title (WO27) stays hers.
+- **A site's fixable refusal is fixed and retried once by itself** (`crosslist.autofix_refusal`, the refusals in
+  site_rules.json: Vinted's "too many capital letters", "title too long", forbidden characters): the row back in line,
+  its title stricter at the next mapping (`strict_level`), no 'retry' asked; posted → ONE private line "✓ Vinted had
+  refused … the title was fixed and it is live: …"; refused again → the usual ⛔ line, never a loop.
+- **The live titles reviewed once** (`thrift titles --review --send`): ONE private message, each title that breaks a
+  rule old → new; the owner's reply **"go titles"** (`approve._route_ops`, `titles.apply_review`; `thrift titles
+  --apply` its twin) queues a **"text" edit** per site (`edits.queue_text`, kind `text`): Poshmark `PoshmarkPoster.
+  set_text` (the edit page's title / description, Update → List This Item for THIS edit, the public JSON read until it
+  shows the title), Depop / Vinted `ExtensionPoster.set_text` (the extension's "text" job, `T.textSet`: Depop's title
+  is its description's first line; its blank edit-page fields refilled first), Save once, read back (`read_text`).
+  Each payload carries the text the site should show now (`expect_title` / `expect_first_line`): a title she changed
+  by hand is left as it is ("changed by hand? Left as it is."). The records follow (`edits._mirror`).
+- **Dual sizes always map** (`post/fallback.menu_size`, one order for every site): 1. the exact value; 2. the bigger of
+  a dual label ("S/M", "M/L", "XS/S", "0/2", "7/8", "8-10", "One Size (S–L)" — `dual_parts`, `bigger_of`); 3. the
+  nearest in the same system, one step at most; 4. One Size only for a one-size item (robes, scarves, bags, hats…).
+  At processing `pipeline.settle_dual_size` lists the bigger size; the description says "Size S/M (fits S–M)."
+  (`copy.ensure_label_size`), the card "Size M (label S/M)", the size buttons "S/M → M" as one choice; Depop's and
+  Vinted's mappers take the bigger too (`catalogs.sizes.undual`). A size no menu value fits: ONE private line naming
+  the size and the menu (`crosslist.say_size_skip`), the item posting on the other sites — never the group's 'retry'.
+- Tests: `tests/test_wo50.py`, the WO50 part of `tests/test_poshmark_form.py` and `tests/js/content.test.mjs`.
+
 ## A missed sale, a stuck share, a false stall (WO49, 2026-10-24)
 Live: the FARM Rio dress sold on POSHMARK on Oct 23 and stayed on Depop and Vinted for a day; her two shares of the
 morning waited 71 minutes; the worker was "restarted for a 21-hour stall" the moment the lid opened. Causes and fixes:

@@ -64,7 +64,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeout
 from thrift_agent import brands
 from thrift_agent.post.base import (AccountBlocked, Cancelled, Contains, Mode, Poster, PosterError, Skipped, human_type,
                                     keep_evidence, settle)
-from thrift_agent.post.fallback import matching, nearest_size
+from thrift_agent.post.fallback import matching, menu_size
 from thrift_agent.schema import Render
 
 # The condition menu's labels (verified). Poshmark has no "new without tags": unworn goes up as Like New. It has no
@@ -343,6 +343,15 @@ def _poshmark_page(url: str) -> tuple[bool | None, int | None]:
 PUBLIC_PAGE = _poshmark_page
 
 
+def _poshmark_text(url: str) -> dict | None:
+    """WO50: the public listing's title and description (crosslist.poshmark_listing), behind a name tests replace."""
+    from thrift_agent.crosslist import poshmark_listing
+    return poshmark_listing(url)
+
+
+PUBLIC_TEXT = _poshmark_text
+
+
 def _money(text: str | None) -> float | None:
     """WO41: a price field's text as a number ("$25", "25.00" → 25.0); None when it holds none."""
     m = re.search(r"\d+(?:\.\d+)?", (text or "").replace(",", ""))
@@ -460,6 +469,11 @@ async def _click(el: ElementHandle) -> None:
     """A real click on the element Poshmark listens on: a menu item's inner <a> when it has one."""
     inner = await el.query_selector("a")
     await (inner or el).click()
+
+
+def _squash(text: str | None) -> str:
+    """Text compared as text: line breaks and runs of spaces as one space (WO50: a description read back)."""
+    return " ".join(str(text or "").split())
 
 
 async def _type(loc: Locator, text: str) -> None:
@@ -738,7 +752,8 @@ class PoshmarkPoster(Poster):
         if not picked:
             if not sizes:
                 raise PosterError(f"the size menu for {where} shows no sizes")
-            guess = nearest_size(choice.button, sizes)
+            found = menu_size(choice.button, sizes, f"{r.subcategory or ''} {r.category or ''} {r.title or ''}")   # WO50
+            guess = found[0] if found else None
             if guess is None or not (await self._choose(page, SEL["size_buttons"](page), guess))[0]:
                 raise Skipped(f"size '{choice.button}' isn't on Poshmark's {where} menu, nor one near it"
                               f"{_offer(sizes, 30)} (the size is required)")
@@ -1729,6 +1744,75 @@ class PoshmarkPoster(Poster):
             if out["ok"]:
                 out["note"] = f"the public page shows {live['photos']} photos"
             return out
+        finally:
+            await page.close()
+
+    async def set_text(self, ctx: BrowserContext, url: str, payload: dict, dry: bool = False,
+                       shots: Path | None = None, go=None) -> dict:
+        """WO50: the listing's title and/or description changed on its edit page — nothing else. The page must still show
+        the text we posted (`expect_title` / `expect_description`: a title she changed by hand is never overwritten —
+        {"mismatch"}), the new text typed and read back, then Update and the Share Listing panel's List This Item for
+        THIS edit (WO40) once — never in a dry run, and only when `go()` says yes; then the public listing is read
+        until it shows the new title. {"ok", "saved", "mismatch", "error", "shot", "live_title"}."""
+        m = SEL["listing_url"].search(urlparse(url or "").path)
+        if m is None:
+            raise PosterError(f"not a Poshmark listing address: {url!r}")
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.shot = (shots or Path(".")) / f"{m['id']}-poshmark-{stamp}-text{'-dry' if dry else ''}.png"
+        out: dict = {"ok": False, "saved": False, "shot": str(self.shot)}
+        title, text = payload.get("title"), payload.get("description")
+        page = await ctx.new_page()
+        try:
+            resp = await page.goto(SEL["edit_url"].format(base=self.base_url, id=m["id"]))
+            await page.wait_for_load_state("domcontentloaded")
+            if resp is not None and resp.status == 404:
+                return {**out, "error": "the edit page is gone (404)"}
+            box, area = SEL["title"](page).first, SEL["description"](page).first
+            try:
+                await box.wait_for(state="visible", timeout=UPDATE_TIMEOUT_MS)
+            except PlaywrightTimeout:
+                await keep_evidence(page, self.shot, {"url": url, "found": False})
+                return {**out, "error": "no title field on the edit page"}
+            before_t = (await box.input_value()).strip()
+            before_d = (await area.input_value()).strip() if await area.count() else ""
+            out.update(title_before=before_t)
+            want_t, want_d = payload.get("expect_title"), payload.get("expect_description")
+            if (want_t and before_t != want_t.strip()) or (want_d and _squash(before_d) != _squash(want_d)):
+                await keep_evidence(page, self.shot, {"url": url, "title_before": before_t, "expected": want_t})
+                return {**out, "mismatch": before_t}
+            if title is not None:
+                await box.fill(title)
+            if text is not None:
+                await area.fill(text)
+            await settle(page)
+            after_t = (await box.input_value()).strip()
+            after_d = (await area.input_value()).strip() if await area.count() else ""
+            out.update(title_typed=after_t)
+            await keep_evidence(page, self.shot, {"url": url, "title_before": before_t, "title_typed": after_t,
+                                                  "dry": dry})
+            if title is not None and after_t != title.strip():
+                return {**out, "error": f"the title reads {after_t!r} after typing it: nothing saved"}
+            if text is not None and _squash(after_d) != _squash(text):
+                return {**out, "error": "the description reads otherwise after typing it: nothing saved"}
+            if dry:
+                return {**out, "ok": True}
+            if go is not None and not go():
+                return {**out, "error": "stopped before Save"}
+            await SEL["update_listing"](page).first.click()
+            out["saved"] = True
+            out["save"] = await self._save_edit(page, m["id"])
+            end = time.monotonic() + PUBLIC_CHECK_S * 3
+            live = None
+            while True:
+                live = await asyncio.to_thread(PUBLIC_TEXT, url)
+                shown = (live or {}).get("title")
+                if title is None or (shown and shown.strip() == title.strip()) or time.monotonic() >= end:
+                    break
+                await asyncio.sleep(PUBLIC_EVERY_S)
+            out["live_title"] = (live or {}).get("title")
+            await keep_evidence(page, self.shot.with_name(self.shot.stem + "-after.png"),
+                                {"url": url, "save": out["save"], "public_title": out["live_title"]})
+            return {**out, "ok": title is None or (out["live_title"] or "").strip() == title.strip()}
         finally:
             await page.close()
 

@@ -47,6 +47,22 @@ PUBLISH_NEEDS = frozenset({"submit"})                       # the supervised `--
 AUTOPUBLISH_NEEDS = frozenset({"submit", "after_publish"})  # the unattended loop: the landing page recorded too
 
 
+def _squash(text) -> str:
+    """Text compared as text (WO50): line breaks and runs of spaces as one space."""
+    return " ".join(str(text or "").split())
+
+
+def _text_shows(read: dict, payload: dict) -> bool:
+    """WO50: the edit page shows the new text (title and/or description) after Save."""
+    if not read:
+        return False
+    if payload.get("title") is not None and _squash(read.get("title")) != _squash(payload["title"]):
+        return False
+    if payload.get("description") is not None and _squash(read.get("description")) != _squash(payload["description"]):
+        return False
+    return True
+
+
 def describe_diff(diff: dict) -> str:
     """The pre-publish diff in words a person reads in the ❌ line and the group's ⏭ line (the Vinted incident of
     2026-10-20: "{'photos': ('8', '0'), 'photos_loaded': ('8', '0')}" named no step): "photos 0 of 8 on the form;
@@ -838,6 +854,112 @@ class ExtensionPoster(Poster):
                 and float(out["live_price"]) == float(old)):
             out["saved"] = False                    # refused, and the site still shows the old price: nothing saved
         return out
+
+    async def set_text(self, url: str, payload: dict, dry: bool = False, shots: Path | None = None, go=None,
+                       sku: str | None = None, fields: dict | None = None) -> dict:
+        """WO50: a listing's title and/or description changed on its edit page (the extension's "text" job; Depop's
+        title is its description's first line). The page must still show what we posted (`expect_title` /
+        `expect_first_line`, else nothing is typed: {"mismatch"}); Depop's blank edit-page fields are filled first from
+        the listing's own fields (WO41); the text typed and read back; then — never in a dry run, and only when `go()`
+        says yes — Save pressed ONCE, and the edit page read again (`read_text`). {"ok", "saved", "mismatch", "error",
+        "shot", "seen"}."""
+        edit = self.edit_url(url)
+        if edit is None:
+            return {"ok": False, "saved": False, "error": f"not a {self.site} listing address: {url}"}
+        if not await self.wait_connected():
+            raise PosterError(f"{self.site}: the Thrift Chrome extension isn't connected")
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.shot = (shots or Path(".")) / f"{sku or 'listing'}-{self.name}-{stamp}-text{'-dry' if dry else ''}.png"
+        bridge = self._bridge()
+        job = bridge.submit(self.name, "text", {"fields": fields or {}, "copy": {}, "price": None, "photos": [],
+                                                "listing_url": url, "edit_url": edit, "dry": dry,
+                                                **{k: v for k, v in payload.items()
+                                                   if k in ("title", "description", "expect_title", "expect_first_line")}},
+                            shot=self.shot)
+        job.listener = self._listen
+        try:
+            out = await self._text(bridge, job, url, payload, dry, go, sku)
+        finally:
+            if not job.done:
+                bridge.drop(job)
+                try:
+                    await bridge.settle(job, 5.0)
+                except BaseException:  # noqa: BLE001
+                    pass
+        return out
+
+    async def _text(self, bridge, job, url: str, payload: dict, dry: bool, go, sku) -> dict:
+        try:
+            ev = await self._await(job, ("ready", "result", "error"), job.created + bridge_mod.JOB_TIMEOUT)
+        except TimeoutError:
+            return {"ok": False, "saved": False, "error": "the edit page wasn't done in time: nothing saved"}
+        if ev.get("event") == "error":
+            if ev.get("page") in STOP_PAGES:
+                raise self._stop(ev)
+            return {"ok": False, "saved": False, "shot": self._kept(job, "form"),
+                    "error": f"{ev.get('stage') or 'edit'}: {ev.get('message')}"}
+        seen = ev.get("seen") or {}
+        out = {"ok": False, "saved": False, "shot": self._kept(job, "form"), "seen": seen,
+               "notes": ev.get("notes") or []}
+
+        def cancel() -> None:
+            if ev.get("event") == "ready":
+                bridge.command(job, "cancel")
+        if seen.get("mismatch"):
+            cancel()
+            return {**out, "mismatch": seen.get("title_before") or str(seen.get("description_before") or "")[:80]}
+        if payload.get("title") is not None and _squash(seen.get("title")) != _squash(payload["title"]):
+            cancel()
+            return {**out, "error": f"the title reads {seen.get('title')!r} after typing it: nothing saved"}
+        if payload.get("description") is not None and _squash(seen.get("description")) != _squash(payload["description"]):
+            cancel()
+            return {**out, "error": "the description reads otherwise after typing it: nothing saved"}
+        if dry or ev.get("event") == "result":
+            cancel()
+            return {**out, "ok": bool(dry)}
+        if (n := seen.get("submit_buttons")) != 1:
+            cancel()
+            return {**out, "error": f"the edit page's Save differs from the recording ({n} found): nothing saved"}
+        if go is not None and not go():
+            cancel()
+            return {**out, "error": "stopped before Save"}
+        self._say("go-ahead sent: Save once")
+        bridge.command(job, "submit")
+        out["saved"] = True
+        try:
+            ev = await job.wait(("result", "error"), AFTER_CLICK_MIN)
+        except (TimeoutError, asyncio.TimeoutError):
+            ev = {"event": "error", "message": "no page after Save"}
+        out["shot"] = self._kept(job, "after-publish", "refused", "form") or out["shot"]
+        if ev.get("event") == "error" and str(ev.get("message") or "").startswith("refused:"):
+            out["error"] = f"{self.site} refused the change ({ev['message'][len('refused: '):]})"
+        read = await self.read_text(url, None, sku)
+        out["after"] = read
+        out["ok"] = _text_shows(read, payload)
+        if not out["ok"] and out.get("error"):
+            out["saved"] = False                    # refused, and the page still shows the old text: nothing saved
+        return out
+
+    async def read_text(self, url: str, shots: Path | None = None, sku: str | None = None) -> dict:
+        """WO50: the edit page's title and description as they are (a read-only "text" job): {"title", "description"}
+        or {} when it can't be read."""
+        edit = self.edit_url(url)
+        if edit is None:
+            return {}
+        bridge = self._bridge()
+        job = bridge.submit(self.name, "text", {"fields": {}, "copy": {}, "price": None, "photos": [],
+                                                "listing_url": url, "edit_url": edit, "dry": True, "read_only": True})
+        try:
+            ev = await self._await(job, ("ready", "result", "error"), job.created + bridge_mod.JOB_TIMEOUT)
+        except TimeoutError:
+            return {}
+        finally:
+            if not job.done:
+                bridge.drop(job)
+        if ev.get("event") == "ready":
+            bridge.command(job, "cancel")
+        seen = ev.get("seen") or {}
+        return {"title": seen.get("title"), "description": seen.get("description")}
 
     async def set_fields(self, url: str, fields: dict, dry: bool = False, shots: Path | None = None, go=None,
                          sku: str | None = None) -> dict:

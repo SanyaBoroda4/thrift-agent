@@ -159,7 +159,11 @@ def map_depop(view: ItemView, ask=None) -> DepopFields:
     if package not in {p["name"] for p in cat.package_sizes}:
         raise MappingError(f"package size {package!r} isn't Depop's")
     tags = hashtags(view, colors, int(cat.form["description"]["max_hashtags"]))
-    text = description(r.title, r.description, tags, int(cat.form["description"]["max_chars"]))
+    from thrift_agent import titles                         # WO50: the first line is a shop-window title too
+    brand = (view.facts.brand.value or "").strip() or None
+    first = titles.for_site(r.title, "depop", brand=brand, condition=view.facts.condition)
+    text = description(first, titles.display_in_text(r.description, brand), tags,
+                       int(cat.form["description"]["max_chars"]))
     return DepopFields(category=path, description=text, hashtags=tags, brand=r.brand, brand_label=r.brand_label,
                        size=size, size_set=sid,
                        condition=condition, colors=colors, source=source, age=age, attributes=attrs,

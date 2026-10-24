@@ -404,7 +404,7 @@ async function fetchPhotos(urls) {
 }
 
 function urlFor(job, site) {
-  if (["cover", "price", "fields", "photos"].includes(job.mode)) return job.edit_url;   // WO37/41/43/45: the edit page
+  if (["cover", "price", "fields", "photos", "text"].includes(job.mode)) return job.edit_url;   // WO37/41/43/45/50: edit page
   if (job.mode === "orders") return job.orders_url;                  // WO38: the sold orders, read only
   if (["verify", "delist", "probe", "practice"].includes(job.mode)) return job.listing_url;
   if (job.mode === "find") return site.shop_url.replace("{shop}", encodeURIComponent(job.shop || ""));

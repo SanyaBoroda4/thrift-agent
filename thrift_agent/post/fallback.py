@@ -38,6 +38,56 @@ def nearest_size(want: str, offered: list[str]) -> str | None:
     return best[2] if best and best[0] <= MAX_STEP else None
 
 
+LETTERS = ("XXS", "XS", "S", "M", "L", "XL", "XXL", "XXXL")
+DUAL = re.compile(r"^\s*(?:one\s*size\s*\(\s*)?(XXS|XS|S|M|L|XL|XXL|XXXL|\d{1,2})\s*(?:/|-|–|—|to)\s*"
+                  r"(XXS|XS|S|M|L|XL|XXL|XXXL|\d{1,2})\s*\)?\s*$", re.I)
+ONE_SIZE_ITEMS = re.compile(r"\b(robes?|scarf|scarves|bags?|totes?|clutch|purse|wallets?|hats?|beanies?|caps?|bandanas?|"
+                            r"shawls?|wraps?|ponchos?|gloves?|mittens?|sunglasses|keychains?|jewelry|necklaces?|"
+                            r"bracelets?|earrings?|headbands?|belts?)\b", re.I)
+
+
+def dual_parts(size: str | None) -> tuple[str, str] | None:
+    """WO50: a label's two sizes — "S/M", "M/L", "XS/S", "0/2", "7/8", "8-10", "One Size (S–L)" — as (smaller, bigger)
+    in the label's own spelling; None for one size."""
+    m = DUAL.match(str(size or ""))
+    if not m:
+        return None
+    a, b = m[1].upper(), m[2].upper()
+    if a.isdigit() != b.isdigit():
+        return None
+    if a.isdigit():
+        return (a, b) if int(a) <= int(b) else (b, a)
+    return (a, b) if LETTERS.index(a) <= LETTERS.index(b) else (b, a)
+
+
+def bigger_of(size: str | None) -> str | None:
+    """The bigger size of a dual label ("S/M" → "M", "8-10" → "10"), else None."""
+    parts = dual_parts(size)
+    return parts[1] if parts else None
+
+
+def menu_size(want: str, offered: list[str], item_type: str | None = None) -> tuple[str, str] | None:
+    """WO50: the menu value for `want`, in the owner's order — (the value, how) or None when no value is reasonable:
+    1. the exact value ("exact"); 2. the bigger size of a dual label ("S/M" → "M": "bigger of S/M"); 3. the nearest size
+    in the same system, one step at most ("nearest"); 4. One Size — only for an item that really is one-size (robes,
+    scarves, bags, hats…: "one size"). Never a size of another system."""
+    keyed = {_key(o): o for o in offered if o}
+    if want and _key(want) in keyed:
+        return keyed[_key(want)], "exact"
+    if (big := bigger_of(want)) is not None:
+        if _key(big) in keyed:
+            return keyed[_key(big)], f"the bigger of {want}"
+        if (near := nearest_size(big, offered)) is not None:
+            return near, f"near the bigger of {want}"
+    if want and (near := nearest_size(want, offered)) is not None:
+        return near, "nearest"
+    if item_type and ONE_SIZE_ITEMS.search(item_type):
+        for o in offered:
+            if re.fullmatch(r"\s*(?:one\s*size|os|o/s)\s*", o or "", re.I):
+                return o, "one size"
+    return None
+
+
 def _key(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", re.sub(r"\band\b", "&", str(text).lower()))
 

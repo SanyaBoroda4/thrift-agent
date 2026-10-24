@@ -81,15 +81,23 @@ BRAND
 - brand_label: exactly what the label says ("alo", "MNG"); empty when the facts have no brand.
 
 POSHMARK
-- Title ≤80 chars: the Brand FIRST, always; then item type, standout detail/material, color, then "size X" (US
-  size). Include the style name when known — buyers search for it (e.g. "Birkenstock Arizona ...").
-  "New" only for NWT/NWOT, right after the brand ("Naked Wardrobe New Leopard Catsuit ..."), never before it.
-  Use the room — short titles don't get found.
+- Title — a shop window downtown: people walking past read the label. Short, natural and nice to read: 50–70
+  characters, never over 80. The Brand FIRST, always, written as a shop sign writes it, never the label's
+  all-caps logo ("BCBG Max Azria", not "BCBGMAXAZRIA"; "Farm Rio", not "FARM Rio"); real acronyms stay (UGG,
+  H&M, DKNY). Then what it is, the one feature that sells it, colour, then "size X" (US size); each word starts
+  with a capital letter. Include the style name when known — buyers search for it (e.g. "Birkenstock Arizona ...").
+  NWT: the title ends with ", New with Tags"; NWOT: "New" right after the brand; a used item never says "New".
+  Never in a title: style or model numbers and codes (letters mixed with digits, "RN 54867", "SKU …"), item ids,
+  emoji, slashes ("Black & Green", not "Black/Green"), "&amp;"-style artefacts, stacked adjectives, a repeated word,
+  "size size", condition words other than "New" (no NWT, EUC, "like new").
+  Good titles from this closet: "Farm Rio Zodiac Print Maxi Dress Black Red Balloon Sleeve size M" · "Mango Satin
+  Button-Down Blouse Camel Brown Patch Pocket size 4" · "UGG Suede Platform Slippers Tan & Sage Green size 7" ·
+  "BCBG Max Azria Black Slouchy Shoulder Bag, New with Tags".
   Two garments sold together (a top with a skirt, shorts or pants; set_pieces in the facts) are a "2-Piece Set" in
   the title ("... Corset Top & Bubble Skirt 2-Piece Set size M"; 3 pieces: "3-Piece Set").
   No brand in the facts (unreadable, or the owner says the item has none): the title starts with the item, and no
   brand or designer name appears anywhere — never one guessed from the style.
-  Decimal sizes use a dot (7.5), never a comma. No emojis, no ALL CAPS words except brand styling.
+  Decimal sizes use a dot (7.5), never a comma.
 - short_name: the item's name for the owner's chat — brand + item, at most 6 words, no size,
   no colour ("MNG Knit Cardigan & Pants Set", "Tory Burch Ballet Flats").
 - Sizes in the TITLE are US only, never EU: adults end with title_size ("size 7.5"); kids shoes use title_size
@@ -232,6 +240,7 @@ def title_order(title: str, facts: Facts) -> str:
     """The brand FIRST (WO27; e.g. "100% Merino New J.Crew Wide Leg Sweater Pants Blue size M"): moved to the front
     from wherever the copy put it, spelled as the facts spell it, added when missing. "New" / "NWT" / "NWOT" — only for
     NWT and NWOT — right after the brand, never before it; a used item never says it. The rest keeps its order."""
+    title = re.sub(r",?\s*\bNew\s+with(?:out)?\s+Tags\b", " New", title, flags=re.I)   # WO50's ending: one "New" here
     words = re.sub(r"\bbrand\s+new\b", "New", title, flags=re.I).split()     # "Brand New" is one "New"
     brand = (facts.brand.value or "").strip()
     span = _brand_span(words, brand) if brand else None
@@ -388,11 +397,12 @@ def ensure_label_size(description: str, facts: Facts) -> str:
     "Label size: 4 ans / 104 cm." — the buyer sees the US size on the listing and what the garment itself says.
     Nothing when the description already quotes the label, or the size didn't come from the table."""
     printed = (facts.size_printed.value or "").strip()
-    dual = bool(re.fullmatch(r"\s*(?:XXS|XS|S|M|L|XL|XXL|XXXL)\s*[/-]\s*(?:XXS|XS|S|M|L|XL|XXL|XXXL)\s*", printed, re.I))
+    from thrift_agent.post.fallback import dual_parts
     if not printed or printed.lower() in description.lower():
         return description
-    if dual:                                    # WO49: a label's two sizes ("S/M"), listed under the bigger one
-        return f"{description.rstrip()}\nLabel size: {printed}."
+    if (parts := dual_parts(printed)) is not None:          # WO50: "Size S/M (fits S–M)."
+        line = f"Size {printed} (fits {parts[0]}–{parts[1]})."
+        return description if line.lower() in description.lower() else f"{description.rstrip()}\n{line}"
     if facts.department != "Kids" or facts.category.strip().lower() == "shoes" or kids_clothing_size(printed) is None:
         return description
     return f"{description.rstrip()}\nLabel size: {printed}."

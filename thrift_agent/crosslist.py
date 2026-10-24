@@ -335,6 +335,8 @@ def record(s: Settings, db: DB, iid: str, mp: str, title: str, out, fields: dict
     progress = f"\n{' · '.join(lines)}" if lines else ""
     if out.status == "failed" and out.clicked and not out.url:
         unconfirmed_wait(db, iid, mp, out.screenshot)     # WO35 §4: no question — the site's own data settles it
+    elif out.status == "failed" and refused(error) and autofix_refusal(db, iid, mp, title, error):
+        pass                                             # WO50: fixed by the code and retried once — no 'retry' asked
     elif out.status == "failed" and refused(error):
         was = unconf_state(db, iid, mp) or {}
         if silent_refusal(error) and was.get("stage") != "reposted":
@@ -370,6 +372,76 @@ def record(s: Settings, db: DB, iid: str, mp: str, title: str, out, fields: dict
                                f"{fields_summary(fields)}{progress}{note}")
     elif out.status == "posted" and (worth := noteworthy(out.note)):
         notify.ops_photo(shot, f"{LABEL[mp]} posted ({iid}) {out.url}: {worth}")
+    if out.status == "posted":
+        autofix_posted(db, iid, mp, fields)
+
+
+AUTOFIX = "title_autofix"          # kv: {item|site: {"fix", "error", "stage": "retry"|"done"}} (WO50)
+
+
+def autofix_refusal(db: DB, iid: str, mp: str, title: str, error: str | None) -> bool:
+    """WO50: a refusal the code can fix itself (data/site_rules.json "refusals": Vinted's "too many capital letters", a
+    title too long, characters a site rejects) — the row back in line ONCE, its title made stricter at the next
+    mapping (`strict_title`); the owner is never asked to reply 'retry' for it. A second refusal after that retry is
+    the usual ⛔ line (no loop). True when it was taken here."""
+    from thrift_agent import titles
+    said = (error or "").split(REFUSED, 1)[-1]
+    fix = titles.fixable(mp, said)
+    state = loads(db.kv_get(AUTOFIX)) or {}
+    key = f"{iid}|{mp}"
+    if not fix or key in state:
+        if key in state:
+            state[key]["stage"] = "done"
+            db.kv_set(AUTOFIX, json.dumps(state))
+        return False
+    state[key] = {"fix": fix, "error": said[:300], "stage": "retry", "title": title}
+    db.kv_set(AUTOFIX, json.dumps(state))
+    db.upsert_listing(iid, mp, status="queued", error=None)
+    db.log(iid, "refused_autofix", {"mp": mp, "fix": fix, "error": said[:300]})
+    return True
+
+
+def strict_level(db: DB, iid: str, mp: str) -> int:
+    return 1 if ((loads(db.kv_get(AUTOFIX)) or {}).get(f"{iid}|{mp}") or {}).get("stage") == "retry" else 0
+
+
+def strict_title(db: DB, iid: str, mp: str, fields, view):
+    """WO50: the mapped title (Vinted's title, Depop's description's first line) passes the site's rules before the
+    form opens — stricter after the site refused it (`strict_level`). A title that still breaks them never reaches the
+    site: MappingError (this marketplace skipped, said)."""
+    from thrift_agent import titles
+    from thrift_agent.catalogs.common import MappingError
+    level = strict_level(db, iid, mp)
+    facts = getattr(view, "facts", None)
+    brand = ((facts.brand.value or "").strip() or None) if facts is not None else None
+    condition = facts.condition if facts is not None else None
+    if mp == "vinted":
+        if not getattr(fields, "title", None):
+            return fields
+        fields.title = titles.for_site(fields.title, "vinted", level, brand, condition)
+        current = fields.title
+    elif not getattr(fields, "description", None):
+        return fields
+    else:
+        first, _, rest = (fields.description or "").partition("\n")
+        first = titles.for_site(first, "depop", level, brand, condition)
+        fields.description = f"{first}\n{rest}" if rest else first
+        current = first
+    if problems := titles.check(current, mp):
+        raise MappingError(f"the title breaks {LABEL.get(mp, mp)}'s rules ({'; '.join(problems)}): {current}")
+    return fields
+
+
+def autofix_posted(db: DB, iid: str, mp: str, fields: dict) -> None:
+    """WO50: a form the site had refused, fixed by the code and now live — ONE private line with what changed."""
+    state = loads(db.kv_get(AUTOFIX)) or {}
+    entry = state.pop(f"{iid}|{mp}", None)
+    if entry is None:
+        return
+    db.kv_set(AUTOFIX, json.dumps(state))
+    new = fields.get("title") or str(fields.get("description") or "").split("\n", 1)[0]
+    notify.say(f"✓ {LABEL.get(mp, mp)} had refused {entry.get('title') or iid} ({entry.get('error')}); the title was "
+               f"fixed and it is live: {new}")
 
 
 def refused(error: str | None) -> bool:
@@ -495,7 +567,32 @@ def skip_unmappable(db: DB, iid: str, mp: str, title: str, why: str) -> None:
     if why == NO_SIZE:                                   # WO37: one line for the item, not one per site
         say_no_size(title)
         return
+    if size_skip(why):                                   # WO50: the size and the menu named, once
+        say_size_skip(db, iid, mp, title, why)
+        return
     notify.say(f"⏭ {LABEL[mp]} skipped ({iid}): {title}\ncan't map: {why}")
+
+
+SIZE_SKIP = re.compile(r"size '?[^']*'? (?:isn't on|has no place on)|waist \S+ isn't on", re.I)
+SIZE_SKIP_SAID = "size_skip_said"         # kv: [item|site] (WO50)
+
+
+def size_skip(error: str | None) -> bool:
+    """WO50: a site skipped the item because its size fits none of the menu's values."""
+    return bool(SIZE_SKIP.search(error or ""))
+
+
+def say_size_skip(db: DB, iid: str, mp: str, title: str, error: str | None) -> None:
+    """WO50: ONE private line per item and site — the size and the menu named; the item posts on the other sites, and
+    a reply 'size …' to its card lists it here too (it puts every skipped site back in line)."""
+    said = loads(db.kv_get(SIZE_SKIP_SAID)) or []
+    key = f"{iid}|{mp}"
+    if key in said:
+        return
+    db.kv_set(SIZE_SKIP_SAID, json.dumps([*said, key][-300:]))
+    why = str(error or "").replace(SKIPPED, "").strip()
+    notify.say(f"📏 {title}: {LABEL.get(mp, mp)} has no reasonable value for its size ({why}) — it goes up on the "
+               "other sites; reply 'size …' to its card to list it here too.")
 
 
 # ---------------------------------------------------------------- the group's one line per item
@@ -830,7 +927,8 @@ def poshmark_listing(url: str) -> dict | None:
             "subcategory": (features[0].get("display") if features and isinstance(features[0], dict) else None),
             "size": d.get("size"), "for_sale": status == "available" if status else None,
             "status": status or None, "sold": "sold" in status,          # WO49: sold_out vs not_for_sale
-            "photos": photos, "price": price}
+            "photos": photos, "price": price,
+            "title": d.get("title"), "description": d.get("description")}     # WO50: a text edit read back
 
 
 def poshmark_cover(url: str) -> str | None:

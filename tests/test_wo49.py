@@ -318,7 +318,7 @@ def test_a_labels_two_sizes_list_under_the_bigger_one_and_the_description_keeps_
                  size_us=Ev(value="S/M", photos=[2], source="photo", confidence=0.9))
     out = pipeline.settle_dual_size(robe)
     assert out.size_us.value == "M" and out.size_us.source == "derived" and out.size_printed.value == "S/M"
-    assert copywriter.ensure_label_size("Plush robe.", out).endswith("\nLabel size: S/M.")
+    assert copywriter.ensure_label_size("Plush robe.", out).endswith("\nSize S/M (fits S–M).")    # WO50's line
     assert pipeline.settle_dual_size(facts(size_us=Ev(value="M-L", source="photo", confidence=0.9))).size_us.value == "L"
     owner = facts(size_us=Ev(value="S/M", source="owner", confidence=1.0))
     assert pipeline.settle_dual_size(owner).size_us.value == "S/M"                  # the owner's size stands
@@ -330,7 +330,7 @@ def test_vinted_titles_lose_a_shouting_brand_only_when_capitals_dominate():
     too many capital letters"."""
     from thrift_agent.catalogs.vinted import vinted_title
     assert vinted_title("BCBGMAXAZRIA New Black Slouchy Shoulder Bag Knotted Strap") == \
-        "Bcbgmaxazria New Black Slouchy Shoulder Bag Knotted Strap"
+        "BCBG Max Azria New Black Slouchy Shoulder Bag Knotted Strap"          # WO50: the shop-sign spelling
     for ok in ("UGG Tasman Slippers Chestnut size 7", "Levi's 501 Cutoff Denim Shorts size 26",
                "J. Crew 100% Merino Wide Leg Sweater Pants Blue size M"):
         assert vinted_title(ok) == ok
@@ -365,7 +365,8 @@ def test_a_listing_taken_down_or_sold_is_never_posted_again(env, monkeypatch):
     from thrift_agent.post import runner
     s, db, clock, said, group = env
     monkeypatch.setattr(Settings, "is_prod", property(lambda self: True))
-    monkeypatch.setattr(runner.Render, "model_validate", classmethod(lambda cls, d: d))
+    from types import SimpleNamespace
+    monkeypatch.setattr(runner.Render, "model_validate", classmethod(lambda cls, d: SimpleNamespace(**d)))
     s.data.setdefault("marketplaces", {}).setdefault("poshmark", {})["autopublish"] = True
     _listing(db, "i_261021_382586", "poshmark", status="queued")
     db.conn.execute("UPDATE items SET status='ready', owner_price=145, renders=? WHERE id='i_261021_382586'",

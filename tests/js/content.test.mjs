@@ -1809,3 +1809,32 @@ test("Depop: a package size moved below ours before the click is chosen again; o
   assert.match(note.text, /^package 'Medium' at the click, below the plan \(Large\) — Depop's own choice; check the label when it sells/);
   assert.ok(q.events().some((e) => e.event === "step" && e.name === "submit" && e.clicked));
 });
+
+
+// WO50: a listing's title / description changed on its edit page — only when the page still shows what we posted
+test("Vinted and Depop: a 'text' job types the new title / first line, never over a text changed by hand (WO50)", async () => {
+  const NEW = "BCBG Max Azria Black Slouchy Shoulder Bag, New with Tags";
+  const p = page("vinted", undefined, undefined, { ai: false });
+  p.d.querySelector("[data-testid='title--input']").value = "BCBGMAXAZRIA New Black Slouchy Shoulder Bag";
+  await run(p, { job_id: "vinted-text", site: "vinted", mode: "text", dry: true, title: NEW,
+                 expect_title: "BCBGMAXAZRIA New Black Slouchy Shoulder Bag", fields: {}, copy: {} });
+  let r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(r.seen.title, NEW);
+  assert.equal(r.seen.mismatch, false);
+  const q = page("vinted", undefined, undefined, { ai: false });
+  q.d.querySelector("[data-testid='title--input']").value = "Her own title";
+  await run(q, { job_id: "vinted-text-2", site: "vinted", mode: "text", dry: true, title: NEW,
+                 expect_title: "BCBGMAXAZRIA New Black Slouchy Shoulder Bag", fields: {}, copy: {} });
+  r = plain(q.last());
+  assert.equal(r.seen.mismatch, true);
+  assert.equal(q.d.querySelector("[data-testid='title--input']").value, "Her own title");      // nothing typed
+  const d = page("depop", undefined, undefined, { ...DEPOP_FIX, ai: false });
+  d.d.querySelector("textarea#description").value = "BCBGMAXAZRIA New Black Slouchy Shoulder Bag\n\nA bag.";
+  await run(d, { job_id: "depop-text", site: "depop", mode: "text", dry: true,
+                 description: `${NEW}\n\nA bag.`, expect_first_line: "BCBGMAXAZRIA New Black Slouchy Shoulder Bag",
+                 fields: {}, copy: {} });
+  r = plain(d.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(r.seen.description, `${NEW}\n\nA bag.`);
+});

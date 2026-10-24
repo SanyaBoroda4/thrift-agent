@@ -755,6 +755,35 @@ def login(site: str = "poshmark") -> None:
 
 
 @app.command()
+def titles(review: bool = typer.Option(False, "--review", help="every live title checked against the shop-window rules"),
+           send: bool = typer.Option(False, "--send", help="with --review: the one private message (old → new)"),
+           apply: bool = typer.Option(False, "--apply", help="the reviewed new titles queued on the sites ('go titles')"),
+           check: str = typer.Option(None, "--check", help="one title checked and fixed (nothing changed)")) -> None:
+    """WO50: shop-window titles. --check "<title>": what breaks the rules and the fixed title. --review [--send]: every
+    live title checked; the ones that break a rule, old → new (with --send: ONE private message; the owner's reply
+    'go titles' applies them). --apply: the reviewed titles queued as edits (the twin of 'go titles')."""
+    from thrift_agent import titles as titles_mod
+    s, db = settings(), _db()
+    if check:
+        print(f"problems: {escape('; '.join(titles_mod.check(check)) or 'none')}")
+        print(f"fixed:    {escape(titles_mod.fix(check))}")
+        return
+    if review:
+        rows = titles_mod.review(db)
+        text = titles_mod.review_message(rows)
+        print(escape(text))
+        if send:
+            notify.say(text)
+            db.log(None, "titles_reviewed", {"items": len(rows)})
+        return
+    if apply:
+        made = titles_mod.apply_review(s, db)
+        print(f"{len(made)} title edit(s) queued — the running poster makes them")
+        return
+    raise typer.BadParameter("--check, --review or --apply")
+
+
+@app.command()
 def doctor() -> None:
     """WO49: the agent's health on one screen — the worker's progress, what waits (iCloud, the local upload intake,
     Azure), the extension, each site, the take-downs still open, today's shares. Read only. Also a reply "doctor" in

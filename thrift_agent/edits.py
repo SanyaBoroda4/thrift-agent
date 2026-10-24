@@ -23,7 +23,7 @@ from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads, new_id
 from thrift_agent.schema import Facts, Render
 
-KINDS = ("category", "photos")        # WO43: a department / category change; WO45 §6: photos added to a live listing
+KINDS = ("category", "photos", "text")   # WO43: a category change; WO45 §6: photos added; WO50: a title / description
 MAX_ATTEMPTS = 3
 RETRY_AFTER = timedelta(hours=1)
 OPEN = ("pending", "saving", "unconfirmed")
@@ -210,6 +210,9 @@ async def run_one(s: Settings, db: DB, site: str, poster, ctx, sites: list[str],
     dry = bool(row["dry"])
     label = crosslist.LABEL.get(site, site)
     what = (f"{payload.get('add')} more photo{'s' if payload.get('add') != 1 else ''}" if row["kind"] == "photos"
+            else f"titled “{payload.get('title') or payload.get('first_line')}”"
+            if row["kind"] == "text" and (payload.get("title") or payload.get("first_line"))
+            else "with its new description" if row["kind"] == "text"
             else path_text(payload.get("path") or payload.get("want") or {}) or row["kind"])
     shots = s.path("failed") / "shots"
     shots.mkdir(parents=True, exist_ok=True)
@@ -238,7 +241,18 @@ async def run_one(s: Settings, db: DB, site: str, poster, ctx, sites: list[str],
         return True
 
     try:
-        if row["kind"] == "photos":
+        if row["kind"] == "text":                               # WO50: the title / description, nothing else
+            if site == "poshmark":
+                out = await poster.set_text(ctx, url, payload, dry=dry, shots=shots, go=go)
+            else:
+                out = await poster.set_text(url, payload, dry=dry, shots=shots, go=go, sku=iid,
+                                            fields=loads(listing["fields_json"]) or {})
+            if out.get("mismatch") is not None:
+                _skip(db, row, f"the site shows another text than we posted (changed by hand?): {out['mismatch']}")
+                notify.say(f"✏️ {title} on {label}: the listing shows another title than we posted — changed by hand? "
+                           "Left as it is.")
+                return True
+        elif row["kind"] == "photos":
             if site == "poshmark":
                 out = await poster.set_photos(ctx, url, payload, dry=dry, shots=shots, go=go)
             else:
@@ -258,7 +272,8 @@ async def run_one(s: Settings, db: DB, site: str, poster, ctx, sites: list[str],
     if dry:
         _update(db, row["id"], status="done" if out.get("ok") else "failed", done_at=_iso(_now()),
                 error=out.get("error"), evidence=evidence)
-        notify.say(f"{'Photos' if row['kind'] == 'photos' else 'Category'} dry run on {label} — {title} → {what}: "
+        kind = {"photos": "Photos", "text": "Title"}.get(row["kind"], "Category")
+        notify.say(f"{kind} dry run on {label} — {title} → {what}: "
                    + ("filled in on the edit page, not saved" if out.get("ok") else f"not filled: {out.get('error')}")
                    + (f" · {Path(evidence).name}" if evidence else "")
                    + (f" · seen: {out.get('seen')}" if out.get("seen") else ""))
@@ -285,6 +300,13 @@ async def _shows(site: str, poster, url: str, payload: dict, iid: str, shots: Pa
     (a read-only "fields" job, or the photo count for a "photos" edit)."""
     import asyncio
     want = payload.get("want") or {}
+    if "title" in payload or "description" in payload:            # WO50: the title / description
+        if site == "poshmark":
+            live = await asyncio.to_thread(crosslist.poshmark_listing, url) or {}
+            return bool(payload.get("title") is None or " ".join(str(live.get("title") or "").split())
+                        == " ".join(str(payload["title"]).split()))
+        from thrift_agent.post.ext_driver import _text_shows
+        return _text_shows(await poster.read_text(url, shots, iid), payload)
     if "files" in payload:                                        # WO45 §6: the photo count
         need = int(payload.get("had") or 0) + int(payload.get("add") or 0)
         if site == "poshmark":
@@ -314,6 +336,25 @@ def _mirror(db: DB, iid: str, site: str, payload: dict) -> None:
             fields["photos"] = fields["photos"][:max(live, len(fields["photos"]) - len(payload["files"]))]
         db.upsert_listing(iid, site, fields_json=fields, photos_live=live, photos_read_at=_iso(_now()))
         return
+    if "title" in payload or "description" in payload:            # WO50: the text the site now shows
+        if site == "poshmark":
+            it = db.item(iid)
+            renders = (loads(it["renders"]) or {}) if it is not None else {}
+            posh = renders.get("poshmark") or {}
+            if payload.get("title") is not None:
+                posh["title"] = payload["title"]
+            if payload.get("description") is not None:
+                posh["description"] = payload["description"]
+            if posh:
+                renders["poshmark"] = posh
+                db.set_item(iid, renders=renders)
+        else:
+            if payload.get("title") is not None and site == "vinted":
+                fields["title"] = payload["title"]
+            if payload.get("description") is not None:
+                fields["description"] = payload["description"]
+            db.upsert_listing(iid, site, fields_json=fields)
+        return
     if site == "poshmark":
         fields.update({k: v for k, v in (payload.get("want") or {}).items() if k != "size"})
     else:
@@ -329,6 +370,45 @@ def queue_photos(s: Settings, db: DB, iid: str, site: str, files: list[str], had
     if not files:
         return []
     return queue(db, iid, "photos", {site: {"files": files, "had": had, "add": len(files), "limit": limit}}, dry=dry)
+
+
+def queue_text(db: DB, iid: str, title: str | None = None, sites: list[str] | None = None,
+               descriptions: dict[str, str] | None = None, dry: bool = False) -> list[str]:
+    """WO50: one "text" edit per site the item is live on — the new title (Poshmark and Vinted: their title; Depop:
+    its description's first line, the rest kept) and/or a new description per site (`descriptions`). Each carries the
+    text the site should show now (`expect_title` / `expect_first_line`): a listing she changed by hand is left as it
+    is (`run_one`). Returns the rows made."""
+    it = db.item(iid)
+    posh = ((loads(it["renders"]) or {}).get("poshmark") or {}) if it is not None else {}
+    payloads: dict[str, dict] = {}
+    for row in db.listings_for(iid):
+        site = row["marketplace"]
+        if row["status"] != "posted" or not row["url"] or (sites and site not in sites):
+            continue
+        fields = loads(row["fields_json"]) or {}
+        desc = (descriptions or {}).get(site)
+        if site == "poshmark":
+            p = {"expect_title": posh.get("title")}
+            if title:
+                p["title"] = title
+            if desc is not None:
+                p["description"] = desc
+        elif site == "vinted":
+            p = {"expect_title": fields.get("title")}
+            if title:
+                p["title"] = title
+            if desc is not None:
+                p["description"] = desc
+        else:                                                     # Depop: the first line is the title
+            body = desc if desc is not None else str(fields.get("description") or "")
+            old_first = str(fields.get("description") or "").split("\n", 1)[0]
+            first, sep, rest = body.partition("\n")
+            p = {"expect_first_line": old_first, "description": f"{title}{sep}{rest}" if title else body}
+            if title:
+                p["first_line"] = title                           # the title, for the lines (Depop has no field)
+        if p.get("title") is not None or p.get("description") is not None:
+            payloads[site] = p
+    return queue(db, iid, "text", payloads, dry=dry)
 
 
 def listing_text(db: DB) -> list[str]:

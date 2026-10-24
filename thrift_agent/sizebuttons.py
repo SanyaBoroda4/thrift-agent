@@ -106,6 +106,10 @@ def guess(db: DB, facts: Facts, values: list[str]) -> str | None:
     size, else the middle of the menu."""
     if not values:
         return None
+    from thrift_agent.post.fallback import bigger_of
+    for raw in (facts.size_printed.value, facts.size_us.value, getattr(facts, "size_guess", None)):
+        if (big := bigger_of(raw)) is not None and (found := next((v for v in values if v.upper() == big), None)):
+            return found                                 # WO50: a dual label is one choice — its bigger size
     if (v := history_guess(db, facts, values)) is not None:
         return v
     if (hint := model_guess(facts, values)) is not None:
@@ -181,7 +185,10 @@ def offer(db: DB, it, facts: Facts | None = None) -> dict | None:
                                                                                   len(values) - SHOWN))
     start = max(0, min(int(start), max(0, len(values) - SHOWN)))
     width = len(letters) if system == "letters" and start == 0 and len(letters) <= SHOWN else SHOWN
+    from thrift_agent.post.fallback import bigger_of, dual_parts
+    dual = next((r for r in (facts.size_printed.value, facts.size_us.value) if dual_parts(r)), None)
     return {"values": values, "star": star, "system": system, "tab": tab, "start": start,
+            "dual": f"{dual_parts(dual)[0]}/{dual_parts(dual)[1]}" if dual and bigger_of(dual) == star else None,
             "shown": values[start:start + width], "eu": {v: eu_label(v, facts) for v in values}
             if facts.category == "Shoes" else {}}
 
@@ -206,6 +213,8 @@ def label(o: dict, v: str, chosen: str | None) -> str:
     base = v
     if eu := (o.get("eu") or {}).get(v):
         base = f"{v} · {eu}"
+    if o.get("dual") and v == o.get("star"):              # WO50: "S/M → M", one choice, taken on all three sites
+        base = f"{o['dual']} → {v}"
     if chosen is not None and v == chosen:
         return f"✓ {base}"
     return f"⭐{base}" if v == o["star"] else base

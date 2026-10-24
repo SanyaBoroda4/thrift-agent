@@ -239,7 +239,8 @@ def title_with_feature(title: str, facts: Facts, cfg: dict) -> str:
     keep = [brand, best.phrase if best else "", sizes.title_size(facts) or "",
             f"{facts.set_pieces}-Piece Set" if facts.set_pieces else "",
             *(form for noun in nouns for form in (noun, noun.rstrip("s"), noun + "s")), *colours]
-    return fit_title(new, keep)
+    from thrift_agent import titles                         # WO50: the shop-window rules, every title, every site
+    return titles.shop_window(fit_title(new, keep), facts)
 
 
 def feature_lines(facts: Facts, cfg: dict) -> list[str]:

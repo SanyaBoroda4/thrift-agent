@@ -607,7 +607,7 @@
       if (page !== "listing") return fail("probe", "unknown", `not a listing page: ${location.href}`);
       return site.probe(job, st);
     }
-    if (page !== "form" && ["cover", "price", "fields", "photos"].includes(job.mode)) {
+    if (page !== "form" && ["cover", "price", "fields", "photos", "text"].includes(job.mode)) {
       // WO43 (live 2026-10-18): Depop's edit page came up as a header and a footer with no form for 15 s — the form
       // is waited for a while longer before the page is called something else
       const late = await T.until(() => (T.classify(job.site) === "form" ? true : null), 30000);
@@ -628,16 +628,17 @@
       else if (job.mode === "price") await T.priceSet(job, st);       // WO41: the price, nothing else
       else if (job.mode === "fields") await T.fieldsSet(job, st);     // WO43: the category and size, nothing else
       else if (job.mode === "photos") await T.photosAdd(job, st, (photos || []).map(T.fileOf));   // WO45 §6
+      else if (job.mode === "text") await T.textSet(job, st);         // WO50: the title / description, nothing else
       else await site.fill(job, (photos || []).map(T.fileOf), st);
     } catch (e) {
       await T.screenshot("form");
       return fail(st.failed.length ? st.failed[0].split(":")[0] : "fill", "form",
                   String(e && e.message ? e.message : e).slice(0, 300));
     }
-    const edit = ["cover", "price", "fields", "photos"].includes(job.mode);
+    const edit = ["cover", "price", "fields", "photos", "text"].includes(job.mode);
     const seen = job.mode === "cover" ? T.coverSeen(job, st) : job.mode === "price" ? T.priceSeen(job, st)
       : job.mode === "fields" ? T.fieldsSeen(job, st) : job.mode === "photos" ? T.photosSeen(job, st)
-        : site.readBack(job, st);
+        : job.mode === "text" ? T.textSeen(job, st) : site.readBack(job, st);
     seen.submit_buttons = (edit ? T.saveButtons(job.site) : site.submitButtons()).length;
     seen.fill_ms = Math.round(performance.now() - t0);
     T.emit({ event: "step", job_id: job.job_id, name: "submit_seen", ok: seen.submit_buttons === 1,
@@ -804,6 +805,45 @@
   };
   T.priceSeen = (job, st) => ({ price_before: st.priceBefore ?? null, price: st.priceAfter ?? null,
                                 mismatch: !!st.priceMismatch, refilled: st.refilled || [] });
+
+  // ---- WO50: a listing's title and/or description changed on its edit page (the owner's shop-window titles): the page
+  // must still show what we posted (`expect_title` / `expect_first_line`: a text she changed by hand is never overwritten
+  // — nothing typed), Depop's fields its edit page left blank filled first (as the price job, WO41), the new text typed
+  // and read back; a `read_only` job only reads (the check after Save). Save is the bridge's go-ahead; nothing else on
+  // the listing is touched. Depop has no title: its description's first line is the title.
+  T.textSet = async (job, st) => {
+    const steps = T.selectors[job.site].steps;
+    const squash = (x) => String(x || "").split(/\s+/).join(" ").trim();
+    const titleBox = steps.title && (job.title != null || job.expect_title != null || job.read_only)
+      ? await T.need(steps.title.selectors, "title") : null;
+    const descBox = job.description != null || job.expect_first_line != null || job.read_only
+      ? await T.need(steps.description.selectors, "description") : null;
+    await T.until(() => ((titleBox ? titleBox.value : descBox && descBox.value) ? true : null), 10000);
+    st.titleBefore = titleBox ? titleBox.value : null;
+    st.descBefore = descBox ? descBox.value : null;
+    const first = (v) => squash(String(v || "").split("\n")[0]);
+    if ((job.expect_title != null && titleBox && squash(titleBox.value) !== squash(job.expect_title))
+        || (job.expect_first_line != null && descBox && first(descBox.value) !== squash(job.expect_first_line))) {
+      st.textMismatch = true;
+      st.notes.push("the page shows another text than we posted: nothing typed (changed by hand?)");
+      return;
+    }
+    if (job.read_only) {
+      st.titleAfter = st.titleBefore;
+      st.descAfter = st.descBefore;
+      return;
+    }
+    const site = T.sites[job.site];
+    if (site.refill) await site.refill(job, st);
+    if (titleBox && job.title != null) await T.step("title", st, async () => T.type(titleBox, job.title));
+    if (descBox && job.description != null) await T.step("description", st, async () => T.type(descBox, job.description));
+    await T.settle(300);
+    st.titleAfter = titleBox ? titleBox.value : null;
+    st.descAfter = descBox ? descBox.value : null;
+  };
+  T.textSeen = (job, st) => ({ title_before: st.titleBefore ?? null, title: st.titleAfter ?? null,
+                               description_before: st.descBefore ?? null, description: st.descAfter ?? null,
+                               mismatch: !!st.textMismatch, read_only: !!job.read_only, refilled: st.refilled || [] });
 
   // ---- WO43: a listing's category and size changed on its edit page (live 2026-10-17: men's sneakers listed under
   // Women): the site's own category and size steps, as the sell form's, on the values the bridge sends; a

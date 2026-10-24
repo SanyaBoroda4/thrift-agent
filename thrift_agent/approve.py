@@ -699,10 +699,13 @@ def item_caption(iid: str, it) -> tuple[str, int | None]:
     notes = list(gate.get("notes") or [])
     guessed = [n for n in [*(gate.get("info") or []), *notes] if n.startswith(SIZE_NOTE)]   # WO33: shown, never asked
     if size := size_words(posh, facts):
+        from thrift_agent.post.fallback import dual_parts
+        printed = str((facts.get("size_printed") or {}).get("value") or "").strip()
+        label = f" (label {printed})" if dual_parts(printed) else ""       # WO50: "Size M (label S/M)"
         if it["owner_size"] and (guessed or size_tapped(it)):      # WO43: her tap (or reply) on a card without a size
-            lines.append(f"📏 Size {size} ✓")
+            lines.append(f"📏 Size {size} ✓{label}")
         else:
-            lines.append(f"Size {size}" + (" — my best reading; reply 'size …' to change it" if guessed else ""))
+            lines.append(f"Size {size}{label}" + (" — my best reading; reply 'size …' to change it" if guessed else ""))
     elif guessed:                                                   # WO37: no site lists it without one; WO43: tap it
         lines.append(NO_SIZE_LINE)
     cond = facts.get("condition")
@@ -1124,6 +1127,14 @@ def _route_ops(s: Settings, db: DB, update: dict) -> str:
         from thrift_agent import doctor
         bot.send_message(doctor.text(s, db), reply_to=mid)
         return "ops: doctor"
+    if re.fullmatch(r"go\s+titles?", text.lower().strip(" /!.?")):     # WO50: the live titles' review, applied
+        from thrift_agent import titles
+        rows = titles.apply_review(s, db)
+        bot.send_message(f"✓ {len(rows)} title change{'s' if len(rows) != 1 else ''} queued — each site's edit page, "
+                         "nothing else on the listings; a line here as each one is live" if rows else
+                         "Nothing to change: no reviewed title is waiting (send `thrift titles --review` again)",
+                         reply_to=mid)
+        return f"ops: go titles ({len(rows)})"
     m = UNMATCHED_LINE.search(quoted)
     if m is None or not text:
         bot.send_message("Replies here act on an 'Unmatched sale' message (reply with words from the item's title) or "

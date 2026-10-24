@@ -452,10 +452,9 @@ def test_a_skipped_item_saves_nothing_is_reported_and_the_loop_goes_on(tmp_path,
     assert (row["status"], row["error"], row["url"], row["posted_at"]) == ("skipped", runner.SKIPPED + SKIP,
                                                                                  None, None)
     assert db.item(a)["status"] == "ready" and db.listing(b, "poshmark")["status"] == "posted"
-    assert any(m.startswith(f"⏭ skipped on poshmark ({a}): {RENDER.title}\n{SKIP}\n(a reply 'retry' to the ⏭ "
-                            "message in the group tries again)") for m in said)
-    assert f"⏭ {RENDER.title} wasn't listed on Poshmark: Poshmark's form doesn't take one of its details. Reply " \
-           "'retry' to try it again." in said.group                  # WO33: a reply settles it, never a command
+    # WO50: a size no menu value fits is ONE private line naming the size and the menu — never the group's 'retry'
+    assert any(m.startswith(f"📏 {RENDER.title}: Poshmark has no reasonable value for its size ({SKIP})") for m in said)
+    assert not any("wasn't listed on Poshmark" in m for m in said.group)
     assert not any("thrift " in m for m in [*said, *said.group])
     assert not s.flag("PAUSE").exists() and not any("paused" in m.lower() for m in said)   # max_fail=1: not a failure
     assert runner.next_job(s, db, ["poshmark"], False) is None          # never retried on its own

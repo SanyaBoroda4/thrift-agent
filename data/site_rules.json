@@ -1,0 +1,117 @@
+{
+  "_about": "WO50 §3: each site's validation rules in one place — the title checker (thrift_agent/titles.py), the copy and the posters read them. A rule learned from a site's own refusal says where it came from.",
+  "title": {
+    "target_min": 50,
+    "target_max": 70,
+    "caps_word_letters": 4,
+    "caps_share_max": 0.35,
+    "caps_share_why": "Vinted refused 'BCBGMAXAZRIA New Black Slouchy Shoulder Bag Knotted Strap' (38% capitals: 'Title contains too many capital letters, try using lowercase letters', POST /api/v2/item_upload/items 400, 2026-10-24) and accepted every one of our 70 titles up to 29% ('FRAME Le High Straight Jeans Medium Blue Wash Raw Hem size 00'): its limit lies above 29% and at or below 38%. The fixer aims for 29% or less (caps_share_safe: lower-case connecting words); the checker blocks only above 35% (caps_share_max), so a title with real acronyms (NYDJ, DKNY) is never held; after Vinted's own refusal the retry goes further (sentence case beyond the brand and acronyms).",
+    "acronyms": [
+      "UGG",
+      "H&M",
+      "DKNY",
+      "NYDJ",
+      "ASOS",
+      "BCBG",
+      "WHBM",
+      "ASICS",
+      "NASA",
+      "NCAA",
+      "USPS",
+      "AG",
+      "AE",
+      "AEO",
+      "A&F",
+      "BR",
+      "CK",
+      "DVF",
+      "TNF",
+      "LA",
+      "NY",
+      "NYC",
+      "USA",
+      "UK",
+      "US",
+      "EU",
+      "UPF",
+      "SPF",
+      "LED",
+      "II",
+      "III",
+      "IV",
+      "XS",
+      "XXS",
+      "XL",
+      "XXL",
+      "XXXL",
+      "XXXXL",
+      "OS",
+      "J.Crew",
+      "J. Crew",
+      "RE/DONE",
+      "BP",
+      "NFL",
+      "NBA",
+      "MLB",
+      "NHL",
+      "UNIQLO"
+    ],
+    "condition_words": [
+      "NWT",
+      "NWOT",
+      "EUC",
+      "GUC",
+      "VGUC",
+      "VGC",
+      "EUC",
+      "Like New",
+      "Excellent Condition",
+      "Good Condition",
+      "Pre-owned",
+      "Preowned",
+      "Pre-loved",
+      "Preloved",
+      "Gently Used",
+      "Used",
+      "Mint"
+    ],
+    "caps_share_safe": 0.29
+  },
+  "sites": {
+    "poshmark": {
+      "title_max": 80,
+      "description_max": 1500,
+      "photos_max": 16
+    },
+    "vinted": {
+      "title_max": 100,
+      "description_max": 2000,
+      "photos_max": 20,
+      "caps_share_max": 0.35
+    },
+    "depop": {
+      "title_max": 80,
+      "description_max": 1000,
+      "photos_max": 8,
+      "title_is": "the description's first line"
+    }
+  },
+  "refusals": [
+    {
+      "site": "vinted",
+      "match": "too many capital letters",
+      "fix": "title_caps",
+      "seen": "2026-10-24, the BCBG bag: 'Title contains too many capital letters, try using lowercase letters.'"
+    },
+    {
+      "site": "*",
+      "match": "title (?:is )?too long|title (?:must|can) (?:be|contain) at most|title is longer",
+      "fix": "title_length"
+    },
+    {
+      "site": "*",
+      "match": "title (?:contains|has) (?:invalid|forbidden|not allowed) (?:characters|symbols)",
+      "fix": "title_chars"
+    }
+  ]
+}

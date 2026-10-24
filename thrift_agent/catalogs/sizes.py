@@ -132,10 +132,26 @@ def _up(table: dict[float, int], n: float) -> tuple[float, int] | None:
     return (min(bigger), table[min(bigger)]) if bigger and min(bigger) - n <= 1 else None
 
 
+def undual(s: SizeIn) -> tuple[SizeIn, str | None]:
+    """WO50: a label's two sizes ("S/M", "8-10", "One Size (S–L)") are the bigger one on every site, as a set's
+    (the owner's rule) — (the size to map, the note) or (s, None)."""
+    from dataclasses import replace
+
+    from thrift_agent.post.fallback import bigger_of
+    big = bigger_of(s.value)
+    if big is None:
+        return s, None
+    return replace(s, value=big), f"size {big} (the bigger of the label's {s.value})"
+
+
 def vinted_size(s: SizeIn, lib: str, options: list[Option]) -> tuple[Option, str | None]:
     """(the option, a guess to report or None) for the leaf's size library. MappingError when nothing fits."""
     if not s.value:
         raise MappingError("no size on the item")
+    s, dual = undual(s)
+    if dual:
+        o, note = vinted_size(s, lib, options)
+        return o, note or dual
     guess = None
 
     def found(oid: int | None, note: str | None = None) -> tuple[Option, str | None]:
@@ -239,6 +255,10 @@ def depop_size(s: SizeIn, sizes: list[str], set_path: str) -> tuple[str, str | N
         raise MappingError("no size field")
     if not s.value:
         raise MappingError("no size on the item")
+    s, dual = undual(s)                                   # WO50: "S/M" is M
+    if dual:
+        v, note = depop_size(s, sizes, set_path)
+        return v, note or dual
     have = {v.lower(): v for v in sizes}
 
     def pick(v: str | None, note: str | None = None) -> tuple[str, str | None]:

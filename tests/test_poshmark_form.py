@@ -1294,3 +1294,84 @@ def test_wo41_another_price_on_the_page_or_smart_sell_on_is_never_saved(chrome, 
     out = run(chrome, price_site, lambda ctx: posh.set_price(ctx, URL, 25, 22, shots=tmp_path, go=lambda: False))
     assert out["error"] == "stopped before Save" and price_site.saves == []
 
+
+
+# ---------------------------------------------------------------- WO50: a title / description changed on the edit page
+
+EDIT_TEXT = """<html><body><h1>Edit Listing</h1>
+<input type="text" data-vv-name="title" value="%(title)s">
+<textarea data-vv-name="description">%(desc)s</textarea>
+<a data-et-name="delete" onclick="fetch('/api/delete')">Delete Listing</a>
+<button data-et-name="update" onclick="update()">Update</button>
+<div data-test="modal-container" id="share" hidden><div>‹ Back</div><h2>Share Listing</h2>
+  <button data-et-name="list" data-et-prop-flow_type="edit" data-et-prop-listing_id="%(lid)s"
+          onclick="save()">List This Item</button>
+</div>
+<script>
+  function save() {
+    const t = document.querySelector('[data-vv-name=title]').value;
+    const d = document.querySelector('[data-vv-name=description]').value;
+    fetch('/api/text?title=' + encodeURIComponent(t) + '&desc=' + encodeURIComponent(d))
+      .then(() => { location.href = '/listing/x'; });
+  }
+  function update() { document.getElementById('share').hidden = false; }
+</script></body></html>"""
+
+
+class TextSite:
+    """The edit page with its title and description (WO50); every save recorded — the public listing then shows it."""
+
+    def __init__(self, title: str = "BCBGMAXAZRIA New Black Slouchy Shoulder Bag", desc: str = "BCBGMAXAZRIA bag."):
+        self.title, self.desc, self.saves = title, desc, []
+
+    async def handle(self, route):
+        import html as html_mod
+        from urllib.parse import parse_qs, urlparse
+        url = route.request.url
+        path = urlparse(url).path
+        if not url.startswith(BASE + "/"):
+            await route.abort()
+        elif path == f"/edit-listing/{LISTING_ID}":
+            body = EDIT_TEXT % {"title": html_mod.escape(self.title), "desc": html_mod.escape(self.desc),
+                                "lid": LISTING_ID}
+            await route.fulfill(status=200, content_type="text/html; charset=utf-8", body=body)
+        elif path == "/api/text":
+            q = parse_qs(urlparse(url).query)
+            self.saves.append(q["title"][0])
+            self.title, self.desc = q["title"][0], q.get("desc", [""])[0]
+            await route.fulfill(status=204, body="")
+        else:
+            await route.fulfill(status=200, content_type="text/html", body="<html><body>listing</body></html>")
+
+
+@pytest.fixture
+def text_site(monkeypatch):
+    site = TextSite()
+    monkeypatch.setattr(poshmark, "PUBLIC_TEXT", lambda url: {"title": site.title, "description": site.desc})
+    monkeypatch.setattr(poshmark, "PUBLIC_CHECK_S", 0.3)
+    monkeypatch.setattr(poshmark, "PUBLIC_EVERY_S", 0.1)
+    return site
+
+
+NEW_TITLE = "BCBG Max Azria Black Slouchy Shoulder Bag, New with Tags"
+
+
+def test_wo50_a_title_edit_types_the_new_title_and_saves_once(chrome, posh, tmp_path, text_site):
+    payload = {"title": NEW_TITLE, "expect_title": "BCBGMAXAZRIA New Black Slouchy Shoulder Bag"}
+    out = run(chrome, text_site, lambda ctx: posh.set_text(ctx, URL, payload, shots=tmp_path))
+    assert out["ok"] and out["saved"] and out["live_title"] == NEW_TITLE, out
+    assert text_site.saves == [NEW_TITLE] and text_site.desc == "BCBGMAXAZRIA bag."      # nothing else changed
+    assert out["save"] == "List This Item pressed"
+
+
+def test_wo50_a_dry_run_fills_the_title_and_saves_nothing(chrome, posh, tmp_path, text_site):
+    payload = {"title": NEW_TITLE, "expect_title": "BCBGMAXAZRIA New Black Slouchy Shoulder Bag"}
+    out = run(chrome, text_site, lambda ctx: posh.set_text(ctx, URL, payload, dry=True, shots=tmp_path))
+    assert out["ok"] and not out["saved"] and out["title_typed"] == NEW_TITLE and text_site.saves == []
+
+
+def test_wo50_a_title_she_changed_by_hand_is_never_overwritten(chrome, posh, tmp_path, text_site):
+    text_site.title = "Her own BCBG bag title"
+    payload = {"title": NEW_TITLE, "expect_title": "BCBGMAXAZRIA New Black Slouchy Shoulder Bag"}
+    out = run(chrome, text_site, lambda ctx: posh.set_text(ctx, URL, payload, shots=tmp_path))
+    assert out["mismatch"] == "Her own BCBG bag title" and text_site.saves == []

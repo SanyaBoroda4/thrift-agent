@@ -255,7 +255,10 @@ def next_job(s: Settings, db: DB, enabled: list[str], dry: bool,
                 continue        # ship first; the item stays 'ready' and is picked up once the hold is lifted
             if mode == "draft" and not dry and not can_draft(mp):
                 continue        # held(): the form would be filled for nothing
-            return it["id"], mp, Render.model_validate(renders[mp]), mode
+            render = Render.model_validate(renders[mp])
+            if (render := shop_window_render(db, it, render, renders)) is None:
+                continue        # WO50: a title that breaks the rules never reaches the site (said once)
+            return it["id"], mp, render, mode
     return None
 
 
@@ -302,6 +305,32 @@ def publishable(s: Settings, db: DB, enabled: list[str]) -> list[tuple[str, str]
                     and (post is None or post["status"] in ("queued", "dryrun")):
                 out.append((it["id"], mp))
     return out
+
+
+TITLE_HELD = "title_held_said"      # kv: [item] — the line said (WO50)
+
+
+def shop_window_render(db: DB, it, render: Render, renders: dict) -> Render | None:
+    """WO50: the Poshmark title passes the shop-window rules before the form opens — an item processed before them is
+    fixed here (deterministically; its render kept), the owner's own title (WO27) stays hers. A title that still breaks
+    them: None (the item waits) and ONE private line."""
+    from thrift_agent import titles
+    if it["owner_title"] or not titles.check(render.title):
+        return render
+    facts = loads(it["facts"]) or {}
+    brand = (facts.get("brand") or {}).get("value") if isinstance(facts.get("brand"), dict) else None
+    fixed = titles.fix(render.title, brand, facts.get("condition"))
+    if problems := titles.check(fixed):
+        said = loads(db.kv_get(TITLE_HELD)) or []
+        if it["id"] not in said:
+            db.kv_set(TITLE_HELD, json.dumps([*said, it["id"]][-200:]))
+            notify.say(f"✏️ {render.title}: its title breaks the shop-window rules ({'; '.join(problems)}) and couldn't "
+                       "be fixed — it waits; reply to its card with the title to use (or `thrift edit --title`).")
+        return None
+    renders["poshmark"] = {**renders["poshmark"], "title": fixed}
+    db.set_item(it["id"], renders=renders)
+    db.log(it["id"], "title_fixed", {"from": render.title, "to": fixed})
+    return render.model_copy(update={"title": fixed})
 
 
 def approved(it, render: dict) -> bool:
@@ -558,6 +587,8 @@ def record_outcome(db: DB, iid: str, mp: str, render: Render, out: Outcome, mark
         notify.photo(Path(out.screenshot or ""), f"❌ {mp} failed ({iid}): {render.title}\n{error}{note}")
     elif out.status == "skipped" and crosslist.NO_SIZE in (error or ""):
         crosslist.say_no_size(render.title)            # WO37: her size is the answer, never 'retry'; one line an item
+    elif out.status == "skipped" and crosslist.size_skip(error):
+        crosslist.say_size_skip(db, iid, mp, render.title, error)   # WO50: one private line; the other sites go on
     elif out.status == "skipped":
         ask_skipped(db, iid, mp, render.title, "Poshmark's form doesn't take one of its details")   # a reply settles it
         notify.photo(Path(out.screenshot or ""), f"⏭ skipped on {mp} ({iid}): {render.title}\n{out.error}\n"
@@ -807,7 +838,7 @@ async def run_cross(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, *, dr
     title = ((loads(it["renders"]) or {}).get("poshmark") or {}).get("title") or iid
     try:
         view = ItemView.from_row(it)
-        fields = map_fields(mp, view)
+        fields = crosslist.strict_title(db, iid, mp, map_fields(mp, view), view)    # WO50: the site's title rules
     except MappingError as e:
         if request:
             notify.say(f"⏭ {crosslist.LABEL[mp]} dry run ({iid}): {title}\ncan't map: {e}")

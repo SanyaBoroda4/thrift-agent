@@ -286,7 +286,7 @@ def test_a_value_that_cant_be_mapped_skips_only_that_marketplace(tmp_path, loop,
     assert ps["depop"].calls == [] and db.listing(iid, "depop")["status"] == "skipped"
     assert said.group[0].startswith(card(NAME, 85, [("poshmark", f"https://poshmark.com/listing/{iid}")]) +
                                     '\n\n🟢 <a href="https://www.vinted.com/items/')   # Depop skipped: left out
-    assert any(m.startswith(f"⏭ Depop skipped ({iid})") and "can't map" in m for m in said.ops)
+    assert any(m.startswith("📏 ") and "Depop has no reasonable value for its size" in m for m in said.ops)  # WO50
 
 
 def test_a_logged_out_marketplace_stops_for_the_window_with_one_plain_line(tmp_path, loop):
