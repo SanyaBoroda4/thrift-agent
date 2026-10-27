@@ -7,12 +7,153 @@ from __future__ import annotations
 
 import json
 import re
+import socket
+import threading
+import time
 from pathlib import Path
 
 import httpx
 
 API = "https://api.telegram.org"
+HOST = "api.telegram.org"
 TIMEOUT = 20                # seconds; getUpdates adds its own long-poll timeout on top
+CONNECT_TIMEOUT = 10        # a connection that can't open in 10 s won't: tried again (below), never waited out for 20
+
+# ---- the link (Alex, 2026-10-27: "the Mac's Telegram link keeps dropping"). Measured on the Mac over 14 days: 4,868
+# failed polls — DNS 3,144 (its first resolver is Tailscale's MagicDNS, 100.100.100.100: answers stop around wakes and
+# network changes), no network 457 (dark wakes), read timeouts 336 (a poll in flight when the Mac sleeps), connection
+# resets 204 (the path to Telegram's Amsterdam servers: in a live probe api.telegram.org was reset 1 time in 60 while
+# Apple and Anthropic were never), a captive portal's self-signed certificate 707 (one day of travel, 10-18). So:
+# ONE client per process whose connections live 15 s (a poll every ~15 s reuses the open TLS connection — no DNS look
+# per call) with TCP keepalive (a dead peer noticed in ~25 s, not at the read timeout); a request that never left the
+# Mac (no connection, no DNS, a reset in the handshake) is tried again 1, 2, 4 s later; on a DNS failure the last
+# addresses api.telegram.org had are used (the TLS name check stays api.telegram.org); a request that went out and got
+# no answer is NEVER sent again (WO37: it may have been delivered).
+RETRY_PAUSES = (1.0, 2.0, 4.0)
+KEEPALIVE_EXPIRY = 15.0     # an idle connection older than this is not reused (after a sleep it is dead)
+LEARN_EVERY = 600           # the addresses refreshed from DNS at most every 10 min, after a call that worked
+DNS_DOWN_FOR = 60           # after a DNS failure, the next minute's calls go to the known addresses at once
+SEED_ADDRESSES = ("149.154.166.110", "149.154.167.220")   # api.telegram.org (read from the Mac, 2026-10-27) / its peer
+NOT_SENT = ("ConnectError", "ConnectTimeout", "PoolTimeout", "WriteError", "WriteTimeout")
+_DNS_ERR = re.compile(r"nodename nor servname|Name or service not known|Temporary failure in name resolution|"
+                      r"getaddrinfo failed|No address associated|\[Errno (?:8|-2|-3|-5|11001|11002)\]")
+_sleep = time.sleep         # the tests' seam
+_LOCK = threading.Lock()
+_CLIENT: httpx.Client | None = None
+_ADDRESSES: list[str] = list(SEED_ADDRESSES)
+_STATE = {"learned": 0.0, "dns_down_until": 0.0, "next": 0}
+
+
+def keepalive_options() -> list[tuple[int, int, int]]:
+    """SO_KEEPALIVE, first probe after 10 s idle, then every 5 s, 3 misses = dead — each option only where this OS
+    takes it (macOS names the idle time TCP_KEEPALIVE, Linux and Windows TCP_KEEPIDLE)."""
+    want = [(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)]
+    idle = getattr(socket, "TCP_KEEPIDLE", None) or getattr(socket, "TCP_KEEPALIVE", None)
+    for name, value in ((idle, 10), (getattr(socket, "TCP_KEEPINTVL", None), 5),
+                        (getattr(socket, "TCP_KEEPCNT", None), 3)):
+        if name is not None:
+            want.append((socket.IPPROTO_TCP, name, value))
+    ok, probe = [], socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        for level, name, value in want:
+            try:
+                probe.setsockopt(level, name, value)
+                ok.append((level, name, value))
+            except OSError:
+                pass
+    finally:
+        probe.close()
+    return ok
+
+
+def client() -> httpx.Client:
+    """The process's one connection pool to Telegram (thread-safe; the worker's two threads share it)."""
+    global _CLIENT
+    with _LOCK:
+        if _CLIENT is None:
+            _CLIENT = httpx.Client(
+                transport=httpx.HTTPTransport(socket_options=keepalive_options()),
+                limits=httpx.Limits(max_connections=8, max_keepalive_connections=4, keepalive_expiry=KEEPALIVE_EXPIRY))
+        return _CLIENT
+
+
+def http_post(url: str, data=None, files=None, timeout: float = TIMEOUT, **extra) -> httpx.Response:
+    """The single network seam (the tests replace it): one POST on the shared client."""
+    return client().post(url, data=data, files=files, timeout=httpx.Timeout(timeout, connect=min(timeout, CONNECT_TIMEOUT)),
+                         **extra)
+
+
+def dns_failed(error: BaseException) -> bool:
+    x, depth = error, 0
+    while x is not None and depth < 8:
+        if isinstance(x, socket.gaierror):
+            return True
+        x, depth = x.__cause__ or x.__context__, depth + 1
+    return bool(_DNS_ERR.search(str(error)))
+
+
+def learn_addresses(now: float | None = None) -> None:
+    """api.telegram.org's addresses as DNS gives them now (after a call that worked), for the next DNS outage."""
+    now = time.monotonic() if now is None else now
+    if now - _STATE["learned"] < LEARN_EVERY:
+        return
+    _STATE["learned"] = now
+    try:
+        found = [ai[4][0] for ai in socket.getaddrinfo(HOST, 443, socket.AF_INET, socket.SOCK_STREAM)]
+    except OSError:
+        return
+    if found:
+        _ADDRESSES[:] = list(dict.fromkeys(found + _ADDRESSES))[:6]
+
+
+def _pinned() -> str:
+    addr = _ADDRESSES[_STATE["next"] % len(_ADDRESSES)]
+    _STATE["next"] += 1
+    return addr
+
+
+def post(token: str, method: str, data=None, files=None, timeout: float = TIMEOUT) -> httpx.Response:
+    """The one way to Telegram (the Bot and notify): retried 1, 2, 4 s later while the request never left the Mac;
+    by a known address while DNS fails. Raises the last httpx error; a request that may have gone out (no answer) is
+    raised at once — never sent twice."""
+    pinned = _pinned() if time.monotonic() < _STATE["dns_down_until"] else None
+    for i, pause in enumerate((0.0, *RETRY_PAUSES)):
+        if pause:
+            _sleep(pause)
+        try:
+            if pinned:
+                r = http_post(f"https://{pinned}/bot{token}/{method}", data=data, files=files, timeout=timeout,
+                              headers={"Host": HOST}, extensions={"sni_hostname": HOST})
+            else:
+                r = http_post(f"{API}/bot{token}/{method}", data=data, files=files, timeout=timeout)
+        except httpx.HTTPError as e:
+            if type(e).__name__ not in NOT_SENT or i == len(RETRY_PAUSES):
+                raise
+            if dns_failed(e):
+                _STATE["dns_down_until"] = time.monotonic() + DNS_DOWN_FOR
+                pinned = _pinned()
+            elif pinned:
+                pinned = _pinned()                     # that address didn't answer: the next one
+            continue
+        if not pinned:
+            learn_addresses()
+        return r
+    raise RuntimeError("unreachable")                  # the loop returns or raises
+
+
+def failure_kind(error: BaseException | str) -> str:
+    """A failed call in one word, for the link's events: dns, offline, timeout, reset, tls, http, other."""
+    t = str(error)
+    if dns_failed(error) if isinstance(error, BaseException) else _DNS_ERR.search(t):
+        return "dns"
+    for kind, words in (("offline", ("Network is unreachable", "Errno 51", "No route to host", "Errno 65")),
+                        ("tls", ("CERTIFICATE_VERIFY_FAILED", "SSL")),
+                        ("reset", ("Errno 54", "Connection reset", "RemoteProtocolError", "Server disconnected")),
+                        ("timeout", ("Timeout", "timed out")),
+                        ("http", ("failed: ", "Bad Gateway", "HTTP "))):
+        if any(w in t for w in words):
+            return kind
+    return "other"
 UPLOAD_TIMEOUT = 90         # a photo goes up on a slow network (WO37: 20 s timed out three times on the hotel Wi-Fi)
 UPLOADS = ("sendPhoto", "editMessageMedia")
 # WO37: a request that went out but whose answer never came — Telegram may well have delivered it (live 2026-10-12:
@@ -52,7 +193,7 @@ class Bot:
         timeout = (int(params.get("timeout") or 0) + 10 if method == "getUpdates"
                    else UPLOAD_TIMEOUT if method in UPLOADS else TIMEOUT)
         try:
-            r = httpx.post(f"{API}/bot{self.token}/{method}", data=data, files=files or None, timeout=timeout)
+            r = post(self.token, method, data=data, files=files or None, timeout=timeout)
         except httpx.HTTPError as e:
             raise RuntimeError(f"telegram {method}: {type(e).__name__}: {e}") from e
         try:

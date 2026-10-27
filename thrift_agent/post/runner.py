@@ -535,6 +535,10 @@ def ask_skipped(db: DB, iid: str, mp: str, title: str, why: str) -> None:
     from thrift_agent.config import settings
     site = crosslist.LABEL.get(mp, mp)
     text = f"⏭ {title} wasn't listed on {site}: {why}. {SKIPPED_REPLY}"
+    if db.conn.execute("SELECT 1 FROM outbox WHERE kind='skipped' AND ref=? AND text=? AND resolved_at IS NULL",
+                       (crosslist.unconfirmed_ref(iid, mp), text)).fetchone():
+        db.log(iid, "skipped_line_kept", {"site": mp})  # the same line still open (live 10-24: the robe's, twice)
+        return
     bot = approve.bot_for(settings())
     if bot is None:
         notify.group(text)

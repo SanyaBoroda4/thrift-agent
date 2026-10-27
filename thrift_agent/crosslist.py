@@ -702,7 +702,13 @@ def _card(s: Settings, db: DB, iid: str, text: str, edit: bool) -> None:
         except Exception as e:  # noqa: BLE001 — "message is not modified" and the like: the card stays as it is
             db.log(iid, "card_edit", {"error": str(e)[:200]})
         return
-    mid = bot.send_message(text, parse_mode="HTML")
+    from thrift_agent import telegram
+    try:
+        mid = bot.send_message(text, parse_mode="HTML")
+    except RuntimeError as e:
+        if not telegram.maybe_delivered(e):
+            raise                                      # never left the Mac: the caller leaves it for the next sweep
+        mid = 0                                        # it went out, no answer: counted as sent, never twice (WO37)
     db.add_outbox(bot.chat_id, mid, "posted", iid, text=text)
     db.outbox_resolve("posted", iid)
 
@@ -827,8 +833,12 @@ def announce(s: Settings | None, db: DB, iid: str) -> str | None:
         return None
     state = daily.done_state(s, db) if s is not None and not _line_due(s, db, iid) else None
     text = card_text(s, db, iid, done_line(state, daily.owner_waits(s, db)) if state is not None else None)
-    db.log(iid, "posted_announced", {"mps": mps})
-    _card(s, db, iid, text, edit=False)
+    try:
+        _card(s, db, iid, text, edit=False)
+    except RuntimeError as e:      # it never left the Mac (2026-10-27): not announced — the poster's sweep sends it
+        db.log(iid, "card_not_sent", {"error": str(e)[:200]})
+        return None
+    db.log(iid, "posted_announced", {"mps": mps})  # only once the card is out (it had been logged before the send)
     _say_checks(db, iid, mps)
     if state is not None:
         _carry_done(s, db, iid)

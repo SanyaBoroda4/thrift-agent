@@ -231,23 +231,27 @@ def test_due_once_a_day_and_the_tick_runs_it_on_the_mac_only(env, monkeypatch):
 
 
 def test_the_low_disk_line_once_per_episode(env, monkeypatch):
+    """Alex, 2026-10-27: under 5 GB one private line; nothing above it (no "free again" line)."""
     s, db, said = env
     gb = 1024 ** 3
-    free = {"n": 1.3 * gb}
+    free = {"n": 13.4 * gb}
     monkeypatch.setattr(cleanup, "disk_free", lambda _s: (free["n"], 228 * gb))
     t = time.time()
-    assert cleanup.disk_watch(s, db, now=t).startswith("⚠️ The Mac has 1.3 GB free (under 20 GB).")
-    assert "Thrift's own folders:" in said[0]
+    assert cleanup.disk_watch(s, db, now=t) is None and said == []                    # 13.4 GB: the Mac as it lives
+    free["n"] = 1.3 * gb
     assert cleanup.disk_watch(s, db, now=t + 1) is None                               # looked at every 10 min
-    assert cleanup.disk_watch(s, db, now=t + 601) is None and len(said) == 1          # still low: silent
-    free["n"] = 21 * gb
-    assert cleanup.disk_watch(s, db, now=t + 1202) is None                            # above 20, under 22: silent
+    assert cleanup.disk_watch(s, db, now=t + 601).startswith("⚠️ The Mac has 1.3 GB free (under 5 GB).")
+    assert "Thrift's own folders:" in said[0]
+    assert cleanup.disk_watch(s, db, now=t + 1202) is None and len(said) == 1         # still low: silent
+    free["n"] = 5.5 * gb
+    assert cleanup.disk_watch(s, db, now=t + 1803) is None                            # above 5, under 6: silent
     free["n"] = 30 * gb
-    assert cleanup.disk_watch(s, db, now=t + 1803) == "✓ The Mac has 30.0 GB free again."
-    free["n"] = 10 * gb
-    assert cleanup.disk_watch(s, db, now=t + 2404).startswith("⚠️")                   # a new episode
-    assert [r[0] for r in db.conn.execute("SELECT kind FROM events WHERE kind IN ('disk_low', 'disk_ok') ORDER BY rowid")] \
-        == ["disk_low", "disk_ok", "disk_low"]
+    assert cleanup.disk_watch(s, db, now=t + 2404) is None and len(said) == 1         # back up: nothing said
+    free["n"] = 4 * gb
+    assert cleanup.disk_watch(s, db, now=t + 3005).startswith("⚠️")                   # a new episode
+    assert len(said) == 2
+    kinds = [r[0] for r in db.conn.execute("SELECT kind FROM events WHERE kind IN ('disk_low', 'disk_ok') ORDER BY rowid")]
+    assert kinds == ["disk_low", "disk_ok", "disk_low"]
 
 
 def test_delete_copy_only_inside_the_inbox(env):

@@ -111,7 +111,7 @@ def test_task_leases_run_out_and_every_site_is_the_default(db, live):
 
 def test_no_tasks_outside_live(db, monkeypatch):
     monkeypatch.setenv("SALES_MODE", "replay")
-    assert call(db, "GET", "/tasks", query={"sites": "depop"})[1] == {"tasks": [], "sold": [], "mode": "replay"}
+    assert call(db, "GET", "/tasks", query={"sites": "depop"})[1] == {"tasks": [], "sold": [], "sold_on": [], "mode": "replay"}
 
 
 def test_mac_events(db, live, sent):

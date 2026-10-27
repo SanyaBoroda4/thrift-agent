@@ -8,6 +8,7 @@ import re
 import threading
 import time
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 
 import typer
@@ -199,15 +200,51 @@ def _tick_unless_worker(s, db) -> None:
         _tick(s, db)
 
 
+POLL_LINK = {"fails": 0, "since": None, "kinds": {}, "first": ""}   # the Telegram link's outage now (Alex, 10-27)
+POLL_TIMEOUT_MAX = 25        # a long poll stays under 30 s (Alex, 2026-10-27): the settings' value is capped here
+
+
+def poll_backoff(fails: int) -> float:
+    """The pause after the Nth failed poll in a row: 5, 10, 20, 40, then 60 s — never a poll every 5 s all night
+    (14 days before this: 4,868 failed polls, most of them in the night's dark wakes)."""
+    return float(min(60, 5 * 2 ** max(0, fails - 1)))
+
+
 def _safe_poll(s, db, bot, timeout: int) -> int:
-    """One Telegram long poll that never kills the worker (network blips, an API hiccup): log and go on."""
+    """One Telegram long poll that never kills the worker. A link failure (no network, DNS, a reset, a timeout,
+    Telegram's own 5xx) is ONE event per outage — `telegram_down` at its first failure, `telegram_up` with how long,
+    how many polls and what kinds when a poll works again — and backs off (poll_backoff); held lines go out once it
+    is back (notify.flush_held). Anything else is a bug: its traceback is logged as before."""
+    from thrift_agent import telegram
+    link = POLL_LINK
     try:
-        return approve.poll_once(s, db, bot, timeout)
+        n = approve.poll_once(s, db, bot, min(int(timeout), POLL_TIMEOUT_MAX))
     except Exception as e:  # noqa: BLE001
-        db.log(None, "error", traceback.format_exc())
-        print(f"[telegram] poll failed: {type(e).__name__}: {e}")
-        time.sleep(min(timeout, 5))
+        if not str(e).startswith("telegram getUpdates"):
+            db.log(None, "error", traceback.format_exc())
+            print(f"[telegram] poll failed: {type(e).__name__}: {e}")
+            time.sleep(5)
+            return 0
+        link["fails"] += 1
+        kind = telegram.failure_kind(e)
+        link["kinds"][kind] = link["kinds"].get(kind, 0) + 1
+        if link["fails"] == 1:
+            link["since"], link["first"] = datetime.now(timezone.utc), f"{type(e).__name__}: {e}"[:300]
+            db.log(None, "telegram_down", {"kind": kind, "why": link["first"]})
+            print(f"[telegram] link down ({kind}): {e}")
+        time.sleep(poll_backoff(link["fails"]))
         return 0
+    if link["fails"]:
+        down = (datetime.now(timezone.utc) - link["since"]).total_seconds() if link["since"] else 0
+        db.log(None, "telegram_up", {"down_s": round(down), "failed_polls": link["fails"], "kinds": link["kinds"],
+                                     "first": link["first"]})
+        print(f"[telegram] link back after {round(down)} s ({link['fails']} failed polls: {link['kinds']})")
+        link.update(fails=0, since=None, kinds={}, first="")
+    try:
+        notify.flush_held(db)                          # the lines Telegram couldn't be reached for, now it can
+    except Exception as e:  # noqa: BLE001
+        db.log(None, "error", f"flush_held: {type(e).__name__}: {e}")
+    return n
 
 
 def _safe_pump(s, db) -> None:

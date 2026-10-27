@@ -257,6 +257,31 @@ def test_an_item_sold_while_queued_is_never_listed(tmp_path, api):
     assert db.listing(iid, "poshmark")["status"] == "posted"
 
 
+def test_the_site_an_item_sold_on_holds_it_as_sold(tmp_path, api):
+    """2026-10-27: a sold Depop listing leaves Depop's shop data, so nothing marked the UGG Chestnut's or the Nike
+    tee's Depop row sold — GET /tasks names the site each item sold ON; only that row becomes sold (the others are
+    the take-downs')."""
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid = _item(db)
+    db.upsert_listing(iid, "depop", status="posted", url="https://www.depop.com/products/shop-nike-celtics-dab5/")
+    db.upsert_listing(iid, "poshmark", status="posted", url="https://poshmark.com/listing/x-" + "c" * 24)
+    orig = api.handler
+
+    def handler(request):
+        if request.url.path == "/tasks":
+            return httpx.Response(200, json={"tasks": [], "sold": [iid], "sold_on": [{"item": iid, "site": "depop"},
+                                                                                     {"item": "i_gone", "site": "x"}]})
+        return orig(request)
+    api.handler = handler
+    sales.fetch_tasks(db, ["depop"], force=True)
+    assert db.listing(iid, "depop")["status"] == "sold"
+    assert db.listing(iid, "poshmark")["status"] == "posted"                  # left for its take-down
+    assert db.conn.execute("SELECT count(*) FROM events WHERE kind='listing_sold_here'").fetchone()[0] == 1
+    sales.fetch_tasks(db, ["depop"], force=True)                              # told again: nothing new
+    assert db.conn.execute("SELECT count(*) FROM events WHERE kind='listing_sold_here'").fetchone()[0] == 1
+
+
 def test_an_unrecorded_control_is_never_tried_and_the_owner_is_asked(tmp_path, api):
     s = _settings(tmp_path)
     db = DB(s.path("db"))

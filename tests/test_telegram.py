@@ -18,12 +18,12 @@ class Resp:
 def _post(monkeypatch, resp):
     seen = {}
 
-    def fake_post(url, data=None, files=None, timeout=None):
-        seen.update(url=url, data=data, files=files, timeout=timeout)
+    def fake_post(url, data=None, files=None, timeout=None, **extra):
+        seen.update(url=url, data=data, files=files, timeout=timeout, **extra)
         if isinstance(resp, Exception):
             raise resp
         return resp
-    monkeypatch.setattr("thrift_agent.telegram.httpx.post", fake_post)
+    monkeypatch.setattr("thrift_agent.telegram.http_post", fake_post)
     return seen
 
 

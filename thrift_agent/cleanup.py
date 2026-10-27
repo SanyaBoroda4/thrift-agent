@@ -49,12 +49,13 @@ EVIDENCE_DAYS = 14                 # the evidence in failed/shots (Alex, 2026-10
 SETTLED_SKIPS = ("shared again", "already live", "sold", "not published automatically")   # skips that wait for no one
 _ITEM_FILE = re.compile(r"^(i_\d{6}_[0-9a-f]{6})[-.]")      # "i_261019_09053e-vinted-20261020-080011.png"
 _LISTING_FILE = re.compile(r"^([0-9a-f]{24})-")              # Poshmark's listing id: "6ad6d53a…-poshmark-…-price-dry.png"
-LOW_GB = 20.0                      # ONE private line when the Mac's free space drops under this …
-LOW_CLEAR_GB = 22.0                # … said again only after it was back above this
+LOW_GB = 5.0                       # ONE private line when the Mac's free space drops under this (Alex, 2026-10-27:
+                                   # was 20 GB — the Mac lives at ~13 GB free; nothing is said above it) …
+LOW_CLEAR_GB = 6.0                 # … and again only after it was back above this (silently: no "free again" line)
 DAILY = "cleanup_at"               # kv: the daily run's stamp (sales._claim)
 LAST = "cleanup_last"              # kv: the last run's summary (thrift status)
 DISK_AT = "disk_checked_at"        # kv: the disk looked at every DISK_EVERY seconds
-DISK_SAID = "disk_low_said"        # kv: the low-disk line is out (cleared above LOW_CLEAR_GB)
+DISK_SAID = "disk_low_said"        # kv: the low-disk line is out (cleared, silently, above LOW_CLEAR_GB)
 DISK_EVERY = 600
 ENABLED = True                     # the worker's tick runs the watch and the policy; the test suite turns it off
 ASIDE = "-icloud"                  # WO46's set-aside iCloud copies (a day's worth): duplicates
@@ -63,7 +64,6 @@ _SECOND = re.compile(r"^(?P<base>.+?) (?P<n>\d{1,2})$")       # iCloud's second 
 IN_FLIGHT = ("new", "needs_confirm", "regroup")
 LOW_LINE = ("⚠️ The Mac has {free:.1f} GB free (under {low:.0f} GB). iCloud may stop downloading her photos and a "
             "share can fail — please free space on the Mac. Thrift's own folders: {ours}.")
-BACK_LINE = "✓ The Mac has {free:.1f} GB free again."
 
 
 @dataclass
@@ -526,8 +526,9 @@ def tick(s: Settings, db: DB) -> None:
 
 
 def disk_watch(s: Settings, db: DB, now: float | None = None) -> str | None:
-    """ONE private line when the free space drops under LOW_GB; one when it is back above LOW_CLEAR_GB. Returns the
-    line sent, if any. Looked at every DISK_EVERY seconds at most."""
+    """ONE private line when the free space drops under LOW_GB (5 GB); nothing above it — back above LOW_CLEAR_GB the
+    episode ends silently (event `disk_ok`), so the next drop is said again. Returns the line sent, if any. Looked at
+    every DISK_EVERY seconds at most."""
     now = time.time() if now is None else now
     if now - float(db.kv_get(DISK_AT) or 0) < DISK_EVERY:
         return None
@@ -545,11 +546,8 @@ def disk_watch(s: Settings, db: DB, now: float | None = None) -> str | None:
         notify.say(text)
         return text
     if free_gb >= LOW_CLEAR_GB and said:
-        db.kv_set(DISK_SAID, "")
+        db.kv_set(DISK_SAID, "")                       # nothing said above the line (Alex, 2026-10-27)
         db.log(None, "disk_ok", {"free": free, "total": total})
-        text = BACK_LINE.format(free=free_gb)
-        notify.say(text)
-        return text
     return None
 
 

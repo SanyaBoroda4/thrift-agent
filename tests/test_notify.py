@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 
-from thrift_agent import notify
+from thrift_agent import notify, telegram
 from thrift_agent.config import Settings
 from thrift_agent.db import DB
 
@@ -23,7 +23,7 @@ def wire(monkeypatch, tmp_path, settings_override):
         def raise_for_status(self):
             return None
 
-    def post(url, data=None, files=None, timeout=None):
+    def post(url, data=None, files=None, timeout=None, **extra):
         sent.append((url.rsplit("/", 1)[-1], (data or {}).get("chat_id"), (data or {}).get("text")
                      or (data or {}).get("caption")))
         return Resp()
@@ -36,7 +36,7 @@ def wire(monkeypatch, tmp_path, settings_override):
     monkeypatch.setattr(notify, "_ops_enabled", REAL_OPS_ENABLED)
     db = DB(tmp_path / "state.db")
     monkeypatch.setattr(notify, "_db", lambda: db)
-    monkeypatch.setattr(notify.httpx, "post", post)
+    monkeypatch.setattr(telegram, "http_post", post)
     return sent, db
 
 
@@ -69,12 +69,12 @@ def test_the_ops_chat_id_may_come_from_the_private_settings(wire, monkeypatch, s
 def test_an_ops_chat_that_fails_is_left_alone_for_a_while_and_never_falls_back(wire, monkeypatch, capsys):
     sent, db = wire
 
-    def refused(url, data=None, files=None, timeout=None):
+    def refused(url, data=None, files=None, timeout=None, **extra):
         sent.append(("refused", data.get("chat_id"), data.get("text")))
         raise httpx.HTTPStatusError("403 Forbidden: bot can't initiate conversation with a user", request=None,
                                     response=None)
 
-    monkeypatch.setattr(notify.httpx, "post", refused)
+    monkeypatch.setattr(telegram, "http_post", refused)
     assert notify.ops("first") is False                                  # not /started yet: tried, refused
     assert notify.ops("second") is False                                 # ... then left alone for DOWN_FOR
     assert sent == [("refused", "5550001", "first")]                     # never the group
@@ -110,7 +110,7 @@ def test_notify_never_raises(monkeypatch, tmp_path, capsys):
 
     def boom(*a, **k):
         raise httpx.ConnectError("no network")
-    monkeypatch.setattr(notify.httpx, "post", boom)
+    monkeypatch.setattr(telegram, "http_post", boom)
     notify.group("hello")                                # Telegram down: logged, not raised
     notify.say("hello")
     notify.photo(tmp_path / "missing.png", "caption")    # screenshot never written: text fallback, not raised
@@ -165,7 +165,7 @@ def test_failure_log_survives_cp1252_stderr(monkeypatch):
 
     def boom(*a, **k):
         raise httpx.ConnectError("no network → ⚠️")
-    monkeypatch.setattr(notify.httpx, "post", boom)
+    monkeypatch.setattr(telegram, "http_post", boom)
     notify.group("hello")
     err.flush()
     assert "sendMessage failed" in buf.getvalue().decode("cp1252")

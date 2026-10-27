@@ -106,7 +106,8 @@ def _tasks(db, body, query, params, now):
     unknown = [s for s in sites if s not in util.SITES]
     if unknown:
         raise BadRequest(f"unknown sites: {', '.join(unknown)} (poshmark, depop, vinted)")
-    return 200, {"tasks": core.take_tasks(db, sites, now), "sold": core.sold_items(db, now), "mode": util.mode()}
+    return 200, {"tasks": core.take_tasks(db, sites, now), "sold": core.sold_items(db, now),
+                 "sold_on": core.sold_sites(db, now), "mode": util.mode()}
 
 
 def _task_result(db, body, query, params, now):

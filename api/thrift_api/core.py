@@ -1108,6 +1108,21 @@ def sold_items(db: Database, now: datetime | None = None, mode: str | None = Non
     return [row["item_id"] for row in rows]
 
 
+def sold_sites(db: Database, now: datetime | None = None, mode: str | None = None) -> list[dict]:
+    """The same sales as `sold_items`, each with the site it sold ON — {"item", "site"} — whose own listing the Mac
+    then holds as sold (2026-10-27: a sold Depop listing just leaves Depop's shop data, so the photo check never saw it
+    sold: the UGG Chestnut's and the Nike tee's Depop rows stayed 'posted' on the Mac, and 'go titles' tried to edit
+    the Nike's sold listing). Live only (else [])."""
+    now, mode = _clock(now), mode or util.mode()
+    if mode != "live":
+        return []
+    since = max(go_live(db, now), now - timedelta(days=30))
+    rows = db.query("SELECT DISTINCT s.item_id, s.marketplace FROM sales s JOIN email_events e ON e.message_id = "
+                    "s.message_id WHERE s.item_id IS NOT NULL AND s.status NOT IN ('cancelled', 'merged') "
+                    "AND e.received_at >= ? ORDER BY s.item_id, s.marketplace", (iso(since),))
+    return [{"item": row["item_id"], "site": row["marketplace"]} for row in rows]
+
+
 # --- the owner's and the developer's views ---------------------------------------------------------------------------
 
 def sales_list(db: Database, state: str = "open") -> list[dict]:

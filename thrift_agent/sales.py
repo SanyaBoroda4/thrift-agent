@@ -337,6 +337,9 @@ def fetch_tasks(db: DB, sites: list[str], force: bool = False) -> int:
     got = answer.get("tasks") or []
     for iid in answer.get("sold") or []:            # sold anywhere: never listed after the sale (A1)
         skip_sold(db, iid)
+    for entry in answer.get("sold_on") or []:       # and the site it sold ON holds it as sold (2026-10-27)
+        if isinstance(entry, dict):
+            mark_sold_here(db, entry.get("item"), entry.get("site"))
     reposts = [t for t in got if t.get("kind") == "repost"]      # WO45 §7: the API's safety net asks for one retry
     got = [t for t in got if t.get("kind") != "repost"]
     for t in reposts:
@@ -385,6 +388,18 @@ def repost(db: DB, task: dict) -> None:
 def pending(db: DB, site: str | None = None) -> list:
     sql = "SELECT * FROM takedowns WHERE status='pending'" + (" AND marketplace=?" if site else "") + " ORDER BY fetched_at"
     return db.conn.execute(sql, (site,) if site else ()).fetchall()
+
+
+def mark_sold_here(db: DB, iid: str | None, site: str | None) -> bool:
+    """The site an item sold ON: its own listing is `sold` here too, so no text edit, price drop or photo check goes
+    to it any more (live 2026-10-27: a sold Depop listing leaves Depop's shop data, so nothing else ever said so — the
+    UGG Chestnut's and the Nike tee's Depop rows stayed 'posted', and 'go titles' tried to edit the Nike's)."""
+    row = db.listing(iid, site) if iid and site else None
+    if row is None or row["status"] != "posted":
+        return False
+    db.upsert_listing(iid, site, status="sold")
+    db.log(iid, "listing_sold_here", {"site": site})
+    return True
 
 
 def skip_sold(db: DB, iid: str) -> list[str]:

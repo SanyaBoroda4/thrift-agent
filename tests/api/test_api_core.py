@@ -521,9 +521,11 @@ def test_the_sold_list_for_the_mac(db, monkeypatch):
     core.process_email(db, followup("poshmark", "CANCELLED", "zara-cancel", order="aaaa1111bbbb2222cccc3333"), NOW)
     core.process_email(db, posh_sale("posh-x", title="Mystery Tee", url=None, order=None), NOW)     # unmatched
     assert core.sold_items(db, NOW) == [ITEM]
+    assert core.sold_sites(db, NOW) == [{"item": ITEM, "site": "poshmark"}]          # the site it sold on (10-27)
     assert core.sold_items(db, NOW + timedelta(days=31)) == []                        # past 30 days
+    assert core.sold_sites(db, NOW + timedelta(days=31)) == []
     monkeypatch.setenv("SALES_MODE", "replay")
-    assert core.sold_items(db, NOW) == []
+    assert core.sold_items(db, NOW) == [] and core.sold_sites(db, NOW) == []
 
 
 # --- a manual match ------------------------------------------------------------------------------------------------

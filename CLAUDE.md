@@ -1351,6 +1351,46 @@ it, git-ignored: `incidents/*/shots/`, `incidents/*/logs/`). What the code does 
   `tests/js/content.test.mjs`, `tests/test_crosslist_flow.py`, `tests/test_never_ask.py`, `tests/test_wo45.py`,
   `tests/api/test_api_wo45.py`, `tests/test_catalog_answers.py`.
 
+## The Telegram link (Alex, 2026-10-27)
+Measured on the Mac over 14 days (`events` kind `error`, the logs, a live probe): 4,868 failed `getUpdates` polls —
+DNS 3,144 (the Mac's first resolver is Tailscale's MagicDNS 100.100.100.100; it stops answering around wakes and
+network changes, in bursts on 10-13, 10-14, 10-18, 10-23), no network 457 (the night's dark wakes), a captive portal's
+self-signed certificate 707 (one travel day, 10-18), read timeouts 336 (a poll in flight when the Mac sleeps), resets
+in the TLS handshake 204 — the path to Telegram itself: a live probe from the Mac had api.telegram.org reset 1 time in
+60 and ~3× slower (Amsterdam) while Apple and Anthropic, through the same router, never were. So: the Mac (DNS, sleep),
+not the router; Telegram's path for the resets. Lost before this: 9 private / plain lines (4 dropped while the ops chat
+was marked down, 5 failed outright — 2 of those timed out after going out and may have arrived); cards (the outbox,
+WO37) were never lost; nothing went twice because of the network (two "item" rows were the [Change] prompt by design;
+the robe's ⏭ line went twice on 10-24 because the API's repost re-queued it — now said once).
+- **One client per process** (`telegram.client()`: httpx, connections kept 15 s — the ~15 s poll reuses its TLS
+  connection, no DNS look per call — with TCP keepalive: SO_KEEPALIVE, idle 10 s, interval 5 s, 3 probes, each where
+  the OS takes it, `keepalive_options`). The one network seam: `telegram.http_post`; every call goes through
+  `telegram.post` (the Bot's `call`, `notify._send`).
+- **Retry with back-off:** a request that never left the Mac (ConnectError — DNS, no network, a reset handshake —,
+  ConnectTimeout, PoolTimeout, a failed write) is tried again 1, 2, 4 s later (`RETRY_PAUSES`); one that went out with
+  no answer (ReadTimeout, RemoteProtocolError, ReadError — WO37's `maybe_delivered`) never is.
+- **DNS pinned while it fails:** a DNS failure (`dns_failed`: socket.gaierror or its words) sends the next try to
+  api.telegram.org's last known address (`_ADDRESSES`, learned from DNS every 10 min after a good call; seeded with
+  149.154.166.110 / 149.154.167.220) with `Host: api.telegram.org` and the TLS name check on that name
+  (`sni_hostname`); for a minute after, calls go there first (`DNS_DOWN_FOR`).
+- **The long poll stays under 30 s:** `telegram.poll_timeout` (15 on the Mac) capped at 25 (`cli.POLL_TIMEOUT_MAX`);
+  the HTTP read waits the poll + 10 s.
+- **The poll's back-off and one event per outage** (`cli._safe_poll`): a failed poll waits 5, 10, 20, 40, then 60 s
+  (`poll_backoff`; was 5 s every time, all night); `telegram_down` {kind, why} at the outage's first failure,
+  `telegram_up` {down_s, failed_polls, kinds} when a poll works (`telegram.failure_kind`: dns, offline, tls, reset,
+  timeout, http) — no traceback event per failed poll any more; a non-network error in the poll is still a traceback.
+- **Nothing lost:** a private or group line (`notify.ops` / `group` / the photos) whose send never left the Mac is
+  HELD (kv `telegram_held:<when>:<pid>`, one row each, 30 at most, 48 h) and sent — "(held back since 3:12 PM:
+  Telegram couldn't be reached)" — by `notify.flush_held` after the next good poll or the next line that goes out; a
+  row is claimed (deleted) before its send, so the worker and the poster never send one twice; one that may have
+  arrived is never held. A refusal (Telegram answered no: the ops chat not /started) is dropped as before. A ✅ card
+  that never left is not "announced" (event `card_not_sent`): the poster's sweep sends it (`crosslist.announce` logs
+  `posted_announced` only after the send; one that may have arrived counts, outbox message id 0). The same ⏭ "wasn't
+  listed" line for an item and site is said once while it is open (`runner.ask_skipped`).
+- Not ours to change: Tailscale's DNS on the Mac (MagicDNS first) — `tailscale set --accept-dns=false` would make the
+  router's resolver first; left as it is (the pinning covers it).
+- Tests: `tests/test_telegram_link.py`; `tests/test_telegram.py` and `tests/test_notify.py` on the new seam.
+
 ## Shop-window titles every site accepts; dual sizes always map (WO50, 2026-10-24)
 The owner's rule: "imagine a shop window downtown: people walking past read the label" — short, natural, nice to read;
 no shouting capitals, no codes or SKU-like strings, no odd letters; never dropping what matters (brand, what it is, the
@@ -1432,6 +1472,12 @@ morning waited 71 minutes; the worker was "restarted for a 21-hour stall" the mo
   `orders.POSHMARK_STATUS` — every fresh sale was dropped as "no known status"; only shipped / delivered / complete /
   cancelled orders ever reached the API (the Alo set's order appeared only once it shipped). "Sold" → to_ship now.
   The reader also takes every sales answer the page loads (`MORE_ANSWERS`), rows merged by id.
+- **The site it sold ON holds it as sold** (2026-10-27): GET /tasks also answers `sold_on` — each sale's item and
+  site (`core.sold_sites`, the same 30-day live window as `sold`) — and the Mac marks that site's own `posted` row
+  `sold` (`sales.mark_sold_here`, event `listing_sold_here`). Live: a sold Depop listing just leaves Depop's shop data,
+  so the photo check never saw it sold — the UGG Chestnut's (sold 10-16) and the Nike tee's (10-22) Depop rows had
+  stayed `posted`, and "go titles" tried to edit the Nike's sold listing (Depop: "There was a problem editing your
+  product"). Poshmark's and Vinted's sold listings were already marked by the photo check.
 - **"Gone already" keeps the rows true:** a take-down that finds the listing gone marks it `delisted` here too (the
   dress's and the Alo set's Depop rows had stayed `posted`); `sales.repair_gone` fixes such rows at the poster's start.
   **Depop's delete judged by the address:** a job that ends in an error (Depop reloads the page as it deletes — "the
@@ -1524,8 +1570,10 @@ done; an unconfirmed publish) — one Removal per item (its files; a file is tie
 or a Poshmark listing id of ours), the kept ones said in the plan's notes, the line "… 123 evidence files older than
 14 days (11 items)". Never touched: a share in flight, a work copy an item still needs (the archive copy is then
 kept, said in the plan's notes), the database. **The
-disk** (`cleanup.disk_watch`, every 10 min from the same tick): under 20 GB free → ONE private line naming thrift's
-own folders; "✓ … free again" above 22 GB; `thrift status` shows "disk: X free of Y". Tests: `tests/test_cleanup.py`.
+disk** (`cleanup.disk_watch`, every 10 min from the same tick): under 5 GB free → ONE private line naming thrift's
+own folders; nothing is said above it (Alex, 2026-10-27: was 20 GB with a "free again" line — the Mac lives at ~13 GB);
+back above 6 GB the episode ends silently (event `disk_ok`); `thrift status` shows "disk: X free of Y". Tests:
+`tests/test_cleanup.py`.
 
 ## Her first real upload shares (WO46, 2026-10-19)
 The upload Shortcut went live on her phone that evening (no test run). It saves the iCloud copy FIRST, then uploads, so

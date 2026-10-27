@@ -78,6 +78,14 @@ def no_telegram(monkeypatch):
     monkeypatch.setattr("thrift_agent.notify._ops_enabled", lambda: (False, "", None))     # the ops chat too (WO29)
     monkeypatch.setattr("thrift_agent.notify._db", lambda: None)        # never the repo's own var/state.db
     monkeypatch.setattr("thrift_agent.notify.httpx.post", no_network)
+    # the Telegram link (2026-10-27): its one network seam, its DNS look and its back-off pauses — never real here
+    from thrift_agent import cli, telegram
+    monkeypatch.setattr(telegram, "http_post", no_network)
+    monkeypatch.setattr(telegram, "learn_addresses", lambda *a, **k: None)
+    monkeypatch.setattr(telegram, "_sleep", lambda seconds: None)
+    monkeypatch.setattr(telegram, "_STATE", {"learned": 0.0, "dns_down_until": 0.0, "next": 0})
+    monkeypatch.setattr(telegram, "_ADDRESSES", list(telegram.SEED_ADDRESSES))
+    monkeypatch.setattr(cli, "POLL_LINK", {"fails": 0, "since": None, "kinds": {}, "first": ""})
 
 
 @pytest.fixture(autouse=True)
