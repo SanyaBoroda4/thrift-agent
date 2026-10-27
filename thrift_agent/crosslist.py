@@ -22,6 +22,7 @@ from pathlib import Path
 
 from thrift_agent import catalogs, daily, notify
 from thrift_agent.config import Settings
+from thrift_agent.brain.gate import NO_BRAND_NOTE
 from thrift_agent.db import DB, listing_id_from, loads
 
 CROSS = catalogs.CROSS
@@ -715,6 +716,10 @@ def _card(s: Settings, db: DB, iid: str, text: str, edit: bool) -> None:
     db.outbox_resolve("posted", iid)
 
 
+LISTED_NO_BRAND = "listed with no brand (no brand label, tag or logo in the photos)"
+_SITE_NO_BRAND = re.compile(r"\(no brand\)$|^listed without a brand$")
+
+
 def _say_checks(db: DB, iid: str, mps: list[str]) -> None:
     """The posters' notes (a brand left empty, a size taken as the nearest, …) to the ops chat, each once per item —
     never to the group (WO34, the owner: nothing technical in the group; the MNG card had a Depop note twice)."""
@@ -723,9 +728,15 @@ def _say_checks(db: DB, iid: str, mps: list[str]) -> None:
         said |= set((loads(detail) or {}).get("notes") or [])
     rows = {r["marketplace"]: r for r in db.listings_for(iid)}
     notes = []
+    it = db.item(iid)
+    no_brand = it is not None and not it["owner_brand"] and NO_BRAND_NOTE in ((loads(it["gate"]) or {}).get("notes") or [])
+    if no_brand and LISTED_NO_BRAND not in said:     # 2026-10-27: no brand to be seen — said once, for the item
+        notes.append(LISTED_NO_BRAND)
     for mp in mps:
         f = loads((rows.get(mp) or {})["fields_json"]) if rows.get(mp) and rows[mp]["fields_json"] else {}
         for c in [*(f.get("guesses") or []), *(f"copy: {x}" for x in (f.get("checks") or []))]:
+            if no_brand and _SITE_NO_BRAND.search(c):
+                continue                               # the item's one line says it
             note = f"{LABEL.get(mp, mp)}: {c}"
             if note not in said and note not in notes:
                 notes.append(note)

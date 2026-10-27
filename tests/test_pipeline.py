@@ -667,7 +667,8 @@ def test_a_price_alone_makes_the_item_ready_whatever_it_could_not_read(tmp_path,
     and her price lists the item; nothing comes back for it."""
     s = _settings(tmp_path)
     db = DB(s.path("db"))
-    state = {"brand": Ev(value=None, confidence=0.2)}                   # the model can't read the brand
+    state = {"brand": Ev(value=None, photos=[2], confidence=0.2)}       # a brand label it can't read (2026-10-27:
+    #                                                                     with nothing to be seen it lists no brand)
     monkeypatch.setattr("thrift_agent.brain.llm.ask", fake_ask(lambda **kw: facts(brand=state["brand"], **kw)))
     monkeypatch.setattr("thrift_agent.pipeline.load_yaml", lambda name: {"brands": {}, "aliases": {}, "category_defaults": {}})
     d = tmp_path / "item"

@@ -22,6 +22,20 @@ OTHER_CATEGORY_QUESTION = "Category? — reply e.g. 'category Tops'"
 
 
 SIZE_NOTE = "size: the best reading,"   # WO33: an unsure size is a note (the card's Size line), never a question
+NO_BRAND_NOTE = "no brand: no brand label, tag or logo in the photos — listed with no brand"
+BRAND_SEEN = ("read", "unreadable", "logo", "none")
+
+
+def brand_seen(facts: Facts) -> str:
+    """What the photos show of the brand (Alex, 2026-10-27): the model's own word (facts.brand_seen), else — facts read
+    before it — what the facts hold: a reading → 'read' (its confidence decides), a photo cited for the brand without
+    one → 'unreadable', nothing at all → 'none'."""
+    seen = getattr(facts, "brand_seen", None)
+    if seen in BRAND_SEEN:
+        return seen
+    if facts.brand.value:
+        return "read"
+    return "unreadable" if facts.brand.photos else "none"
 
 
 def evaluate(facts: Facts, price: PriceResult, lint: list[str], unsupported: int, cfg: dict,
@@ -41,10 +55,18 @@ def evaluate(facts: Facts, price: PriceResult, lint: list[str], unsupported: int
     need, soft, notes, questions = [], [], [], []
     mc = cfg["min_confidence"]
 
-    if facts.brand.source != "owner" and (not facts.brand.value or facts.brand.confidence < mc["brand"]):
-        need.append(f"brand unclear ({facts.brand.value}, {facts.brand.confidence:.2f})")
-        questions.append(f"Brand: read as “{facts.brand.value}”, not sure — reply 'brand …' if it's wrong"
-                         if facts.brand.value else "Brand? Couldn't read it — reply 'brand …'")
+    # The brand (Alex, 2026-10-27): read confidently → used, never asked; no brand to be seen (no brand label, tag
+    # or logo, nothing suggesting a known brand) → listed with no brand, never asked (Poshmark empty, Depop "Other",
+    # Vinted "List without brand"; the "Check —" line says so); a brand there but unreadable — a blurry, cut-off or
+    # ambiguous label, tag or logo, or a known brand's logo or design without a readable label → the one question.
+    confident = bool(facts.brand.value) and facts.brand.confidence >= mc["brand"]
+    if facts.brand.source != "owner" and not confident:
+        if brand_seen(facts) == "none" and not facts.brand.value:
+            notes.append(NO_BRAND_NOTE)
+        else:
+            need.append(f"brand unclear ({facts.brand.value}, {facts.brand.confidence:.2f})")
+            questions.append(f"Brand: read as “{facts.brand.value}”, not sure — reply 'brand …' if it's wrong"
+                             if facts.brand.value else "Brand? Couldn't read it — reply 'brand …'")
     if sized and (not facts.size_us.value or facts.size_us.confidence < mc["size"]):
         # WO33, the owner's rule: never a question about size, never a hold — the best reading is listed, the card
         # shows it (approve.item_caption: "Size S — my best reading; reply 'size …' to change it")

@@ -358,6 +358,11 @@ def run(interval: int = 15) -> None:
     s.ensure_dirs()
     if s.is_prod:
         notify.check(s)                                   # a silent Telegram is not an option on the Mac
+    try:
+        if changed := pipeline.apply_brand_rule(s, db):        # once: the 2026-10-27 brand rule for items waiting
+            print(f"brand rule applied: {', '.join(changed)}")
+    except Exception as e:  # noqa: BLE001 — never the reason the worker doesn't start
+        db.log(None, "error", f"brand rule: {type(e).__name__}: {e}")
     bot = approve.bot_for(s)
     print(f"worker watching {s.path('inbox')}" + (" — Telegram on" if bot else " — Telegram off (dev: messages print)"))
     # The daily window (WO28): its first step() is the start's catch-up — the inbox, "Back online" when there is work,

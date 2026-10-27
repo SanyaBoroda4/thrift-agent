@@ -1353,8 +1353,23 @@ it, git-ignored: `incidents/*/shots/`, `incidents/*/logs/`). What the code does 
 
 ## The brand is asked, the database never waits on a line, one New (Alex, 2026-10-27, the afternoon's shares)
 Five shares, 16 items: 9 live on all three sites, 4 waiting for her price; three went wrong, all fixed:
-- **The brand is asked when it couldn't be read** (Alex: "if the agent struggles with the brand and a platform needs
-  one, ask her to type it"). An item whose gate asked the brand (`approve.asks_brand`: none read, or under 0.70) and
+- **The brand rule** (Alex, the same evening — it narrows the question below to case 2):
+  1. **No brand to be seen** — no photo of a brand label, tag or logo and the model sees no brand, or the brand
+     unknown or unreadable with nothing suggesting a known brand → listed with NO brand, never asked: Poshmark's field
+     empty, Depop "Other", Vinted "List without brand"; the gate's note `NO_BRAND_NOTE`, and the item's "Check —" line
+     (private) says "listed with no brand (no brand label, tag or logo in the photos)" once (`crosslist.LISTED_NO_BRAND`;
+     Depop's "(no brand)" and Vinted's "listed without a brand" notes folded into it).
+  2. **A brand there but unreadable** — a brand label, tag or logo that is blurry, cut off or ambiguous, or a
+     recognizable logo or design of a known brand without a readable label → the one question (below).
+  3. **A brand read confidently** (≥ 0.70) → used, never asked.
+  The model says which (`facts.brand_seen`: read | unreadable | logo | none — the extraction prompt's "brand_seen,
+  always"; a size or care label without a brand name is no brand label); facts read before it are judged by what they
+  hold (`gate.brand_seen`: a reading → read, its confidence decides; a photo cited for the brand without one →
+  unreadable; nothing → none). A low-confidence reading always asks (something suggests a brand). Applied once to the
+  items waiting then (`pipeline.apply_brand_rule`, kv `brand_rule_applied`, at the worker's start). Tests:
+  `tests/test_brand_rule.py`.
+- **The brand question** (case 2 above; Alex: "if the agent struggles with the brand and a platform needs one, ask her
+  to type it"). An item whose gate asked the brand (`approve.asks_brand`) and
   that she hasn't answered (items.owner_brand: a name, or "none") goes up NOWHERE once priced (`approve.needs_brand`;
   `runner.approved` is false, `crosslist.pending` skips a row a safety net re-queued): the price's button says "✓ $95 —
   needs the brand: reply with it (or 'no brand')", and ONE group message asks — "🏷️ What brand is <title>? I couldn't

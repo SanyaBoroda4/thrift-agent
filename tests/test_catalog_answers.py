@@ -270,8 +270,9 @@ def test_a_sure_category_is_never_asked(env, facts, monkeypatch):
 
 def test_no_brand_is_a_button_on_a_brand_question_and_keeps_the_card(env, facts, monkeypatch):
     s, db, bot = env
-    monkeypatch.setattr("thrift_agent.brain.llm.ask", _model({"facts": lambda: facts(brand=Ev()),
-                                                              "title": "Red Ballet Flats size 7.5"}))
+    monkeypatch.setattr("thrift_agent.brain.llm.ask",                # a tag in the photos it can't read (2026-10-27)
+                        _model({"facts": lambda: facts(brand=Ev(photos=[3]), brand_seen="unreadable"),
+                                "title": "Red Ballet Flats size 7.5"}))
     iid = _item(s.path("db").parent, db)
     pipeline.process_item(s, db, iid)
     card = bot.next_id

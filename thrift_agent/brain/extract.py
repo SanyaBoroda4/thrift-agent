@@ -12,6 +12,11 @@ Rules:
 - Every field that comes from a photo lists the photo indices that show it.
 - If a label is not legible, value=null with low confidence and add a question. Never guess brand,
   size or material. Material only from a fiber-content/care label or an insole/sole stamp.
+- brand_seen, always: 'read' when a brand label, tag or logo is legible (brand = what it says); 'unreadable' when a
+  brand label, tag or logo is in a photo but blurry, cut off or ambiguous (brand = null, or your partial reading with
+  low confidence, its photo cited); 'logo' when the item shows a recognizable logo or design of a known brand but no
+  readable label (brand = that brand, low confidence, the photo cited); 'none' when no photo shows a brand label,
+  tag or logo and you see no brand (brand = null). A size or care label without a brand name is not a brand label.
 - item_type and features must not name a material (leather, suede, wool, silk...) unless `material` has
   evidence from a label or stamp; texture words (woven, quilted, ribbed, glitter, knit) are fine.
 - Shoes: the "label" is the insole stamp, inside the tongue/heel, the sole, or the box end. EU sizes

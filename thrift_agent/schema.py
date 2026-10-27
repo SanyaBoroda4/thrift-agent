@@ -210,6 +210,12 @@ class Facts(BaseModel):
                                                                  "shorts or pants); null for one garment, a pair of "
                                                                  "shoes, a bikini or a jewelry set")
     brand: Ev
+    brand_seen: Literal["read", "unreadable", "logo", "none"] | None = Field(
+        None, description="What the photos show of the brand: 'read' — a brand label, tag or logo you can read; "
+                          "'unreadable' — a brand label, tag or logo IS in a photo but blurry, cut off or ambiguous; "
+                          "'logo' — a recognizable logo or design of a known brand with no readable label; 'none' — "
+                          "no photo shows a brand label, tag or logo and you see no brand (a size or care label "
+                          "without a brand name is not a brand label)")
     style_name: Ev = Field(default_factory=Ev, description="Model/style name if printed on a label or shown on a "
                                                            "retail screenshot, e.g. 'Gizeh', 'Arizona'")
     size_printed: Ev = Field(description="Size exactly as printed on the label/insole, every system and unit "

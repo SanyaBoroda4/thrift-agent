@@ -2225,6 +2225,44 @@ def set_no_brand(s: Settings, db: DB, iid: str) -> str:
     return status
 
 
+BRAND_RULE = "brand_rule_applied"     # kv: the 2026-10-27 brand rule applied once to the items waiting then
+
+
+def apply_brand_rule(s: Settings, db: DB) -> list[str]:
+    """Once (Alex, 2026-10-27: "apply this to the items waiting now"): an item not on a site whose card asks the
+    brand though no brand is to be seen (gate.brand_seen 'none', no reading) is re-gated — no question; it lists with
+    no brand — and its brand message closed. Items whose brand is there but unreadable keep their question. Returns the
+    items changed."""
+    from thrift_agent import approve
+    from thrift_agent.brain import gate as gate_mod
+    if db.kv_get(BRAND_RULE):
+        return []
+    done = []
+    for it in db.conn.execute("SELECT * FROM items WHERE status NOT IN ('posted', 'dropped', 'failed', 'new')").fetchall():
+        iid = it["id"]
+        try:
+            gate = loads(it["gate"]) or {}
+            if it["owner_brand"] or not approve.asks_brand(gate) or reached_site(db, it) or not it["facts"]:
+                continue
+            facts = Facts.model_validate(loads(it["facts"]))
+            if facts.brand.value or gate_mod.brand_seen(facts) != "none":
+                continue
+            photos, kinds = _photos_of(it)
+            doc, status = _regate(s, it, facts, loads(it["renders"]) or {}, photos, kinds, gate.get("notes") or [])
+            was = approve.card(iid, it)
+            with db.tx():
+                db.set_item(iid, gate=doc, status=status)
+                db.log(iid, "brand_rule_applied", {"listed": "with no brand", "status": status})
+                _close_changed_card(db, iid, was)
+            db.outbox_resolve("brand", iid)
+            release_brand_wait(db, iid)
+            done.append(iid)
+        except Exception as e:  # noqa: BLE001 — one item never stops the others
+            db.log(iid, "error", f"brand rule: {type(e).__name__}: {e}")
+    db.kv_set(BRAND_RULE, now())
+    return done
+
+
 def release_brand_wait(db: DB, iid: str) -> list[str]:
     """Her brand (or 'no brand') is in (Alex, 2026-10-27): the item's rows that waited for it go back in line.
     Returns the sites."""
