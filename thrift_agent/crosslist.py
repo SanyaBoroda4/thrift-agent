@@ -729,7 +729,9 @@ def _say_checks(db: DB, iid: str, mps: list[str]) -> None:
     rows = {r["marketplace"]: r for r in db.listings_for(iid)}
     notes = []
     it = db.item(iid)
-    no_brand = it is not None and not it["owner_brand"] and NO_BRAND_NOTE in ((loads(it["gate"]) or {}).get("notes") or [])
+    gate = (loads(it["gate"]) or {}) if it is not None else {}
+    said_by_gate = [*(gate.get("notes") or []), *(gate.get("info") or [])]   # the gate's notes are kept as its "info"
+    no_brand = it is not None and not it["owner_brand"] and NO_BRAND_NOTE in said_by_gate
     if no_brand and LISTED_NO_BRAND not in said:     # 2026-10-27: no brand to be seen — said once, for the item
         notes.append(LISTED_NO_BRAND)
     for mp in mps:

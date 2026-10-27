@@ -74,7 +74,7 @@ def _no_brand_item(db, tmp_path, facts, gate_notes=(NO_BRAND_NOTE,), questions=(
                 facts=facts(brand=NO_BRAND, item_type="biker shorts", category="Shorts", subcategory="Athletic Shorts",
                             size_us=Ev(value="S", photos=[1], source="photo", confidence=0.9)).model_dump(),
                 gate={"decision": "needs_info" if questions else "publish", "reasons": list(questions),
-                      "questions": list(questions), "notes": list(gate_notes), "info": []})
+                      "questions": list(questions), "notes": [], "info": list(gate_notes)})   # as process_item keeps them
     return iid
 
 
