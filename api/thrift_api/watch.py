@@ -27,7 +27,8 @@ EVENING_DONE = "evening_line_day"         # settings: the local day the 📊 lin
 # a listing row left as it is — its reason is the owner's to settle, or a state of its own (the Mac says those itself)
 KEEP_REASONS = ("no size on the item", "shared again", "already live", "sold", "not published automatically",
                 "unconfirmed publish", "mismatch", "retried by the safety net", "skipped: already",
-                "refused the form")   # the Mac's own re-check settles a refused form (WO39; live 2026-10-20 the net
+                "refused the form",
+                "waiting for the brand")   # the Mac's own re-check settles a refused form (WO39; live 2026-10-20 the net
 #                                       re-queued the Tory Burch before that re-check could run)
 
 

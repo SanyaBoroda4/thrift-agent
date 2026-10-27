@@ -280,7 +280,9 @@ def pending(s: Settings, db: DB, mps: list[str] | None = None) -> list[tuple[str
             f"WHERE l.marketplace=? AND l.status IN ({','.join('?' * len(states))}) AND COALESCE(i.test, 0)=0 "
             f"ORDER BY COALESCE(p.posted_at, l.updated_at), l.rowid", (mp, *states)).fetchall()   # ties: queue order
         #   (WO45 §2: a test share's item is never listed)
-        out += [(r["item_id"], mp) for r in rows]
+        from thrift_agent import approve
+        out += [(r["item_id"], mp) for r in rows
+                if not approve.needs_brand(db.item(r["item_id"]))]   # 2026-10-27: waits for her brand (a row a net re-queued)
     return out
 
 

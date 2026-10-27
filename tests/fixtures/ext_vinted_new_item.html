@@ -203,6 +203,8 @@ panel("condition", CONDITIONS, false);
 panel("color", COLORS, true);
 panel("material", MATERIALS, true);
 document.getElementById("brand").addEventListener("click", () => {
+  // live 2026-10-27 (the pink biker shorts): the brand panel stayed shut after the first click (brandOpensLate)
+  if (F.brandOpensLate && !window.__brandClickedOnce) { window.__brandClickedOnce = true; return; }
   const content = document.getElementById("brand-content");
   content.innerHTML = '<input data-testid="brand-select-dropdown-search-input"><ul></ul>';
   const search = content.querySelector("input");

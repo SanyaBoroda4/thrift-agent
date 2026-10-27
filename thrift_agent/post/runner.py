@@ -334,8 +334,10 @@ def shop_window_render(db: DB, it, render: Render, renders: dict) -> Render | No
 
 
 def approved(it, render: dict) -> bool:
-    """The listing carries the owner's approved price (WO27: nothing publishes without it)."""
-    return bool(it["owner_price"]) and int(render.get("price") or 0) == int(it["owner_price"])
+    """The listing carries the owner's approved price (WO27: nothing publishes without it) — and, when its brand
+    couldn't be read, her answer to the brand (Alex, 2026-10-27: Depop and Vinted need one; approve.needs_brand)."""
+    return bool(it["owner_price"]) and int(render.get("price") or 0) == int(it["owner_price"]) \
+        and not approve.needs_brand(it)
 
 
 def can_draft(mp: str) -> bool:

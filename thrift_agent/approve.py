@@ -193,6 +193,8 @@ def next_step(s: Settings, db: DB, iid: str) -> str:
     status = it["status"]
     if status == "ready" and it["owner_price"] and needs_size(it):     # WO39: nothing goes up without a size
         return "it goes up once a size is tapped on its card"
+    if status == "ready" and it["owner_price"] and needs_brand(it):    # 2026-10-27: nor without a brand
+        return "it goes up once you reply with its brand (or 'no brand')"
     if status == "ready" and it["owner_price"]:
         return f"it goes up {when_posting(s)} on {_sites(s)}"
     if status == "new":
@@ -645,6 +647,72 @@ def needs_size(it) -> bool:
 
 
 NEEDS_SIZE = "tap a size to list it"
+NEEDS_BRAND = "needs the brand: reply with it (or 'no brand')"
+BRAND_ASK = ("🏷️ What brand is {title}? I couldn't read it, and Depop and Vinted need one — reply to this message "
+             "with the brand, or 'no brand'.")
+BRAND_WAITING = "waiting for the brand"              # a listing row's reason while she is asked (both safety nets keep it)
+
+
+def needs_brand(it) -> bool:
+    """Alex, 2026-10-27: the gate asked the brand — it couldn't be read, or the reading is under 0.70 ("Brand? Couldn't
+    read it", "Brand: … — my best reading") — and she hasn't answered (a brand, or 'no brand': items.owner_brand):
+    Depop and Vinted require one, so the item goes up nowhere until her reply (live: the pink biker shorts went up as
+    Depop's "Other" and Vinted failed). A brand read well, or no label the model is sure of, never asks."""
+    if it is None or it["owner_brand"]:
+        return False
+    if ((loads(it["facts"]) or {}).get("brand") or {}).get("source") == "owner":
+        return False
+    return asks_brand(loads(it["gate"]) or {})
+
+
+def ask_brands(s: Settings, db: DB) -> int:
+    """ONE message per item priced and waiting for its brand — "🏷️ What brand is <title>? … reply to this message
+    with the brand, or 'no brand'." — at the bottom of the group, so she never scrolls back to its card (as the size's,
+    WO39). A row of it already failed or skipped (a site that refused it before the rule) is marked waiting, so neither
+    safety net re-posts it meanwhile. Once per item (outbox kind `brand`). Returns the messages sent."""
+    bot = bot_for(s)
+    if bot is None:
+        return 0
+    sent = 0
+    for it in db.items("ready"):
+        if not it["owner_price"] or not needs_brand(it) or ("test" in it.keys() and it["test"]):
+            continue
+        iid = it["id"]
+        for row in db.listings_for(iid):
+            if row["status"] in ("failed", "skipped", "queued") and not str(row["error"] or "").startswith(BRAND_WAITING):
+                db.upsert_listing(iid, row["marketplace"], status="skipped",
+                                  error=f"{BRAND_WAITING} (was: {row['error'] or row['status']})"[:500])
+        if sent_before(db, bot.chat_id, "brand", iid) is not None:
+            continue
+        title = (((loads(it["renders"]) or {}).get("poshmark") or {}).get("title")) or iid
+        text = BRAND_ASK.format(title=title)
+        if once(db, bot, "brand", iid, text, lambda t=text: bot.send_message(t)) is not None:
+            sent += 1
+    return sent
+
+
+def _reply_brand(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int | None) -> str:
+    """A reply to "🏷️ What brand is …?": the brand of THAT item, or 'no brand'. An item not on any site yet gets it
+    the usual way (pipeline.set_brand / set_no_brand: the copy and the title follow); one already live on a site
+    (it went up before this rule) gets it for the sites still waiting only (pipeline.brand_for_waiting)."""
+    from thrift_agent import pipeline
+    words = (text or "").strip().strip("'\"").strip()
+    if not words or len(words.split()) > 6:
+        bot.send_message("Reply with the brand, e.g. 'Zella', or 'no brand'", reply_to=mid)
+        return f"brand {iid}: unreadable reply {text!r}"
+    m = _BRAND_CMD.match(words)
+    brand = m.group(1).strip() if m else words
+    none = bool(pipeline.NO_BRAND_WORDS.fullmatch(brand.strip(" .!")))
+    it = db.item(iid)
+    if it is not None and pipeline.reached_site(db, it):
+        pipeline.brand_for_waiting(s, db, iid, None if none else brand)
+        db.outbox_resolve("brand", iid)
+        _confirm(s, db, bot, mid, iid, "No brand" if none else f"Brand: {brand}")
+        return f"brand {iid}: {'none' if none else brand!r} (for the sites still waiting)"
+    out = _set_no_brand(s, db, bot, iid, mid) if none else _set_brand(s, db, bot, iid, brand, mid)
+    pipeline.release_brand_wait(db, iid)
+    db.outbox_resolve("brand", iid)
+    return out
 SIZE_ASK = "Waiting for a size: {title} — tap one on its card (or reply 'size …' to this message)"
 
 
@@ -1252,6 +1320,8 @@ def _route_message(s: Settings, db: DB, bot: Bot, msg: dict) -> str:
         return _reply_category(s, db, bot, ref, text, mid)
     if kind == "size":
         return _reply_size(s, db, bot, ref, text, mid)
+    if kind == "brand":
+        return _reply_brand(s, db, bot, ref, text, mid)
     if kind == "unconfirmed":
         return _reply_unconfirmed(s, db, bot, ref, text, mid)
     if kind == "skipped":
@@ -1451,6 +1521,15 @@ def _set_price(s: Settings, db: DB, bot: Bot, iid: str, amount: int, reply_to: i
         db.outbox_resolve("item", iid)
         if not refresh_card(s, db, iid):
             _ack(db, bot, "item", iid, f"✓ ${amount} — {NEEDS_SIZE}")
+    elif needs_brand(db.item(iid)):
+        # Alex, 2026-10-27: the brand couldn't be read — nothing goes up until her reply (Depop and Vinted need one);
+        # the card says so and ONE message asks (ask_brands, right away)
+        db.outbox_resolve("item", iid)
+        _ack(db, bot, "item", iid, f"✓ ${amount} — {NEEDS_BRAND}")
+        try:
+            ask_brands(s, db)
+        except Exception as e:  # noqa: BLE001 — the window's tick asks again
+            db.log(iid, "error", f"brand message: {type(e).__name__}: {e}")
     else:
         db.outbox_resolve("item", iid)
         # WO29: no "✓ $X — N left" message: said on the button (the size rows stay when the size was tapped, WO43)

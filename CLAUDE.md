@@ -1351,6 +1351,41 @@ it, git-ignored: `incidents/*/shots/`, `incidents/*/logs/`). What the code does 
   `tests/js/content.test.mjs`, `tests/test_crosslist_flow.py`, `tests/test_never_ask.py`, `tests/test_wo45.py`,
   `tests/api/test_api_wo45.py`, `tests/test_catalog_answers.py`.
 
+## The brand is asked, the database never waits on a line, one New (Alex, 2026-10-27, the afternoon's shares)
+Five shares, 16 items: 9 live on all three sites, 4 waiting for her price; three went wrong, all fixed:
+- **The brand is asked when it couldn't be read** (Alex: "if the agent struggles with the brand and a platform needs
+  one, ask her to type it"). An item whose gate asked the brand (`approve.asks_brand`: none read, or under 0.70) and
+  that she hasn't answered (items.owner_brand: a name, or "none") goes up NOWHERE once priced (`approve.needs_brand`;
+  `runner.approved` is false, `crosslist.pending` skips a row a safety net re-queued): the price's button says "✓ $95 —
+  needs the brand: reply with it (or 'no brand')", and ONE group message asks — "🏷️ What brand is <title>? I couldn't
+  read it, and Depop and Vinted need one — reply to this message with the brand, or 'no brand'." (`ask_brands`, outbox
+  kind `brand`, once; also from the window's tick). Her reply (`_reply_brand`): a name → `pipeline.set_brand`, 'no
+  brand' → `set_no_brand` — the item lists on all three. An item already live on a site (before this rule) gets her
+  answer for the sites still waiting only (`pipeline.brand_for_waiting`); its rows that failed, skipped or were queued
+  meanwhile say "waiting for the brand (was: …)" — both safety nets keep that reason — and go back in line
+  (`release_brand_wait`). The 💤 line names it ("waiting for a brand: …", `daily.BRAND_WAIT`). A brand read well, or a
+  label the model is sure isn't there, never asks. Live: the pink biker shorts (no brand) went up as Depop's "Other"
+  and failed on Vinted.
+- **Vinted's "List without brand"**: its brand panel had stayed shut after the one click (the pink shorts: the field
+  "Select a brand", no rows), so the option never showed though Vinted still has it (the Denim Forum's open menu, the
+  same afternoon: "No brand indicated › List without brand"). `vinted.js open` clicks again (3 times at most) until the
+  panel shows; `noBrandOption` re-opens it if needed, scrolls the list to its end and searches "" then a word no brand
+  has (Vinted ends a search's rows with the option); a miss keeps a `menu-no-brand` picture. Stand-in hook
+  `brandOpensLate`.
+- **"database is locked"** (14:03 EDT: the Poshmark worker while recording the Reformation jeans it had just
+  published — the row stayed `posting`, the listing live — and the worker's Telegram thread at 14:04):
+  `process_item` said its private "No full photo …" line INSIDE its write transaction; notify opened a NEW connection
+  per line, whose opening runs the schema and the migrations (writes), and waited 30 s on its own caller's lock while
+  the item's transaction held the database — 155 s for that item. Now: the line is said after the commit; a Telegram
+  line said inside ANY write transaction waits for its commit (`db.in_transaction`, `db.after_commit`, `notify._later`;
+  dropped on a rollback); notify keeps one connection per thread (`notify._db`); a Poshmark turn that failed looks for
+  a row it left `posting` in the closet at once (`parallel._poshmark_worker` → `runner.reconcile_stale`), not only at
+  the poster's next start.
+- **", New with Tags" says New once** (`titles.fix`): every other standalone "New" outside the brand goes, an existing
+  tail isn't doubled (live: the Levi's 501 "… Jeans New, size 26, New with Tags" — 'repeated: New' — was held on every
+  site); a brand's own "New" (New Balance, New Look, New York & Company, New Era) is never a repeat (`NEW_BRANDS`).
+- Tests: `tests/test_brand_wait.py`; the jsdom "brand panel that doesn't open at the first click".
+
 ## The Telegram link (Alex, 2026-10-27)
 Measured on the Mac over 14 days (`events` kind `error`, the logs, a live probe): 4,868 failed `getUpdates` polls —
 DNS 3,144 (the Mac's first resolver is Tailscale's MagicDNS 100.100.100.100; it stops answering around wakes and

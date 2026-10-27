@@ -89,6 +89,7 @@ def work(s: Settings, db: DB) -> Work:
 
 
 SIZE_WAIT = "a size"
+BRAND_WAIT = "a brand"
 RETRY_WAIT = "your 'retry'"
 
 
@@ -109,7 +110,9 @@ def owner_waits(s: Settings, db: DB) -> dict[str, list[str]]:
         name = crosslist.item_name(db, iid)
         if name not in retries:
             retries.append(name)
-    return {SIZE_WAIT: sizes, RETRY_WAIT: retries}
+    brands = [crosslist.item_name(db, it["id"]) for it in db.items("ready")
+              if it["owner_price"] and approve.needs_brand(it) and not ("test" in it.keys() and it["test"])]
+    return {SIZE_WAIT: sizes, BRAND_WAIT: brands, RETRY_WAIT: retries}
 
 
 def size_waiting(db: DB) -> list[str]:
@@ -374,6 +377,10 @@ class Window:
             approve.ask_sizes(self.s, self.db)        # WO39 follow-up: "Waiting for a size: …", once per item
         except Exception as e:  # noqa: BLE001 — tried again on the next tick
             self.db.log(None, "error", f"size message: {type(e).__name__}: {e}")
+        try:
+            approve.ask_brands(self.s, self.db)       # 2026-10-27: "🏷️ What brand is …?", once per item
+        except Exception as e:  # noqa: BLE001 — tried again on the next tick
+            self.db.log(None, "error", f"brand message: {type(e).__name__}: {e}")
         return text
 
     def show(self, text: str) -> None:

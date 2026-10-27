@@ -19,9 +19,13 @@
 
   async function open(name) {
     const input = await T.need(S()[name].selectors, name);
-    await T.click(input);
-    // its panel shows: the chevron up, rows, or (the brand) its search box
-    await T.until(() => isOpen(input) || (S()[name].search && T.$$(S()[name].search).some(T.visible)), 2000);
+    // its panel shows: the chevron up, rows, or (the brand) its search box — clicked again when it didn't (live
+    // 2026-10-27: the pink biker shorts' brand panel stayed shut after one click and no brand row could show)
+    const shown = () => isOpen(input) || (S()[name].search && T.$$(S()[name].search).some(T.visible));
+    for (let i = 0; i < 3 && !shown(); i++) {
+      await T.click(input);
+      await T.until(shown, 2000);
+    }
     return input;
   }
 
@@ -194,6 +198,26 @@
 
   const noBrandRow = (t) => new RegExp(S().empty_brand.text, "i").test(T.norm(t));
 
+  // Vinted's own "No brand indicated" › "List without brand" (WO35): the brand panel open (opened again when it
+  // closed or never opened), its list scrolled to the end, and searched for the empty text, then for a word no brand
+  // has — Vinted ends a search's rows with it (live 2026-10-27, the Denim Forum's menu).
+  async function noBrandOption() {
+    const step = S().empty_brand;
+    const visible = () => T.$$(step.selectors).find(T.visible) ||
+      T.$$(S().rows.selectors).find((r) => T.visible(r) && noBrandRow(rowText(r)));
+    for (const query of ["", "zzqx"]) {
+      for (let i = 0; i < 2; i++) {
+        if (!T.$$(S().brand.search).some(T.visible)) await open("brand");
+        const search = T.$$(S().brand.search).find(T.visible);
+        if (search) await T.type(search, query);
+        for (const list of T.$$(["[data-testid='brand-select-dropdown-content']"])) list.scrollTop = list.scrollHeight;
+        const found = await T.until(visible, 3000);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
   async function brand(st, f) {
     await open("brand");
     const search = await T.waitFor(S().brand.search, { timeout: 3000 });
@@ -231,11 +255,11 @@
       if (hit) return take(hit, `brand set to '${hit.text}' (from '${longer.from}')`);
     }
     if (f.brand) await T.screenshot("menu-brand");
-    await T.type(box, "");
-    const step = S().empty_brand;
-    const none = await T.until(() => T.$$(step.selectors).find(T.visible) ||
-      T.$$(S().rows.selectors).find((r) => T.visible(r) && noBrandRow(rowText(r))), 5000);
-    if (!none) throw new Error("no 'List without brand' in Vinted's brand menu");
+    const none = await noBrandOption();
+    if (!none) {
+      await T.screenshot("menu-no-brand");
+      throw new Error("no 'List without brand' in Vinted's brand menu");
+    }
     if (none.getAttribute("aria-checked") !== "true") await T.click(none);
     T.picked(st, "brand", f.brand || "", "List without brand");
     st.brandChoice = "";

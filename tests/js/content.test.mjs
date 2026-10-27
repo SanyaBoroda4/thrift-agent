@@ -1850,3 +1850,12 @@ test("a 'text' job never types over a description changed by hand (WO50, expect_
   assert.equal(r.seen.mismatch, true, JSON.stringify(r));
   assert.equal(d.d.querySelector("textarea#description").value, "BCBGMAXAZRIA New Black Slouchy Shoulder Bag\n\nHer own words.");
 });
+
+test("Vinted: a brand panel that doesn't open at the first click still gives 'List without brand' (live 2026-10-27)", async () => {
+  const p = page("vinted", undefined, undefined, { brandOpensLate: true });
+  await run(p, { ...VINTED_JOB, fields: { ...VINTED_JOB.fields, brand: null, brand_candidates: [] } });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.ok(r.guesses.includes("listed without a brand"), JSON.stringify(r.guesses));
+  assert.equal(p.w.__noBrand, true);
+});

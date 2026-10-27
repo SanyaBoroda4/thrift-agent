@@ -21,6 +21,7 @@ import json
 import os
 import re
 import sys
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TextIO
@@ -168,6 +169,8 @@ def flush_held(db=None) -> int:
 
 def group(text: str) -> None:
     """A message for the group (WO29): "Posted ✓ …" or a plain action-needed line. Nothing else."""
+    if _later(group, text):
+        return
     ok, tok, chat = _enabled()
     if not ok:
         _print(f"[notify] {text}")
@@ -181,6 +184,8 @@ def group(text: str) -> None:
 
 
 def group_photo(path: Path, caption: str) -> None:
+    if _later(group_photo, path, caption):
+        return
     ok, tok, chat = _enabled()
     if not ok:
         _print(f"[notify] {caption}  ({path})")
@@ -200,12 +205,33 @@ def group_photo(path: Path, caption: str) -> None:
 
 # ---------- the ops chat: everything else ----------
 
+_LOCAL = threading.local()
+
+
 def _db():
+    """This thread's own connection for notify's bookkeeping, opened once (2026-10-27: a new one per line ran the
+    schema and the migrations each time — writes that waited on the caller's lock)."""
     try:
+        path = str(settings().path("db"))
+        cached = getattr(_LOCAL, "db", None)
+        if cached is not None and cached[0] == path:
+            return cached[1]
         from thrift_agent.db import DB
-        return DB(settings().path("db"))
+        db = DB(Path(path))
+        _LOCAL.db = (path, db)
+        return db
     except Exception:  # noqa: BLE001 - no DB here (a bare CLI): no once-a-day, no back-off
         return None
+
+
+def _later(fn, *args, **kw) -> bool:
+    """Inside a write transaction nothing goes out now (it would hold the database through a second connection and
+    the network — 'database is locked', live 2026-10-27): the line waits for the commit. True when deferred."""
+    from thrift_agent import db as db_mod
+    if not db_mod.in_transaction():
+        return False
+    db_mod.after_commit(lambda: fn(*args, **kw))
+    return True
 
 
 def signature(text: str) -> str:
@@ -244,6 +270,8 @@ def _repeat(db, text: str) -> bool:
 def ops(text: str, *, once: bool = True) -> bool:
     """A message for the ops chat; True when it went out. Held when Telegram can't be reached (sent later); logged
     and dropped when there is no ops chat or it refused us — never sent to the group."""
+    if _later(ops, text, once=once):
+        return True
     ok, tok, chat = _ops_enabled()
     if not ok:
         _print(f"[ops] {text}")
@@ -268,6 +296,8 @@ def ops(text: str, *, once: bool = True) -> bool:
 
 
 def ops_photo(path: Path, caption: str) -> bool:
+    if _later(ops_photo, path, caption):
+        return True
     ok, tok, chat = _ops_enabled()
     if not ok:
         _print(f"[ops] {caption}  ({path})")

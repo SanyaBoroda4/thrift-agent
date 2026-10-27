@@ -240,6 +240,12 @@ async def _poshmark_worker(s, poster, dry, stage, halt, state, opener, takedowns
             except Exception as e:  # noqa: BLE001 — a worker never dies of one bad turn
                 notify.say(f"❌ Poshmark worker: {type(e).__name__}: {e}")
                 worked = False
+                try:      # a listing this turn left 'posting' (live 2026-10-27: List This Item pressed, then 'database
+                    #       is locked' while recording it) is looked for in the closet now — never posted again blind
+                    if await runner.reconcile_stale(s, db, ps, ctx):
+                        db.log(None, "posting_reconciled", {"after": f"{type(e).__name__}: {e}"[:200]})
+                except Exception as e2:  # noqa: BLE001 — the poster's next start looks again
+                    db.log(None, "error", f"reconcile after a failed turn: {type(e2).__name__}: {e2}")
             gap = next_gap(s["schedule"]) if worked else IDLE
             started = time.monotonic()
             if not worked:

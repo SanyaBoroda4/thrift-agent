@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import threading
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -181,6 +182,25 @@ def listing_id_from(mp: str, url: str | None) -> str | None:
     return None
 
 
+_TX = threading.local()             # this thread's open write transactions, and what waits for their end
+
+
+def in_transaction() -> bool:
+    """Is this thread inside a write transaction (any DB's `tx`)? Then nothing that waits on another connection or the
+    network may run now (2026-10-27: a private line said inside one held the database 30 s+: 'database is locked')."""
+    return getattr(_TX, "depth", 0) > 0
+
+
+def after_commit(fn) -> bool:
+    """`fn` once this thread's write transaction commits (dropped if it rolls back); at once when there is none.
+    True when it was deferred."""
+    if not in_transaction():
+        fn()
+        return False
+    _TX.after.append(fn)
+    return True
+
+
 class DB:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -267,13 +287,29 @@ class DB:
 
     @contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:
+        """A write transaction. What `after_commit` defers inside it (a Telegram line: notify) runs once it commits."""
         self.conn.execute("BEGIN IMMEDIATE")
+        depth = getattr(_TX, "depth", 0)
+        if depth == 0:
+            _TX.after = []
+        _TX.depth = depth + 1
+        ok = False
         try:
             yield self.conn
             self.conn.execute("COMMIT")
+            ok = True
         except Exception:
             self.conn.execute("ROLLBACK")
             raise
+        finally:
+            _TX.depth -= 1
+            if _TX.depth == 0:
+                pending, _TX.after = _TX.after, []
+                for fn in pending if ok else []:
+                    try:
+                        fn()
+                    except Exception:  # noqa: BLE001 — a deferred line never undoes the committed work
+                        pass
 
     def log(self, ref: str | None, kind: str, detail: Any = None) -> None:
         self.conn.execute("INSERT INTO events VALUES (?,?,?,?)",

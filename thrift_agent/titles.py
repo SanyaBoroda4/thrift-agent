@@ -117,9 +117,12 @@ def _codes(title: str) -> list[str]:
     return list(dict.fromkeys(found))
 
 
+NEW_BRANDS = re.compile(r"\bNew(?= (?:Balance|Look|York|Era|Republic|Directions)\b)")   # "New" that is a brand's
+
+
 def _dupes(title: str, brand: str | None = None) -> list[str]:
     seen, out = set(), []
-    for w in re.findall(r"[A-Za-z][A-Za-z'’]+", title):
+    for w in re.findall(r"[A-Za-z][A-Za-z'’]+", NEW_BRANDS.sub("", title)):
         k = w.lower().replace("’", "'")
         if k in SMALL or len(k) < 3:
             continue
@@ -225,9 +228,16 @@ def fix(title: str, brand: str | None = None, condition: str | None = None, max_
     t = re.sub(r"\s+([,.!?])", r"\1", re.sub(r"\s{2,}", " ", t))
     t = re.sub(r"(?:,\s*){2,}", ", ", t).strip(" ,-&/")
     cap = max_len or title_max()
-    if condition == "NWT" and len(t) + len(NWT_TAIL) <= cap:
-        t = re.sub(rf"^({re.escape(shown)}\s+)?New\s+", lambda m: m[1] or "", t) if shown else re.sub(r"^New\s+", "", t)
-        t = t.rstrip(" ,") + NWT_TAIL
+    tailed = None
+    if condition == "NWT":
+        # ", New with Tags" says it once, at the end: every other "New" outside the brand goes (live 2026-10-27: the
+        # Levi's 501 "… Jeans New, size 26, New with Tags" — 'repeated: New' — was held on every site)
+        base = t[:-len(NWT_TAIL)] if t.endswith(NWT_TAIL) else t
+        head = shown if shown and base.startswith(shown) else ""
+        body = re.sub(r"(?<![\w'])New(?:\s+with(?:out)?\s+Tags)?\b,?", " ", base[len(head):])
+        tailed = re.sub(r"\s+([,.!?])", r"\1", re.sub(r"\s{2,}", " ", f"{head} {body}")).strip(" ,") + NWT_TAIL
+    if tailed is not None and len(tailed) <= cap:
+        t = tailed
     elif condition == "NWT" and not re.search(r"\bNew\b", t):
         t = f"{shown} New {t[len(shown):].strip()}".strip() if shown and t.startswith(shown) else f"New {t}"
     if len(t) > cap:

@@ -1798,6 +1798,7 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
                                   "price": json.dumps(pr.model_dump()), "renders": json.dumps(row),
                                   "gate": json.dumps(gate_doc)})
     changed = not in_place or (new_card, _digest(d / "cover.jpg")) != was
+    no_cover_line = None
     with db.tx():
         latest = db.item(iid)
         stale = latest["updated_at"] != it["updated_at"] and (in_place or latest["status"] == "new")
@@ -1820,7 +1821,9 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
                                            **({"card": "changed" if changed else "unchanged"} if in_place else {})})
             if cover_note == NO_FULL_COVER:              # WO37: one line to the private chat, never a question
                 title = (row.get("poshmark") or {}).get("title") or _title_of(db.item(iid))
-                notify.say(f"No full photo of {title} — a full front shot next time")
+                no_cover_line = f"No full photo of {title} — a full front shot next time"
+    if no_cover_line:                                    # after the commit (2026-10-27: said inside it, the line held
+        notify.say(no_cover_line)                        # the database 30 s+ — 'database is locked')
     if stale:
         if in_place:
             raise ValueError(f"item {iid} changed while it was being reprocessed (an answer came in) — run it again")
@@ -2220,6 +2223,35 @@ def set_no_brand(s: Settings, db: DB, iid: str) -> str:
         db.set_item(iid, owner_brand=NO_BRAND, facts=facts.model_dump(), renders=renders, gate=doc, status=status)
         db.log(iid, "brand_set", {"brand": None, "status": status})
     return status
+
+
+def release_brand_wait(db: DB, iid: str) -> list[str]:
+    """Her brand (or 'no brand') is in (Alex, 2026-10-27): the item's rows that waited for it go back in line.
+    Returns the sites."""
+    from thrift_agent import approve
+    back = []
+    for row in db.listings_for(iid):
+        if str(row["error"] or "").startswith(approve.BRAND_WAITING):
+            db.upsert_listing(iid, row["marketplace"], status="queued", error=None)
+            back.append(row["marketplace"])
+    if back:
+        db.log(iid, "brand_wait_released", {"mps": back})
+    return back
+
+
+def brand_for_waiting(s: Settings, db: DB, iid: str, brand: str | None) -> list[str]:
+    """Her brand for an item already live on a site (it went up before the brand rule): kept as owner_brand, and the
+    facts and the records the waiting sites are mapped from carry it (`None`: no brand — Depop's "Other", Vinted's
+    "List without brand"); the live listings are left as they are. Returns the sites put back in line."""
+    it = db.item(iid)
+    if it is None:
+        raise ValueError(f"unknown item {iid}")
+    facts = loads(it["facts"]) or {}
+    facts["brand"] = {"value": brand, "photos": [], "source": "owner", "confidence": 1.0}
+    renders = {mp: {**r, "brand": brand} for mp, r in (loads(it["renders"]) or {}).items()}
+    db.set_item(iid, owner_brand=brand or NO_BRAND, facts=facts, renders=renders)
+    db.log(iid, "brand_set", {"brand": brand, "for": "the sites still waiting"})
+    return release_brand_wait(db, iid)
 
 
 def _brand_in(old: str | None) -> str | None:

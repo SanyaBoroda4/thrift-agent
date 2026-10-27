@@ -356,7 +356,8 @@ def fetch_tasks(db: DB, sites: list[str], force: bool = False) -> int:
 
 
 KEEP_REASONS = ("no size on the item", "shared again", "already live", "sold", "not published automatically",
-                "unconfirmed publish", "Mismatch", "refused the form")   # a listing row left as it is: its reason is
+                "unconfirmed publish", "Mismatch", "refused the form",
+                "waiting for the brand")   # a listing row left as it is: its reason is
 # the owner's to settle, or the Mac's own flow settles it (a refused form: WO39's re-check — live 2026-10-20 the net
 # re-queued the Tory Burch before the re-check could run)
 
