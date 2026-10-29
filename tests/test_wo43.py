@@ -491,7 +491,7 @@ def test_recategorize_moves_the_record_to_men_and_queues_one_edit_per_live_site(
     iid = _item(db, tmp_path, shoe_facts(size_us=Ev(value="10.5", source="owner", confidence=1.0)), status="posted",
                 size="10.5")
     for mp, url in (("poshmark", "https://poshmark.com/listing/On-x-6ad40a527fd46a62bddd7c89"),
-                    ("depop", "https://www.depop.com/products/tetianasorokina-on-cloud-4e83/"),
+                    ("depop", "https://www.depop.com/products/exampleshopname-on-cloud-4e83/"),
                     ("vinted", "https://www.vinted.com/items/10420112924")):
         db.upsert_listing(iid, mp, status="posted", url=url, fields_json={})
     out = edits.recategorize(s, db, iid, {"department": "Men", "category": "Shoes", "subcategory": "Sneakers"})

@@ -114,7 +114,7 @@ def title_words(text: str) -> list[str]:
 
 def slug_words(address: str) -> list[str]:
     """The title's words in a Depop address /products/<username>-<words>-<4 hex>/: the username part (Depop scrambles
-    one character of it every time — tetiana9orokina, tetian3sorokina…) and the id dropped (WO35)."""
+    one character of it every time — example9hopname, exampl3shopname…) and the id dropped (WO35)."""
     m = re.search(r"/products/([a-z0-9]+(?:-[a-z0-9]+)+)/?", address or "")
     if not m:
         return []

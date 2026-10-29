@@ -401,7 +401,7 @@ def test_a_listing_that_appears_just_before_the_retry_is_never_posted_twice(tmp_
     s = _settings(tmp_path)
     db = DB(s.path("db"))
     iid = _item(db)
-    live = f"https://www.depop.com/products/tetian3sorokina-tory-burch-{iid[-4:]}/"
+    live = f"https://www.depop.com/products/exampl3shopname-tory-burch-{iid[-4:]}/"
     ps = _posters(depop=Seen("depop", [UNCONFIRMED_DEPOP], [None, live]))   # absent at the re-check, then there
     run(s, db, ps)
     assert len(ps["depop"].calls) == 1 and ps["depop"].looked == 2

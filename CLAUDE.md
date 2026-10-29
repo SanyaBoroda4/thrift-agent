@@ -370,8 +370,8 @@ rows were copied in once (kv `listings_migrated`); `posts` is left as it was.
     `view_listing`); the old code took that page for an unknown one and looked in the shop, where its first-four-words
     match missed all three Levi's ("Levi's" → "levi", "s"; the address says "levis"). The seller's /manage/ page shows
     "SKU: <our item id>".
-  - Depop scrambles one character of the username in every product address (`tetiana9orokina`, `tetian3sorokina`,
-    `tetianasorokin0`, …): a listing is matched on the title's words after the username part, never on it
+  - Depop scrambles one character of the username in every product address (`example9hopname`, `exampl3shopname`,
+    `exampleshopnam0`, …): a listing is matched on the title's words after the username part, never on it
     (`ext_driver.slug_words`), and confirmed by the SKU.
   - Depop requires a brand: Post with it empty is refused — "This field is required" under Brand, the form stays (the
     silk pants, no brand). No brand, or one Depop doesn't list → Depop's own **Other**.

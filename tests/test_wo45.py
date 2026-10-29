@@ -115,7 +115,7 @@ def _item(s, db, facts: Facts, status="awaiting_price", title="Ralph Lauren Plai
                 gate={"decision": "publish", "reasons": [], "questions": [], "notes": [], "info": []})
     for mp in posted:
         db.upsert_listing(iid, mp, status="posted", url={"poshmark": "https://poshmark.com/listing/x-6ad4f5d7cb00f3049eba1b5b",
-                                                         "depop": "https://www.depop.com/products/tetiana-shirt-24cb/",
+                                                         "depop": "https://www.depop.com/products/example-shirt-24cb/",
                                                          "vinted": "https://www.vinted.com/items/10432047307"}[mp],
                           fields_json={"photos": photos[:1] if mp != "poshmark" else []}, price=price,
                           posted_at="2026-10-18T16:30:00+00:00")

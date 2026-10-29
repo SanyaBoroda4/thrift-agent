@@ -66,7 +66,7 @@ def facts_for(n=1) -> Facts:
 
 
 URLS = {"poshmark": "https://poshmark.com/listing/x-6ad4f5d7cb00f3049eba1b5b",
-        "depop": "https://www.depop.com/products/tetiana-shirt-24cb/", "vinted": "https://www.vinted.com/items/10432047307"}
+        "depop": "https://www.depop.com/products/example-shirt-24cb/", "vinted": "https://www.vinted.com/items/10432047307"}
 
 
 def _posted(s, db, price=40, n_photos=3, sites=("poshmark", "depop", "vinted")):
@@ -229,7 +229,7 @@ def test_the_photo_check_reads_the_shops_in_bulk_and_opens_a_page_only_when_some
     db.upsert_listing(b, "vinted", url="https://www.vinted.com/items/999")
     vinted = BulkPoster([{"id": "10432047307", "price": "40.0", "photos": 3},      # a: complete
                          {"id": "999", "price": "35.0", "photos": None}])         # b: no count in the JSON
-    depop = BulkPoster([{"slug": "tetiana-shirt-24cb", "price": "40", "photos": 1, "sold": False}])   # a: short
+    depop = BulkPoster([{"slug": "example-shirt-24cb", "price": "40", "photos": 1, "sold": False}])   # a: short
     ps = {"vinted": vinted, "depop": depop}
     done = asyncio.run(photocheck.run(s, db, ps))
     assert db.listing(a, "vinted")["photos_live"] == 3 and db.listing(a, "vinted")["price_live"] == 40

@@ -193,7 +193,7 @@ def test_a_depop_delete_whose_page_reloads_is_judged_by_the_address(monkeypatch)
     monkeypatch.setattr(p, "_depop_state", state)
     monkeypatch.setattr(p, "_job", job)
     monkeypatch.setattr("thrift_agent.post.ext_driver.unverified", lambda *a, **k: set())
-    assert asyncio.run(p.delist("https://www.depop.com/products/tktianasorokina-farm-rio-zodiac-print-maxi-5281/")) \
+    assert asyncio.run(p.delist("https://www.depop.com/products/ekampleshopname-farm-rio-zodiac-print-maxi-5281/")) \
         is True
     assert any("is gone" in n for n in p.notes)
 

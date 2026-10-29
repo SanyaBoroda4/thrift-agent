@@ -454,7 +454,7 @@
         "text": "^view listing$",
         "how": "the success page's \"View listing\" link: the new listing's /products/<slug>/manage/",
         "verified": true,
-        "seen": "2026-10-09, the success page after Post (WO35, i_261004_69a123's evidence): <a href=\"/products/tetiana9orokina-levis-501-distressed-denim-cutoff-e832/manage/\">View listing</a>"
+        "seen": "2026-10-09, the success page after Post (WO35, i_261004_69a123's evidence): <a href=\"/products/example9hopname-levis-501-distressed-denim-cutoff-e832/manage/\">View listing</a>"
       },
       "listing_title": {
         "selectors": [

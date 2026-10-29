@@ -646,7 +646,7 @@ def test_still_the_sell_form_after_the_click_is_a_refusal_never_unconfirmed(tmp_
     assert [j["mode"] for j in fake.jobs] == ["publish", "find"]
 
 
-DEPOP_SLUG = "https://www.depop.com/products/tetian3sorokina-tory-burch-red-ballet-2191/"
+DEPOP_SLUG = "https://www.depop.com/products/exampl3shopname-tory-burch-red-ballet-2191/"
 
 
 def test_depop_the_success_page_names_the_listing_and_its_manage_page_shows_our_sku(tmp_path, selectors, quick):
@@ -654,12 +654,12 @@ def test_depop_the_success_page_names_the_listing_and_its_manage_page_shows_our_
     address is taken from it and the SKU there must be our item id."""
     landed = Outcome("posted", url=DEPOP_SLUG + "manage/", clicked=True)
     out, fake, p = run(_with_fake([landed, SimpleNamespace(status="posted", skus=["i_1"], body="")], mp="depop",
-                                  selectors_path=selectors(), shop="tetianasorokina", tmp=tmp_path))
+                                  selectors_path=selectors(), shop="exampleshopname", tmp=tmp_path))
     assert out.status == "posted" and out.url == DEPOP_SLUG and fake.clicks == 1
     assert [j["mode"] for j in fake.jobs] == ["publish", "verify"]
     assert fake.jobs[1]["listing_url"] == DEPOP_SLUG + "manage/" and "SKU" not in (out.note or "")
     out, fake, p = run(_with_fake([landed, SimpleNamespace(status="posted", skus=["i_999"], body="")], mp="depop",
-                                  selectors_path=selectors(), shop="tetianasorokina", tmp=tmp_path))
+                                  selectors_path=selectors(), shop="exampleshopname", tmp=tmp_path))
     assert out.status == "posted" and "is i_999, not i_1" in out.note      # Depop named it: live — said, not re-posted
 
 
@@ -669,7 +669,7 @@ def test_depop_the_landing_after_70_seconds_is_still_taken_no_question(tmp_path,
     late = SimpleNamespace(status="posted", url=DEPOP_SLUG + "manage/", clicked=True, delay=0.7, error=None,
                            guesses=[])
     out, fake, _ = run(_with_fake([late, SimpleNamespace(status="posted", skus=["i_1"], body="")], mp="depop",
-                                  selectors_path=selectors(), shop="tetianasorokina", tmp=tmp_path))
+                                  selectors_path=selectors(), shop="exampleshopname", tmp=tmp_path))
     assert out.status == "posted" and out.url == DEPOP_SLUG and "find" not in [j["mode"] for j in fake.jobs]
     js = (bm.EXT_DIR / "background.js").read_text(encoding="utf-8")
     assert int(re.search(r"const AFTER_CLICK_MS = (\d+);", js).group(1)) >= 180000
@@ -677,14 +677,14 @@ def test_depop_the_landing_after_70_seconds_is_still_taken_no_question(tmp_path,
 
 
 def test_depop_a_scrambled_username_in_the_address_is_still_found_by_the_title_and_the_sku(tmp_path, selectors, quick):
-    """WO35: Depop changes one character of the username in every product address (tetian3sorokina…): the shop's
+    """WO35: Depop changes one character of the username in every product address (exampl3shopname…): the shop's
     listings are matched by the title's words after it, then the SKU on /manage/ decides."""
     shop = SimpleNamespace(status="posted", listings=[
-        {"url": "https://www.depop.com/products/tetianasorokcna-levis-501-cutoff-denim-ed56/", "text": ""},
+        {"url": "https://www.depop.com/products/exampleshopncme-levis-501-cutoff-denim-ed56/", "text": ""},
         {"url": DEPOP_SLUG, "text": ""}])
     out, fake, _ = run(_with_fake([Outcome("failed", clicked=True, error="no listing page"), shop,
                                    SimpleNamespace(status="posted", skus=["i_1"], body="")], mp="depop",
-                                  selectors_path=selectors(), shop="tetianasorokina", tmp=tmp_path))
+                                  selectors_path=selectors(), shop="exampleshopname", tmp=tmp_path))
     assert out.status == "posted" and out.url == DEPOP_SLUG and fake.clicks == 1
     assert [j["mode"] for j in fake.jobs] == ["publish", "find", "verify"]
     assert fake.jobs[2]["listing_url"] == DEPOP_SLUG + "manage/"
@@ -694,21 +694,21 @@ def test_depop_a_listing_whose_sku_isn_t_ours_is_never_taken(tmp_path, selectors
     shop = SimpleNamespace(status="posted", listings=[{"url": DEPOP_SLUG, "text": ""}])
     out, fake, _ = run(_with_fake([Outcome("failed", clicked=True, error="no listing page"), shop,
                                    SimpleNamespace(status="posted", skus=["i_261004_dd0c98"], body="")], mp="depop",
-                                  selectors_path=selectors(), shop="tetianasorokina", tmp=tmp_path))
+                                  selectors_path=selectors(), shop="exampleshopname", tmp=tmp_path))
     assert out.status == "failed" and out.clicked and out.url is None and fake.clicks == 1
 
 
 def test_the_title_words_of_an_address_never_include_the_username():
-    assert ext_driver.slug_words("https://www.depop.com/products/tetiana9orokina-levis-501-distressed-denim-cutoff-e832/")\
+    assert ext_driver.slug_words("https://www.depop.com/products/example9hopname-levis-501-distressed-denim-cutoff-e832/")\
         == ["levis", "501", "distressed", "denim", "cutoff"]
-    assert ext_driver.slug_matches("https://www.depop.com/products/tetiana9orokina-levis-501-distressed-denim-cutoff-e832/",
+    assert ext_driver.slug_matches("https://www.depop.com/products/example9hopname-levis-501-distressed-denim-cutoff-e832/",
                                    "Levi's 501 Distressed Denim Cutoff Shorts Light Wash size 26")
     assert not ext_driver.slug_matches(
-        "https://www.depop.com/products/tetian3sorokina-levis-501-distressed-denim-cut-off-2191/",
+        "https://www.depop.com/products/exampl3shopname-levis-501-distressed-denim-cut-off-2191/",
         "Levi's 501 Distressed Denim Cutoff Shorts Light Wash size 26")
-    assert ext_driver.slug_matches("https://www.depop.com/products/tetianasofokina-solid-striped-white-knit-ec29/",
+    assert ext_driver.slug_matches("https://www.depop.com/products/exampleshfpname-solid-striped-white-knit-ec29/",
                                    "Solid & Striped White Knit Crop Top & Flare Pants 2-Piece Set size M")
-    assert ext_driver.slug_matches("https://www.depop.com/products/tetianasortkina-mng-mango-knit-cardigan-5e9a/",
+    assert ext_driver.slug_matches("https://www.depop.com/products/exampleshotname-mng-mango-knit-cardigan-5e9a/",
                                    "MNG (Mango) Knit Cardigan & Wide Leg Pants Tan Geometric 2-Piece Set size S")
 
 
@@ -1101,7 +1101,7 @@ async def _cover_with_fake(results, mp="depop", dry=False, photo=2, count=6):
     fake.start()
     await asyncio.wait_for(fake.connected.wait(), 5)
     p = _poster(mp, b, None)
-    url = ("https://www.depop.com/products/tetianusorokina-ugg-new-chestnut-shearling-platform-87d9/" if mp == "depop"
+    url = ("https://www.depop.com/products/examplushopname-ugg-new-chestnut-shearling-platform-87d9/" if mp == "depop"
            else "https://www.vinted.com/items/10356580141")
     try:
         out = await p.set_cover(url, photo, count, dry=dry)
@@ -1112,7 +1112,7 @@ async def _cover_with_fake(results, mp="depop", dry=False, photo=2, count=6):
 
 
 @pytest.mark.parametrize("mp,edit", [
-    ("depop", "https://www.depop.com/products/edit/tetianusorokina-ugg-new-chestnut-shearling-platform-87d9/"),
+    ("depop", "https://www.depop.com/products/edit/examplushopname-ugg-new-chestnut-shearling-platform-87d9/"),
     ("vinted", "https://www.vinted.com/items/10356580141/edit")])
 def test_a_cover_dry_run_never_saves_and_a_fix_saves_once(mp, edit):
     out, fake = run(_cover_with_fake([Outcome("posted")], mp=mp, dry=True))

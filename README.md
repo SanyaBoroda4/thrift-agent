@@ -89,9 +89,6 @@ Defaults for the first weeks of live posting, until the eval numbers justify loo
 Seller data (price table from real sales, real listings, account notes, username) lives in `private/`, a separate
 **private** repo cloned into this folder and git-ignored here. Without it, the code runs on the example files in
 `config/*.example.yaml` and `data/style_examples/`.
-```
-git clone git@github.com:SanyaBoroda4/thrift-agent-private.git private
-```
 
 ## Windows (development)
 ```powershell

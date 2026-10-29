@@ -525,18 +525,18 @@ test("Depop: Post's success page names the new listing — its View listing link
   const url = "https://www.depop.com/products/create/success/?productId=946436605";
   const html = `<html><head><title>Done - Depop</title></head><body><main>
     <h1>Nice! It's listed</h1><p>Turn more of your clothes into cash by listing another item.</p>
-    <a href="/products/tetiana9orokina-levis-501-distressed-denim-cutoff-e832/manage/">View listing</a>
+    <a href="/products/example9hopname-levis-501-distressed-denim-cutoff-e832/manage/">View listing</a>
     <a href="/products/create/">List another item</a></main></body></html>`;
   const p = page("depop", html, url);
   await run(p, { ...DEPOP_JOB, job_id: "depop-landed", mode: "after_publish" });
   await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
   const r = plain(p.events().find((e) => e.event === "result"));
-  assert.equal(r.url, "https://www.depop.com/products/tetiana9orokina-levis-501-distressed-denim-cutoff-e832/manage/");
+  assert.equal(r.url, "https://www.depop.com/products/example9hopname-levis-501-distressed-denim-cutoff-e832/manage/");
   assert.equal(r.landing, url);
 });
 
 test("Depop: the seller's /manage/ page gives its SKU — our item id (WO35)", async () => {
-  const url = "https://www.depop.com/products/tetianasorokin0-levis-501-cutoff-denim-shorts-ed56/manage/";
+  const url = "https://www.depop.com/products/exampleshopnam0-levis-501-cutoff-denim-shorts-ed56/manage/";
   const ld = { "@type": "Product", name: "Levi's 501", description: "Levi's 501 Cutoff Denim Shorts size 26\n\nShorts.",
                offers: { price: "30.00", availability: "https://schema.org/InStock" }, image: ["a.jpg"] };
   const html = `<html><head><title>Depop</title><script type="application/ld+json" data-testid="meta__jsonLd">
@@ -1143,7 +1143,7 @@ test("depop: the probe finds the bin and presses nothing", async () => {
 
 // ---------------------------------------------------------------- WO37: a live listing's cover, on its edit page
 
-const EDIT = { depop: "https://www.depop.com/products/edit/tetianusorokina-ugg-new-chestnut-shearling-platform-87d9/",
+const EDIT = { depop: "https://www.depop.com/products/edit/examplushopname-ugg-new-chestnut-shearling-platform-87d9/",
                vinted: "https://www.vinted.com/items/10356580141/edit" };
 const editPage = (site, fixture = {}) => page(site, read("tests/fixtures/ext_edit_photos.html"), EDIT[site],
                                               { site, ...fixture });
@@ -1542,20 +1542,20 @@ test("Vinted: the shop read in bulk — every wardrobe item's price, state and p
 });
 
 test("Depop: the shop read in bulk from its products JSON with the page's token; the tiles when it can't be read", async () => {
-  const p = page("depop", undefined, "https://www.depop.com/tetianasorokina/");
+  const p = page("depop", undefined, "https://www.depop.com/exampleshopname/");
   p.d.cookie = "access_token=tok123";
   const asked = [];
   p.w.fetch = async (u, opts) => { asked.push([String(u), opts?.headers?.Authorization]); return { ok: true, status: 200,
-    json: async () => ({ objects: [{ id: 7, slug: "tetiana-shirt-24cb", price: { priceAmount: "40.0" }, pictures: [{}, {}], sold: false }],
+    json: async () => ({ objects: [{ id: 7, slug: "example-shirt-24cb", price: { priceAmount: "40.0" }, pictures: [{}, {}], sold: false }],
                           meta: { end: true } }) }; };
-  await p.w.Thrift.run({ job: { job_id: "d-bulk", site: "depop", mode: "find", shop: "tetianasorokina", all: true },
+  await p.w.Thrift.run({ job: { job_id: "d-bulk", site: "depop", mode: "find", shop: "exampleshopname", all: true },
                          selectors: SELECTORS, photos: [], pace: "fast" });
   const r = plain(p.last());
   assert.equal(r.event, "result", JSON.stringify(r));
   assert.equal(r.source, "json");
-  assert.ok(asked[0][0].includes("/shop/tetianasorokina/products/") && asked[0][1] === "Bearer tok123", asked);
-  assert.deepEqual(r.listings, [{ id: "7", slug: "tetiana-shirt-24cb", price: "40.0", sold: false, photos: 2,
-                                  url: "https://www.depop.com/products/tetiana-shirt-24cb/" }]);
+  assert.ok(asked[0][0].includes("/shop/exampleshopname/products/") && asked[0][1] === "Bearer tok123", asked);
+  assert.deepEqual(r.listings, [{ id: "7", slug: "example-shirt-24cb", price: "40.0", sold: false, photos: 2,
+                                  url: "https://www.depop.com/products/example-shirt-24cb/" }]);
 });
 
 // ---------------------------------------------------------------- the Vinted incident of 2026-10-20
