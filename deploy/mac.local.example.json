@@ -1,0 +1,4 @@
+{
+  "MacHost": "<user>@<tailscale-ip>",
+  "HostKeyAlias": "192.168.x.x"
+}

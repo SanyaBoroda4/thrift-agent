@@ -31,3 +31,5 @@ data/brand_aliases.learned.json
 # incident evidence (the seller's account pages, logs): never in the repo
 incidents/*/shots/
 incidents/*/logs/
+# the Mac's real address and SSH user (deploy.ps1 / provision.py read it)
+deploy/mac.local.json

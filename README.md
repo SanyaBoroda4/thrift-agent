@@ -123,11 +123,12 @@ The poster service stays off until the owner turns publishing on (`poster.dry_ru
 `bash deploy/services.sh stop poster` first.
 
 ### Deploy over SSH
-The PC reaches the Mac with an SSH key (no password): `ssh tatiana_sorokina@192.168.68.57`. The Mac travels and
-addresses change: try `MacBook-Pro-5.local` first, then that IP; if neither answers, the owner gives the IP. From
+The PC reaches the Mac with an SSH key (no password): `ssh <user>@192.168.x.x`. The Mac travels and
+addresses change: try `<mac-host>.local` first, then that IP; if neither answers, the owner gives the IP. From
 Windows:
 ```powershell
 .\deploy\deploy.ps1          # -MacHost user@host to override, -NoPush to skip the git push
+# defaults: deploy/mac.local.json (git-ignored), copied from deploy/mac.local.example.json
 ```
 It pushes, then on the Mac (`deploy/mac_deploy.sh`) pulls the code and `private/`, runs `deploy/mac_setup.sh` (venv,
 folders, the tests, the launchd files), restarts the **worker** service, and shows the services' status, `thrift

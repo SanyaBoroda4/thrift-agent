@@ -16,15 +16,16 @@ taps Share → "New item", and gets a Telegram ping when it's listed or when som
   restart the worker service, show status + log). See "Mac over SSH".
 
 ## Mac over SSH (WO21)
-- The PC reaches the Mac with an SSH key, no password: `ssh tatiana_sorokina@192.168.68.57` (MacBook-Pro-5.local;
+- The PC reaches the Mac with an SSH key, no password: `ssh <user>@192.168.x.x` (<mac-host>.local;
   its host key is known under the IP). Repo `~/thrift-agent`, venv `.venv`, logs `~/thrift/logs`, DB `~/thrift/var`.
 - **Find the Mac over Tailscale first (owner rule, 2026-10-10):** the PC and the Mac are on Tailscale (same account);
-  `tailscale status` shows the Mac (`macbook-pro-4`, 100.109.116.57) — SSH to that address with
-  `-o HostKeyAlias=192.168.68.57` (the known host key must match). It works from any network: a hotel's guest Wi-Fi
+  `tailscale status` shows the Mac (`<mac-host>`, <tailscale-ip>) — SSH to that address with
+  `-o HostKeyAlias=192.168.x.x` (the known host key must match). It works from any network: a hotel's guest Wi-Fi
   keeps devices from reaching each other (2026-10-10). Fallback, the home LAN (WO28): it travels and DHCP moves
-  addresses — on 2026-10-05 the PC itself had 192.168.68.57. Try `MacBook-Pro-5.local`, then 192.168.68.57; if neither
+  addresses — on 2026-10-05 the PC itself had the Mac's usual IP. Try `<mac-host>.local`, then its LAN IP; if neither
   answers, ask the user for the IP and wait — never assume.
-- `deploy\deploy.ps1` (default: the Mac's Tailscale address with `HostKeyAlias=192.168.68.57`; `-MacHost` /
+- `deploy\deploy.ps1` (default: the Mac's Tailscale address and HostKeyAlias from the git-ignored
+  `deploy/mac.local.json`; `-MacHost` /
   `-HostKeyAlias` to override, `-NoPush`): `git push`,
   then on the Mac `deploy/mac_deploy.sh`: `git pull`, `git -C private pull`, `bash deploy/mac_setup.sh` (venv,
   folders, the tests, the launchd files), the WORKER

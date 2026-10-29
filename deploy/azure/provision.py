@@ -48,8 +48,11 @@ SECRETS = VAR / "secrets.json"        # thrift_app's password (this PC only; git
 KEYS = VAR / "keys.txt"               # the function keys (this PC only; git-ignored)
 TAGS = ["project=thrift-agent"]
 RG = "thrift-rg"
-MAC = os.getenv("THRIFT_MAC", "tatiana_sorokina@192.168.68.57")
-MAC_ALIAS = os.getenv("THRIFT_MAC_ALIAS", "192.168.68.57")
+# The Mac: THRIFT_MAC / THRIFT_MAC_ALIAS, else deploy/mac.local.json (git-ignored, the same file deploy.ps1 reads)
+_MAC_LOCAL = ROOT / "deploy" / "mac.local.json"
+_MAC_CFG = json.loads(_MAC_LOCAL.read_text(encoding="utf-8-sig")) if _MAC_LOCAL.exists() else {}
+MAC = os.getenv("THRIFT_MAC") or _MAC_CFG.get("MacHost") or "<user>@<tailscale-ip>"
+MAC_ALIAS = os.getenv("THRIFT_MAC_ALIAS") or _MAC_CFG.get("HostKeyAlias") or "192.168.x.x"
 FIREWALL_TMP = "thrift-setup-tmp"
 AZURE_SERVICES = "AllowAllAzureServicesAndResourcesWithinAzureIps"
 SHARES_CONTAINER = "shares"           # WO45 §2: the Shortcut's photos (api/thrift_api/uploads.py), 30 days

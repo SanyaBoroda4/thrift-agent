@@ -18,6 +18,6 @@ vinted: package ✓
 vinted: check ✓
 vinted: filled in 17.7 s
 vinted: dryrun in 32.9 s — 
-/Users/tatiana_sorokina/thrift/var/failed/shots/i_261019_09053e-vinted-20261020-
+/Users/<user>/thrift/var/failed/shots/i_261019_09053e-vinted-20261020-
 102017.png
 == done Tue Oct 20 10:20:50 EDT 2026
