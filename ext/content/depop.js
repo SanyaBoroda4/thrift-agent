@@ -341,8 +341,25 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
     await T.click(opts[i]);
     T.picked(st, cid, value, shown);
     if (single(cid)) await T.until(() => !optionsOf(menuOf(cid)).length, 1500);       // its menu closes
-    else await T.until(() => T.chipsOf(cid).some((c) => T.norm(c) === T.norm(value)), 1500);   // its chip shows
+    else if (!(await T.until(() => T.chipsOf(cid).some((c) => T.norm(c) === T.norm(value)), 1500))) {   // its chip
+      // WO51 (live 2026-11-01, the Parke set): Depop's own two colours were in, so "White" never became a chip and
+      // stayed typed in the box — the text is cleared; the tidy makes room and adds it back
+      clearTyped(cid);
+      st.notes.push(`${cid}: '${value}' didn't take (chips: ${T.chipsOf(cid).join(", ") || "none"}) — typed text cleared`);
+    }
+    clearTyped(cid);
   }
+
+  // WO51: a multi-select's own text box holds no leftover text (a pick that didn't take, a menu closed mid-typing)
+  const clearTyped = (cid) => {
+    const box = document.getElementById(cid);
+    if (box && !single(cid) && T.typeable(box) && (box.value || "").trim()) {
+      T.setValue(box, "");
+      box.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  };
+  T.typedLeft = () => [...document.querySelectorAll("form input[role='combobox']")]
+    .filter((b) => b.id && !single(b.id) && (b.value || "").trim()).map((b) => `${b.id}: ${b.value.trim()}`);
 
   // WO36 §3: an optional value the form doesn't offer is left out — said in the notes, and the read-back expects it
   // absent (st.left, which the driver takes off its plan).
@@ -536,6 +553,55 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
     return T.$$(S().boost.selectors).filter((b) => re.test(T.norm((b.closest("label") || b.parentElement || b).textContent)));
   };
 
+  // Depop Shipping. Recorded 2026-10-06: a radio pair (USPS / Other), USPS on by default. WO51 (live 2026-11-01): the
+  // radios are gone — the "Shipping" section ([data-testid=national-shipping-section]) names "Depop Shipping (via
+  // USPS)" as the only way, with "Shipping from" (her address, a radio checked) and the package size below. The form is
+  // scrolled down and waited for (a section drawn late, or only after an earlier field); the section is found by its
+  // test id, else by its heading's visible text; "Other" (manual shipping) is never chosen.
+  const shippingSection = () => {
+    const sel = S().shipping;
+    const byId = T.$$(sel.section || []).find((el) => el.isConnected);
+    if (byId) return byId;
+    const re = new RegExp(sel.heading_text || "^shipping$", "i");
+    const head = T.$$(["form h2", "form h3", "form [role='heading']"]).find((h) => re.test(T.norm(h.textContent)));
+    return head ? (head.closest("section, [class*='section' i]") || head.parentElement) : null;
+  };
+  async function shipping(st, f) {
+    const sel = S().shipping;
+    const found = () => T.$(sel.selectors) || shippingSection();
+    let el = found();
+    for (let k = 0; !el && k < 4; k++) {                 // drawn late: the page scrolled to its end, then looked again
+      window.scrollTo?.(0, document.body?.scrollHeight || 0);
+      el = await T.until(found, 2500);
+    }
+    if (!el) {
+      throw new T.SiteChanged(`shipping: not on the page (${[].concat(sel.selectors, sel.section || []).join(" | ")})`);
+    }
+    el.scrollIntoView?.({ block: "center" });
+    const usps = T.$(sel.selectors);
+    if (usps) {                                          // the old form: the USPS radio, on
+      if (!usps.checked) await T.click(usps);
+      if (!usps.checked) throw new Error("the Depop Shipping radio didn't take");
+      st.shipping = f.shipping;
+      return "Depop Shipping (radio)";
+    }
+    const section = shippingSection();
+    const text = T.norm(section ? section.textContent : "");
+    const provider = new RegExp(sel.provider_text || "depop shipping", "i");
+    if (!provider.test(text)) {
+      await T.screenshot("shipping");
+      throw new T.SiteChanged(`shipping: the section doesn't name Depop Shipping ('${text.slice(0, 80)}')`);
+    }
+    const radios = section ? [...section.querySelectorAll(sel.address || "input[type='radio']")] : [];
+    if (radios.length && !radios.some((r) => r.checked)) {
+      await T.screenshot("shipping");
+      throw new Error("shipping: no 'Shipping from' address is chosen on Depop's form");
+    }
+    st.shipping = f.shipping;
+    await T.sleep(150);
+    return "Depop Shipping (the form's only way)";
+  }
+
   T.sites.depop = {
     async fill(job, files, st) {
       const f = job.fields;
@@ -583,6 +649,23 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
       await T.step("brand", st, async () => (f.brand ? brand(st, f.brand, f.brand_typed, T.brandNames(f))
         : brandOther(st, null)), { limit: 60000 });       // WO35: Depop requires one — no brand is "Other"
       await T.step("condition", st, async () => choose(st, ids.condition, f.condition));
+      // WO51: Depop allows two colours and puts its own in first (live 2026-11-01: Red + Pink, then our White had no
+      // room) — its chips that aren't ours go before ours are added
+      if ((f.colors || []).length) {
+        await T.step("colour-room", st, async () => {
+          const want = (f.colors || []).slice(0, 2);
+          let n = 0;
+          for (const b of chipButtons(ids.colour)) {
+            if (!want.some((w) => T.norm(w) === T.norm(chipValue(b)))) {
+              st.notes.push(`removed '${chipValue(b)}' from ${ids.colour} (Depop's own suggestion)`);
+              await T.click(b);
+              await T.until(() => !b.isConnected, 1500);
+              n++;
+            }
+          }
+          return `${n} removed`;
+        });
+      }
       for (const c of (f.colors || []).slice(0, 2)) {     // optional on Depop: one it doesn't offer is left out
         await T.step(ids.colour, st, async () => choose(st, ids.colour, c, { optional: true }));
       }
@@ -598,13 +681,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
       if (job.fields.sku && S().sku) {
         await T.step("sku", st, async () => T.type(await T.need(S().sku.selectors, "sku"), String(job.fields.sku)));
       }
-      await T.step("shipping", st, async () => {         // Depop Shipping: its USPS radio (on by default)
-        const usps = await T.need(S().shipping.selectors, "shipping", { visible: false });
-        if (!usps.checked) await T.click(usps);
-        if (!usps.checked) throw new Error("the Depop Shipping radio didn't take");
-        st.shipping = f.shipping;
-        await T.sleep(150);
-      });
+      await T.step("shipping", st, async () => shipping(st, f));
       await T.step("package", st, async () => {
         const how = await packageAtLeast(st, ids.package, f.package_size, "before ours");
         st.package = document.getElementById(ids.package)?.value || null;
@@ -674,6 +751,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
           await packageSize(st, ids.package, pkgWant);
           await T.quiet(600, 3000);
         }
+        for (const cid of Object.keys(planned(f))) clearTyped(cid);   // WO51: no leftover text in any multi-select
       }, { limit: 60000 });                                 // the checks, a size read again, the page left to settle
     },
 
@@ -766,6 +844,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
       seen.brand_choice = st.brandChoice || null;         // WO36: what the brand step picked, and how
       for (const cid of Object.keys(planned(f))) seen[cid] = T.chipsOf(cid);
       seen.left = st.left;                                 // WO36 §3: optional values the form didn't offer
+      seen.typed_left = T.typedLeft();                     // WO51: text typed in a multi-select that never became a chip
       return seen;
     },
 

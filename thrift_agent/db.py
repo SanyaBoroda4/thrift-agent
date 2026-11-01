@@ -145,6 +145,9 @@ MIGRATIONS = {"items": {"cover_hash": "TEXT", "owner_price": "INTEGER", "owner_c
                         "photos_expected": "INTEGER"},   # WO45 §6: the share's `done N` when the item was made from
               #                                            part of it — the card says "3 of 4 photos"
               "batches": {"test": "INTEGER"},            # WO45 §2: from a test share (the Shortcut's test copy)
+              # WO51 §6: what an open share waits for (shares.refresh_open) — its items, how many had their card, the
+              # state (work | her | send | orphan | done), the words, when it last moved; synced for the API's watchdog
+              "shares": {"items": "INTEGER", "cards": "INTEGER", "state": "TEXT", "waiting": "TEXT", "moved_at": "TEXT"},
               "listings": {"price_live": "REAL",         # WO41: the price last read on the site itself
                            "price_read_at": "TEXT",
                            "photos_live": "INTEGER",     # WO45 §6: the photos the site shows (read after posting)

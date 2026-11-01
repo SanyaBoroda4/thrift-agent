@@ -56,11 +56,13 @@ LISTING_COLUMNS = ("status", "url", "listing_id", "sku", "price", "posted_at", "
 PRICE_COLUMNS = ("item_id", "marketplace", "stage", "old_price", "new_price", "pct", "status", "attempts", "error",
                  "due_at", "done_at", "created_at")                                   # WO41: the Mac's price drops
 SHARE_COLUMNS = ("source", "expected", "received", "received_at", "complete_at", "grouped_at", "carded_at", "outcome",
-                 "outcome_at", "reason", "batch_id", "test")                          # WO45 §3: the share ledger
+                 "outcome_at", "reason", "batch_id", "test",                          # WO45 §3: the share ledger
+                 "items", "cards", "state", "waiting", "moved_at")                    # WO51 §6: what it waits for
 NUMBERS = ("price", "price_live", "old_price", "new_price", "pct")
-INTEGERS = ("drop_stage", "attempts", "priced", "test", "photos", "photos_sent", "photos_live", "expected", "received")
+INTEGERS = ("drop_stage", "attempts", "priced", "test", "photos", "photos_sent", "photos_live", "expected", "received",
+            "items", "cards")
 TIMES = ("created_at", "posted_at", "all_live_at", "next_drop_at", "no_drop", "price_read_at", "due_at", "done_at",
-         "photos_read_at", "received_at", "complete_at", "grouped_at", "carded_at", "outcome_at")
+         "photos_read_at", "received_at", "complete_at", "grouped_at", "carded_at", "outcome_at", "moved_at")
 
 
 class Outbox:

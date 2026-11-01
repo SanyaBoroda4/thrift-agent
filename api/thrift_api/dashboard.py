@@ -366,6 +366,8 @@ def _shares_panel(raw, zone: tzinfo) -> str:
         outcome = _norm(r.get("outcome"))
         if outcome in OUTCOME_WORDS:
             words, cls = OUTCOME_WORDS[outcome]
+        elif r.get("complete_at") and r.get("waiting") and _norm(r.get("state")) != "done":
+            words, cls = f"waiting for {r['waiting']}", "wait"            # WO51 §6: what it waits for, from the Mac
         elif r.get("complete_at"):
             words, cls = "in progress", "wait"
         else:

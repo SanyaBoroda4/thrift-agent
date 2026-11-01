@@ -117,11 +117,47 @@
     return T.$$(selectors).length;
   };
 
-  // ---- typing: the native setter, so a framework-controlled input takes the value as if typed
+  // ---- WO51: a failure that is the page's (an element missing, the form changed) is a SiteChanged; one our own script
+  // threw (TypeError, "Illegal invocation" …) is reported as code, with its file and line — the bridge then never
+  // counts it against the item (live 2026-11-01: Vinted's brand step called the <input> value setter on a <button>)
+  class SiteChanged extends Error {
+    constructor(message) { super(message); this.name = "SiteChanged"; }
+  }
+  T.SiteChanged = SiteChanged;
+  const CODE = /^(TypeError|ReferenceError|RangeError|SyntaxError|EvalError|URIError)$/;
+  T.errInfo = (e) => {
+    const name = (e && e.name) || "";
+    const raw = String(e && e.message ? e.message : e).slice(0, 300);
+    if (e instanceof SiteChanged || name === "SiteChanged") return { message: raw, kind: "site", where: null };
+    if (!CODE.test(name)) return { message: raw, kind: null, where: null };
+    const where = String((e && e.stack) || "").split("\n").slice(1, 4)
+      .map((l) => l.trim().replace(/^at\s+/, "").replace(/chrome-extension:\/\/[^/]+\//g, "").replace(/\s*\(\s*\)$/, ""))
+      .filter(Boolean).join(" ← ").slice(0, 300);
+    return { message: `${name}: ${raw}${where ? ` (at ${where})` : ""}`, kind: "code", where };
+  };
+  // ---- typing: the native setter, so a framework-controlled input takes the value as if typed — on a text box only
+  // (WO51: never a <button> or a <div>: the page changed, said as such instead of the browser's "Illegal invocation")
+  T.typeable = (el) => !!el && (el.tagName === "TEXTAREA" || (el.tagName === "INPUT"
+    && !/^(button|submit|checkbox|radio|file|image|reset|hidden)$/i.test(el.type || "")));
   T.setValue = (el, value) => {
+    if (!T.typeable(el)) {
+      const tid = el && el.getAttribute ? el.getAttribute("data-testid") : null;
+      throw new SiteChanged(`can't type into a <${String((el && el.tagName) || "nothing").toLowerCase()}>`
+                            + `${tid ? ` [${tid}]` : ""}: the page changed`);
+    }
     const proto = el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
     el.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  // WO51: a form field's value as the page shows it — an <input>'s own value, else (a custom dropdown, Vinted's form
+  // since 2026-11: a <button> whose `<testid>--value` span draws the choice, data-placeholder while none) the text it
+  // draws; never a button's .value (always "").
+  T.fieldValue = (el) => {
+    if (!el) return null;
+    if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT") return el.value;
+    if (el.hasAttribute && el.hasAttribute("data-placeholder")) return "";
+    const v = el.querySelector && el.querySelector("[data-testid$='--value'], .select-value");
+    return ((v || el).textContent || "").replace(/\s+/g, " ").trim();
   };
   T.type = async (el, text) => {
     el.scrollIntoView?.({ block: "center" });
@@ -321,9 +357,11 @@
       T.emit({ event: "step", job_id: st.job_id, name, ok: true, ms: Math.round(performance.now() - t0),
                ...(typeof detail === "string" ? { detail } : {}) });
     } catch (e) {
-      const message = String(e && e.message ? e.message : e).slice(0, 300);
+      const info = T.errInfo(e);                   // WO51: our own script's error named as such, with its line
+      const message = info.message;
       st.failed.push(`${name}: ${message}`);
-      T.emit({ event: "step", job_id: st.job_id, name, ok: false, detail: message,
+      if (info.kind && !st.errorKind) st.errorKind = info.kind;
+      T.emit({ event: "step", job_id: st.job_id, name, ok: false, detail: message, kind: info.kind || undefined,
                ms: Math.round(performance.now() - t0) });
       if (e instanceof Stalled) {
         await T.screenshot(`stalled-${name.replace(/[^a-z0-9]+/gi, "-")}`);
@@ -632,8 +670,9 @@
       else await site.fill(job, (photos || []).map(T.fileOf), st);
     } catch (e) {
       await T.screenshot("form");
-      return fail(st.failed.length ? st.failed[0].split(":")[0] : "fill", "form",
-                  String(e && e.message ? e.message : e).slice(0, 300));
+      const info = T.errInfo(e);                   // WO51: "code" (our script) / "site" (the page changed) for the bridge
+      return T.emit({ event: "error", job_id: job.job_id, stage: st.failed.length ? st.failed[0].split(":")[0] : "fill",
+                      page: "form", message: info.message, kind: info.kind || st.errorKind || undefined });
     }
     const edit = ["cover", "price", "fields", "photos", "text"].includes(job.mode);
     const seen = job.mode === "cover" ? T.coverSeen(job, st) : job.mode === "price" ? T.priceSeen(job, st)
@@ -938,8 +977,11 @@
         const id = `${msg.job.job_id}:${msg.job.mode}`;
         if (!T.ran.has(id)) {
           T.ran.add(id);
-          T.run(msg).catch((e) => T.emit({ event: "error", job_id: msg.job.job_id, stage: "script", page: "unknown",
-                                           message: String(e && e.message ? e.message : e).slice(0, 300) }));
+          T.run(msg).catch((e) => {
+            const info = T.errInfo(e);
+            T.emit({ event: "error", job_id: msg.job.job_id, stage: "script", page: "unknown", message: info.message,
+                     kind: info.kind || "code" });
+          });
         }
         sendResponse({ ok: true });
       } else if (msg.type === "submit" || msg.type === "cancel") {

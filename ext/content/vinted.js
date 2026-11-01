@@ -148,8 +148,12 @@
     await close(input);
   }
 
-  // WO36 §4: a field's values as its input shows them (a multi-select lists its choices, comma-separated)
-  const valuesOf = (name) => (T.$(S()[name]?.selectors)?.value || "").split(",").map((x) => x.trim()).filter(Boolean);
+  // WO51 (live 2026-11-01): Vinted rebuilt its form — every dropdown is now a <button> (a Radix menu trigger) whose
+  // choice is drawn in its `<testid>--value` span ("Select a size" while none, the button marked data-placeholder);
+  // its .value is always "". A field's value is what it SHOWS (T.fieldValue); the old <input>s still read as before.
+  const valueOf = (name) => T.fieldValue(T.$(S()[name]?.selectors)) || "";
+  // WO36 §4: a field's values as it shows them (a multi-select lists its choices, comma-separated)
+  const valuesOf = (name) => valueOf(name).split(",").map((x) => x.trim()).filter(Boolean);
 
   // WO36 §4: a multi-select set to exactly our values, once — the rows checked that aren't ours unchecked, ours checked
   async function setMulti(st, name, want) {
@@ -171,6 +175,9 @@
   const baseOf = (input) => (input.getAttribute("data-testid") || "").replace(/-input$/, "");
   const chevronUp = (base) => base && document.querySelector(`[data-testid='${base}-chevron-up']`);
   const isOpen = (input) => {
+    const expanded = input.getAttribute && input.getAttribute("aria-expanded");      // WO51: the new <button>s
+    if (expanded === "true" || input.getAttribute?.("data-state") === "open") return true;
+    if (expanded === "false") return false;
     const base = baseOf(input);
     if (chevronUp(base)) return true;
     if (base && document.querySelector(`[data-testid='${base}-chevron-down']`)) return false;
@@ -194,9 +201,15 @@
       await T.click(up.closest("[role='button']") || up);
       await T.until(() => !up.isConnected || up.getAttribute("data-testid")?.endsWith("-chevron-down"), 1500);
     }
+    // WO51: a field's <button> still marked open (the form since 2026-11): Escape, then its own toggle
+    for (const b of T.$$(["button[data-testid$='-input'][aria-expanded='true']"])) {
+      st.notes.push(`closed the open ${b.getAttribute("data-testid").replace(/-input$/, "")} panel`);
+      await close(b);
+    }
   }
 
-  const noBrandRow = (t) => new RegExp(S().empty_brand.text, "i").test(T.norm(t));
+  const noBrandRow = (t) => new RegExp(S().empty_brand.text, "i").test(T.norm(t))
+    || /^(no brand( indicated)?|without (a )?brand|unbranded)$/i.test(T.norm(t));
 
   // Vinted's own "No brand indicated" › "List without brand" (WO35): the brand panel open (opened again when it
   // closed or never opened), its list scrolled to the end, and searched for the empty text, then for a word no brand
@@ -220,8 +233,19 @@
 
   async function brand(st, f) {
     await open("brand");
-    const search = await T.waitFor(S().brand.search, { timeout: 3000 });
-    const box = search || (await T.need(S().brand.selectors, "brand"));
+    let search = await T.waitFor(S().brand.search, { timeout: 3000 });
+    if (!search) {                                       // the panel opened late: once more, then never a guess
+      await open("brand");
+      search = await T.waitFor(S().brand.search, { timeout: 3000 });
+    }
+    const field = T.$(S().brand.selectors);
+    // WO51 (live 2026-11-01): the search box moved (brand-search--input) and the field became a <button>: typing into
+    // it threw "Illegal invocation". Only a real text box is typed into; none → the page changed (a site failure).
+    const box = search || (T.typeable(field) && !field.readOnly ? field : null);
+    if (!box) {
+      await T.screenshot("menu-brand");
+      throw new T.SiteChanged("no search box in Vinted's brand panel");
+    }
     const names = f.brand ? T.brandNames(f) : [];
     const seen = [];                                     // every brand Vinted offered for our names
     const find = async (query, match) => {               // one search: until the row shows, 5 s at most
@@ -323,8 +347,10 @@
         fixed.push(name);
       }
     }
-    const shown = T.$(S().brand.selectors)?.value || "";
-    const same = st.brandChoice ? T.brandKey(shown) === T.brandKey(st.brandChoice) : (!shown || noBrandRow(shown));
+    const shown = valueOf("brand");
+    // WO51: Vinted pre-fills a brand of its own ("Disney" on a Relibeauty costume): the field must show OURS, or
+    // Vinted's "List without brand" when we list none — an empty field or any other brand is set again
+    const same = st.brandChoice ? T.brandKey(shown) === T.brandKey(st.brandChoice) : noBrandRow(shown);
     if (st.brandChoice !== undefined && !same) {          // "List without brand" is what its field shows then (live)
       st.notes.push(`the brand read '${shown}': set again`);
       await brand(st, f);
@@ -411,8 +437,8 @@
           if (k >= parts.length) throw new Error(`the leaf ${f.category_id} isn't under ${f.category_path}`);
           await clickRow(parts[k]);
         }
-        await T.until(() => (T.$(S().category.selectors)?.value || "").trim(), 3000);   // the input shows the leaf
-        T.picked(st, "category", f.category_path, T.$(S().category.selectors)?.value || "");
+        await T.until(() => valueOf("category").trim(), 3000);   // the field shows the leaf
+        T.picked(st, "category", f.category_path, valueOf("category"));
         escape();
       });
       // Vinted requires a brand (live 2026-10-09, WO35: the Solid & Striped set — Upload refused, "Fill in brand to
@@ -450,8 +476,8 @@
       // what the listing has now: a new category empties the condition and the package, and THOSE go back — the
       // owner's own choices (live 2026-10-18: the dry run had put our mapping's "Very good" / medium over her "Good" /
       // large); our values only where the page had none
-      const before = { condition: (T.$(S().condition?.selectors)?.value || "").trim(), package: chosenPackage(),
-                       brand: (T.$(S().brand?.selectors)?.value || "").trim() };
+      const before = { condition: valueOf("condition").trim(), package: chosenPackage(),
+                       brand: valueOf("brand").trim() };
       st.notes.push(`before the change: brand ${before.brand || "none"}, condition ${before.condition || "none"}, `
                     + `package ${before.package || "none"}`);
       if (f.category_id) {
@@ -468,8 +494,8 @@
             if (k >= parts.length) throw new Error(`the leaf ${f.category_id} isn't under ${f.category_path}`);
             await clickRow(parts[k]);
           }
-          await T.until(() => (T.$(S().category.selectors)?.value || "").trim(), 3000);
-          T.picked(st, "category", f.category_path, T.$(S().category.selectors)?.value || "");
+          await T.until(() => valueOf("category").trim(), 3000);
+          T.picked(st, "category", f.category_path, valueOf("category"));
           escape();
         });
       }
@@ -479,7 +505,7 @@
       }
       // live 2026-10-18: a new category empties the brand ("Fill in brand to continue" — Vinted refused the Save), the
       // condition and the package size — the listing's own set back, the same brand searched as the sell form does
-      if (before.brand && !(T.$(S().brand?.selectors)?.value || "").trim()) {
+      if (before.brand && !valueOf("brand").trim()) {
         await T.step("brand", st, async () => brand(st, { brand: before.brand, brand_candidates: [before.brand] }),
                      { limit: 60000 });
       }
@@ -490,7 +516,7 @@
       await closeAll(st);
     },
     fieldsSeen(job, st) {
-      const value = (sel) => (T.$(sel) ? T.$(sel).value : null);
+      const value = (sel) => (T.$(sel) ? T.fieldValue(T.$(sel)) : null);
       return { category: value(S().category.selectors), size: value(S().size?.selectors),
                condition: value(S().condition?.selectors), package: chosenPackage(),
                brand: value(S().brand?.selectors), picked: st.picked ? { ...st.picked } : null };
@@ -499,7 +525,7 @@
     readBack(job, st) {
       const value = (sel) => {
         const el = T.$(sel);
-        return el ? el.value : null;
+        return el ? T.fieldValue(el) : null;                // WO51: what a field SHOWS (a <button> draws its choice)
       };
       const seen = {
         title: value(S().title.selectors), description: value(S().description.selectors),

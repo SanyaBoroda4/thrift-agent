@@ -94,7 +94,7 @@
         ],
         "how": "the input opens [data-testid=catalog-select-dropdown-content]: a search box and ul[data-testid=category-list] of div#catalog-<id>[role=button] rows (the title in .web_ui__Cell__title); the leaf by its id when shown, else the path walked row by row",
         "verified": true,
-        "seen": "2026-10-06, the first extension dry run on the Mac: the dropdown open with Women (catalog-1904), Men (5), Kids (1193), Home (1918) …; 2026-10-06, the second extension dry run on the Mac: Women (catalog-1904) → Clothing → Pants & leggings walked, the leaf #catalog-1071 'Wide-leg pants' shown as a radio row; 2026-10-06, the third extension dry run on the Mac: Women › Clothing › Pants & leggings › #catalog-1071 'Wide-leg pants' chosen, the input reads 'Wide-leg pants'"
+        "seen": "2026-10-06, the first extension dry run on the Mac: the dropdown open with Women (catalog-1904), Men (5), Kids (1193), Home (1918) …; 2026-10-06, the second extension dry run on the Mac: Women (catalog-1904) → Clothing → Pants & leggings walked, the leaf #catalog-1071 'Wide-leg pants' shown as a radio row; 2026-10-06, the third extension dry run on the Mac: Women › Clothing › Pants & leggings › #catalog-1071 'Wide-leg pants' chosen, the input reads 'Wide-leg pants'; 2026-11-01 (WO51): a <button> now (aria-expanded / data-state; its choice in the [data-testid=<testid>--value] span, data-placeholder while none — read by T.fieldValue); the panel's rows unchanged"
       },
       "brand": {
         "selectors": [
@@ -104,11 +104,14 @@
           "input[name='brand']"
         ],
         "search": [
+          "[data-testid='brand-search--input']",
+          "input#brand-search-input",
+          "input[name='brand-search-input']",
           "[data-testid='brand-select-dropdown-search-input']",
           "input[type='search']"
         ],
         "verified": true,
-        "seen": "2026-10-06, the third extension dry run on the Mac: [data-testid=brand-select-dropdown-input] (input#brand), its search, 'J.Crew' picked for J. Crew"
+        "seen": "2026-10-06, the third extension dry run on the Mac: [data-testid=brand-select-dropdown-input] (input#brand), its search, 'J.Crew' picked for J. Crew; 2026-11-01 (WO51, live — three failed jobs' pages): Vinted rebuilt the form: the field is a <button data-testid=brand-select-dropdown-input> (a Radix menu trigger, aria-expanded / data-state, its choice in [data-testid=brand-select-dropdown-input--value]; Vinted pre-fills its own suggestion, e.g. 'Disney'), the search box input#brand-search-input[data-testid=brand-search--input], the panel [data-testid=brand-select-dropdown-content] inside div[role=menu] with 'Suggested' and 'Popular brands' groups of div[role=radio][aria-label] cells"
       },
       "empty_brand": {
         "selectors": [
@@ -127,7 +130,7 @@
           "input[name='size']"
         ],
         "verified": true,
-        "seen": "2026-10-06, the third extension dry run on the Mac: [data-testid=category-size-single-grid-input] opens [data-testid=category-size-single-grid-content]: a grid of div[role=checkbox][aria-label='S / US 4-6'] (a Suggested group, then 'Women's items'); 2026-10-06, the fourth extension dry run on the Mac: the whole form read back as planned, 6 of 6 photos displayed (S / US 4-6)"
+        "seen": "2026-10-06, the third extension dry run on the Mac: [data-testid=category-size-single-grid-input] opens [data-testid=category-size-single-grid-content]: a grid of div[role=checkbox][aria-label='S / US 4-6'] (a Suggested group, then 'Women's items'); 2026-10-06, the fourth extension dry run on the Mac: the whole form read back as planned, 6 of 6 photos displayed (S / US 4-6); 2026-11-01 (WO51): a <button> now (aria-expanded / data-state; its choice in the [data-testid=<testid>--value] span, data-placeholder while none — read by T.fieldValue); the panel's rows unchanged"
       },
       "condition": {
         "selectors": [
@@ -136,7 +139,7 @@
           "input[name='condition']"
         ],
         "verified": true,
-        "seen": "2026-10-06, the third extension dry run on the Mac: [data-testid=category-condition-single-list-input] opens a list of div#condition-<id>[role=radio] rows (condition-6 New with tags, condition-1 New without tags …); 2026-10-06, the fourth extension dry run on the Mac: the whole form read back as planned, 6 of 6 photos displayed (New without tags)"
+        "seen": "2026-10-06, the third extension dry run on the Mac: [data-testid=category-condition-single-list-input] opens a list of div#condition-<id>[role=radio] rows (condition-6 New with tags, condition-1 New without tags …); 2026-10-06, the fourth extension dry run on the Mac: the whole form read back as planned, 6 of 6 photos displayed (New without tags); 2026-11-01 (WO51): a <button> now (aria-expanded / data-state; its choice in the [data-testid=<testid>--value] span, data-placeholder while none — read by T.fieldValue); the panel's rows unchanged"
       },
       "color": {
         "selectors": [
@@ -145,7 +148,7 @@
           "input[name='color']"
         ],
         "verified": true,
-        "seen": "2026-10-06, the third extension dry run on the Mac: [data-testid=color-select-dropdown-input] ('Select up to 2 colors') opens [role=checkbox] rows (Suggested: suggested-color-20 Cream, then 'Select colors'); 2026-10-06, the fourth extension dry run on the Mac: the whole form read back as planned, 6 of 6 photos displayed (Cream)"
+        "seen": "2026-10-06, the third extension dry run on the Mac: [data-testid=color-select-dropdown-input] ('Select up to 2 colors') opens [role=checkbox] rows (Suggested: suggested-color-20 Cream, then 'Select colors'); 2026-10-06, the fourth extension dry run on the Mac: the whole form read back as planned, 6 of 6 photos displayed (Cream); 2026-11-01 (WO51): a <button> now (aria-expanded / data-state; its choice in the [data-testid=<testid>--value] span, data-placeholder while none — read by T.fieldValue); the panel's rows unchanged"
       },
       "material": {
         "selectors": [
@@ -154,7 +157,7 @@
           "input[name='material']"
         ],
         "verified": true,
-        "seen": "2026-10-06, the third extension dry run on the Mac: [data-testid=category-material-multi-list-input] opens [role=checkbox] rows (Suggested, then All); 2026-10-06, the fourth extension dry run on the Mac: the whole form read back as planned, 6 of 6 photos displayed (Wool)"
+        "seen": "2026-10-06, the third extension dry run on the Mac: [data-testid=category-material-multi-list-input] opens [role=checkbox] rows (Suggested, then All); 2026-10-06, the fourth extension dry run on the Mac: the whole form read back as planned, 6 of 6 photos displayed (Wool); 2026-11-01 (WO51): a <button> now (aria-expanded / data-state; its choice in the [data-testid=<testid>--value] span, data-placeholder while none — read by T.fieldValue); the panel's rows unchanged"
       },
       "skirt_length": {
         "selectors": [
@@ -536,9 +539,16 @@
           "[data-testid='usps__shipping__input']",
           "#usps__shipping"
         ],
-        "how": "Depop Shipping (via USPS): a radio, on by default; 'Other' (manual) is never chosen",
+        "how": "Depop Shipping (via USPS): the USPS radio when the form offers a choice (on by default); since 2026-11 the Shipping section names it as the only way — found by its test id, else its heading; 'Other' (manual) is never chosen",
         "verified": true,
-        "seen": "2026-10-06, the first extension dry run on the Mac: radio name=shipping value=USPS checked; MANUAL the other"
+        "seen": "2026-10-06, the first extension dry run on the Mac: radio name=shipping value=USPS checked; MANUAL the other; 2026-11-01 (WO51, live — three failed jobs' pages): no radio any more — div[data-testid=national-shipping-section] with h2 'Shipping', a 'Shipping info added' note, the label 'Depop Shipping (via USPS)', 'Shipping from' radios ([data-testid=selectAddressRadio], hers checked), the Package size combobox shippingMethods-input (options grouped 'Suggested' / 'Change size') and an 'Offer worldwide shipping' checkbox (left unchecked)",
+        "section": [
+          "[data-testid='national-shipping-section']",
+          "[data-testid*='shipping-section' i]"
+        ],
+        "heading_text": "^shipping$",
+        "provider_text": "depop shipping",
+        "address": "[data-testid='selectAddressRadio'] input[type='radio']"
       },
       "delete_button": {
         "selectors": [

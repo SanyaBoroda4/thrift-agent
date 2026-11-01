@@ -286,7 +286,9 @@ def test_split_reports_a_batch_note_it_could_not_apply(tmp_path, monkeypatch):
     assert [it["note"] for it in db.items("new") if it["batch_id"] == bid2] == ["size 8, NWT"] and said == []
 
 
-def test_process_batch_refuses_more_photos_than_one_model_call_takes(tmp_path, monkeypatch):
+def test_process_batch_groups_a_roll_past_one_model_call_in_parts(tmp_path, monkeypatch):
+    """WO51 §6: a 91-photo batch was refused ("share it in smaller sets"); it is grouped in overlapping parts now,
+    each small enough for one call (tests/test_wo51_big_shares.py has the stitch)."""
     s = _settings(tmp_path)
     db = DB(s.path("db"))
     share = _jpg(s.path("inbox") / "big" / "IMG_0.jpg").parent
@@ -296,12 +298,17 @@ def test_process_batch_refuses_more_photos_than_one_model_call_takes(tmp_path, m
     monkeypatch.setattr(pipeline.prep, "list_photos", lambda src: fake)
     monkeypatch.setattr(pipeline.prep, "normalize", lambda src, dst, edge: dst)
     monkeypatch.setattr(pipeline.prep, "drop_near_duplicates", lambda paths, times, d: (paths, []))
+    monkeypatch.setattr(pipeline.prep, "photo_kinds", lambda paths: ["own"] * len(paths))
+    monkeypatch.setattr(pipeline.photomem, "check_share", lambda db, raw: ({}, raw, {p.name: {} for p in raw}))
+    calls = []
 
-    def no_call(*a, **k):
-        raise AssertionError("seg.segment must not be called for an oversized batch")
-    monkeypatch.setattr(pipeline.seg, "segment", no_call)
-    with pytest.raises(ValueError, match="91 photos after dedupe; the model takes at most 90"):
+    def segment(photos, *a, **k):
+        calls.append(len(photos))
+        raise RuntimeError("stop after the calls were planned")
+    monkeypatch.setattr(pipeline.seg, "segment", segment)
+    with pytest.raises(RuntimeError, match="stop after"):
         pipeline.process_batch(s, db, bid)
+    assert calls and all(n <= 40 for n in calls)                    # the first part, never the whole 91
 
 
 def _new_item(s, db):

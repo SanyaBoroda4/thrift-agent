@@ -38,7 +38,8 @@ COLUMNS = {
                   "test"],                                                                           # WO45 §2
     "share_uploads": ["share_id", "name", "n", "sha256", "size", "content_type", "received_at", "test"],
     "shares": ["id", "source", "expected", "received", "received_at", "complete_at", "grouped_at", "carded_at",
-               "outcome", "outcome_at", "reason", "batch_id", "test", "updated_at"],                   # WO45 §3
+               "outcome", "outcome_at", "reason", "batch_id", "test", "updated_at",                    # WO45 §3
+               "items", "cards", "state", "waiting", "moved_at"],                                      # WO51 §6
 }
 
 

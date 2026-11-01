@@ -14,7 +14,7 @@ import pytest
 from ext_fake import FakeExtension
 
 from cards import ALL_DONE, card, done_for_now
-from thrift_agent import approve, crosslist, daily, notify, pipeline
+from thrift_agent import approve, crosslist, daily, health, notify, pipeline
 from thrift_agent.bridge import EXT_DIR
 from thrift_agent.catalogs.common import MappingError
 from thrift_agent.config import Settings
@@ -544,8 +544,11 @@ def test_a_new_window_lifts_blocks_and_never_retries_an_unconfirmed_publish(tmp_
     crosslist.block(db, "vinted", "Vinted: a verification (first listing / account check) is asked")
     assert crosslist.blocked(db, "vinted") and crosslist.pending(s, db) == []
     db.kv_set(daily.SESSION_KEY, "w2")
-    assert crosslist.new_window(s, db) and not crosslist.blocked(db, "vinted")
-    assert crosslist.pending(s, db) == [(iid, "vinted")]
+    # WO51: a new window no longer lifts a pause — it makes its test run due at once; a passing test lifts it
+    assert crosslist.new_window(s, db) and crosslist.blocked(db, "vinted")
+    assert health.test_due(db, "vinted") == "auto"
+    health.tested(db, "vinted", True)
+    assert not crosslist.blocked(db, "vinted") and crosslist.pending(s, db) == [(iid, "vinted")]
 
 
 def test_a_mismatch_row_gets_three_windows_then_the_groups_line_naming_the_step(tmp_path, monkeypatch):

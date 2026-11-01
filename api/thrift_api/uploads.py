@@ -12,8 +12,9 @@ three shares' photos sat on the iPhone for 4½ hours and iCloud Drive never push
   POST /shares/{share_id}/fetched    {"names": [...]}                  → {"ok": true, …}
 
 A refusal is {"ok": false, "error": "…"}: 400 for a bad share id, a body that isn't an image (the magic bytes decide,
-never the header), a 61st photo; 413 past 30 MB. The same bytes twice (one SHA-256) are stored once, still "ok"; a
-different photo under a name already used gets "-2", "-3" … in its name. Stored byte for byte — a HEIC stays a HEIC,
+never the header), a 201st photo (WO51 §6: was 60 — a 70-photo share came on 2026-11-01); 413 past 30 MB. The same
+bytes twice (one SHA-256) are stored once, still "ok"; a different photo under a name already used gets "-2", "-3" …
+in its name. Stored byte for byte — a HEIC stays a HEIC,
 the EXIF (the capture time the photo memory keys on, WO43) untouched.
 
 The bytes go to Blob Storage, container `shares`, blob `<share id>/<name>`, in the function app's own account
@@ -39,7 +40,7 @@ log = logging.getLogger(__name__)
 
 SHARE_ID = re.compile(r"\d{4}-\d{2}-\d{2}_\d{6}(_[0-9a-z]{1,8})?")   # the Shortcut's date_time_random
 MAX_BYTES = 30 * 1024 * 1024
-MAX_PHOTOS = 60
+MAX_PHOTOS = 200      # WO51 §6 (live 2026-11-01: a 70-photo share; the API took 60 and only iCloud had all 70)
 MAX_COUNT = 500
 KEEP_DAYS = 30
 CONTAINER = "shares"

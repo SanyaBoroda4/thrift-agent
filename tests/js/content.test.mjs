@@ -1859,3 +1859,69 @@ test("Vinted: a brand panel that doesn't open at the first click still gives 'Li
   assert.ok(r.guesses.includes("listed without a brand"), JSON.stringify(r.guesses));
   assert.equal(p.w.__noBrand, true);
 });
+
+// ---------------------------------------------------------------- WO51 (live 2026-11-01)
+
+test("Vinted (WO51): the rebuilt form's brand <button> — our brand over Vinted's own 'Disney', no Illegal invocation", async () => {
+  const p = page("vinted", undefined, undefined, { buttonBrand: true, prefillBrand: "Disney" });
+  await run(p, VINTED_JOB);
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(p.w.__brandShown(), "J.Crew");
+  assert.equal(r.seen.brand_shown, "J.Crew");
+  assert.ok(!JSON.stringify(r).includes("Illegal invocation"));
+});
+
+test("Vinted (WO51): no brand of ours on the rebuilt form — 'List without brand', never Vinted's 'Disney'", async () => {
+  const p = page("vinted", undefined, undefined, { buttonBrand: true, prefillBrand: "Disney" });
+  await run(p, { ...VINTED_JOB, fields: { ...VINTED_JOB.fields, brand: null, brand_candidates: [] } });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(p.w.__brandShown(), "List without brand");
+  assert.notEqual(r.seen.brand_shown, "Disney");
+});
+
+test("Vinted (WO51): a brand step that throws in our own code is reported as code with its place", async () => {
+  const p = page("vinted", undefined, undefined, { buttonBrand: true });
+  p.w.Thrift.typeable = () => { throw new p.w.TypeError("Illegal invocation"); };
+  await run(p, VINTED_JOB);
+  const ev = p.events().map(plain).filter((e) => e.event === "error" || (e.event === "step" && e.ok === false));
+  const bad = ev.find((e) => /Illegal invocation/.test(e.detail || e.message || ""));
+  assert.ok(bad, JSON.stringify(ev));
+  assert.equal(bad.kind, "code");
+  assert.match(bad.detail || bad.message, /TypeError: Illegal invocation/);
+});
+
+test("Depop (WO51): today's shipping section — no USPS radio, Depop Shipping the only way", async () => {
+  const p = page("depop", undefined, undefined, { ...DEPOP_FIX, shipping2026: true });
+  await run(p, DEPOP_JOB);
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  const step = p.events().map(plain).find((e) => e.event === "step" && e.name === "shipping");
+  assert.equal(step.ok, true, JSON.stringify(step));
+  assert.match(step.detail, /only way/);
+});
+
+test("Depop (WO51): a shipping section drawn late is waited for", async () => {
+  const p = page("depop", undefined, undefined, { ...DEPOP_FIX, shipping2026: true, shippingLate: 1500 });
+  await run(p, DEPOP_JOB);
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+});
+
+test("Depop (WO51): the shipping section found by its heading when its test id is gone", async () => {
+  const p = page("depop", undefined, undefined, { ...DEPOP_FIX, shipping2026: true, shippingNoTestId: true });
+  await run(p, DEPOP_JOB);
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+});
+
+test("Depop (WO51): Depop's own Red + Pink make room for ours; two colours, no text left in the box", async () => {
+  const p = page("depop", undefined, undefined, { ...DEPOP_FIX, aiColours: ["Red", "Pink"] });
+  await run(p, { ...DEPOP_JOB, fields: { ...DEPOP_JOB.fields, colors: ["Red", "White"] } });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.deepEqual([...p.w.__chosen["colour-input"]].sort(), ["Red", "White"]);
+  assert.equal(p.d.getElementById("colour-input").value, "");
+  assert.deepEqual(r.seen.typed_left, []);
+});

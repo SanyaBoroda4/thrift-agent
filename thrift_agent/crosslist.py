@@ -41,7 +41,7 @@ MISMATCH = "Mismatch: "                 # WO36 §4: the form read back other tha
 ALERTS = {"login": "{site} needs you to log in on the Mac.",
           "captcha": "{site} shows a CAPTCHA — solve it in its Chrome window on the Mac.",
           "verify": "{site} asks for a check — open it on the Mac.",
-          "block": "{site} turned the Mac away for now — I'll try again next time the Mac is open."}
+          "block": "{site} turned the Mac away for now — I'll try again by myself later."}
 DRIVERS = {"depop": ("extension", "playwright", "api"), "vinted": ("extension", "playwright")}
 ALL_DONE_LINE = "💤 All done — you can close the Mac."          # WO34: the group card's last line
 DOT = {"poshmark": "🟣", "depop": "🔴", "vinted": "🟢"}
@@ -165,24 +165,42 @@ def window(db: DB) -> str:
     return db.kv_get(daily.SESSION_KEY) or datetime.now().strftime("%Y-%m-%d")
 
 
+RETRY_AFTER = 30 * 60          # WO51: an item failure is tried again this long after it (was: the next daily window —
+#                                with the Mac always on, a window may never come)
+
+
 def new_window(s: Settings, db: DB) -> bool:
-    """Between listings: a window the poster hasn't seen lifts the blocks and puts the failures that never reached the
-    publish button back in line (MAX_ATTEMPTS each; the last one becomes 'skipped', with an ops note)."""
+    """Between listings: a window the poster hasn't seen (the owner at the Mac) tests every paused site at once (WO51:
+    a pause ends only by a passing test — it no longer waits for a window) and puts the failures that never reached the
+    publish button back in line (`retry_failed`)."""
     w = window(db)
     if db.kv_get(WINDOW_SEEN) == w:
         return False
     db.kv_set(WINDOW_SEEN, w)
-    db.kv_set(BLOCKS, "{}")
     db.kv_set(STREAK, "{}")
+    from thrift_agent import health
+    health.all_due_now(db)
+    retry_failed(s, db, at=None)
+    return True
+
+
+def retry_failed(s: Settings, db: DB, at: datetime | None = None) -> list[tuple[str, str]]:
+    """WO51: an item failure (nothing published) is tried again RETRY_AFTER after it — MAX_ATTEMPTS in all, the last
+    one becomes 'skipped' with the group's ⏭ line naming the step. `at` None: every such row now (a new window).
+    Never an unconfirmed publish (the site's data settles it, WO35 §4) or a refused form (WO39: her 'retry')."""
+    out = []
+    cutoff = None if at is None else (at - timedelta(seconds=RETRY_AFTER)).isoformat(timespec="seconds")
     for row in db.conn.execute(f"SELECT * FROM listings WHERE status='failed' AND url IS NULL AND marketplace IN "
                                f"({','.join('?' * len(CROSS))})", CROSS).fetchall():
         if (row["error"] or "").startswith(UNCONFIRMED):
             continue                                    # it may be live: settled by the site's data (WO35 §4)
         if refused(row["error"]):
             continue                                    # WO39: never the same form again by itself — her 'retry'
+        if cutoff is not None and (row["updated_at"] or "") > cutoff:
+            continue
         iid, mp = row["item_id"], row["marketplace"]
         # A form that read back other than planned (a "Mismatch": nothing was published) had waited for ever, one try
-        # a window (WO36 §4). Since the Vinted incident of 2026-10-20 (the owner): MAX_ATTEMPTS windows like any other
+        # a window (WO36 §4). Since the Vinted incident of 2026-10-20 (the owner): MAX_ATTEMPTS like any other
         # failure, then the group's ⏭ line naming the step — "later" never repeats silently for good.
         if row["attempts"] < MAX_ATTEMPTS:
             db.upsert_listing(iid, mp, status="queued")
@@ -192,7 +210,8 @@ def new_window(s: Settings, db: DB) -> bool:
             notify.say(f"⏭ {LABEL[mp]} skipped for {iid} after {MAX_ATTEMPTS} attempts: {row['error']}")
             from thrift_agent.post import runner
             runner.ask_skipped(db, iid, mp, _title_of(db, iid), f"{MAX_ATTEMPTS} tries — {step_text(row['error'])}")
-    return True
+        out.append((iid, mp))
+    return out
 
 
 def step_text(error: str | None) -> str:
@@ -223,41 +242,42 @@ def step_name(error: str | None) -> str:
 
 
 def blocked(db: DB, mp: str) -> str | None:
-    b = (loads(db.kv_get(BLOCKS)) or {}).get(mp)
-    return b["reason"] if b and b.get("window") == window(db) else None
+    """Why `mp` starts no new listing now — its pause (WO51, thrift_agent.health: paused until a test run passes or the
+    owner resumes it; before, "stopped for this window", which an always-on Mac never ended) — or None."""
+    from thrift_agent import health
+    return health.paused(db, mp)
 
 
 def account_blocked(db: DB, mp: str) -> str | None:
-    """WO40: the site stopped for this window by what it SHOWED — a login, CAPTCHA, block or check page — not by our
-    own failures in a row (live 2026-10-16: Vinted refused a form twice; a take-down must still run there)."""
-    reason = blocked(db, mp)
-    return reason if reason and not reason.startswith("failures:") else None
+    """WO40: the site paused by what it SHOWED — a login, CAPTCHA, block or check page — not by failures (live
+    2026-10-16: Vinted refused a form twice; a take-down must still run there)."""
+    from thrift_agent import health
+    return health.account_paused(db, mp)
 
 
-def block(db: DB, mp: str, reason: str, page: str | None = None) -> None:
-    """Stop `mp` for this window (logged out, CAPTCHA, a verification wall, a block page, failures in a row): ONE plain
-    line in the group for an account problem — what to do, by what the site showed (`page`) — the reason in the ops
-    chat; Poshmark and the other marketplace go on."""
-    blocks = loads(db.kv_get(BLOCKS)) or {}
-    if (blocks.get(mp) or {}).get("window") == window(db):
-        return
-    blocks[mp] = {"window": window(db), "reason": reason, "since": datetime.now(timezone.utc).isoformat()}
-    db.kv_set(BLOCKS, json.dumps(blocks))
-    db.log(None, "crosslist_blocked", {"mp": mp, "reason": reason, "page": page})
-    if not reason.startswith("failures:"):
-        notify.group(ALERTS[alert_kind(reason, page)].format(site=LABEL[mp]))
-    notify.say(f"⛔ {LABEL[mp]} stopped for this window: {reason}")
+def block(db: DB, mp: str, reason: str, page: str | None = None, shot=None) -> None:
+    """Pause `mp` (logged out, CAPTCHA, a verification wall, a block page, item failures in a row): ONE plain line in
+    the group for an account problem — what to do, by what the site showed (`page`) — and one private line; Poshmark
+    and the other marketplace go on. WO51: it comes back by itself — a test run after the cool-down (health)."""
+    from thrift_agent import health
+    account = not reason.startswith("failures:")
+    new = health.pause(db, mp, reason, "account" if account else "items", error=reason, page=page, shot=shot)
+    if new:
+        db.log(None, "crosslist_blocked", {"mp": mp, "reason": reason, "page": page})
+        if account:
+            notify.group(ALERTS[alert_kind(reason, page)].format(site=LABEL[mp]))
 
 
 def failure(db: DB, mp: str, failed: bool, limit: int = 3) -> None:
-    """The per-marketplace circuit breaker: `limit` failures in a row stop that marketplace for the window. WO35: an
-    unconfirmed publish is no failure until the site's own data shows it absent (live 2026-10-09: two of Vinted's
-    three "failures in a row" at 08:30 were listings that had gone up)."""
+    """The per-marketplace circuit breaker: `limit` ITEM failures in a row pause that marketplace (WO51: a failure that
+    isn't about the item never counts — thrift_agent.health). WO35: an unconfirmed publish is no failure until the
+    site's own data shows it absent (live 2026-10-09: two of Vinted's three "failures in a row" at 08:30 were listings
+    that had gone up)."""
     streak = loads(db.kv_get(STREAK)) or {}
     streak[mp] = streak.get(mp, 0) + 1 if failed else 0
     db.kv_set(STREAK, json.dumps(streak))
     if streak[mp] >= limit:
-        block(db, mp, f"failures: {streak[mp]} in a row")
+        block(db, mp, f"failures: {streak[mp]} listings in a row failed")
 
 
 def capped(s: Settings, db: DB, mp: str) -> bool:
@@ -266,13 +286,15 @@ def capped(s: Settings, db: DB, mp: str) -> bool:
     return db.listed_since(midnight, mp) >= daily_cap(s, mp)
 
 
-def pending(s: Settings, db: DB, mps: list[str] | None = None) -> list[tuple[str, str]]:
+def pending(s: Settings, db: DB, mps: list[str] | None = None, paused_too: bool = False) -> list[tuple[str, str]]:
     """(item, marketplace) the poster takes now, oldest Poshmark listing first: a 'queued' row — and a 'dryrun' one
-    once the marketplace publishes for real — on an enabled marketplace that isn't stopped for the window or at its
-    daily cap."""
+    once the marketplace publishes for real — on an enabled marketplace that isn't paused or at its daily cap
+    (`paused_too`: a paused one too — its test run's item, WO51). An item put behind the others after a failure that
+    wasn't its own goes last (health.behind)."""
+    from thrift_agent import health
     out = []
     for mp in mps if mps is not None else enabled(s):
-        if blocked(db, mp) or capped(s, db, mp):
+        if (blocked(db, mp) and not paused_too) or capped(s, db, mp):
             continue
         states = ("queued", "dryrun") if live(s, mp) else ("queued",)
         rows = db.conn.execute(
@@ -282,15 +304,17 @@ def pending(s: Settings, db: DB, mps: list[str] | None = None) -> list[tuple[str
             f"ORDER BY COALESCE(p.posted_at, l.updated_at), l.rowid", (mp, *states)).fetchall()   # ties: queue order
         #   (WO45 §2: a test share's item is never listed)
         from thrift_agent import approve
-        out += [(r["item_id"], mp) for r in rows
+        mine = [r["item_id"] for r in rows
                 if not approve.needs_brand(db.item(r["item_id"]))]   # 2026-10-27: waits for her brand (a row a net re-queued)
+        out += [(iid, mp) for iid in health.behind(db, mp, mine)]
     return out
 
 
-def next_job(s: Settings, db: DB, prefer: str | None = None, mps: list[str] | None = None) -> tuple[str, str] | None:
+def next_job(s: Settings, db: DB, prefer: str | None = None, mps: list[str] | None = None,
+             paused_too: bool = False) -> tuple[str, str] | None:
     """The next cross-list job: the item just listed first (Poshmark → Depop → Vinted, then the next item), else the
     oldest waiting one. `mps`: only these marketplaces (WO32: the ones whose poster can take a job now)."""
-    jobs = pending(s, db, mps)
+    jobs = pending(s, db, mps, paused_too=paused_too)
     if not jobs:
         return None
     if prefer is not None:
@@ -358,11 +382,11 @@ def record(s: Settings, db: DB, iid: str, mp: str, title: str, out, fields: dict
         attempts = (row["attempts"] if row else 0) or 0
         what = "nothing was published; " if (error or "").startswith(MISMATCH) else ""
         if attempts < MAX_ATTEMPTS:
-            again = (f"{what}attempt {attempts} of {MAX_ATTEMPTS} — the next try the next time the Mac wakes or "
-                     f"restarts, inside its posting hours")
+            again = (f"{what}attempt {attempts} of {MAX_ATTEMPTS} — tried again in {RETRY_AFTER // 60} min, inside "
+                     f"its posting hours")
         else:
-            again = (f"{what}attempt {attempts} of {MAX_ATTEMPTS} — no more by itself: next window the group's ⏭ line "
-                     f"asks for 'retry'")
+            again = (f"{what}attempt {attempts} of {MAX_ATTEMPTS} — no more by itself: the group's ⏭ line asks for "
+                     f"'retry'")
         notify.ops_photo(shot, f"❌ {LABEL[mp]} failed ({iid}): {title}\n{step_text(error)}{note}\n({again})")
     elif out.status == "skipped" and NO_SIZE in (out.error or ""):
         say_no_size(title)
@@ -418,6 +442,21 @@ def strict_title(db: DB, iid: str, mp: str, fields, view):
     facts = getattr(view, "facts", None)
     brand = ((facts.brand.value or "").strip() or None) if facts is not None else None
     condition = facts.condition if facts is not None else None
+    if facts is not None:                    # WO51 §3: no brand or character mark that isn't the item's own
+        from thrift_agent import brands, pipeline
+        it = db.item(iid)
+        owner = it["owner_brand"] if it is not None and "owner_brand" in it.keys() else None
+        own = brands.own_names(getattr(fields, "brand", None) or brand, brand, owner)
+        ok = pipeline.mark_ok_text(facts)
+        gone: list[str] = []
+        for name in ("title", "description"):
+            if getattr(fields, name, None):
+                text, found = brands.guard(getattr(fields, name), own, ok)
+                if found:
+                    setattr(fields, name, text)
+                    gone += found
+        if gone:
+            db.log(iid, "marks_removed", {"mp": mp, "marks": sorted(set(gone))})
     if mp == "vinted":
         if not getattr(fields, "title", None):
             return fields
@@ -560,6 +599,37 @@ def say_no_size(title: str) -> None:
     """WO37: an item with no size, ONE private line whichever site found it (the same text: said once) — her reply
     'size …' to its card puts every site back in line; never the group's 'retry' line, which would only skip again."""
     notify.say(f"⏭ {title}: {NO_SIZE} — it goes up once you reply 'size …' to its card")
+
+
+WRONG_FAMILY = "isn't the item's family"        # WO51 §5: a reason both safety nets keep (the category is fixed first)
+FAMILY_SAID = "family_said"                     # kv: [item|site] — the line said once
+
+
+def family_problem(item_type: str | None, site: str, category) -> str | None:
+    """WO51 §5 (live 2026-11-01: a crochet mini dress under Poshmark's Sweaters › V-Necks and Vinted's "V-neck
+    sweaters"): the site's category in another family than the item's own type words — the words, else None (unknown
+    agrees with everything)."""
+    from thrift_agent import families
+    mine = families.family_of_type(item_type)
+    theirs = families.family_of_category(site, category)
+    if families.same_family(mine, theirs):
+        return None
+    shown = category if isinstance(category, str) else " › ".join(str(c) for c in category if c)
+    return f"category '{shown}' {WRONG_FAMILY} (a {mine}, not a {theirs})"
+
+
+def hold_family(db: DB, iid: str, mp: str, title: str, why: str) -> None:
+    """The item waits on `mp` (skipped, a kept reason) until its category is fixed — ONE private line per item and
+    site, never posted in the wrong category."""
+    db.upsert_listing(iid, mp, status="skipped", error=SKIPPED + why)
+    db.log(iid, "post_wrong_family", {"mp": mp, "why": why})
+    said = set(loads(db.kv_get(FAMILY_SAID)) or [])
+    if f"{iid}|{mp}" in said:
+        return
+    said.add(f"{iid}|{mp}")
+    db.kv_set(FAMILY_SAID, json.dumps(sorted(said)))
+    notify.say(f"⏸ {LABEL[mp]} holds {title}: its {why} — it waits until the category is fixed "
+               f"(reply 'category …' to its card, or `thrift recategorize`).")
 
 
 def skip_unmappable(db: DB, iid: str, mp: str, title: str, why: str) -> None:

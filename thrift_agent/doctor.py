@@ -8,6 +8,10 @@ still open and how old, and today's shares with their outcomes. Read only; never
 from __future__ import annotations
 
 import json
+import re
+import subprocess
+import sys
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 from thrift_agent import alerts, crosslist, daily, pipeline, shares, uploads
@@ -15,6 +19,44 @@ from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
 
 SITES = ("poshmark", "depop", "vinted")
+PRESSURE = {"1": "normal", "2": "warning", "4": "critical"}      # kern.memorystatus_vm_pressure_level
+
+
+def _sysctl(name: str) -> str | None:
+    """`sysctl -n <name>` on the Mac, or None (not there, timed out)."""
+    try:
+        r = subprocess.run(["sysctl", "-n", name], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def _megabytes(text: str, key: str) -> float | None:
+    m = re.search(rf"{key}\s*=\s*([\d.]+)([KMG])", text or "")
+    return float(m[1]) * {"K": 1 / 1024, "M": 1, "G": 1024}[m[2]] if m else None
+
+
+def memory_line(read: Callable[[str], str | None] | None = None) -> str:
+    """WO51: the Mac's memory in one line — "Memory: 35% free · pressure normal · swap 8.1 of 9.0 GB used ⚠️" (the
+    8 GB Mac lives near its swap's end: the owner's own Safari tabs, the Thrift Chrome, a big share's images). ⚠️
+    when the kernel says warning / critical, under 10% is free, or the swap is 80% full. `read`: sysctl -n (tests)."""
+    read = read or _sysctl
+    free, level = read("kern.memorystatus_level"), read("kern.memorystatus_vm_pressure_level")
+    swap = read("vm.swapusage") or ""
+    parts, alarm = [], False
+    if free and free.strip().isdigit():
+        parts.append(f"{int(free)}% free")
+        alarm |= int(free) < 10
+    if level is not None and level.strip() in PRESSURE:
+        parts.append(f"pressure {PRESSURE[level.strip()]}")
+        alarm |= level.strip() != "1"
+    total, used = _megabytes(swap, "total"), _megabytes(swap, "used")
+    if total:
+        parts.append(f"swap {used / 1024:.1f} of {total / 1024:.1f} GB used")
+        alarm |= used is not None and used >= 0.8 * total
+    if not parts:
+        return "Memory: unreadable now"
+    return "Memory: " + " · ".join(parts) + (" ⚠️" if alarm else "")
 
 
 def _ago(ts: str | None, now: datetime) -> str:
@@ -56,10 +98,19 @@ def _count_dirs(path) -> str:
         return f"unreadable now ({type(e).__name__})"
 
 
-def report(s: Settings, db: DB, now: datetime | None = None, api=None) -> list[str]:
-    """The lines (see the module). `api`: thrift-api's client (tests pass a stand-in; None: sales.api())."""
+def report(s: Settings, db: DB, now: datetime | None = None, api=None,
+           memory: Callable[[], str] | None = None) -> list[str]:
+    """The lines (see the module). `api`: thrift-api's client (tests pass a stand-in; None: sales.api()). `memory`:
+    the memory line's reader — on the Mac `memory_line` (sysctl), elsewhere none (tests never read the machine)."""
     now = now or datetime.now(timezone.utc)
     out = ["🩺 Thrift doctor — " + now.astimezone().strftime("%a %b %d, %H:%M")]
+    if memory is None and s.is_prod and sys.platform == "darwin":
+        memory = memory_line
+    if memory is not None:
+        try:
+            out.append(memory())
+        except Exception as e:  # noqa: BLE001 — a part it can't read says so
+            out.append(f"Memory: unreadable now ({type(e).__name__})")
     # the worker
     prog = loads(db.kv_get(alerts.PROGRESS)) or {}
     out.append(f"Worker: last progress {_ago(prog.get('at'), now)}" + (f" ({prog.get('what')})" if prog.get("what") else "")
@@ -92,7 +143,9 @@ def report(s: Settings, db: DB, now: datetime | None = None, api=None) -> list[s
         why = crosslist.blocked(db, mp)
         parts = [f"{st_} {n}" for st_, n in sorted(c.items()) if st_ in ("posted", "queued", "posting", "failed")]
         out.append(f"{crosslist.LABEL.get(mp, mp)}: " + (", ".join(parts) or "nothing")
-                   + (f" · STOPPED for this window: {why}" if why else ""))
+                   + (f" · PAUSED: {why}" if why else ""))
+    from thrift_agent import health
+    out += [f"  {line}" for line in health.summary(db)]          # WO51: each pause and its next test
     # take-downs not done
     rows = db.conn.execute("SELECT item_id, marketplace, status, attempts, error, fetched_at FROM takedowns "
                            "WHERE status NOT IN ('done', 'not_found', 'sold') ORDER BY fetched_at").fetchall()

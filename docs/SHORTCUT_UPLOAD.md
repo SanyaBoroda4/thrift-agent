@@ -64,6 +64,10 @@ comes before any upload: the photos are saved either way, and the Mac takes the 
 came. (If you'd rather see no error at all, put steps 12–16 in a second Shortcut and call it with **Run Shortcut** —
 the error then shows in the helper's name, and the first Shortcut has already saved everything.)
 
+How many photos: up to **200** a share (WO51 §6, 2026-11-01 — it was 60; a 70-photo share came that day). Nothing
+changes on the phone: the same Shortcut sends them all. A photo past 200 is refused by the API (the Shortcut then
+stops with that error) and the share still reaches the Mac whole through its iCloud copy.
+
 The key can also go in the address instead of a header (`…&code=<the key>` on both URLs) if a header is awkward to
 fill in; the header is tidier.
 

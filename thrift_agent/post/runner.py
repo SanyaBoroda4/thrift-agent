@@ -16,7 +16,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from thrift_agent import approve, brands, catalogs, crosslist, daily, notify, pipeline, power
+from thrift_agent import approve, brands, catalogs, crosslist, daily, health, notify, pipeline, power
 from thrift_agent import bridge as bridge_mod
 from thrift_agent.brain.copy import NEGATIVE_WORDS, STYLE_HEMS, USED, USED_CLAIMS
 from thrift_agent.catalogs import CatalogError, refresh
@@ -230,8 +230,9 @@ def next_job(s: Settings, db: DB, enabled: list[str], dry: bool,
     "publish" item publishes when the marketplace's autopublish is on; anything else is a draft — and a draft the
     poster can't save yet (can_draft) is left alone outside a dry-run: held(), never failed, never asked about.
     `allow_publish=False` (HOLD_UNSHIPPED) skips jobs that would go live; drafts still run, and so does a dry-run of a
-    publish-gated item, since a dry-run never submits."""
-    for it in db.items("ready"):
+    publish-gated item, since a dry-run never submits. WO51: an item put behind the others after a failure that wasn't
+    its own (health.defer) comes after them."""
+    for it in health.behind(db, "poshmark", list(db.items("ready")), key=lambda x: x["id"]):
         batch = db.batch(it["batch_id"])
         if batch is not None and batch["status"] == "regroup":
             continue            # the owner is fixing this batch's photos ([Wrong photos]): not until the fix
@@ -256,6 +257,13 @@ def next_job(s: Settings, db: DB, enabled: list[str], dry: bool,
             if mode == "draft" and not dry and not can_draft(mp):
                 continue        # held(): the form would be filled for nothing
             render = Render.model_validate(renders[mp])
+            item_type = ((loads(it["facts"]) or {}).get("item_type") or None)
+            if isinstance(item_type, dict):
+                item_type = item_type.get("value")
+            if wrong := crosslist.family_problem(item_type, mp, tuple(getattr(render, k, None) for k in
+                                                                      ("department", "category", "subcategory"))):
+                crosslist.hold_family(db, it["id"], mp, render.title, wrong)   # WO51 §5: never the wrong family
+                continue
             if (render := shop_window_render(db, it, render, renders)) is None:
                 continue        # WO50: a title that breaks the rules never reaches the site (said once)
             return it["id"], mp, render, mode
@@ -310,11 +318,32 @@ def publishable(s: Settings, db: DB, enabled: list[str]) -> list[tuple[str, str]
 TITLE_HELD = "title_held_said"      # kv: [item] — the line said (WO50)
 
 
+def _guard_render(db: DB, it, render: Render, renders: dict) -> Render:
+    """WO51 §3: the Poshmark title (never the owner's own) and description without a brand or character mark that
+    isn't the item's own (an item processed before the guard is put right here, its render kept)."""
+    facts = loads(it["facts"]) or {}
+    fb = facts.get("brand") if isinstance(facts.get("brand"), dict) else {}
+    owner = it["owner_brand"] if "owner_brand" in it.keys() else None
+    own = brands.own_names(getattr(render, "brand", None) or fb.get("value"), fb.get("value"), owner)
+    ok = " · ".join(str(x) for x in [(facts.get("style_name") or {}).get("value"),
+                                     ((facts.get("premium") or {}).get("collab") or {}).get("value"),
+                                     ((facts.get("premium") or {}).get("line") or {}).get("value")] if x)
+    title, t_gone = (render.title, []) if it["owner_title"] else brands.guard(render.title, own, ok)
+    desc, d_gone = brands.guard(getattr(render, "description", None), own, ok)
+    if not (t_gone or d_gone):
+        return render
+    renders["poshmark"] = {**renders["poshmark"], "title": title, "description": desc}
+    db.set_item(it["id"], renders=renders)
+    db.log(it["id"], "marks_removed", {"mp": "poshmark", "marks": sorted(set(t_gone + d_gone))})
+    return render.model_copy(update={"title": title, "description": desc})
+
+
 def shop_window_render(db: DB, it, render: Render, renders: dict) -> Render | None:
     """WO50: the Poshmark title passes the shop-window rules before the form opens — an item processed before them is
     fixed here (deterministically; its render kept), the owner's own title (WO27) stays hers. A title that still breaks
     them: None (the item waits) and ONE private line."""
     from thrift_agent import titles
+    render = _guard_render(db, it, render, renders)          # WO51 §3: no mark that isn't the item's own
     if it["owner_title"] or not titles.check(render.title):
         return render
     facts = loads(it["facts"]) or {}
@@ -833,13 +862,15 @@ def map_fields(mp: str, view: ItemView):
 
 
 async def run_cross(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, *, dry: bool, hold: bool = False,
-                    request: bool = False, progress=None) -> Outcome | None:
+                    request: bool = False, progress=None, quiet: bool = False) -> Outcome | None:
     """One item on Depop or Vinted (WO30): map its values from the catalogs (a value that can't be mapped skips this
     marketplace only), keep them on the row, take the row ('posting' before the form opens, invariant 4), fill the
     form — a dry run leaves without publishing — and record what happened. A logged-out / CAPTCHA / verification wall
-    stops the marketplace for the window. `request`: an explicit dry run (`thrift crosslist --dry-run`): the row is
-    neither taken nor changed, only the screenshot and the fields go to the ops chat. `progress`: each progress line of
-    an extension job as it comes (the CLI prints them, WO32b)."""
+    pauses the marketplace. `request`: an explicit dry run (`thrift crosslist --dry-run`, a paused site's test run —
+    WO51): the row is neither taken nor changed, only the screenshot and the fields go to the ops chat (`quiet`: not
+    even those — the automatic test runs). `progress`: each progress line of an extension job as it comes (WO32b).
+    WO51: a failure that isn't about the item (health.kind_of: site or infra) puts it back in line untouched — never a
+    ❌ line, never an attempt; the same one twice pauses the site (one line)."""
     it = db.item(iid)
     title = ((loads(it["renders"]) or {}).get("poshmark") or {}).get("title") or iid
     try:
@@ -847,12 +878,23 @@ async def run_cross(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, *, dr
         fields = crosslist.strict_title(db, iid, mp, map_fields(mp, view), view)    # WO50: the site's title rules
     except MappingError as e:
         if request:
-            notify.say(f"⏭ {crosslist.LABEL[mp]} dry run ({iid}): {title}\ncan't map: {e}")
-        else:
-            crosslist.skip_unmappable(db, iid, mp, title, str(e))
+            if not quiet:
+                notify.say(f"⏭ {crosslist.LABEL[mp]} dry run ({iid}): {title}\ncan't map: {e}")
+            return Outcome("skipped", error=f"can't map: {e}")   # a test run's: no verdict on the site (WO51)
+        crosslist.skip_unmappable(db, iid, mp, title, str(e))
         return None
     except CatalogError as e:
         crosslist.block(db, mp, f"failures: catalog — {e}")
+        return None
+    facts = getattr(view, "facts", None)
+    wrong = crosslist.family_problem(getattr(facts, "item_type", None), mp,
+                                     getattr(fields, "category_path", None) or getattr(fields, "category", None))
+    if wrong:                                       # WO51 §5: never posted in another family's category
+        if request:
+            if not quiet:
+                notify.say(f"⏸ {crosslist.LABEL[mp]} dry run ({iid}): {title}\n{wrong}")
+            return Outcome("skipped", error=wrong)
+        crosslist.hold_family(db, iid, mp, title, wrong)
         return None
     render = cross_render_of(db, iid, mp, fields)
     poster = ps[mp]
@@ -871,11 +913,15 @@ async def run_cross(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, *, dr
             return None
         except Exception as e:  # noqa: BLE001 — an asked-for dry run never stops the poster
             db.log(iid, "crosslist_dry_run", {"mp": mp, "status": "error", "error": f"{type(e).__name__}: {e}"})
-            notify.say(f"❌ dry run {crosslist.LABEL[mp]} ({iid}): {type(e).__name__}: {e}")
-            return None
+            if not quiet:
+                notify.say(f"❌ dry run {crosslist.LABEL[mp]} ({iid}): {type(e).__name__}: {e}")
+            return Outcome("failed", error=f"{type(e).__name__}: {e}")
         lines = list(getattr(poster, "lines", []) or [])
         db.log(iid, "crosslist_dry_run", {"mp": mp, "status": out.status, "shot": out.screenshot, "error": out.error,
-                                          "fill_seconds": getattr(poster, "fill_seconds", None), "progress": lines})
+                                          "fill_seconds": getattr(poster, "fill_seconds", None), "progress": lines,
+                                          "quiet": quiet or None})
+        if quiet:
+            return out
         notify.ops_photo(Path(out.screenshot or ""),
                          f"🧪 dry-run {crosslist.LABEL[mp]} ({iid}): {title} — ${fields.price} [{out.status}]\n"
                          f"{crosslist.fields_summary(fields.model_dump())}"
@@ -921,20 +967,31 @@ async def run_cross(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, *, dr
         db.upsert_listing(iid, mp, status="queued", error=str(e), attempts=max(0, (row["attempts"] or 1) - 1))
         crosslist.block(db, mp, str(e), e.page)
         return None
-    except Exception as e:  # noqa: BLE001 — before the form: nothing submitted; this marketplace stops for the window
-        db.upsert_listing(iid, mp, status="queued", error=f"{type(e).__name__}: {e}")
-        crosslist.block(db, mp, f"failures: {type(e).__name__}: {e}")
+    except Exception as e:  # noqa: BLE001 — before the form: nothing submitted; never about the item (WO51)
+        err = f"{type(e).__name__}: {e}"
+        kind = health.kind_of(err)
+        health.non_item(db, mp, iid, err, health.INFRA if kind == health.ITEM else kind)
         return None
     seconds, slept = time.monotonic() - m0, power.slept_since(t0, k0, m0)
     if slept:
         out, requeued = await after_sleep(db, ps, ctx, iid, mp, render, out, t0)
         if requeued:
             return out
+    if out.status == "failed" and not out.clicked:
+        kind = health.kind_of(out.error, getattr(poster, "error_kind", None))
+        if kind != health.ITEM:                      # WO51: the site's or our own — the item back in line untouched
+            db.upsert_listing(iid, mp, fields_json={**fields.model_dump(), "note": out.note})
+            if health.non_item(db, mp, iid, out.error, kind, shot=out.screenshot) != "item":
+                db.log(iid, "post_failed", {"mp": mp, "error": out.error, "shot": out.screenshot, "kind": kind,
+                                            "note": out.note, "seconds": round(seconds, 1),
+                                            "progress": list(getattr(poster, "lines", None) or []) or None})
+                return out
     crosslist.record(s, db, iid, mp, title, out, fields.model_dump(), seconds=seconds, slept=slept,
                      lines=getattr(poster, "lines", None))
     if not (out.status == "failed" and out.clicked and not out.url):   # WO35: unconfirmed counts once it is absent
         crosslist.failure(db, mp, out.status == "failed", int(s.get("poster.max_consecutive_failures", 3)))
     if out.status == "posted":
+        health.worked(db, mp, iid)
         crosslist.set_unconf(db, iid, mp, stage=None)
     elif not out.clicked and (crosslist.unconf_state(db, iid, mp) or {}).get("stage") == "reposted":
         crosslist.set_unconf(db, iid, mp, stage="retry")   # nothing was clicked: the next try still looks first
@@ -1170,6 +1227,10 @@ async def run(s: Settings, db: DB, once: bool = False, force_dry: bool = False, 
                     for site in ready_cross(ps, cross):  # WO35 §4: an unconfirmed publish, settled by the site's data
                         if not crosslist.blocked(db, site):
                             await recheck_unconfirmed(s, db, ps, site, ctx)
+                        elif not dry and not s.flag_set("PAUSE") and (test := health.test_due(db, site)):
+                            from thrift_agent.post import parallel   # WO51: a paused site's test run (dry), then back
+                            await parallel._cross_test(s, db, ps, site, test)
+                crosslist.retry_failed(s, db, at=datetime.now(timezone.utc))     # WO51: an item failure, 30 min on
             ready = ready_cross(ps, cross)                 # WO32: an extension marketplace while the extension is there
             hour_ago, midnight = windows(tz=s["schedule"]["timezone"])
             ok, why = can_post(s, db.listed_since(hour_ago, "poshmark"), db.listed_since(midnight, "poshmark"))

@@ -48,12 +48,33 @@ is refused as Depop does (2026-10-09): "This field is required" under Brand, the
 </main>
 <script>
 const F = window.__FIXTURE || {};
-const DEPTS = {"Men > Bottoms": ["Sweatpants", "Pants"], "Women > Bottoms": ["Sweatpants", "Pants", "Skirts"],
+// WO51 (live 2026-11-01, three failed jobs' pages): Depop removed the USPS / Other radios — the Shipping section names
+// "Depop Shipping (via USPS)" as the only way, "Shipping from" her address (a radio, checked), the package size below.
+// window.__FIXTURE.shipping2026: that form; shippingLate: the section drawn that many ms after the page (lazily);
+// shippingNoTestId: the section without its test id (found by its heading).
+if (F.shipping2026) {
+  const sec = document.querySelector("[data-testid='national-shipping-section']");
+  sec.querySelectorAll("#usps__shipping, #manual__shipping, label[for$='__shipping']").forEach((e) => e.remove());
+  const info = document.createElement("div");
+  info.innerHTML = '<p>Shipping info added</p><p>Depop Shipping (via USPS)</p><p>Shipping from</p>'
+    + '<label data-testid="selectAddressRadio"><input type="radio" name="address" checked> Home, Charleston SC</label>';
+  sec.insertBefore(info, sec.querySelector(".field"));
+  if (F.shippingNoTestId) sec.removeAttribute("data-testid");
+  if (F.shippingLate) {                 // not drawn yet: no test id, no heading, no words — they come later
+    const head = sec.querySelector("h2"), id = sec.getAttribute("data-testid");
+    sec.removeAttribute("data-testid"); head.remove(); info.hidden = true; info.remove();
+    setTimeout(() => {
+      if (id) sec.setAttribute("data-testid", id);
+      sec.insertBefore(head, sec.firstChild); info.hidden = false; sec.insertBefore(info, sec.querySelector(".field"));
+    }, F.shippingLate);
+  }
+}
+const DEPTS ={"Men > Bottoms": ["Sweatpants", "Pants"], "Women > Bottoms": ["Sweatpants", "Pants", "Skirts"],
                "Kids > Bottoms": ["Sweatpants", "Pants"]};
 const OPTIONS = {
   "brand-input": F.brands || ["J.Crew", "J.Crew Factory", "Tory Burch", "Mango"],   // WO36: F.brands
   "condition-input": ["Brand new", "Like new", "Used - Excellent", "Used - Good", "Used - Fair"],
-  "colour-input": ["Black", "Grey", "Cream", "Red", "White"],
+  "colour-input": ["Black", "Grey", "Cream", "Red", "Pink", "White"],
   "source-input": ["Vintage", "Preloved"],
   "age-input": ["Modern", "90s"],
   "style-input": ["Casual", "Minimalist"],
@@ -81,6 +102,8 @@ function chips(id) {
 }
 function toggle(id, v) {
   chosen[id] = chosen[id] || [];
+  // WO51: Depop takes two colours at most — a third pick does nothing (live 2026-11-01: "White" stayed typed in the box)
+  if (id === "colour-input" && !chosen[id].includes(v) && chosen[id].length >= 2) return;
   chosen[id] = chosen[id].includes(v) ? chosen[id].filter((x) => x !== v) : [...chosen[id], v];
   chips(id);
 }
@@ -127,7 +150,7 @@ function wire(id) {
       }
       for (const o of hits) {
         menu.appendChild(option(o, (t) => {
-          if (MULTI.includes(id)) { toggle(id, t); input.value = t; }
+          if (MULTI.includes(id)) { toggle(id, t); input.value = (chosen[id] || []).includes(t) ? "" : t; }
           else { input.value = t; window.__picked[id] = t; }
           menu.innerHTML = "";
         }));
@@ -163,7 +186,7 @@ document.getElementById("upload-input__input").addEventListener("change", (e) =>
     }, 50);
   }
   if (F.ai !== false) setTimeout(() => {               // Depop's own suggestions, once the photos are up
-    chosen["colour-input"] = ["Cream", "Grey"]; chips("colour-input");
+    chosen["colour-input"] = F.aiColours || ["Cream", "Grey"]; chips("colour-input");   // WO51: Red + Pink live
     const theirs = F.aiBrand ?? "J.Crew";                // WO36: the Alo set had "Alo Yoga" here, right
     if (theirs) { document.getElementById("brand-input").value = theirs; window.__picked["brand-input"] = theirs; }
     if (F.aiStyle) { chosen["style-input"] = [F.aiStyle]; chips("style-input"); }

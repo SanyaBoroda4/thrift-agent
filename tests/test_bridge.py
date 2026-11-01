@@ -543,8 +543,8 @@ def test_the_owner_declining_cancels_without_a_click(tmp_path, selectors):
 
 @pytest.mark.parametrize("page,line", [("login", "Vinted needs you to log in on the Mac."),
                                        ("captcha", "Vinted shows a CAPTCHA — solve it in its Chrome window on the Mac."),
-                                       ("block", "Vinted turned the Mac away for now — I'll try again next time the "
-                                                 "Mac is open."),
+                                       ("block", "Vinted turned the Mac away for now — I'll try again by myself "
+                                                 "later."),
                                        ("verify", "Vinted asks for a check — open it on the Mac.")])
 def test_a_stop_page_stops_the_site_with_its_own_line(tmp_path, selectors, page, line, monkeypatch):
     with pytest.raises(AccountBlocked) as e:
@@ -556,7 +556,7 @@ def test_a_stop_page_stops_the_site_with_its_own_line(tmp_path, selectors, page,
     monkeypatch.setattr(notify, "group", group.append)
     monkeypatch.setattr(notify, "say", ops.append)
     crosslist.block(db, "vinted", str(e.value), e.value.page)
-    assert group == [line] and ops[0].startswith("⛔ Vinted stopped for this window")
+    assert group == [line] and ops[0].startswith("⛔ Vinted paused")   # WO51
 
 
 @pytest.fixture

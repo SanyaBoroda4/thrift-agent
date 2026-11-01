@@ -137,8 +137,9 @@ def attach(new: list[Path], refs: list[tuple[str, str, list[Path]]], model: str,
                    "Report which item each new photo shows", max_tokens=1500)
 
 
-def _content(photos: list[tuple[Path, datetime]], kinds: list[str], breaks: dict[int, float], px: int) -> list[dict]:
-    content: list[dict] = []
+def _content(photos: list[tuple[Path, datetime]], kinds: list[str], breaks: dict[int, float], px: int,
+             lead: str | None = None) -> list[dict]:
+    content: list[dict] = [llm.text(lead)] if lead else []       # WO51 §6: a part of a long roll says so first
     for i, ((p, _), kind) in enumerate(zip(photos, kinds)):
         if i in breaks:
             content.append(llm.text(f"— pause {fmt_pause(breaks[i])} —"))
@@ -154,28 +155,221 @@ def _request_bytes(content: list[dict]) -> int:
 
 def segment(photos: list[tuple[Path, datetime]], model: str, thumb_px: int, kinds: list[str] | None = None,
             breaks: dict[int, float] | None = None, fallback_px: int | None = None,
-            max_bytes: int = MAX_REQUEST_BYTES, report: dict | None = None) -> SegOut:
+            max_bytes: int = MAX_REQUEST_BYTES, report: dict | None = None, lead: str | None = None) -> SegOut:
     """`kinds[i]` is prep.photo_kind() of photo i ("own" | "retail"); None = all own. `breaks` are pauses() — shown
     to the model as "— pause 2 min —" lines, the only timing it sees. Previews are `thumb_px` on the long edge;
     when that request would be larger than `max_bytes`, or the API answers 413 (too large), they are sent at
-    `fallback_px` instead of failing. `report` (if given) gets the size used: {"preview_px": …}."""
+    `fallback_px` instead of failing. `report` (if given) gets the size used: {"preview_px": …}. `lead`: a line
+    before the photos (WO51 §6: which part of a long roll this is) — None for a roll segmented in one call."""
     kinds = kinds or ["own"] * len(photos)
     breaks = breaks or {}
     px = thumb_px
-    content = _content(photos, kinds, breaks, px)
+    content = _content(photos, kinds, breaks, px, lead)
     if fallback_px and fallback_px < px and _request_bytes(content) > max_bytes:
-        px, content = fallback_px, _content(photos, kinds, breaks, fallback_px)
+        px, content = fallback_px, _content(photos, kinds, breaks, fallback_px, lead)
     try:
         out = llm.ask(model, SYSTEM, content, SegOut, "report_groups", "Report the item groups", max_tokens=3000)
     except Exception as e:                            # a request too large after all: once more, smaller
         if getattr(e, "status_code", None) != 413 or not fallback_px or fallback_px >= px:
             raise
         px = fallback_px
-        out = llm.ask(model, SYSTEM, _content(photos, kinds, breaks, px), SegOut, "report_groups",
+        out = llm.ask(model, SYSTEM, _content(photos, kinds, breaks, px, lead), SegOut, "report_groups",
                       "Report the item groups", max_tokens=3000)
     if report is not None:
         report["preview_px"] = px
     return out
+
+
+# ---------------------------------------------------------------- a big share in parts (WO51 §6)
+#
+# Live 2026-11-01: a 70-photo share went to the model in one call (it worked); a share past 90 photos failed outright
+# ("share it in smaller sets") and the upload took 60 at most. A share of any size is now grouped in parts: a roll of
+# up to PART_PHOTOS photos is ONE call exactly as before (the same request: the golden replays' recorded answers still
+# apply — the biggest golden share has 29 photos); a bigger one in windows of at most PART_PHOTOS, neighbours sharing
+# PART_OVERLAP photos. Why 40 and 8: 40 previews at 768 px stay far below the API's 100 images and the 20 MB request
+# budget (no fall back to 384 px), and 40 is about the biggest roll seen grouped well in one call before (the golden
+# 29-photo batch, the 42-photo share of Oct 19); 8 shared photos give each side of a seam 4 photos of context — more
+# than half an item (today's 12 items had 3–10 photos, 6 typical).
+#
+# The stitch (`stitch`): every photo has one part TRUSTED for it — the part it lies nearer the middle of (each overlap
+# is cut at its midpoint). The pieces both neighbours agree on (the overlap photos grouped alike by both — a "meet") and
+# each part's own photos (its exclusive stretch) are the atoms; each part links the atoms of its groups only through
+# photos it is trusted for. So an item that straddles a seam is one item (both parts saw it whole around the seam), and
+# a part's mistake near its own edge — where it lacks context — never merges or splits anything: the other part,
+# trusted there, decides. Where the two parts grouped the shared photos differently, a doubt is recorded (thrift
+# status), never a question.
+
+PART_PHOTOS = 40      # a roll of up to this many photos: one call, as before; a bigger one: parts of at most this many
+PART_OVERLAP = 8      # photos two neighbouring parts both see — 4 on each side of the seam
+
+
+def plan_parts(n: int, part: int = PART_PHOTOS, overlap: int = PART_OVERLAP) -> list[tuple[int, int]]:
+    """[(start, end)] windows over range(n), in order: one window when n <= part; else as few as fit, each at most
+    `part` photos, neighbours sharing `overlap` photos, all about the same length (no short last part)."""
+    if n <= part:
+        return [(0, n)]
+    overlap = max(1, min(overlap, (part - 1) // 2))   # every part keeps photos of its own between its two overlaps
+    k = -(-(n - overlap) // (part - overlap))         # ceil: the fewest windows that cover n
+    size = -(-(n + (k - 1) * overlap) // k)           # ceil: even lengths (<= part, since k(part - overlap) >= n - overlap)
+    step = size - overlap
+    return [(i * step, n if i == k - 1 else i * step + size) for i in range(k)]
+
+
+def part_lead(k: int, total: int, start: int, end: int, n: int) -> str:
+    """The line before a part's photos: which part of the roll this is, and that its edges may continue elsewhere."""
+    return (f"This is part {k} of {total} of one long roll of {n} photos (its photos {start}–{end - 1}, numbered from 0 "
+            f"here). The first and last few photos may be the end or the start of an item shown mostly in the "
+            f"neighbouring part: group them by what they show — the parts are matched up afterwards.")
+
+
+def segment_roll(photos: list[tuple[Path, datetime]], model: str, thumb_px: int, kinds: list[str] | None = None,
+                 breaks: dict[int, float] | None = None, fallback_px: int | None = None,
+                 max_bytes: int = MAX_REQUEST_BYTES, report: dict | None = None, part: int = PART_PHOTOS,
+                 overlap: int = PART_OVERLAP) -> SegOut:
+    """The roll grouped into items, whatever its size: `segment` itself (the same call) up to `part` photos; else one
+    `segment` per window of `plan_parts`, stitched into one SegOut in the roll's own numbering. `report` gets
+    "preview_px" (the smallest size any part used), and for a roll in parts "parts" ([[start, end], …]) and "doubts"
+    (where two parts grouped their shared photos differently)."""
+    kinds = kinds or ["own"] * len(photos)
+    breaks = breaks or {}
+    windows = plan_parts(len(photos), part, overlap)
+    if len(windows) == 1:
+        return segment(photos, model, thumb_px, kinds=kinds, breaks=breaks, fallback_px=fallback_px,
+                       max_bytes=max_bytes, report=report)
+    outs, sizes = [], []
+    for k, (start, end) in enumerate(windows, 1):
+        used: dict = {}
+        outs.append(segment(photos[start:end], model, thumb_px, kinds=kinds[start:end],
+                            # a pause before a part's first photo has no photo before it in that part: left out
+                            breaks={i - start: sec for i, sec in breaks.items() if start < i < end},
+                            fallback_px=fallback_px, max_bytes=max_bytes, report=used,
+                            lead=part_lead(k, len(windows), start, end, len(photos))))
+        sizes.append(used.get("preview_px"))
+    out, doubts = stitch(len(photos), windows, outs)
+    if report is not None:
+        report["preview_px"] = min((p for p in sizes if p), default=None)
+        report["parts"] = [[start, end] for start, end in windows]
+        report["doubts"] = doubts
+    return out
+
+
+def stitch(n: int, windows: list[tuple[int, int]], outs: list[SegOut]) -> tuple[SegOut, list[str]]:
+    """Each part's grouping (in its own numbering) as ONE grouping of range(n), and the doubts in the owner's words.
+    See the comment above `PART_PHOTOS`. A photo no part placed is in no group (the partition check says so: the
+    contact sheet asks); a photo a part put in two groups counts for the first (a doubt)."""
+    last = len(windows) - 1
+    doubts: list[str] = []
+    groups: list[list[list[int]]] = []            # part → group → its photos, in the roll's numbering
+    owner: list[dict[int, int]] = []              # part → photo → its group there (the first, if listed twice)
+    for j, ((start, _), out) in enumerate(zip(windows, outs)):
+        gs = [[start + i for i in g.photos] for g in out.groups]
+        own: dict[int, int] = {}
+        for gi, g in enumerate(gs):
+            for p in g:
+                if p in own and own[p] != gi:
+                    doubts.append(f"part {j + 1} put photo {p} in two items")
+                own.setdefault(p, gi)
+        groups.append(gs)
+        owner.append(own)
+    # the overlaps, each cut at its midpoint: part j is trusted for [mids[j], mids[j + 1])
+    overlaps = [(windows[j + 1][0], windows[j][1]) for j in range(last)]
+    mids = [0, *[(a + b) // 2 for a, b in overlaps], n]
+
+    def trusted(p: int) -> int:
+        return next(j for j in range(last + 1) if mids[j] <= p < mids[j + 1])
+
+    def overlap_of(p: int) -> int | None:
+        return next((j for j, (a, b) in enumerate(overlaps) if a <= p < b), None)
+
+    # the atoms: a part's group's own photos (seen by that part alone), and in each overlap the photos both parts
+    # grouped alike (keyed by their group in each part; a photo one part left out has None there) — each an int id
+    ids: dict[tuple, int] = {}
+    atom_of: dict[int, int] = {}
+    for p in range(n):
+        o = overlap_of(p)
+        if o is None:
+            j = trusted(p)
+            if p in owner[j]:
+                atom_of[p] = ids.setdefault(("own", j, owner[j][p]), len(ids))
+        else:
+            key = (owner[o].get(p), owner[o + 1].get(p))
+            if key != (None, None):
+                atom_of[p] = ids.setdefault(("meet", o, key), len(ids))
+    parent = list(range(len(ids)))
+
+    def find(a: int) -> int:
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    # each part links the atoms of each of its groups, through the photos it is trusted for only
+    for j, gs in enumerate(groups):
+        for gi, g in enumerate(gs):
+            atoms = sorted({atom_of[p] for p in g if owner[j].get(p) == gi and p in atom_of and trusted(p) == j})
+            for a in atoms[1:]:
+                ra, rb = find(atoms[0]), find(a)
+                if ra != rb:
+                    parent[max(ra, rb)] = min(ra, rb)
+    items: dict[int, list[int]] = {}
+    for p, a in sorted(atom_of.items()):
+        items.setdefault(find(a), []).append(p)
+    ordered = sorted(items.values(), key=lambda ps: ps[0])
+    # where the two parts grouped their shared photos differently: a doubt naming the items around it
+    item_of = {p: k for k, ps in enumerate(ordered, 1) for p in ps}
+    for o, (a, b) in enumerate(overlaps):
+        shared = [p for p in range(a, b) if p in owner[o] and p in owner[o + 1]]
+        if any((owner[o][p] == owner[o][q]) != (owner[o + 1][p] == owner[o + 1][q])
+               for x, p in enumerate(shared) for q in shared[x + 1:]):
+            near = sorted({item_of[p] for p in range(a, b) if p in item_of})
+            doubts.append(f"photos {a}–{b - 1}: two parts of the roll grouped them differently — check item"
+                          f"{'s' if len(near) != 1 else ''} {', '.join(map(str, near))}")
+    screenshots = sorted(p for p in range(n) if p - windows[trusted(p)][0] in outs[trusted(p)].screenshots)
+    unassigned = sorted(p for p in range(n) if p not in atom_of
+                        and any(p - windows[j][0] in outs[j].unassigned for j in range(last + 1)
+                                if windows[j][0] <= p < windows[j][1]))
+    return SegOut(groups=[_merged_group(ps, windows, groups, owner, outs, trusted) for ps in ordered],
+                  screenshots=screenshots, unassigned=unassigned,
+                  notes=" ".join(o.notes for o in outs if o.notes).strip()), doubts
+
+
+def _merged_group(photos: list[int], windows, groups, owner, outs: list[SegOut], trusted) -> Group:
+    """One stitched item's Group: its photos; a photo is a full shot / a label as the part trusted for it said; the
+    sizes, the lowest confidence and the summary of the part groups it is made of (the summary of the one with the
+    most of its photos)."""
+    mine = set(photos)
+    full, labels = [], []
+    for p in photos:
+        j = trusted(p)
+        gi = owner[j].get(p)
+        g = outs[j].groups[gi] if gi is not None else None
+        if g is None:                                  # placed by the other part only (it left this one out here)
+            j = next((k for k in range(len(outs)) if p in owner[k]), j)
+            gi = owner[j].get(p)
+            g = outs[j].groups[gi] if gi is not None else None
+        if g is None:
+            continue
+        local = p - windows[j][0]
+        if local in g.full_item_photos:
+            full.append(p)
+        if local in g.label_photos:
+            labels.append(p)
+    parts = []                                         # (part, group, how many of this item's photos it holds)
+    for j, gs in enumerate(groups):
+        for gi, g in enumerate(gs):
+            held = sum(1 for p in g if p in mine and owner[j].get(p) == gi)
+            if held:
+                parts.append((j, gi, held, g))
+    sizes: list[str] = []
+    for j, gi, held, g in parts:
+        src = outs[j].groups[gi]
+        label_here = [windows[j][0] + i for i in src.label_photos if windows[j][0] + i in mine]
+        if label_here or (not src.label_photos and held * 2 >= len(g)):
+            sizes += [s for s in src.sizes_read if s not in sizes]
+    best = max(parts, key=lambda t: t[2]) if parts else None
+    return Group(photos=photos, summary=outs[best[0]].groups[best[1]].summary if best else "",
+                 full_item_photos=full, label_photos=labels, sizes_read=sizes,
+                 confidence=min((outs[j].groups[gi].confidence for j, gi, _, _ in parts), default=0.0))
 
 
 # ---------------------------------------------------------------- the code's own reading of the roll

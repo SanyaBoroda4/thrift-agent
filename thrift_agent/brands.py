@@ -150,6 +150,111 @@ def candidates(brand: str | None, label: str | None = None, aliases: "Aliases | 
     return out
 
 
+# ---------------------------------------------------------------- WO51 §3: the trademark guard
+
+TRADEMARKS = ROOT / "data" / "trademarks.json"
+_MARKS: list[str] | None = None
+
+
+def marks() -> list[str]:
+    """The guarded marks (data/trademarks.json), longest first (so "Polo Ralph Lauren" is found before "Ralph Lauren")."""
+    global _MARKS
+    if _MARKS is None:
+        try:
+            data = json.loads(TRADEMARKS.read_text(encoding="utf-8"))
+            _MARKS = sorted({m for m in data.get("marks") or [] if m and m.strip()}, key=len, reverse=True)
+        except (OSError, ValueError):
+            _MARKS = []
+    return _MARKS
+
+
+def _mark_re(mark: str) -> re.Pattern:
+    """A mark as a whole phrase, its spacing / dots / hyphens / apostrophes / "&" written any way ("Levi's" = "Levis",
+    "Spider-Man" = "Spider Man", "Tiffany & Co" = "Tiffany and Co"), case and accents aside (the text is folded too)."""
+    folded = unicodedata.normalize("NFKD", mark).encode("ascii", "ignore").decode().lower()
+    out = []
+    for ch in folded:
+        if ch in " -.":
+            out.append(r"[\s\-.]*")
+        elif ch in "'’`":
+            out.append(r"['’`]?")
+        elif ch == "&":
+            out.append(r"(?:&|and)")
+        else:
+            out.append(re.escape(ch))
+    return re.compile(r"(?<![a-z0-9])" + "".join(out) + r"(?![a-z0-9])", re.I)
+
+
+def _fold(text: str) -> str:
+    """Accents off, one character for one — positions in the folded text are the original's (é → e)."""
+    return "".join((unicodedata.normalize("NFKD", c).encode("ascii", "ignore").decode() or "?")[:1] for c in text)
+
+
+def own_mark(mark: str, own: list[str], ok_text: str = "") -> bool:
+    """`mark` is the item's own: one of its names (the brand, the label's text, an alias) is it, contains it or is
+    contained in it ("Ralph Lauren" in "Polo Ralph Lauren"), or the text that may name it (its style name, a collab
+    its label shows) does."""
+    m = key(mark)
+    if not m:
+        return True
+    for n in own:
+        k = key(n)
+        if k and (k == m or m in k or k in m):
+            return True
+    return bool(ok_text) and bool(_mark_re(mark).search(_fold(ok_text)))
+
+
+def foreign_marks(text: str | None, own: list[str], ok_text: str = "") -> list[str]:
+    """The guarded marks in `text` that aren't the item's own (WO51 §3: "Disney" on a Relibeauty costume)."""
+    t = _fold(text or "")
+    found = []
+    for mark in marks():
+        if _mark_re(mark).search(t) and not own_mark(mark, own, ok_text):
+            if not any(key(mark) in key(f) for f in found):      # "Disney" inside "Disney Princess" counted once
+                found.append(mark)
+    return found
+
+
+STYLE_SUFFIX = r"(?:[\s\-]*(?:style|inspired|like|look|type|dupe))?"
+
+
+def strip_marks(text: str | None, found: list[str]) -> str:
+    """`text` without the marks found (and a "-style" / "inspired" that leaned on one): "Disney Belle Princess Costume"
+    → "Belle Princess Costume". Spacing and punctuation tidied; line breaks kept."""
+    out = text or ""
+    for mark in found:
+        rx = re.compile(_mark_re(mark).pattern + STYLE_SUFFIX, re.I)
+        folded = _fold(out)
+        spans = [m.span() for m in rx.finditer(folded)]
+        for a, b in reversed(spans):
+            out = out[:a] + out[b:]
+    lines = []
+    for line in out.split("\n"):
+        line = re.sub(r"[ \t]{2,}", " ", line)
+        line = re.sub(r"\s+([,.;:!?])", r"\1", line)
+        line = re.sub(r"^[\s,;:\-–—]+|[\s,;:\-–—]+$", "", line)
+        line = re.sub(r"\(\s*\)", "", line)
+        line = re.sub(r"(?<=\w)\s+x\s*$|^\s*x\s+(?=\w)", "", line)      # a collab's "x" left hanging
+        line = re.sub(r"#(?=\s|$)", "", line)                            # a hashtag left empty
+        lines.append(line.strip())
+    return "\n".join(lines)
+
+
+def guard(text: str | None, own: list[str], ok_text: str = "") -> tuple[str, list[str]]:
+    """(the text without the marks that aren't the item's own, those marks)."""
+    found = foreign_marks(text, own, ok_text)
+    return (strip_marks(text, found) if found else (text or "")), found
+
+
+def own_names(brand: str | None, label: str | None = None, owner: str | None = None,
+              aliases: "Aliases | None" = None) -> list[str]:
+    """The item's own brand names for the guard: the brand, the label's text, her answer, and their aliases."""
+    names = candidates(brand, label, aliases)
+    if owner and owner.strip().lower() not in ("none", "no brand"):
+        names += [n for n in candidates(owner, None, aliases) if key(n) not in {key(x) for x in names}]
+    return names
+
+
 def for_settings(s) -> "Aliases":
     """The aliases of these settings' learned file (paths.brand_aliases), over the curated one."""
     return Aliases(s.path("brand_aliases") if s.get("paths.brand_aliases") else None)

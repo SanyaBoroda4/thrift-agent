@@ -259,6 +259,7 @@ class ExtensionPoster(Poster):
         self.learned_shop = None        # the shop name a listing page showed (Depop's shop link)
         self.fill_seconds = None        # how long the last form took to fill (the page's own clock)
         self.shot = None                # the evidence path of the job in hand
+        self.error_kind = None          # WO51: what the extension said a failure was ("code", "site") — health.kind_of
         self.strict = False
         self.notes, self.guesses = [], []
         self.created_id = None
@@ -300,7 +301,10 @@ class ExtensionPoster(Poster):
         if self.name == "vinted":
             if getattr(f, "package_sizes", None):
                 want["package"] = OneOf(f.package_sizes)
-            want["brand_shown"] = BrandOf(names, ["List without brand", ""])
+            # WO51: never "" — Vinted requires a brand (an empty field is refused at Upload), and on its rebuilt form
+            # (2026-11) an unread <button> read as "" had passed as "without a brand" while it showed Vinted's own
+            # "Disney"; its own no-brand choice is what the field must show then
+            want["brand_shown"] = BrandOf(names, ["List without brand", "No brand", "No brand indicated"])
             want["color"] = Chosen(ours("color", f.colors[:2]))
             want["material"] = Chosen(ours("material", f.materials[:3]))
         if self.name == "depop":
@@ -311,6 +315,7 @@ class ExtensionPoster(Poster):
             want["source-input"] = Chosen(ours("source-input", f.source))
             want["age-input"] = Chosen(ours("age-input", [f.age] if f.age else []))
             want["style-input"] = Chosen([])           # never (the owner, 2026-10-12)
+            want["typed_left"] = []                    # WO51: no text typed in a multi-select that never became a chip
             for name, values in (f.attributes or {}).items():
                 want[f"attributes.{name}-input"] = Chosen(ours(f"attributes.{name}-input", values))
             # WO45 (live 2026-10-18, the Polo tee): Depop's menu had no "Extra small" — the page took the smallest
@@ -439,6 +444,7 @@ class ExtensionPoster(Poster):
         self.shot = shots / f"{r.sku}-{self.name}-{stamp}.png"
         self.clicked, self.created_id = None, None
         self.notes, self.guesses, self.lines, self.fill_seconds = [], [], [], None
+        self.error_kind = None
         if self.fields is None:
             return Outcome("failed", error=f"{self.name}: no mapped fields for this item")
         if mode != "publish":
@@ -472,6 +478,7 @@ class ExtensionPoster(Poster):
             self._record(job, {"item": r.sku, "error": ev})
             if ev.get("page") in STOP_PAGES:
                 raise self._stop(ev)
+            self.error_kind = ev.get("kind")              # WO51: "code" (our script threw) / "site" (the page changed)
             return Outcome("failed", screenshot=self._kept(job, "form"),
                            error=f"{self.site} {ev.get('stage') or 'form'}: {ev.get('message')}", note=_joined(self.notes))
         seen = ev.get("seen") or {}

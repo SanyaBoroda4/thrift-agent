@@ -28,7 +28,7 @@ EVENING_DONE = "evening_line_day"         # settings: the local day the 📊 lin
 KEEP_REASONS = ("no size on the item", "shared again", "already live", "sold", "not published automatically",
                 "unconfirmed publish", "mismatch", "retried by the safety net", "skipped: already",
                 "refused the form",
-                "waiting for the brand")   # the Mac's own re-check settles a refused form (WO39; live 2026-10-20 the net
+                "waiting for the brand", "isn't the item's family")   # the Mac's own re-check settles a refused form (WO39; live 2026-10-20 the net
 #                                       re-queued the Tory Burch before that re-check could run)
 
 
@@ -53,11 +53,24 @@ def _step_of(row: dict) -> tuple[str, str | None]:
     return "received", None
 
 
+WAIT_ON_HER = timedelta(hours=2)          # WO51 §6: a share waiting this long on her answer → ONE "⏳ Waiting for …" line
+WAITING_SAID = "share_waiting:"           # settings: + share id — that line said (once)
+
+
 def shares_watch(db: Database, now: datetime | None = None, mode: str | None = None) -> list[str]:
-    """§3, every 5 minutes: a share complete (taken by the Mac) with no outcome after STUCK_AFTER (STUCK_AFTER_BIG past
-    BIG_SHARE photos) while the Mac is online → ONE private line per share, "⏳ Share 12:31 (4 photos) stuck at
-    grouped since 12:33". Nothing while the Mac is offline (WO42's line covers that), nothing once an outcome came.
-    Returns the share ids said now."""
+    """§3, every 5 minutes, while the Mac is online (offline: WO42's line), for each share complete with no outcome —
+    WO51 §6 (live 2026-11-01, 1:15 PM: "⏳ Share 12:39 PM (70 photos) stuck at carded since 12:44" while its cards were
+    simply going out one at a time behind her open one): the Mac says what the share waits for (`state`, `waiting`,
+    `moved_at`, from its card queue), and the watchdog fires only when nothing moves —
+    - "work" (its photos grouped or its items processed), "send" (a card to send, none open for her) or "orphan" (an
+      item with neither a card nor a place in the queue): no movement for STUCK_AFTER (STUCK_AFTER_BIG past BIG_SHARE
+      photos) → ONE line, "⏳ Share 12:39 PM (70 photos) stuck since 12:48 PM: waiting for the next card to go out (8
+      queued, none open for her).";
+    - "her" (the queue waits for her answer): never "stuck"; after WAIT_ON_HER with no answer, in the daytime, ONE line
+      saying so — "⏳ Waiting for her price on "Edikted Crochet Mini Dress" — 8 more cards behind it.";
+    - "done": nothing (the outcome comes with the next sync).
+    A share from a Mac that doesn't say (no `state`): the rule before WO51 ("stuck at grouped since 12:33" after
+    STUCK_AFTER). Each line once per share. Returns the share ids said now."""
     now, mode = (util.aware(now) if now else util.utcnow()), mode or util.mode()
     if mode == "off" or not _mac_online(db, now):
         return []
@@ -69,19 +82,44 @@ def shares_watch(db: Database, now: datetime | None = None, mode: str | None = N
             done = parse_time(row["complete_at"])
             if done is None:
                 continue
-            limit = STUCK_AFTER_BIG if int(row["received"] or 0) > BIG_SHARE else STUCK_AFTER
+            photos = int(row["received"] or 0)
+            limit = STUCK_AFTER_BIG if photos > BIG_SHARE else STUCK_AFTER
+            state = (row.get("state") or "").strip().lower()
+            if state:
+                if line := _share_line(db, row, state, max(parse_time(row.get("moved_at")) or done, done), limit, now):
+                    out.ops(line)
+                    said.append(row["id"])
+                continue
             if now - done < limit or core.setting(db, STUCK_SAID + row["id"]):
                 continue
             step, at = _step_of(row)
             since = parse_time(at)
             when = deadlines.local(since).strftime("%H:%M") if since else "?"
-            photos = int(row["received"] or 0)
             out.ops(f"⏳ Share {_share_when(row['id'])} ({photos} photo{'s' if photos != 1 else ''}) stuck at {step} "
                     f"since {when}")
             core.put_setting(db, STUCK_SAID + row["id"], iso(now))
             said.append(row["id"])
     out.flush()
     return said
+
+
+def _share_line(db: Database, row: dict, state: str, moved: datetime, limit: timedelta, now: datetime) -> str | None:
+    """WO51 §6: the one line for a share whose Mac says what it waits for, or None (moving, said already, done)."""
+    waiting = (row.get("waiting") or "").strip().rstrip(".") or "its next step"
+    if state == "done":
+        return None
+    if state == "her":
+        if (now - moved < WAIT_ON_HER or core.setting(db, WAITING_SAID + row["id"])
+                or not POSTING_HOURS[0] <= deadlines.local(now).hour < POSTING_HOURS[1]):
+            return None
+        core.put_setting(db, WAITING_SAID + row["id"], iso(now))
+        return f"⏳ Waiting for {waiting}."
+    if now - moved < limit or core.setting(db, STUCK_SAID + row["id"]):
+        return None
+    core.put_setting(db, STUCK_SAID + row["id"], iso(now))
+    photos = int(row["received"] or 0)
+    return (f"⏳ Share {_share_when(row['id'])} ({photos} photo{'s' if photos != 1 else ''}) stuck since "
+            f"{_clock(deadlines.local(moved))}: waiting for {waiting}.")
 
 
 UNFETCHED_AFTER = timedelta(minutes=10)    # WO49: an upload this long after its last photo, not fetched by the Mac
@@ -125,8 +163,9 @@ def shares_today(db: Database, now: datetime | None = None) -> list[dict]:
     day = deadlines.local(now).date().isoformat()
     rows = db.query("SELECT * FROM shares WHERE id LIKE ? OR received_at LIKE ? ORDER BY id DESC",
                     (f"{day}%", f"{day}%"))
-    return [{k: row[k] for k in ("id", "source", "expected", "received", "received_at", "complete_at", "grouped_at",
-                                 "carded_at", "outcome", "reason", "test")} for row in rows]
+    return [{k: row.get(k) for k in ("id", "source", "expected", "received", "received_at", "complete_at", "grouped_at",
+                                     "carded_at", "outcome", "reason", "test",
+                                     "state", "waiting")} for row in rows]     # WO51 §6: what an open one waits for
 
 
 def _unposted_rows(db: Database, now: datetime) -> list[dict]:

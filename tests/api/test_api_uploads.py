@@ -151,13 +151,15 @@ def test_the_size_limit_is_413(db):
     assert upload(db, b"\xff\xd8\xff" + bytes(uploads.MAX_BYTES - 3))[0] == 200
 
 
-def test_sixty_photos_per_share(db):
+def test_two_hundred_photos_per_share(db):
+    # WO51 §6 (live 2026-11-01: a 70-photo share — the API took 60, only the iCloud copy had all 70): 200 a share
+    assert uploads.MAX_PHOTOS == 200
     for i in range(uploads.MAX_PHOTOS):
         assert upload(db, jpeg(i.to_bytes(2, "big")), name=f"IMG_{i}.jpg")[1]["received"] == i + 1
-    status, answer = upload(db, jpeg(b"zz"), name="IMG_61.jpg")
-    assert (status, answer) == (400, {"ok": False, "error": "a share holds at most 60 photos"})
-    assert pending(db)[0]["received"] == 60
-    assert upload(db, jpeg((3).to_bytes(2, "big")), name="again.jpg")[1]["received"] == 60   # the same bytes: fine
+    status, answer = upload(db, jpeg(b"zz"), name="IMG_201.jpg")
+    assert (status, answer) == (400, {"ok": False, "error": "a share holds at most 200 photos"})
+    assert pending(db)[0]["received"] == 200
+    assert upload(db, jpeg((3).to_bytes(2, "big")), name="again.jpg")[1]["received"] == 200   # the same bytes: fine
 
 
 def test_the_same_bytes_once_and_a_reused_name_suffixed(db, blobs):

@@ -13,7 +13,9 @@ A share id: `2026-10-18_121154` (the Shortcut's date and time; §2 adds `_<rando
 `20261018_<share id>`, a second archive of the same share `…_2`, WO37's copies `<share id>-late` — all one share."""
 from __future__ import annotations
 
+import json
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -141,8 +143,156 @@ def doc(db: DB, sid: str) -> dict | None:
     row = db.conn.execute("SELECT * FROM shares WHERE id=?", (sid,)).fetchone()
     if row is None:
         return None
-    return {k: row[k] for k in ("id", "source", "expected", "received", "received_at", "complete_at", "grouped_at",
-                                "carded_at", "outcome", "outcome_at", "reason", "batch_id", "test", "updated_at")}
+    keys = ("id", "source", "expected", "received", "received_at", "complete_at", "grouped_at", "carded_at", "outcome",
+            "outcome_at", "reason", "batch_id", "test", "updated_at", *QUEUE_FIELDS)
+    return {k: row[k] for k in keys if k in row.keys()}
+
+
+# ---------------------------------------------------------------- what an open share waits for (WO51 §6)
+#
+# Live 2026-11-01 (1:15 PM): "⏳ Share 12:39 PM (70 photos) stuck at carded since 12:44" — the share wasn't stuck: its
+# 12 items were made and carded one at a time, and the next card waited for her answer to the open one (the queue is
+# one message at a time, WO20). The API's watchdog only saw "no outcome yet". Now each open share carries what it waits
+# for, worked out here from the queue itself and kept up to date by the worker (`refresh_open`, every minute): the
+# state, the words, and when it last moved — the API's watchdog fires only when nothing moves and says what it waits for.
+
+QUEUE_FIELDS = ("items", "cards", "state", "waiting", "moved_at")
+STATES = ("work", "her", "send", "orphan", "done")   # processing · her answer · a card to send · an item lost · done
+REFRESH_EVERY = 60                                   # seconds between two looks at the open shares (the worker's loop)
+REFRESHED = "shares_refreshed_at"                    # kv: when the open shares were last looked at
+DONE = ("ready", "posting", "posted", "drafted", "sold", "needs_owner")   # an item past its card
+WHAT = {"item": "price", "condition": "answer (brand new or worn?)", "kids": "answer (Girls or Boys?)",
+        "category": "answer (which category?)", "batch": "reply to the photo sheet",
+        "regroup": "reply to the photo sheet"}
+
+
+def refresh_open(db: DB, force: bool = False, at: float | None = None) -> list[str]:
+    """Every open share's (complete, no outcome) queue fields brought up to date — written only when they changed, so
+    the sync carries a change and nothing else; a share whose every item has had its card gets its outcome. At most
+    every REFRESH_EVERY seconds (`force`: now). Returns the shares changed."""
+    t = time.time() if at is None else at
+    if not force and t - float(db.kv_get(REFRESHED) or 0) < REFRESH_EVERY:
+        return []
+    db.kv_set(REFRESHED, str(t))
+    changed = []
+    for row in db.conn.execute("SELECT * FROM shares WHERE complete_at IS NOT NULL AND outcome IS NULL").fetchall():
+        fields = queue_state(db, row)
+        if fields["state"] == "done" and row["batch_id"]:
+            outcome(db, row["id"], "carded", batch_id=row["batch_id"])     # every item has had its card
+        new = {k: v for k, v in fields.items() if row[k] != v}
+        if new:
+            _update(db, row["id"], {**new, "updated_at": now()})
+            changed.append(row["id"])
+    return changed
+
+
+def queue_state(db: DB, row) -> dict:
+    """What the share waits for now, from its items and the card queue: {"items", "cards", "state", "waiting",
+    "moved_at"}. `waiting` is the object of "waiting for …" in the owner's words: "the grouping of its photos", "its
+    items to be processed (3 of 12 done)", 'her price on "Edikted Crochet Mini Dress" — 8 more cards behind it', "the
+    next card to go out (8 queued, none open for her)", 'a card for "…" — it has none and no place in the card queue
+    (failed)'. `moved_at`: the share's last movement — a step, an item processed or answered, a card sent or answered
+    (and, while it waits for her or for a card, any card's; while items are being processed, the worker's progress)."""
+    from thrift_agent import alerts, approve
+    steps = [row[k] for k in ("received_at", "complete_at", "grouped_at", "carded_at") if row[k]]
+    bid = row["batch_id"]
+    if not bid or not row["grouped_at"]:
+        return {"items": None, "cards": None, "state": "work", "waiting": "the grouping of its photos",
+                "moved_at": _latest(steps + [_progress(db, alerts.PROGRESS)])}
+    items = [r for r in db.conn.execute("SELECT id, status, updated_at FROM items WHERE batch_id=? ORDER BY seq",
+                                        (bid,)).fetchall() if r["status"] != "dropped"]
+    ids = [r["id"] for r in items]
+    marks = ",".join("?" * len(ids)) or "''"
+    carded = {r[0] for r in db.conn.execute(f"SELECT DISTINCT ref FROM outbox WHERE kind='item' AND ref IN ({marks})",
+                                            ids)}
+    own = steps + [r["updated_at"] for r in items] + [
+        x for r in db.conn.execute(f"SELECT sent_at, resolved_at FROM outbox WHERE ref IN ({marks})", ids)
+        for x in (r["sent_at"], r["resolved_at"]) if x]
+    lane = "test" if row["test"] else "real"
+    batch = db.batch(bid)
+    queued = approve.queue(db, lane)
+    in_queue = {ref for _, ref in queued}
+    done = [r for r in items if r["status"] in DONE or (r["status"] in approve.OWNER_WAITING and r["id"] in carded)]
+    working = [r for r in items if r["status"] == "new"]
+    waiting = [r for r in items if r["status"] in approve.OWNER_WAITING and r["id"] not in carded]
+    sorted_ids = {r["id"] for r in done + working + waiting}
+    lost = [r for r in items if r["id"] not in sorted_ids]                 # failed, or a status no step takes up
+    if batch is not None and batch["status"] != "regroup":
+        lost += [r for r in working + waiting if r["id"] not in in_queue]   # never asked: no place in the queue
+    counts = {"items": len(items), "cards": len(done)}
+    if not items:
+        return {**counts, "state": "work", "waiting": "its items to be made", "moved_at": _latest(steps)}
+    if batch is not None and batch["status"] == "regroup":
+        return {**counts, "state": "her", "waiting": "her reply to the photo sheet ([Wrong photos])",
+                "moved_at": _latest(own + [_queue_moved(db, lane)])}
+    if lost:
+        r = lost[0]
+        return {**counts, "state": "orphan",
+                "waiting": f'a card for "{_name(db, r["id"])}" — it has none and no place in the card queue '
+                           f'({r["status"]})', "moved_at": r["updated_at"]}
+    if working:
+        return {**counts, "state": "work",
+                "waiting": f"its items to be processed ({len(items) - len(working)} of {len(items)} done)",
+                "moved_at": _latest(own + [_progress(db, alerts.PROGRESS)])}
+    if waiting:
+        moved = _latest(own + [_queue_moved(db, lane)])
+        opened = approve.open_message(db, settle=False, lane=lane)
+        if opened is None:
+            return {**counts, "state": "send",
+                    "waiting": f"the next card to go out ({len(waiting)} queued, none open for her)", "moved_at": moved}
+        behind = sum(1 for e in queued if e != (opened["kind"], opened["ref"]))
+        title = "the photo sheet" if opened["kind"] in ("batch", "regroup") else _name(db, opened["ref"])
+        return {**counts, "state": "her",
+                "waiting": f'her {WHAT.get(opened["kind"], "answer")} on "{title}" — {behind} more card'
+                           f'{"s" if behind != 1 else ""} behind it', "moved_at": moved}
+    return {**counts, "state": "done", "waiting": None, "moved_at": _latest(own)}
+
+
+def _latest(stamps: list) -> str | None:
+    """The latest of some ISO stamps (None and unreadable ones aside), in the ledger's own form."""
+    best = None
+    for s in stamps:
+        try:
+            t = datetime.fromisoformat(str(s))
+        except (TypeError, ValueError):
+            continue
+        t = t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+        best = t if best is None or t > best else best
+    return best.astimezone(timezone.utc).isoformat(timespec="seconds") if best else None
+
+
+def _progress(db: DB, key: str) -> str | None:
+    """The worker's last progress (alerts' kv: {"at": …})."""
+    try:
+        return (json.loads(db.kv_get(key) or "{}") or {}).get("at")
+    except (TypeError, ValueError):
+        return None
+
+
+def _queue_moved(db: DB, lane: str) -> str | None:
+    """The last time the card queue of `lane` moved: a card sent or answered."""
+    from thrift_agent import approve
+    marks = ",".join("?" * len(approve.QUEUE_KINDS))
+    rows = db.conn.execute(f"SELECT kind, ref, sent_at, resolved_at FROM outbox WHERE kind IN ({marks}) "
+                           f"ORDER BY rowid DESC LIMIT 50", approve.QUEUE_KINDS).fetchall()
+    return _latest([x for r in rows if approve.lane_of(db, r["kind"], r["ref"]) == lane
+                    for x in (r["sent_at"], r["resolved_at"]) if x])
+
+
+def _name(db: DB, iid: str) -> str:
+    """The item's short name, as its ✅ card says it (brand + item, no size or colour)."""
+    from thrift_agent.brain import copy as copywriter
+    from thrift_agent.db import loads
+    from thrift_agent.schema import Facts
+    it = db.item(iid)
+    if it is None:
+        return iid
+    render = (loads(it["renders"]) or {}).get("poshmark") or {}
+    try:
+        facts = Facts.model_validate(loads(it["facts"])) if it["facts"] else None
+    except Exception:  # noqa: BLE001 — the title alone
+        facts = None
+    return copywriter.short_name(render.get("short_name"), render.get("title") or iid, facts)
 
 
 def today(db: DB, day: str | None = None) -> list:

@@ -48,6 +48,8 @@ segmentation:
   pause_factor: 4          # gap): shown to the model as "— pause 2 min —" and on the contact sheet
   visual_change_min: 0.45  # a colour change between consecutive photos = a distance (0..1) >= max(visual_change_min,
   visual_change_factor: 2.5   # visual_change_factor x the roll's median); with the pauses it flags doubtful splits
+  part_photos: 40          # WO51 §6: a roll of up to this many photos is grouped in ONE model call (as before); a bigger
+  part_overlap: 8          # one in parts of at most part_photos, neighbours sharing part_overlap photos (stitched)
   auto_confirm: true       # the owner never confirms the grouping (owner decision, WO20b): it is accepted at once, no
                            # contact sheet; doubts stay in thrift status; [Wrong photos] on a card reopens it. false:
                            # the old flow (contact sheet + ok), for testing

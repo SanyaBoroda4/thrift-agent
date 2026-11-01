@@ -25,7 +25,6 @@ from thrift_agent.db import DB, loads, now
 from thrift_agent.ingest import prep, segment as seg
 from thrift_agent.schema import ITEM_ALONE, CopyOut, Ev, Facts, FrontOut, PieceSize, Premium, PriceResult, Render
 
-MAX_SEGMENT_PHOTOS = 90        # the Messages API takes at most 100 image blocks per request; keep headroom
 ANSWERABLE = ("needs_info", "ready", "failed", "new", "awaiting_price", "needs_owner",   # a note resets these to 'new'
               "awaiting_condition")
 REQUEUEABLE = ("failed", "dryrun", "skipped")           # listing statuses `thrift requeue` may send back to the queue
@@ -647,9 +646,8 @@ def process_batch(s: Settings, db: DB, bid: str) -> None:
     note_file = src / "notes.txt"
     note = note_file.read_text(encoding="utf-8").strip() if note_file.exists() else None
 
-    if len(kept) > MAX_SEGMENT_PHOTOS:
-        raise ValueError(f"batch has {len(kept)} photos after dedupe; the model takes at most {MAX_SEGMENT_PHOTOS} "
-                         "— share it in smaller sets")
+    # WO51 §6: no size limit — a roll past `segmentation.part_photos` is grouped in overlapping parts (seg.segment_roll;
+    # until 2026-11-01 a share past 90 photos failed here: "share it in smaller sets")
     cfg = s["segmentation"]
     # Breaks in shooting, relative to this roll (own photos only: screenshots are placed by content).
     breaks = seg.pauses(kept_times, kept_kinds, cfg.get("pause_min_seconds", 30), cfg.get("pause_factor", 4))
@@ -658,14 +656,17 @@ def process_batch(s: Settings, db: DB, bid: str) -> None:
     if len(kept) == 1:
         groups, reasons, summaries, unassigned = [[0]], [], ["single photo"], []
     else:
-        out = seg.segment(list(zip(kept, kept_times)), s["models"]["segment"], s["images"]["thumb_long_edge"],
-                          kinds=kept_kinds, breaks=breaks, fallback_px=s["images"].get("thumb_fallback_long_edge"),
-                          max_bytes=int(cfg.get("max_request_mb", 20) * 1_000_000), report=report)
+        out = seg.segment_roll(list(zip(kept, kept_times)), s["models"]["segment"], s["images"]["thumb_long_edge"],
+                               kinds=kept_kinds, breaks=breaks, fallback_px=s["images"].get("thumb_fallback_long_edge"),
+                               max_bytes=int(cfg.get("max_request_mb", 20) * 1_000_000), report=report,
+                               part=int(cfg.get("part_photos", seg.PART_PHOTOS)),
+                               overlap=int(cfg.get("part_overlap", seg.PART_OVERLAP)))
         groups = [g.photos for g in out.groups]
         summaries = [g.summary for g in out.groups]
         unassigned = list(out.unassigned)                 # screenshots the model could not match to an item
         screenshots = list(out.screenshots)
         reasons = seg.check(out, len(kept), cfg["min_confidence"], kinds=kept_kinds)
+        reasons += report.get("doubts") or []             # WO51 §6: where two parts of a long roll disagreed
         distances, changes = seg.visual_changes(kept, kept_kinds, cfg.get("visual_change_min", 0.45),
                                                 cfg.get("visual_change_factor", 2.5))
         # a pause AND a colour change inside an item, neither between two — only where the model was unsure (WO20)
@@ -683,7 +684,8 @@ def process_batch(s: Settings, db: DB, bid: str) -> None:
                                     "pauses": [[i, round(sec)] for i, sec in sorted(breaks.items())],
                                     "distances": [[i, d] for i, d in sorted(distances.items())],
                                     "changes": sorted(changes), "preview_px": report.get("preview_px"),
-                                    "keys": photo_keys},                  # WO43: each photo's memory keys, by raw index
+                                    "keys": photo_keys,                   # WO43: each photo's memory keys, by raw index
+                                    **({"parts": report["parts"]} if report.get("parts") else {})},   # WO51 §6
                  reasons=reasons)
 
     if cfg.get("auto_confirm", True):
@@ -695,6 +697,7 @@ def process_batch(s: Settings, db: DB, bid: str) -> None:
             db.set_batch(bid, segmentation=segd, reasons=reasons + notes)
             db.log(bid, "grouping_accepted", {"reasons": reasons, "left_out": left_out})
             split(s, db, bid, groups, dropped=left_out)
+            say_left_out(db, bid, src, [raw[int(p.stem)].name for p in kept], left_out)   # WO51 §6: every photo told
             return
         # Not a partition (a photo in no item, or in two): taking it as it is would lose or double a photo, so the
         # contact sheet asks, as before.
@@ -788,6 +791,8 @@ def known_photos_dropped(s: Settings, db: DB, bid: str, src: Path, known_as: dic
 
 
 ATTACH_MIN = 0.7                  # WO45 §5: a late photo joins an item only when the model is this sure
+MAX_ATTACH_GROUPS = 12            # WO51 §6: a lone photo is compared with at most this many groups (3 photos each, letters
+#                                   A–L: a 150-photo roll's 30 groups would pass the API's 100 images and the alphabet)
 
 
 def merge_singletons(s: Settings, db: DB, bid: str, photos: list[Path], kinds: list[str], groups: list[list[int]],
@@ -801,6 +806,11 @@ def merge_singletons(s: Settings, db: DB, bid: str, photos: list[Path], kinds: l
     merged: dict[int, int] = {}
     for k in singles:
         others = [(j, g) for j, g in enumerate(groups) if j != k and j not in merged]
+        if len(others) > MAX_ATTACH_GROUPS:
+            # WO51 §6: a long roll — the groups nearest the photo in the roll (a lone photo belongs with a neighbour),
+            # kept in the roll's order; up to MAX_ATTACH_GROUPS others the call is the same as before
+            near = sorted(others, key=lambda jg: min(abs(i - groups[k][0]) for i in jg[1]))[:MAX_ATTACH_GROUPS]
+            others = sorted(near, key=lambda jg: jg[0])
         if not others:
             continue
         refs = [(chr(ord("A") + n), summaries[j] if j < len(summaries) else f"item {j + 1}",
@@ -999,6 +1009,27 @@ def accept_grouping(groups: list[list[int]], n: int, kinds: list[str], unassigne
     if not groups or partition_problems(groups, n, left_out):
         return None
     return groups, left_out, [f"screenshot {i} matches no item: left out" for i in left_out]
+
+
+LEFT_OUT_SHOWN = 8               # WO51 §6: photo names in the left-out line; the rest counted
+
+
+def say_left_out(db: DB, bid: str, src: Path, names: list[str], left_out: list[int] | tuple[int, ...]) -> bool:
+    """WO51 §6: every photo of a share is in an item or told — the photos the accepted grouping left out (retail
+    screenshots that match none of its items) in ONE private line naming them by their file names, e.g. "📸 2 of the
+    12:39 PM share's photos are in no item: IMG_0811.jpeg, IMG_0812.jpeg — screenshots that match none of its items."
+    Nothing when every photo is in an item (the burst duplicates dropped at prep are the same pictures as kept ones).
+    True when the line went."""
+    shown = [names[i] for i in sorted(set(left_out)) if 0 <= i < len(names)]
+    if not shown:
+        return False
+    listed = ", ".join(shown[:LEFT_OUT_SHOWN]) + (f" and {len(shown) - LEFT_OUT_SHOWN} more"
+                                                  if len(shown) > LEFT_OUT_SHOWN else "")
+    notify.say(f"📸 {len(shown)} of the {share_time(src)} share's photos {'is' if len(shown) == 1 else 'are'} in no "
+               f"item: {listed} — {'a screenshot that matches' if len(shown) == 1 else 'screenshots that match'} "
+               f"none of its items.")
+    db.log(bid, "photos_left_out", {"photos": shown})
+    return True
 
 
 def confirm(s: Settings, db: DB, bid: str, cmd: str) -> None:
@@ -1646,6 +1677,41 @@ def settle_set(facts: Facts, owner_category: str | None = None) -> Facts:
                                     "category_alternatives": [], "set_pieces": facts.set_pieces or 2})
 
 
+def mark_ok_text(facts) -> str:
+    """WO51 §3: where a guarded mark may stand because the item's own label says it — its style name and a collab
+    (or limited edition / sample) the labels show."""
+    parts = [getattr(facts.style_name, "value", None) if getattr(facts, "style_name", None) else None]
+    prem = getattr(facts, "premium", None)
+    for name in ("collab", "line"):
+        ev = getattr(prem, name, None) if prem is not None else None
+        parts.append(getattr(ev, "value", None) if ev is not None else None)
+    return " · ".join(str(p) for p in parts if p)
+
+
+def guard_marks(copy: CopyOut, facts, shop: str | None, it, s: Settings | None = None,
+                keep_title: bool = False) -> tuple[CopyOut, list[str]]:
+    """WO51 §3 (the owner, 2026-11-01): a brand or character mark that isn't on the item's own label or tag never
+    reaches a listing — not when a site suggests it, the copy step writes it, or the title leans on it ("Disney" on a
+    Relibeauty costume). The guarded marks (brands.marks) that aren't the item's own come out of the title (never the
+    owner's own title — `keep_title`), both descriptions and the hashtags. Returns (the copy, the marks removed)."""
+    aliases = brands.for_settings(s) if s is not None else None
+    owner = it["owner_brand"] if it is not None and "owner_brand" in it.keys() else None
+    own = brands.own_names(shop or facts.brand.value, facts.brand.value, owner, aliases)
+    ok = mark_ok_text(facts)
+    removed: list[str] = []
+    if not keep_title:
+        copy.poshmark_title, gone = brands.guard(copy.poshmark_title, own, ok)
+        removed += gone
+    copy.poshmark_description, gone = brands.guard(copy.poshmark_description, own, ok)
+    removed += gone
+    copy.depop_description, gone = brands.guard(copy.depop_description, own, ok)
+    removed += gone
+    tags = [h for h in copy.depop_hashtags if not brands.foreign_marks(h, own, ok)]
+    removed += [h for h in copy.depop_hashtags if h not in tags]
+    copy.depop_hashtags = tags
+    return copy, sorted(set(removed), key=str.lower)
+
+
 def known_brands(tiers: dict | None = None) -> list[str]:
     """The brand names the price table knows (its brands and their aliases): lint flags one in a listing whose facts
     have no brand (WO25: the description never invents a brand)."""
@@ -1754,6 +1820,9 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
         info.append(title_note)
     final.poshmark_description = titles.display_in_text(final.poshmark_description, tfacts.brand.value)
     final.depop_description = titles.display_in_text(final.depop_description, tfacts.brand.value)
+    final, gone = guard_marks(final, facts, shop, it, s, keep_title=bool(it["owner_title"]))   # WO51 §3
+    if gone:
+        info.append(f"removed brand names that aren't this item's: {', '.join(gone)}")
     problems = lint(tfacts, final, shown, known_brands(tiers))
     if not audit.unsupported:
         # The gate only sees the verifier's self-reported count. A verifier that rewrites the text but reports

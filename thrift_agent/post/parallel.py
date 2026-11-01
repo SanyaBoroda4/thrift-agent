@@ -24,14 +24,14 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
-from thrift_agent import alerts, catalogs, crosslist, daily, notify, orders, photocheck, power, pricedrop, sales
+from thrift_agent import alerts, catalogs, crosslist, daily, health, notify, orders, photocheck, power, pricedrop, sales
 from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
 from thrift_agent.post import runner
-from thrift_agent.post.base import AccountBlocked, open_browser
+from thrift_agent.post.base import AccountBlocked, Outcome, open_browser
 from thrift_agent.scheduler import can_post, next_gap, windows
 
 IDLE = 20.0            # a worker with nothing to do looks again after this many seconds
@@ -224,25 +224,127 @@ def _poshmark_thread(s, poster, dry, stage, halt, state, opener, takedowns) -> N
         notify.say(f"❌ Poshmark worker: {type(e).__name__}: {e}")
 
 
+CLOSED = ("TargetClosedError", "Target page, context or browser has been closed", "browser has been closed",
+          "Browser has been closed", "browser has disconnected", "Target closed", "Browser closed")
+RELAUNCH_WAITS = (0.0, 30.0, 120.0, 600.0)    # WO51: Poshmark's browser reopened at once, then after these pauses
+
+
+def browser_closed(error) -> bool:
+    """A failure that says the browser, its context or the page is gone (live 2026-10-28: the poster's Chrome quit by
+    hand from the Dock; every later call answered "Target page, context or browser has been closed")."""
+    return any(c.lower() in str(error or "").lower() for c in CLOSED)
+
+
+class Browser:
+    """WO51: Poshmark's own browser — its persistent context, watched (its "close" event, a call answering that it is
+    gone) and reopened when it closes, with back-off (RELAUNCH_WAITS), the login checked again. Only this profile's
+    browser is ever closed or opened here — never the Thrift Chrome, never the Google Chrome app as a whole (live
+    2026-10-28: the poster held a closed browser for four days; every listing and order sweep failed in 0.0 s)."""
+
+    def __init__(self, s, db, poster, opener):
+        self.s, self.db, self.poster, self.opener = s, db, poster, opener
+        self.pw = self.ctx = None
+        self.alive = False
+        self.opened = False           # the first opening (the poster's start) checks no login: the first listing does
+        self.tries, self.next_try = 0, 0.0
+
+    def _watch(self, ctx) -> None:
+        self.alive = True
+        on = getattr(ctx, "on", None)
+        if on is not None:
+            try:
+                on("close", lambda *_: self.lost("the browser closed"))
+            except Exception:  # noqa: BLE001 — a stand-in without events: the failures tell it
+                pass
+
+    def lost(self, why: str = "") -> None:
+        if self.alive:
+            self.alive = False
+            self.db.log(None, "browser_lost", {"site": "poshmark", "why": str(why)[:200]})
+
+    async def _close_quietly(self) -> None:
+        for close in (getattr(self.ctx, "close", None), getattr(self.pw, "stop", None)):
+            if close is None:
+                continue
+            try:
+                await close()
+            except Exception:  # noqa: BLE001 — closing a browser that is gone already
+                pass
+
+    async def ensure(self) -> bool:
+        """The browser is there (reopened if it closed, the back-off permitting). False: not now (paused after the
+        third failed reopening — one line — and tried again at the back-off's pace)."""
+        if self.alive and self.ctx is not None:
+            return True
+        if time.monotonic() < self.next_try:
+            return False
+        first = not self.opened
+        await self._close_quietly()
+        try:
+            self.pw, self.ctx = await self.opener(self.s.path("chrome_profile"), self.s["schedule"]["timezone"])
+            self.opened = True
+            self._watch(self.ctx)
+            if not first and hasattr(self.poster, "check_account") and hasattr(self.ctx, "new_page"):
+                page = await self.ctx.new_page()
+                try:
+                    await self.poster.check_account(page)   # the login, again: a closed browser may have lost it
+                finally:
+                    try:
+                        await page.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+        except AccountBlocked as e:
+            self.db.log(None, "browser_relaunched", {"site": "poshmark", "tries": self.tries, "login": str(e)[:200]})
+            crosslist.block(self.db, "poshmark", str(e), e.page)
+            self.tries = 0
+            return True
+        except Exception as e:  # noqa: BLE001 — the browser didn't come back: tried again later
+            self.alive = False
+            self.tries += 1
+            self.next_try = time.monotonic() + RELAUNCH_WAITS[min(self.tries, len(RELAUNCH_WAITS) - 1)]
+            err = f"{type(e).__name__}: {e}"
+            self.db.log(None, "browser_relaunch_failed", {"site": "poshmark", "tries": self.tries, "error": err[:300]})
+            if self.tries >= 3:
+                health.pause(self.db, "poshmark", f"the browser couldn't be reopened: {err}", health.INFRA,
+                             error=f"the browser couldn't be reopened ({err[:120]})")
+            return False
+        if not first:
+            self.db.log(None, "browser_relaunched", {"site": "poshmark", "tries": self.tries})
+        if self.tries >= 3 and (health.state(self.db, "poshmark") or {}).get("kind") == health.INFRA:
+            health.resume(self.db, "poshmark", "the browser was reopened")
+        self.tries = 0
+        return True
+
+
 async def _poshmark_worker(s, poster, dry, stage, halt, state, opener, takedowns) -> None:
     db = DB(s.path("db"))                              # this thread's own connection
     ps = {"poshmark": poster}
     marketplaces = ["poshmark", *crosslist.enabled(s)]
-    pw, ctx = await opener(s.path("chrome_profile"), s["schedule"]["timezone"])
+    browser = Browser(s, db, poster, opener)
     awake = power.Awake()
     failures = {"n": 0}
+    reconciled = False
     try:
-        await runner.reconcile_stale(s, db, ps, ctx)
         while not halt.is_set():
+            if not await browser.ensure():                 # WO51: a closed browser reopened before anything else
+                await _rest(halt, IDLE)
+                continue
+            ctx = browser.ctx
+            if not reconciled:
+                await runner.reconcile_stale(s, db, ps, ctx)
+                reconciled = True
             try:
                 worked = await _poshmark_turn(s, db, ps, ctx, dry, stage, state, awake, failures, marketplaces,
-                                              takedowns)
+                                              takedowns, browser)
             except Exception as e:  # noqa: BLE001 — a worker never dies of one bad turn
-                notify.say(f"❌ Poshmark worker: {type(e).__name__}: {e}")
+                if browser_closed(e):
+                    browser.lost(f"{type(e).__name__}: {e}")
+                else:
+                    notify.say(f"❌ Poshmark worker: {type(e).__name__}: {e}")
                 worked = False
                 try:      # a listing this turn left 'posting' (live 2026-10-27: List This Item pressed, then 'database
                     #       is locked' while recording it) is looked for in the closet now — never posted again blind
-                    if await runner.reconcile_stale(s, db, ps, ctx):
+                    if browser.alive and await runner.reconcile_stale(s, db, ps, ctx):
                         db.log(None, "posting_reconciled", {"after": f"{type(e).__name__}: {e}"[:200]})
                 except Exception as e2:  # noqa: BLE001 — the poster's next start looks again
                     db.log(None, "error", f"reconcile after a failed turn: {type(e2).__name__}: {e2}")
@@ -250,28 +352,65 @@ async def _poshmark_worker(s, poster, dry, stage, halt, state, opener, takedowns
             started = time.monotonic()
             if not worked:
                 awake.hold(False)
-            if not halt.is_set():
+            if not halt.is_set() and browser.alive:
                 # WO38: the sold orders read between listings — on an idle turn or inside this pause, never longer
                 waiting = functools.partial(_posh_waiting, s, db, dry)
                 await _sweep(s, db, "poshmark",
-                             lambda: orders.read_poshmark(ctx, yield_to=waiting), gap if worked else None)
+                             lambda: orders.read_poshmark(browser.ctx, yield_to=waiting), gap if worked else None,
+                             lost=browser.lost)
                 await _rest(halt, gap - (time.monotonic() - started))
     finally:
         awake.hold(False)
         state.idle("poshmark")
-        for close in (ctx.close, pw.stop):
-            try:
-                await close()
-            except Exception:  # noqa: BLE001
-                pass
+        await browser._close_quietly()
 
 
-async def _poshmark_turn(s, db, ps, ctx, dry, stage, state, awake, failures, marketplaces, takedowns) -> bool:
+async def _poshmark_test(s, db, ps, ctx, test: str) -> bool:
+    """WO51: a paused Poshmark's test run — its next item filled and left through Discard (a dry run, the row untouched).
+    Passing resumes posting (one line); failing pauses it again, the wait doubled, no new line. The owner's request
+    (`thrift resume`) sends the run's screenshot to the private chat. True when a test ran."""
+    job = runner.next_job(s, db, ["poshmark"], True)
+    if job is None:
+        if test == "resume":
+            health.resume(db, "poshmark", "resumed by the owner (nothing to test)", force=True)
+        elif test == "dry":
+            health.tested(db, "poshmark", True, "nothing to test")
+            notify.say("🧪 Poshmark: nothing waiting to test — still paused")
+        return False
+    iid, mp, render, mode = job
+    try:
+        out = await ps["poshmark"].post(ctx, render, mode, True, s.path("failed") / "shots", stage="form")
+    except AccountBlocked as e:
+        crosslist.block(db, "poshmark", str(e), e.page)
+        health.tested(db, "poshmark", False, str(e))
+        return True
+    except Exception as e:  # noqa: BLE001 — a test that couldn't run is a failed test
+        out = Outcome("failed", error=f"{type(e).__name__}: {e}")
+    ok = out.status not in ("failed", "skipped")      # a filled form, never published
+    if test in ("resume", "dry"):
+        notify.photo(Path(out.screenshot or ""), f"🧪 test run Poshmark ({iid}): {render.title} — ${render.price} "
+                                                 f"[{out.status}]" + (f"\n{out.error}" if out.error else "")
+                                                 + (f"\n{out.note}" if out.note else ""))
+    if not ok:
+        health.defer(db, "poshmark", iid)
+    health.tested(db, "poshmark", ok, out.error)
+    return True
+
+
+async def _poshmark_turn(s, db, ps, ctx, dry, stage, state, awake, failures, marketplaces, takedowns,
+                         browser=None) -> bool:
     """One Poshmark turn: requests, take-downs, then one listing. True when it listed (or tried to)."""
     await runner.serve_requests(s, db, ps, ctx)
     if takedowns is not None and may_take_down(s, db, "poshmark") and await takedowns("poshmark", ps["poshmark"], db, ctx):
         return True
     if crosslist.blocked(db, "poshmark"):
+        test = health.test_due(db, "poshmark")
+        if test and not runner._paused(db) and not s.flag_set("PAUSE"):
+            state.set("poshmark", "test")
+            try:
+                return await _poshmark_test(s, db, ps, ctx, test)
+            finally:
+                state.set("poshmark", None)
         state.idle("poshmark")
         return False
     hour_ago, midnight = windows(tz=s["schedule"]["timezone"])
@@ -297,21 +436,33 @@ async def _poshmark_turn(s, db, ps, ctx, dry, stage, state, awake, failures, mar
     t0, m0, k0 = time.time(), time.monotonic(), power.last_wake()
     try:
         out = await ps[mp].post(ctx, render, mode, dry, s.path("failed") / "shots", stage=stage)
-    except AccountBlocked as e:                       # this site alone stops for the window; the others go on
-        db.upsert_listing(iid, mp, status="queued", error=str(e))
+    except AccountBlocked as e:                       # this site alone pauses; the others go on
+        row = db.listing(iid, mp)
+        db.upsert_listing(iid, mp, status="queued", error=str(e), attempts=max(0, ((row["attempts"] if row else 1) or 1) - 1))
         crosslist.block(db, mp, str(e), e.page)
         state.set("poshmark", None)
         return True
-    except Exception as e:  # noqa: BLE001 — before the form: nothing submitted; Poshmark stops for the window
+    except Exception as e:  # noqa: BLE001 — before the form: nothing submitted; never about the item (WO51)
         err = f"{type(e).__name__}: {e}"
-        db.upsert_listing(iid, mp, status="queued", error=err)
-        crosslist.block(db, mp, f"failures: {err}")
+        if browser is not None and browser_closed(err):
+            browser.lost(err)
+        kind = health.kind_of(err)
+        health.non_item(db, mp, iid, err, health.INFRA if kind == health.ITEM else kind)
         state.set("poshmark", None)
         return True
     seconds, slept = time.monotonic() - m0, power.slept_since(t0, k0, m0)
     requeued = False
     if slept:
         out, requeued = await runner.after_sleep(db, ps, ctx, iid, mp, render, out, t0)
+    if not requeued and out.status == "failed" and not out.clicked:
+        kind = health.kind_of(out.error)
+        if browser is not None and browser_closed(out.error):
+            browser.lost(out.error)                   # reopened before the next turn; the same item goes again
+        if kind != health.ITEM and health.non_item(db, mp, iid, out.error, kind, shot=out.screenshot) != "item":
+            db.log(iid, "post_failed", {"mp": mp, "error": out.error, "shot": out.screenshot, "kind": kind,
+                                        "note": out.note, "seconds": round(seconds, 1)})
+            state.set("poshmark", None)
+            return True
     if not requeued:
         runner.record_outcome(db, iid, mp, render, out, marketplaces, stage,
                               bool(s.get("poster.notify_dry_runs", False)), seconds=seconds, slept=slept, s=s,
@@ -319,8 +470,10 @@ async def _poshmark_turn(s, db, ps, ctx, dry, stage, state, awake, failures, mar
         maybe_announce(s, db, iid)
         failures["n"] = failures["n"] + 1 if out.status == "failed" else 0 if out.status != "skipped" else failures["n"]
         if failures["n"] >= int(s.get("poster.max_consecutive_failures", 3)):
-            crosslist.block(db, mp, f"failures: {failures['n']} in a row: {out.error}")
+            crosslist.block(db, mp, f"failures: {failures['n']} listings in a row failed (last: {out.error})")
             failures["n"] = 0
+        if out.status == "posted":
+            health.worked(db, mp, iid)
     state.set("poshmark", None)
     return True
 
@@ -362,6 +515,31 @@ async def settle_after_wake(db, mp: str, now: float | None = None) -> float:
     return wait
 
 
+async def _cross_test(s, db, ps, mp: str, test: str) -> bool:
+    """WO51: a paused Depop / Vinted's test run — its next item filled, never published, the row untouched (a dry run
+    as `thrift crosslist --dry-run` makes). Passing resumes posting (one line); failing pauses it again, the wait
+    doubled, no new line; an item that can't be mapped is no verdict (the next one is tried next turn). The owner's
+    request (`thrift resume`) sends the run's screenshot and fields to the private chat. True when a test ran."""
+    job = crosslist.next_job(s, db, mps=[mp], paused_too=True)
+    if job is None:
+        if test == "resume":
+            health.resume(db, mp, "resumed by the owner (nothing to test)", force=True)
+        elif test == "dry":
+            health.tested(db, mp, True, "nothing to test")
+            notify.say(f"🧪 {crosslist.LABEL[mp]}: nothing waiting to test — still paused")
+        return False
+    iid = job[0]
+    out = await runner.run_cross(s, db, ps, None, iid, mp, dry=True, request=True, quiet=test == "auto")
+    if out is None or out.status == "skipped":
+        health.defer(db, mp, iid)                  # no verdict on the site: another item next time
+        return True
+    ok = out.status not in ("failed", "skipped")      # a filled form, never published
+    if not ok:
+        health.defer(db, mp, iid)
+    health.tested(db, mp, ok, out.error)
+    return True
+
+
 async def _cross_turn(s, db, ps, mp, dry, state, awake, takedowns) -> bool:
     """One Depop / Vinted turn: take-downs, then one listing. True when it listed (or tried to)."""
     poster = ps[mp]
@@ -378,6 +556,13 @@ async def _cross_turn(s, db, ps, mp, dry, state, awake, takedowns) -> bool:
             and await listing_edit(s, db, mp, poster, None, list(ps), dry)):   # WO43: the owner's edit, any hour
         return True
     hours_ok, _ = can_post(s, 0, 0)
+    if (crosslist.blocked(db, mp) and reachable and not dry and not runner._paused(db) and not s.flag_set("PAUSE")
+            and (test := health.test_due(db, mp))):
+        state.set(mp, "test")                     # WO51: a paused site's test run — its next item, never published
+        try:
+            return await _cross_test(s, db, ps, mp, test)
+        finally:
+            state.set(mp, None)
     if dry or not reachable or not hours_ok or crosslist.blocked(db, mp) or runner._paused(db):
         state.idle(mp)
         return False
@@ -402,13 +587,16 @@ async def _cross_turn(s, db, ps, mp, dry, state, awake, takedowns) -> bool:
 
 # ---------------------------------------------------------------- WO38: the sold orders, between listings
 
-async def _sweep(s, db, site: str, read, gap: float | None, poster=None) -> None:
+async def _sweep(s, db, site: str, read, gap: float | None, poster=None, lost=None) -> None:
     """The site's order sweep when due (orders.maybe_sweep: on an idle turn, or inside a pause after a listing that
-    leaves room for it) — never the worker's end."""
+    leaves room for it) — never the worker's end. `lost`: told when the sweep found the browser closed (WO51: live
+    2026-10-28 → 11-01, Poshmark's sweep failed every 30 minutes on a closed browser and nobody heard)."""
     try:
         await orders.maybe_sweep(s, db, site, read, gap, poster)
     except Exception as e:  # noqa: BLE001 — logged; the sweep comes back next time
         db.log(None, "orders_failed", {"site": site, "error": f"{type(e).__name__}: {e}"[:300]})
+        if lost is not None and browser_closed(e):
+            lost(f"{type(e).__name__}: {e}")
 
 
 def _posh_waiting(s, db, dry) -> bool:
@@ -436,6 +624,7 @@ async def _housekeeping(s, db, ps, cross, dry, stop, state, sites, until_idle) -
                               paused=runner._paused(db), stopped=None)
             if cross:
                 crosslist.new_window(s, db)
+                crosslist.retry_failed(s, db, at=datetime.now(timezone.utc))   # WO51: an item failure, 30 min later
                 if not dry:
                     feed(s, db)
                 if not runner._paused(db):

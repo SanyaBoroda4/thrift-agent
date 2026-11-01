@@ -202,11 +202,41 @@ panel("size", SIZES, false);
 panel("condition", CONDITIONS, false);
 panel("color", COLORS, true);
 panel("material", MATERIALS, true);
+// WO51 (live 2026-11-01, three failed jobs' pages): Vinted rebuilt its form — the brand field is a <button> (a Radix menu
+// trigger: aria-expanded / data-state, its choice drawn in [data-testid=brand-select-dropdown-input--value], the button
+// marked data-placeholder while none), the search box input#brand-search-input[data-testid=brand-search--input], and
+// Vinted fills its own suggestion in (F.prefillBrand: "Disney" on a Relibeauty costume). window.__FIXTURE.buttonBrand.
+const BRAND_PH = "Select a brand";
+if (F.buttonBrand) {
+  const old = document.getElementById("brand");
+  const b = document.createElement("button");
+  b.type = "button"; b.id = "brand"; b.setAttribute("data-testid", "brand-select-dropdown-input");
+  b.setAttribute("aria-haspopup", "menu"); b.setAttribute("aria-expanded", "false"); b.setAttribute("data-state", "closed");
+  b.innerHTML = '<span data-testid="brand-select-dropdown-input--value"></span>';
+  old.replaceWith(b);
+}
+function brandSet(v) {
+  const el = document.getElementById("brand");
+  if (!F.buttonBrand) { el.value = v; return; }
+  el.querySelector("span").textContent = v || BRAND_PH;
+  if (v) el.removeAttribute("data-placeholder"); else el.setAttribute("data-placeholder", "");
+  el.setAttribute("aria-expanded", "false"); el.setAttribute("data-state", "closed");
+  // a button has no input value: the browser's own setter on it throws "Illegal invocation" (the live failure)
+}
+window.__brandShown = () => (F.buttonBrand ? document.querySelector("#brand span").textContent
+                                           : document.getElementById("brand").value);
+if (F.buttonBrand) brandSet(F.prefillBrand || "");
 document.getElementById("brand").addEventListener("click", () => {
   // live 2026-10-27 (the pink biker shorts): the brand panel stayed shut after the first click (brandOpensLate)
   if (F.brandOpensLate && !window.__brandClickedOnce) { window.__brandClickedOnce = true; return; }
   const content = document.getElementById("brand-content");
-  content.innerHTML = '<input data-testid="brand-select-dropdown-search-input"><ul></ul>';
+  content.innerHTML = F.buttonBrand
+    ? '<div role="menu"><input id="brand-search-input" data-testid="brand-search--input" name="brand-search-input"><ul></ul></div>'
+    : '<input data-testid="brand-select-dropdown-search-input"><ul></ul>';
+  if (F.buttonBrand) {
+    const btn = document.getElementById("brand");
+    btn.setAttribute("aria-expanded", "true"); btn.setAttribute("data-state", "open");
+  }
   const search = content.querySelector("input");
   search.addEventListener("input", () => {
     const q = search.value.toLowerCase().replace(/[^a-z]/g, "");
@@ -214,12 +244,12 @@ document.getElementById("brand").addEventListener("click", () => {
     ul.innerHTML = "";
     if (!search.value.includes("&")) BRANDS.filter((b) => b.toLowerCase().replace(/[^a-z]/g, "").includes(q)).forEach((b) => {
       const [li, d] = cell(b, undefined, "button");
-      d.addEventListener("click", () => { document.getElementById("brand").value = b; content.innerHTML = ""; });
+      d.addEventListener("click", () => { brandSet(b); content.innerHTML = ""; });
       ul.appendChild(li);
     });
     const [li, d] = cell("List without brand", "empty-brand", "radio");      // "No brand indicated" (WO35)
     d.addEventListener("click", () => {
-      document.getElementById("brand").value = "List without brand"; window.__noBrand = true;   // as live (2026-10-11)
+      brandSet("List without brand"); window.__noBrand = true;   // as live (2026-10-11)
       d.setAttribute("aria-checked", "true");
     });
     ul.appendChild(li);

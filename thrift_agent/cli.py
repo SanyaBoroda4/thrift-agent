@@ -17,7 +17,7 @@ from rich import print
 from rich.markup import escape
 from rich.table import Table
 
-from thrift_agent import alerts, approve, cleanup, config, daily, notify, photomem, pipeline, power, runlock, uploads
+from thrift_agent import alerts, approve, cleanup, config, daily, notify, photomem, pipeline, power, runlock, shares, uploads
 from thrift_agent.config import settings
 from thrift_agent.db import DB, loads
 
@@ -126,6 +126,10 @@ def _scan_inbox(s, db) -> int:
             pipeline.late_photos(s, db)
         except OSError as e:                              # the archive in iCloud, busy or refused: next time
             db.log(None, "late_photos_skipped", f"{type(e).__name__}: {e}")
+    try:
+        shares.refresh_open(db)                           # WO51 §6: what each open share waits for (the API's watchdog)
+    except Exception as e:  # noqa: BLE001 — never the look's end
+        db.log(None, "error", f"shares.refresh_open: {type(e).__name__}: {e}")
     cleanup.tick(s, db)                                   # WO47: the disk watched, the photo policy once a day
     return n
 
@@ -829,6 +833,33 @@ def titles(review: bool = typer.Option(False, "--review", help="every live title
     raise typer.BadParameter("--check, --review or --apply")
 
 
+SITES = ("poshmark", "depop", "vinted")
+
+
+@app.command()
+def pause(site: str) -> None:
+    """WO51: the owner's pause of one site (poshmark | depop | vinted) — no new listing there until `thrift resume`;
+    the worker and the other sites go on (the global PAUSE file stops everything)."""
+    from thrift_agent import health
+    if site not in SITES:
+        raise typer.BadParameter("poshmark | depop | vinted")
+    health.owner_pause(_db(), site, "paused by the owner")
+    print(f"{site} paused — `thrift resume {site}` takes it back (after one test run)")
+
+
+@app.command()
+def resume(site: str, dry: bool = typer.Option(False, "--dry", help="the test run only; the site stays paused")) -> None:
+    """WO51: a paused site back — the running poster first fills its next item without publishing (the screenshot to
+    the private chat), then posts again when it passes (`--dry`: the test only)."""
+    from thrift_agent import health
+    if site not in SITES:
+        raise typer.BadParameter("poshmark | depop | vinted")
+    if health.owner_resume(_db(), site, dry=dry):
+        print(f"{site}: test run asked — the running poster makes it" + ("" if dry else ", then posting resumes"))
+    else:
+        print(f"{site} isn't paused")
+
+
 @app.command()
 def doctor() -> None:
     """WO49: the agent's health on one screen — the worker's progress, what waits (iCloud, the local upload intake,
@@ -865,9 +896,9 @@ def status() -> None:
     if counts:
         print("listings: " + " · ".join(f"{mp} " + ", ".join(f"{st} {n}" for st, n in sorted(counts[mp].items()))
                                         for mp in crosslist.ORDER if mp in counts))
-    for mp in crosslist.CROSS:
-        if why := crosslist.blocked(db, mp):
-            print(f"[red]{mp} stopped for this window[/]: {escape(why)}")
+    from thrift_agent import health
+    for line in health.summary(db):                    # WO51: a paused site — until its test run passes
+        print(f"[red]{escape(line)}[/]")
     link = loads(db.kv_get(crosslist.EXT_LINK)) or {}
     if link:                                           # WO32: the Thrift Chrome's extension, as the poster last saw it
         print(f"extension: {'connected' if link.get('connected') else '[yellow]not connected[/]'} "

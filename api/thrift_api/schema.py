@@ -85,6 +85,9 @@ COLUMNS = {
                  "error": "TEXT", "photos_sent": "INTEGER", "photos_live": "INTEGER", "photos_read_at": "TEXT"},
     "sales": {"drops": "INTEGER"},              # WO41: the item's price drops made before it sold
     "delist_tasks": {"kind": "TEXT"},           # WO45 §7: NULL / delist = a take-down; repost = the safety net's one retry
+    # WO51 §6: what an open share waits for, from the Mac's queue (shares.refresh_open there) — the watchdog fires only
+    # when nothing moves, and says what it waits for
+    "shares": {"items": "INTEGER", "cards": "INTEGER", "state": "TEXT", "waiting": "TEXT", "moved_at": "TEXT"},
 }
 
 INDEXES = (

@@ -1170,7 +1170,7 @@ card (§4); photos of one item stay one item (§5); every photo she shares is on
 item goes up on all three sites or she is told why (§7); she only taps (§8); every listing is read back (§6).
 - **The direct upload (§2, `api/thrift_api/uploads.py`, `thrift_agent/uploads.py`, `docs/SHORTCUT_UPLOAD.md`):** the
   Shortcut POSTs each photo to `POST /share/<share id>/photo?n=&of=&name=` (a raw image or one multipart file; HEIC and
-  EXIF kept; images only, ≤ 30 MB, ≤ 60 a share; the same bytes stored once) and then `POST /share/<id>/end?count=N`
+  EXIF kept; images only, ≤ 30 MB, ≤ 200 a share — WO51 §6, was 60; the same bytes stored once) and then `POST /share/<id>/end?count=N`
   — behind a key for those two functions only (`provision.py uploads` makes it and sends it ONCE to the private
   chat); the photos are blobs in the function app's storage (container `shares`, gone after 30 days by Azure's rule;
   the rows by `timers.daily`). The Mac asks `GET /shares/pending` every 30 s while awake (`uploads.fetch_new` from
@@ -1280,6 +1280,75 @@ item goes up on all three sites or she is told why (§7); she only taps (§8); e
   `<sku>-poshmark-trace-<nn>-<label>.png/.json` in failed/shots — the field, the tiles' classes, the Done buttons,
   the focus); the cover dialog's checkmark on the first thumb is waited for (it came a moment after the 11th
   thumbnail), and a cover dialog still open when the form is left is cancelled first. Stand-in: `oneSizeMenu`.
+
+## Posting that heals itself; brands, shipping, families (WO51 §2–§5, 2026-11-01)
+Live: her 70-photo share's first three priced items failed on all three sites within 22 seconds, none of it about the
+items — Poshmark's Chrome had been quit by hand from the Dock on Oct 28 and the poster called `new_page` on the dead
+context ever since; Vinted had rebuilt its listing form (every dropdown a `<button>`, the brand search moved — our step
+called an input's value setter on the button: "Illegal invocation") and pre-filled its own "Disney" on a Relibeauty
+costume; Depop had removed the USPS / Other shipping radios. Each failure used an attempt, all three sites went
+"stopped for this window", and with the Mac always on no window ever came.
+- **Every failure has a kind** (`thrift_agent/health.py`, `kind_of`): item (the site refused this listing, a field it
+  can't satisfy) | site (an element missing, the form changed, an unknown page) | infra (the browser / context / page
+  closed, the extension away, the network, our own code throwing — the extension names its errors: `T.errInfo`, a
+  `SiteChanged` for the page's, "code" with file and line for ours). Only item failures use the item's attempts and
+  count toward "3 in a row". A site / infra failure (`health.non_item`): the row back to `queued`, its attempt given
+  back, the item behind the others 10 min (a site failure; `deferred`); the same failure on the next item pauses the
+  site at once; one item alone meeting the same one 3 times is the item's after all.
+- **Pauses, not windows** (`health.pause`, kv `site_health`; `crosslist.blocked` / `block` now read and write it):
+  ONE private line per site per problem — "⛔ Depop paused: its sell form changed (shipping section not found). 6 items
+  waiting — nothing was published." (at most one picture); never a ❌ per item. A paused site comes back by itself:
+  after 30 min (doubling to 4 h) its next item is filled as a dry run (`parallel._poshmark_test` / `_cross_test`, quiet);
+  passing → "✅ Depop back to normal — posting resumed.", failing → paused again, no new line. An item failure is tried
+  again 30 min later (`crosslist.retry_failed`, every housekeeping turn — no window needed). `thrift pause <site>`
+  (waits for her) / `thrift resume <site> [--dry]` (a test run first, its screenshot to the private chat).
+- **Poshmark's browser reopened** (`parallel.Browser`): its context watched ("close" event, a call that says it is
+  gone — `browser_closed`); reopened at once, then after 30 s / 2 min / 10 min, the login checked again; the same item
+  goes next with no attempt used; three failed reopenings pause Poshmark (one line). Only the poster's own profile is
+  ever opened or closed — never the Thrift Chrome, never the Google Chrome app.
+- **Brands (§3):** Vinted's field must show OURS or its "List without brand" (`BrandOf`, never "" — an unread button
+  had passed as no brand); a site's own suggestion is kept only when it is one of our names. **The trademark guard**
+  (`data/trademarks.json`, `brands.guard`, `pipeline.guard_marks` at processing, `runner._guard_render` for Poshmark and
+  `crosslist.strict_title` for Depop / Vinted at posting): a licensed character or much-counterfeited mark (Disney,
+  Nike, Barbie, Gucci…) that isn't the item's own brand, label text, style name or a collab its label shows never
+  reaches a title, description or hashtag.
+- **Depop shipping (§4):** the "Shipping" section (`national-shipping-section`, else its heading's text) naming "Depop
+  Shipping", a "Shipping from" address checked; scrolled to and waited for; "Other" never chosen. **Colours:** Depop's
+  own chips that aren't ours go first (two at most), a pick that didn't take leaves no typed text, the read-back expects
+  `typed_left` empty.
+- **Families (§5, `thrift_agent/families.py`):** an item whose site category is another family than its own type words
+  (a dress under Sweaters) waits on that site — `skipped` with "… isn't the item's family" (both safety nets keep it),
+  ONE private line (`crosslist.family_problem` / `hold_family`), never posted in the wrong category.
+- Tests: `tests/test_wo51_health.py`, `tests/test_families.py`, `tests/test_dst.py`, `tests/api/test_api_dst.py`,
+  `tests/test_doctor_memory.py`, the WO51 part of `tests/js/content.test.mjs` (stand-in hooks `buttonBrand`,
+  `prefillBrand`, `shipping2026`, `shippingLate`, `shippingNoTestId`, `aiColours`).
+
+## Big shares, every photo placed, a watchdog that waits for her (WO51 §6, 2026-11-01)
+Live: a 70-photo share (the API took 60 — only the iCloud copy had all 70; a share past 90 photos failed outright, "share
+it in smaller sets"), and at 1:15 PM "⏳ Share 12:39 PM (70 photos) stuck at carded since 12:44" while its cards were
+simply going out one at a time behind her open one.
+- **The upload takes 200 photos a share** (`api/thrift_api/uploads.MAX_PHOTOS`; nothing changes on the phone).
+- **Segmentation in parts** (`ingest/segment.segment_roll`, `plan_parts`, `stitch`): a roll of up to
+  `segmentation.part_photos` (40) is ONE call exactly as before (the golden replays' answers still apply); a bigger one
+  in even windows of at most 40, neighbours sharing `part_overlap` (8) photos (70 → 0–38 + 31–69; 150 → five parts),
+  each call told which part it is (`part_lead`); a pause before a part's first photo is left out of it. The stitch: each
+  overlap is cut at its midpoint and every photo has the part it lies nearer the middle of as its TRUSTED part; the
+  overlap photos both parts grouped alike, and each part's own photos, are the atoms; each part joins atoms only
+  through photos it is trusted for — so an item across a seam stays one item, and a part's mistake near its own edge
+  never merges or splits anything (the other part decides there). Where two parts grouped the shared photos
+  differently: a doubt in `batches.reasons` (thrift status), never a question. The segmentation record keeps `parts`.
+  `merge_singletons` compares a lone photo with its nearest 12 groups at most (`MAX_ATTACH_GROUPS`).
+- **Every photo is in an item or told**: the photos the accepted grouping left out (screenshots matching no item) in ONE
+  private line naming them (`pipeline.say_left_out`: "📸 2 of the 12:39 PM share's photos are in no item: …").
+- **What an open share waits for** (`shares.refresh_open` from the worker's inbox look, once a minute; `queue_state`):
+  `items`, `cards`, `state` — work (grouping / processing) | her (the card queue waits for her answer) | send (cards
+  queued, none open) | orphan (an item with neither a card nor a place in the queue) | done (every item carded: the
+  outcome `carded`) —, `waiting` (the words) and `moved_at`, synced to thrift-api. **The watchdog** (`watch.shares_watch`):
+  `her` is never stuck — after 2 hours without her answer (08:00–22:00) ONE line "⏳ Waiting for her price on "Edikted
+  Crochet Mini Dress" — 8 more cards behind it."; work / send / orphan with no movement for 15 minutes (30 past 20
+  photos) → ONE line "⏳ Share 12:39 PM (70 photos) stuck since 12:48 PM: waiting for …"; a Mac without the fields keeps
+  the old rule. The dashboard's Shares panel says "waiting for …". Tests: `tests/test_wo51_big_shares.py`,
+  `tests/api/test_api_wo51.py`. The 70-photo golden replay needs the Mac's private photos (not run on the PC).
 
 ## The price pager (WO48, the owner, 2026-10-20)
 Under the eight price buttons, above [Later] [Change] [Wrong photos]: ONE row "‹ lower · higher ›"
