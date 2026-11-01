@@ -1695,7 +1695,11 @@ class PoshmarkPoster(Poster):
                 await keep_evidence(page, self.shot, {"url": url, "found": False})
                 return {**out, "error": "no brand field on the edit page"}
             await box.click()
-            await self._brand_warning(page, out, 1500)
+            # live 2026-11-01: the warning came at the click, at the first keystroke or at the pick, depending on the
+            # listing — provoked before the search (one character typed), answered, the box cleared
+            if not await self._brand_warning(page, out, 4000):
+                await box.type("a")
+                await self._brand_warning(page, out, 3000)
             await box.fill("")
             try:
                 await self._brand(page, r)
@@ -1737,7 +1741,7 @@ class PoshmarkPoster(Poster):
             except Exception:  # noqa: BLE001
                 pass
 
-    async def _brand_warning(self, page: Page, out: dict, timeout_ms: int) -> None:
+    async def _brand_warning(self, page: Page, out: dict, timeout_ms: int) -> bool:
         """WO52 §0 (live 2026-11-01, the Zara jacket): Poshmark's edit page asks once a brand is picked — "You are
         allowed to edit the brand on your listing 3 times. Do you want to continue?" [No] [Yes] — and its backdrop
         covers Update until answered. Our authorized brand change: Yes, the only button in THAT dialog (by its text —
@@ -1746,13 +1750,14 @@ class PoshmarkPoster(Poster):
         try:
             await warn.first.wait_for(state="visible", timeout=timeout_ms)
         except PlaywrightTimeout:
-            return
+            return False
         out["brand_edit_warning"] = (await warn.first.inner_text())[:200]
         await warn.first.get_by_role("button", name="Yes", exact=True).click()
         try:
             await warn.first.wait_for(state="hidden", timeout=5000)
         except PlaywrightTimeout:
             pass
+        return True
 
     async def set_category(self, ctx: BrowserContext, url: str, payload: dict, dry: bool = False,
                            shots: Path | None = None, go=None) -> dict:

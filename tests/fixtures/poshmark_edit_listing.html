@@ -122,14 +122,18 @@
     warn.style.display = "none"; backdrop2.style.display = "none"; events.push("brand-warning-yes");
   });
   document.getElementById("warn-no").addEventListener("click", () => { warn.style.display = "none"; backdrop2.style.display = "none"; });
+  let answered = false;
+  document.getElementById("warn-yes").addEventListener("click", () => { answered = true; });
   brand.addEventListener("input", () => {
     list.innerHTML = "";
+    // window.__FIXTURE.warnOnType: the warning at the first keystroke, nothing typed until it's answered (live)
+    if (F.warnOnType && !answered) { brand.value = ""; warnNow(); return; }
     const q = brand.value.trim().toLowerCase();
     if (!q) return;
     for (const b of (F.brands || ["Zara", "Astr", "J.Crew"]).filter((x) => x.toLowerCase().startsWith(q))) {
       const li = document.createElement("li");
       li.innerHTML = `<a class="dropdown__link">${b}</a>`;
-      li.firstChild.addEventListener("click", () => { brand.value = b; list.innerHTML = ""; events.push(`brand:${b}`); warnNow(); });
+      li.firstChild.addEventListener("click", () => { brand.value = b; list.innerHTML = ""; events.push(`brand:${b}`); if (!F.warnOnType) warnNow(); });
       list.appendChild(li);
     }
   });

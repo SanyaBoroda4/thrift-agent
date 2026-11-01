@@ -1416,3 +1416,14 @@ def test_wo52_the_brand_edit_saves_past_the_warning(chrome, posh, photos, monkey
         return await posh.set_brand(ctx, EDIT_URL, payload, shots=Path(photos[0]).parent), site
     out, site = drive(chrome, scenario)
     assert out["saved"] and site.updates == 1, out
+
+
+def test_wo52_the_brand_edit_answers_a_warning_that_comes_at_the_first_keystroke(chrome, posh, photos):
+    """Live 2026-11-01 (the MNG set → Mango): the warning came while typing and swallowed the search."""
+    r = render(photos).model_dump()
+    payload = {"render": {**r, "brand": "Zara", "brand_label": None}, "brand_names": ["Zara"]}
+
+    async def scenario(ctx, site):
+        return await posh.set_brand(ctx, EDIT_URL, payload, dry=True, shots=Path(photos[0]).parent), site
+    out, site = drive(chrome, scenario, warnOnType=True)
+    assert out["ok"] and out["seen"] == {"brand": "Zara"}, out
