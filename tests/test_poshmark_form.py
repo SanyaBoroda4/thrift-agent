@@ -22,6 +22,7 @@ from PIL import Image
 pw_api = pytest.importorskip("playwright.async_api")
 
 from thrift_agent import brands  # noqa: E402
+from thrift_agent import crosslist as crosslist_mod  # noqa: E402
 from thrift_agent.post import poshmark  # noqa: E402
 from thrift_agent.post.base import PosterError, Skipped, compare  # noqa: E402
 from thrift_agent.schema import Render  # noqa: E402
@@ -1400,3 +1401,18 @@ def test_wo52_the_brand_edit_answers_poshmarks_warning_and_finds_the_parent_bran
     assert out["ok"] and not out["saved"], out
     assert out["seen"] == {"brand": "Zara"} and "allowed to edit the brand" in out["brand_edit_warning"]
     assert site.updates == 0
+
+
+def test_wo52_the_brand_edit_saves_past_the_warning(chrome, posh, photos, monkeypatch):
+    """Live 2026-11-01: the warning came after the pick and its backdrop held the Update click for 30 s."""
+    monkeypatch.setattr(poshmark, "PUBLIC_CHECK_S", 0.3)
+    monkeypatch.setattr(poshmark, "PUBLIC_EVERY_S", 0.1)
+    monkeypatch.setattr(crosslist_mod, "poshmark_listing", lambda url: {"brand": "Zara"})
+    r = render(photos).model_dump()
+    payload = {"render": {**r, "brand": "Zara TRF Collection", "brand_label": None},
+               "brand_names": ["Zara TRF Collection", "Zara TRF", "Zara"]}
+
+    async def scenario(ctx, site):
+        return await posh.set_brand(ctx, EDIT_URL, payload, shots=Path(photos[0]).parent), site
+    out, site = drive(chrome, scenario)
+    assert out["saved"] and site.updates == 1, out

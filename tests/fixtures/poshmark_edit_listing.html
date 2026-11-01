@@ -109,23 +109,27 @@
   });
   const brand = document.getElementById("brand"), warn = document.getElementById("brand-warn");
   const list = document.getElementById("brand-list");
-  let warned = false, allowed = false;
-  brand.addEventListener("mousedown", () => {
-    if (!warned) { warned = true; warn.style.display = "block"; events.push("brand-warning"); }
-  });
+  let warned = false;
+  // live 2026-11-01: the warning comes once a brand is PICKED; its backdrop covers Update until answered
+  const backdrop2 = document.createElement("div");
+  backdrop2.style.cssText = "display:none;position:fixed;inset:0;z-index:1040;background:rgba(0,0,0,.3)";
+  document.body.appendChild(backdrop2);
+  warn.style.cssText += ";position:fixed;top:30%;left:30%;z-index:1050;background:#fff";
+  const warnNow = () => {
+    if (!warned) { warned = true; warn.style.display = "block"; backdrop2.style.display = "block"; events.push("brand-warning"); }
+  };
   document.getElementById("warn-yes").addEventListener("click", () => {
-    allowed = true; warn.style.display = "none"; events.push("brand-warning-yes");
+    warn.style.display = "none"; backdrop2.style.display = "none"; events.push("brand-warning-yes");
   });
-  document.getElementById("warn-no").addEventListener("click", () => { warn.style.display = "none"; });
+  document.getElementById("warn-no").addEventListener("click", () => { warn.style.display = "none"; backdrop2.style.display = "none"; });
   brand.addEventListener("input", () => {
     list.innerHTML = "";
-    if (!allowed) { brand.value = ""; return; }                 // the live page: nothing typed until it's answered
     const q = brand.value.trim().toLowerCase();
     if (!q) return;
     for (const b of (F.brands || ["Zara", "Astr", "J.Crew"]).filter((x) => x.toLowerCase().startsWith(q))) {
       const li = document.createElement("li");
       li.innerHTML = `<a class="dropdown__link">${b}</a>`;
-      li.firstChild.addEventListener("click", () => { brand.value = b; list.innerHTML = ""; events.push(`brand:${b}`); });
+      li.firstChild.addEventListener("click", () => { brand.value = b; list.innerHTML = ""; events.push(`brand:${b}`); warnNow(); });
       list.appendChild(li);
     }
   });

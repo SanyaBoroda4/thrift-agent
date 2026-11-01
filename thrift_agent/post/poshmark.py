@@ -1695,17 +1695,7 @@ class PoshmarkPoster(Poster):
                 await keep_evidence(page, self.shot, {"url": url, "found": False})
                 return {**out, "error": "no brand field on the edit page"}
             await box.click()
-            # WO52 §0 (live 2026-11-01, the Zara jacket): the edit page asks once per change — "You are allowed to
-            # edit the brand on your listing 3 times. Do you want to continue?" [No] [Yes]; unanswered, the box takes
-            # no typing. Our authorized brand change: Yes, the only button in THAT dialog (recorded, never a Save)
-            warn = page.locator("[data-test=modal-container]:visible").filter(has_text=BRAND_EDITS_TEXT)
-            try:
-                await warn.first.wait_for(state="visible", timeout=4000)
-                out["brand_edit_warning"] = (await warn.first.inner_text())[:200]
-                await warn.first.get_by_role("button", name="Yes", exact=True).click()
-                await warn.first.wait_for(state="hidden", timeout=5000)
-            except PlaywrightTimeout:
-                pass
+            await self._brand_warning(page, out, 1500)
             await box.fill("")
             try:
                 await self._brand(page, r)
@@ -1713,6 +1703,7 @@ class PoshmarkPoster(Poster):
                 await keep_evidence(page, self.shot, {"url": url, "error": str(e)})
                 return {**out, "error": f"{e}: nothing saved"}
             await settle(page)
+            await self._brand_warning(page, out, 4000)   # live: it comes once a brand is picked, over Update
             shown = await box.input_value()
             out["seen"] = {"brand": shown}
             out["guesses"] = list(self.guesses)
@@ -1745,6 +1736,23 @@ class PoshmarkPoster(Poster):
                 await page.close()
             except Exception:  # noqa: BLE001
                 pass
+
+    async def _brand_warning(self, page: Page, out: dict, timeout_ms: int) -> None:
+        """WO52 §0 (live 2026-11-01, the Zara jacket): Poshmark's edit page asks once a brand is picked — "You are
+        allowed to edit the brand on your listing 3 times. Do you want to continue?" [No] [Yes] — and its backdrop
+        covers Update until answered. Our authorized brand change: Yes, the only button in THAT dialog (by its text —
+        never a Save, a Delete or another dialog's button)."""
+        warn = page.locator("[data-test=modal-container]:visible").filter(has_text=BRAND_EDITS_TEXT)
+        try:
+            await warn.first.wait_for(state="visible", timeout=timeout_ms)
+        except PlaywrightTimeout:
+            return
+        out["brand_edit_warning"] = (await warn.first.inner_text())[:200]
+        await warn.first.get_by_role("button", name="Yes", exact=True).click()
+        try:
+            await warn.first.wait_for(state="hidden", timeout=5000)
+        except PlaywrightTimeout:
+            pass
 
     async def set_category(self, ctx: BrowserContext, url: str, payload: dict, dry: bool = False,
                            shots: Path | None = None, go=None) -> dict:
