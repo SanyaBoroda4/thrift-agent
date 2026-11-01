@@ -354,3 +354,9 @@ def test_lounge_pants_in_sleepwear_are_no_wrong_family():
     assert crosslist.family_problem("plaid lounge pants", "poshmark", ("Women", "Intimates & Sleepwear", "Pajamas")) is None
     assert crosslist.family_problem("crochet-knit mini dress", "vinted",
                                     "Women > Clothing > Jumpers & sweaters > Sweaters > V-neck sweaters")
+
+
+def test_astr_the_label_is_its_own_spelling():
+    """Live 2026-11-01: Depop skipped 'ASTR the Label Cowl Neck Satin Slip Dress …' as an all-caps word."""
+    from thrift_agent import titles
+    assert not titles.check("ASTR the Label Cowl Neck Satin Slip Dress, Champagne Pink, size S")
