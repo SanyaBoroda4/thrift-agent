@@ -159,6 +159,7 @@ _DONE = re.compile(r"^\s*done\s*$", re.I)
 _DROPDOWN = 'xpath=ancestor-or-self::*[@data-test="dropdown"][1]'     # Poshmark's dropdown component
 _COVER = '.image-edit-modal [data-test="modal-container"]:visible'  # the "Select a Covershot." dialog, when open
 
+BRAND_EDITS_TEXT = "allowed to edit the brand on your listing"   # WO52 §0, recorded live 2026-11-01
 SEL = {
     # ---- verified on the live form, 2026-09-29 ----
     "photo_input": lambda p: p.locator("input#img-file-input"),
@@ -183,6 +184,8 @@ SEL = {
     "condition_option": lambda p, code: p.locator(
         f'[data-et-name="listing_condition"][data-et-prop-content="{code}"]:visible'),
     "brand": lambda p: p.get_by_placeholder("Enter the Brand/Designer"),
+    # WO52 §0: the edit page's "You are allowed to edit the brand on your listing 3 times. Do you want to continue?"
+    "brand_edit_warning": lambda p: p.locator("[data-test=modal-container]:visible"),
     "brand_options": lambda p: p.locator("ul.listing-editor__suggestions-list > li > .dropdown__link:visible"),
     "color_open": lambda p: p.get_by_text("Select up to 2 colors", exact=True).locator("visible=true"),
     "color_tiles": lambda p: p.locator("li.listing-editor__tile--color:visible"),
@@ -1691,6 +1694,18 @@ class PoshmarkPoster(Poster):
             except PlaywrightTimeout:
                 await keep_evidence(page, self.shot, {"url": url, "found": False})
                 return {**out, "error": "no brand field on the edit page"}
+            await box.click()
+            # WO52 §0 (live 2026-11-01, the Zara jacket): the edit page asks once per change — "You are allowed to
+            # edit the brand on your listing 3 times. Do you want to continue?" [No] [Yes]; unanswered, the box takes
+            # no typing. Our authorized brand change: Yes, the only button in THAT dialog (recorded, never a Save)
+            warn = page.locator("[data-test=modal-container]:visible").filter(has_text=BRAND_EDITS_TEXT)
+            try:
+                await warn.first.wait_for(state="visible", timeout=4000)
+                out["brand_edit_warning"] = (await warn.first.inner_text())[:200]
+                await warn.first.get_by_role("button", name="Yes", exact=True).click()
+                await warn.first.wait_for(state="hidden", timeout=5000)
+            except PlaywrightTimeout:
+                pass
             await box.fill("")
             try:
                 await self._brand(page, r)

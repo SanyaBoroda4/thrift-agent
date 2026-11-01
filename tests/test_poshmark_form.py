@@ -1383,3 +1383,20 @@ def test_wo50_a_description_she_changed_by_hand_is_never_overwritten(chrome, pos
                "expect_description": "BCBGMAXAZRIA bag."}
     out = run(chrome, text_site, lambda ctx: posh.set_text(ctx, URL, payload, shots=tmp_path))
     assert "mismatch" in out and text_site.saves == [] and text_site.desc == "Her own description."
+
+
+# ---------------------------------------------------------------- WO52 §0: a live listing's brand
+
+def test_wo52_the_brand_edit_answers_poshmarks_warning_and_finds_the_parent_brand(chrome, posh, photos):
+    """Live 2026-11-01 (the Zara TRF Collection jacket): the edit page's "You are allowed to edit the brand on your
+    listing 3 times" warning took the typing; answered Yes, the parent brand "Zara" is found (a dry run: no Update)."""
+    r = render(photos).model_dump()
+    payload = {"render": {**r, "brand": "Zara TRF Collection", "brand_label": None},
+               "brand_names": ["Zara TRF Collection", "Zara TRF", "Zara"]}
+
+    async def scenario(ctx, site):
+        return await posh.set_brand(ctx, EDIT_URL, payload, dry=True, shots=Path(photos[0]).parent), site
+    out, site = drive(chrome, scenario)
+    assert out["ok"] and not out["saved"], out
+    assert out["seen"] == {"brand": "Zara"} and "allowed to edit the brand" in out["brand_edit_warning"]
+    assert site.updates == 0

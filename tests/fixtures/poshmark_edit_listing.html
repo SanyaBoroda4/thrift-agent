@@ -26,6 +26,17 @@
 <body>
 <h1>Edit Listing</h1>
 <div id="photos"></div>
+<!-- WO52 §0 (live 2026-11-01): the Brand section — the box, Poshmark's suggestions, and the warning the edit page shows
+  at the first click: "You are allowed to edit the brand on your listing 3 times. Do you want to continue?" [No] [Yes];
+  until it is answered the box takes no typing. window.__FIXTURE.brands: the brand list (default Zara, Astr, J.Crew). -->
+<div data-et-name="listingEditorBrandSection"><div data-test="dropdown" class="dropdown">
+  <input placeholder="Enter the Brand/Designer" type="text" maxlength="50" aria-label="input" id="brand"
+         class="form__text form__text--input"><ul class="listing-editor__suggestions-list" id="brand-list"></ul></div>
+  <div data-test="modal-container" class="modal simple-modal" id="brand-warn" style="display:none">
+    <div data-test="modal-body" class="modal__body">You are allowed to edit the brand on your listing 3 times. Do you want to
+      continue?</div>
+    <div class="form__actions"><button class="btn btn--tertiary" id="warn-no">No</button><button class="btn btn--tertiary"
+      id="warn-yes">Yes</button></div></div></div>
 <button class="btn btn--tertiary">Cancel</button>
 <button data-et-name="update" id="update" class="btn btn--primary">Update</button>
 <div data-test="modal" class="modal-backdrop" id="backdrop"></div>
@@ -95,6 +106,28 @@
     if (editing && !F.applyLost) editing.querySelector("img").src = selected.src;
     events.push("apply");
     close();
+  });
+  const brand = document.getElementById("brand"), warn = document.getElementById("brand-warn");
+  const list = document.getElementById("brand-list");
+  let warned = false, allowed = false;
+  brand.addEventListener("mousedown", () => {
+    if (!warned) { warned = true; warn.style.display = "block"; events.push("brand-warning"); }
+  });
+  document.getElementById("warn-yes").addEventListener("click", () => {
+    allowed = true; warn.style.display = "none"; events.push("brand-warning-yes");
+  });
+  document.getElementById("warn-no").addEventListener("click", () => { warn.style.display = "none"; });
+  brand.addEventListener("input", () => {
+    list.innerHTML = "";
+    if (!allowed) { brand.value = ""; return; }                 // the live page: nothing typed until it's answered
+    const q = brand.value.trim().toLowerCase();
+    if (!q) return;
+    for (const b of (F.brands || ["Zara", "Astr", "J.Crew"]).filter((x) => x.toLowerCase().startsWith(q))) {
+      const li = document.createElement("li");
+      li.innerHTML = `<a class="dropdown__link">${b}</a>`;
+      li.firstChild.addEventListener("click", () => { brand.value = b; list.innerHTML = ""; events.push(`brand:${b}`); });
+      list.appendChild(li);
+    }
   });
   document.getElementById("update").addEventListener("click", () => {
     events.push("update");

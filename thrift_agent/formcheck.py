@@ -319,7 +319,7 @@ def _job_ok(db: DB, error: str | None = None) -> None:
         return
     if error is None:
         jobs.ok(db, "form_check")
-    elif hasattr(jobs, "fail"):
+    elif hasattr(jobs, "failed"):
         jobs.failed(db, "form_check", error)
 
 
