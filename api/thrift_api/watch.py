@@ -295,6 +295,47 @@ def _cleanup_today(db: Database, day: str) -> str:
     return f" 🧹 Cleanup freed {size}."
 
 
+SITE_LABEL = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted"}
+
+
+def sites_line(db: Database, day: str) -> str:
+    """WO52 §3: the sites' health from the Mac's twice-daily form checks (its heartbeat's `formcheck`) — "Sites:
+    Poshmark ✓ Depop ✓ Vinted ✓ — form checks 8:30, 2:30 passed." on its own line; a site whose last check failed
+    "Vinted ✗ (form check failed)". Nothing when the heartbeat carries no checks (a Mac before WO52)."""
+    import json
+    beat = db.one("SELECT info FROM heartbeats WHERE source = 'mac'")
+    try:
+        info = json.loads(beat["info"]) if beat and beat["info"] else {}
+    except (TypeError, ValueError):
+        info = {}
+    checks = info.get("formcheck") if isinstance(info, dict) else None
+    if not isinstance(checks, dict) or not checks:
+        return ""
+    marks, slots, all_ok = [], set(), True
+    for site in util.SITES:
+        c = checks.get(site)
+        if not isinstance(c, dict):
+            continue
+        ok = bool(c.get("ok")) and not c.get("degraded")
+        all_ok = all_ok and ok
+        marks.append(f"{SITE_LABEL.get(site, site)} {'✓' if ok else '✗'}")
+        today = c.get("today") if isinstance(c.get("today"), dict) else {}
+        named = [*(today.get("passed") or []), *(today.get("failed") or [])] if today.get("day") == day else []
+        at = parse_time(c.get("at"))
+        if not named and at is not None and deadlines.local(at).date().isoformat() == day and c.get("slot"):
+            named = [c["slot"]]                      # a Mac that sends only the last check
+        for slot in named:
+            try:
+                hh, mm = str(slot).split(":")
+                slots.add((int(hh), mm))
+            except ValueError:
+                continue
+    if not marks:
+        return ""
+    when = (" — form checks " + ", ".join(f"{h % 12 or 12}:{m}" for h, m in sorted(slots))) if slots else " — form checks"
+    return "\nSites: " + " ".join(marks) + when + (" passed." if all_ok else ": one failed — see the 🚨 line.")
+
+
 def evening_line(db: Database, now: datetime | None = None, mode: str | None = None) -> str | None:
     """§9, once a local day in the 21:00 hour: "📊 Today: 7 shares → 8 items, 7 live on all 3 sites with all photos,
     1 waiting for a size." to the private chat. Returns the line, or None when it isn't the hour or it went already."""
@@ -322,7 +363,8 @@ def evening_line(db: Database, now: datetime | None = None, mode: str | None = N
     n_wait = int(waiting["n"]) if waiting else 0
     text = (f"📊 Today: {len(shares)} share{'s' if len(shares) != 1 else ''} → {len(item_ids)} item"
             f"{'s' if len(item_ids) != 1 else ''}, {live_all} live on all {len(util.SITES)} sites with all photos"
-            + (f", {n_wait} waiting for a size" if n_wait else "") + "." + _cleanup_today(db, day))
+            + (f", {n_wait} waiting for a size" if n_wait else "") + "." + _cleanup_today(db, day)
+            + sites_line(db, day))
     out = core.Outbox(now, mode)
     with db.tx():
         core.put_setting(db, EVENING_DONE, day)

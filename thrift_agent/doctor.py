@@ -153,6 +153,8 @@ def report(s: Settings, db: DB, now: datetime | None = None, api=None,
     if job_lines:
         out.append("Jobs:")
         out += [f"  {line}" for line in job_lines]
+    from thrift_agent import formcheck
+    out += [f"  {line}" for line in formcheck.summary(db)]       # WO52 §3: each site's last form check
     # take-downs not done
     rows = db.conn.execute("SELECT item_id, marketplace, status, attempts, error, fetched_at FROM takedowns "
                            "WHERE status NOT IN ('done', 'not_found', 'sold') ORDER BY fetched_at").fetchall()

@@ -160,10 +160,14 @@ async def open_bridge(s: Settings, db: DB | None, ps: dict, watch: bool = True, 
         if quit_by_hand:                         # WO52 §4: one plain line (at most every 6 h)
             closed_line(db, "thrift", "The Thrift Chrome was closed on the Mac — reopened. Please don't quit the "
                                       "Chrome windows on the Mac.")
+        from thrift_agent import formcheck                     # WO52 §3: a form check once the browser is back
+        formcheck.request(db, [mp for mp in ext], "the Thrift Chrome was started again")
 
     def restart_chrome() -> None:
         out = restart_thrift_chrome(s)
         db.log(None, "thrift_chrome_restarted", {"why": "no extension for 5 min", "out": out})
+        from thrift_agent import formcheck                     # WO52 §3: a form check once the browser is back
+        formcheck.request(db, [mp for mp in ext], "the Thrift Chrome was restarted")
 
     task = asyncio.create_task(b.watch(in_window=lambda: power.lid_closed() is not True, start_chrome=start_chrome,
                                        say=say, state=state, restart_chrome=restart_chrome))

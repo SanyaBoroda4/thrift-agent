@@ -123,3 +123,11 @@ def tick(db: DB, at: datetime | None = None) -> list[str]:
         if raise_for(db, mp, err, step=step, evidence=_evidence(db, mp), since=since, at=t):
             out.append(mp)
     return out
+
+
+def form_check_failed(db: DB, site: str, error: str, shot=None, n_waiting: int | None = None) -> bool:
+    """WO52 §3's call point: a form check failed twice in a row (or once with items waiting) — the site's alarm."""
+    step, rest = health._step_of(site, error or "")
+    evidence = f"var/failed/shots/{Path(str(shot)).name}" if shot else None
+    return raise_for(db, site, rest or error or "form check failed", step=step or "form check", evidence=evidence,
+                     why="form_check")

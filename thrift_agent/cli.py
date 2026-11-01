@@ -306,8 +306,9 @@ def beat_info(db) -> dict:
             return json.loads(value) if value and value[:1] in "{[" else value
         except ValueError:
             return value
+    from thrift_agent import formcheck
     return {"inbox_look": kv(alerts.SCAN_DONE), "progress": kv(alerts.PROGRESS), "uploads_poll": kv(uploads.LAST_POLL),
-            "cleanup": kv(cleanup.LAST)}
+            "cleanup": kv(cleanup.LAST), "formcheck": formcheck.beat(db)}   # WO52 §3: the 9 PM sites line
 
 
 def _safe_window(db, fn) -> None:
@@ -873,6 +874,31 @@ def resume(site: str, dry: bool = typer.Option(False, "--dry", help="the test ru
 
 
 @app.command()
+def canary(make: bool = typer.Option(False, "--make", help="make the canary (again) from a sold item"),
+           item: str = typer.Argument(None, help="the item to copy (default: an old sold item with its photos)"),
+           check: str = typer.Option(None, "--check", help="ask the running poster for a form check: a site or 'all'"),
+           ) -> None:
+    """WO52 §3: the canary — a copy of an old sold item the twice-daily form check fills on every site and never
+    publishes. `--make [<item>]` makes it; `--check poshmark|depop|vinted|all` asks the running poster for a check now;
+    no option: shows it and each site's last check."""
+    from thrift_agent import formcheck
+    s, db = settings(), _db()
+    if make:
+        iid = formcheck.make_canary(s, db, item)
+        print(f"canary {iid} made" if iid else "[red]no sold or live item with its photos to copy[/]")
+        return
+    if check:
+        sites = list(formcheck.SITES) if check == "all" else [check]
+        formcheck.request(db, sites, "asked by hand")
+        print(f"form check asked for {', '.join(sites)} — the running poster makes it on its next turn")
+        return
+    it = formcheck.canary(db)
+    print(f"canary: {it['id']} — {it['note']}" if it is not None else "canary: none yet (made at the first check)")
+    for line in formcheck.summary(db):
+        print(escape(line))
+
+
+@app.command()
 def doctor() -> None:
     """WO49: the agent's health on one screen — the worker's progress, what waits (iCloud, the local upload intake,
     Azure), the extension, each site, the take-downs still open, today's shares. Read only. Also a reply "doctor" in
@@ -911,6 +937,9 @@ def status() -> None:
     from thrift_agent import health
     for line in health.summary(db):                    # WO51: a paused site — until its test run passes
         print(f"[red]{escape(line)}[/]")
+    from thrift_agent import formcheck
+    for line in formcheck.summary(db):                 # WO52 §3: the last form check per site
+        print(escape(line))
     link = loads(db.kv_get(crosslist.EXT_LINK)) or {}
     if link:                                           # WO32: the Thrift Chrome's extension, as the poster last saw it
         print(f"extension: {'connected' if link.get('connected') else '[yellow]not connected[/]'} "
