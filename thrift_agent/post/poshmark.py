@@ -61,7 +61,7 @@ from playwright.async_api import BrowserContext, ElementHandle, Locator, Page
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
-from thrift_agent import brands
+from thrift_agent import brands, heal
 from thrift_agent.post.base import (AccountBlocked, Cancelled, Contains, Mode, Poster, PosterError, Skipped, human_type,
                                     keep_evidence, settle)
 from thrift_agent.post.fallback import matching, menu_size
@@ -476,6 +476,17 @@ def _squash(text: str | None) -> str:
     return " ".join(str(text or "").split())
 
 
+# WO52 §2: the text fields found again when Poshmark changes its form — by their label / placeholder words, else by the
+# model (heal.pick over the page's snapshot; never one of NEVER — the controls that list, save, discard, delete or
+# update, pressed by code alone) — and the selector that worked learned for next time.
+HEAL_LABELS = {"title": r"\btitle\b|what are you selling", "description": r"descri", "brand": r"\bbrand|designer",
+               "sku": r"\bsku\b"}
+NEVER = ['button[data-et-name="list"]', '[data-et-name="save_draft"]', '[data-et-name="discard"]',
+         '[data-et-name="delete"]', 'button[data-et-name="update"]', 'button[data-et-name="next"]',
+         'button[type="submit"]', '[data-et-name="share"]']
+FIND_MS = 10_000
+
+
 async def _type(loc: Locator, text: str) -> None:
     await loc.fill("")
     await human_type(loc, text)
@@ -500,6 +511,10 @@ class PoshmarkPoster(Poster):
         self._started = 0.0                                # when this post started (epoch s): new ids are younger
         # The supervised first publish: an async (render, panel text) -> bool, True only when the owner typed LIST.
         self.confirm = None
+        self.learned: heal.Learned | None = None            # WO52 §2: the selectors learned, kept beside the database
+        self.ask = None                                    # brain.llm.ask (a fake in the tests)
+        self.heal_model: str | None = None
+        self._found: dict[str, Locator] = {}               # a field a fallback found: its read-back reads it too
 
     @property
     def create_url(self) -> str:
@@ -529,16 +544,77 @@ class PoshmarkPoster(Poster):
             return None
         return int(text) if text.isdigit() else None
 
+    # ---------------------------------------------------------------- WO52 §2: a field found again
+
+    def _store(self) -> heal.Learned:
+        if self.learned is None:
+            self.learned = heal.store()
+        return self.learned
+
+    def _loc(self, page: Page, key: str) -> Locator:
+        """The field as found this run (a fallback's), else its recorded selector."""
+        return self._found.get(key) or SEL[key](page)
+
+    async def _find(self, page: Page, key: str) -> Locator:
+        """The field `key`: a learned selector, the recorded one (waited for), its label / placeholder, then the model.
+        PosterError when none of them finds it (the step fails as before)."""
+        for sel in self._store().for_site("poshmark").get(key) or []:
+            loc = page.locator(sel)
+            try:
+                if await loc.count() == 1 and await loc.first.is_visible():
+                    self._found[key] = loc
+                    return loc
+            except PlaywrightError:
+                continue
+        loc = SEL[key](page)
+        try:
+            await loc.first.wait_for(state="visible", timeout=FIND_MS)
+            return loc
+        except PlaywrightTimeout:
+            pass
+        rx = re.compile(HEAL_LABELS.get(key, re.escape(key)), re.I)
+        for cand in (page.get_by_label(rx), page.get_by_placeholder(rx)):
+            shown = [cand.nth(i) for i in range(await cand.count())]
+            shown = [c for c in shown if await c.is_visible() and await c.evaluate("e => e.tagName") in
+                     ("INPUT", "TEXTAREA")]
+            if len(shown) == 1:
+                return await self._learned_loc(page, key, shown[0], "label")
+        cands = await page.evaluate(heal.SNAPSHOT_JS, [NEVER, heal.MAX_CANDIDATES])
+        try:
+            image = await page.screenshot()
+        except PlaywrightError:
+            image = None
+        from thrift_agent.brain import llm
+        chosen = await asyncio.to_thread(heal.pick, self.ask or llm.ask, "element", "poshmark", key, "", cands,
+                                         self.heal_model or heal.model_for(), image)
+        if chosen:
+            return await self._learned_loc(page, key, page.locator(f'[data-thrift-ai="{chosen}"]').first, "ai")
+        raise PosterError(f"{key}: not on the page — the form changed (its recorded field, label and the model all "
+                          f"missed)")
+
+    async def _learned_loc(self, page: Page, key: str, loc: Locator, how: str) -> Locator:
+        """A fallback's find: used for the rest of this run, its stable selector kept (said ONCE in the private chat)."""
+        self._found[key] = loc
+        try:
+            sel = await loc.evaluate(heal.STABLE_JS)
+        except PlaywrightError:
+            sel = None
+        self.notes.append(f"{key}: found by {'the model' if how == 'ai' else 'its label'}")
+        if self._store().learn("poshmark", key, sel, how):
+            from thrift_agent import notify
+            notify.say(heal.moved_line("poshmark", key))
+        return loc
+
     # ---------------------------------------------------------------- fill
 
     async def fill(self, page: Page, r: Render) -> None:
         """WO27: never stops to ask. A brand, subcategory, size or colour the form doesn't offer exactly is its best
         guess (self.guesses, reported in "Posted ✓"); a REQUIRED field it can't fill at all skips the item (Skipped)."""
-        self._roots, self._state, self._render, self.chosen = {}, {}, r, {}
+        self._roots, self._state, self._render, self.chosen, self._found = {}, {}, r, {}, {}
         await self._photos(page, r)
-        await _type(SEL["title"](page), r.title)
+        await _type(await self._find(page, "title"), r.title)
         await settle(page)
-        await SEL["description"](page).fill(r.description)
+        await (await self._find(page, "description")).fill(r.description)
         await settle(page)
         await self._category(page, r)
         await self._size(page, r)
@@ -860,15 +936,15 @@ class PoshmarkPoster(Poster):
         done: list[str] = []
         try:
             if "brand" in diff:
-                await SEL["brand"](page).fill("")
+                await self._loc(page, "brand").fill("")
                 self.chosen["brand"] = None
                 self.guesses.append(f"brand left empty: the form read '{diff['brand'][1]}', not '{diff['brand'][0]}'")
                 done.append("brand")
             if "title" in diff:
-                await _type(SEL["title"](page), r.title)
+                await _type(self._loc(page, "title"), r.title)
                 done.append("title")
             if "description" in diff:
-                await SEL["description"](page).fill(r.description)
+                await self._loc(page, "description").fill(r.description)
                 done.append("description")
             if "category" in diff or "subcategory" in diff:
                 await self._category(page, r)
@@ -917,7 +993,7 @@ class PoshmarkPoster(Poster):
         if not r.brand:
             return
         names = brands.candidates(r.brand, r.brand_label, self.aliases)
-        box, items = SEL["brand"](page), SEL["brand_options"](page)
+        box, items = await self._find(page, "brand"), SEL["brand_options"](page)
         options: list[str] = []
         for name in names:
             known = self.aliases.alias(name)               # a spelling learned before ("J. Crew") is typed first
@@ -1028,13 +1104,13 @@ class PoshmarkPoster(Poster):
     async def _sku(self, page: Page, r: Render) -> None:
         """The SKU sits in the collapsed Additional Details: "show details" first. Cost price and other info stay
         empty."""
-        box = SEL["sku"](page)
+        box = self._found.get("sku") or SEL["sku"](page)
         if not await box.is_visible():
             await SEL["details_toggle"](page).first.click()
             try:
                 await box.wait_for(state="visible", timeout=MENU_TIMEOUT_MS)
             except PlaywrightTimeout:
-                raise PosterError("the SKU field did not show after 'show details'") from None
+                box = await self._find(page, "sku")         # WO52 §2: by its label, else the model
         await box.fill(r.sku)
 
     # ---------------------------------------------------------------- helpers
@@ -1111,8 +1187,8 @@ class PoshmarkPoster(Poster):
 
     async def read_back(self, page: Page) -> dict:
         async def value(key: str) -> str | None:
-            loc = SEL[key](page)
-            return await loc.input_value() if await loc.count() else None
+            loc = self._loc(page, key)                     # WO52 §2: a field a fallback found is read back too
+            return await loc.first.input_value() if await loc.count() else None
 
         size = SEL["size_open"](page)
         return {

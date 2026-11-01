@@ -182,6 +182,12 @@ async function onBridge(msg) {
     startJob(msg.job);                               // not awaited: the other site's job may come meanwhile
   } else if (msg.type === "submit" || msg.type === "cancel") {
     await relay(msg);
+  } else if (msg.type === "answer") {                // WO52 §2: the Mac named a field the page couldn't find
+    await restore();
+    const j = byId(msg.job_id);
+    if (j && j.tabId) {
+      try { await toTab(j.tabId, msg, 6000); } catch (e) { /* the page asks again or its step fails as before */ }
+    }
   }
 }
 

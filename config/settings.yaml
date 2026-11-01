@@ -24,6 +24,7 @@ models:
   upright: claude-sonnet-5     # the cover turned four ways, pick the upright one: same answer twice on 10 live items
   labels: claude-opus-5-5      # the labels and tags read closely for premium details (WO26): one call an item with labels
   crosslist: claude-opus-5-5   # WO30: a category the table doesn't have, picked from the catalog's enum (cached after)
+  heal: claude-sonnet-5        # WO52 §2: a form field (or option) a site moved, named from the page's snapshot
 
 images:
   work_long_edge: 2048

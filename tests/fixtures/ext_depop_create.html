@@ -169,6 +169,18 @@ function wire(id) {
 ["group-input", "variants-input", "shippingMethods-input"].concat(Object.keys(OPTIONS)).forEach((id) => {
   if (!document.getElementById(id).dataset.wired) { document.getElementById(id).dataset.wired = "1"; wire(id); }
 });
+// WO52 §2: window.__FIXTURE.conditionMoved — the condition combobox renamed (id cond-picker, its menu still
+// aria-controls'ed) and moved into the Photos section, labelled "Condition" (aria-labelledby, as Depop's own fields are).
+if (F.conditionMoved) {
+  const box = document.getElementById("condition-input");
+  const field = box.closest(".field");
+  const lab = document.createElement("label");
+  lab.id = "cond-label"; lab.textContent = "Condition";
+  field.insertBefore(lab, field.firstChild);
+  box.setAttribute("aria-labelledby", "cond-label");
+  box.id = "cond-picker";
+  document.querySelector("#form h2").after(field);
+}
 document.querySelector('[data-testid="brandButton__clear"]').addEventListener("click", () => {
   document.getElementById("brand-input").value = "";
   delete window.__picked["brand-input"];

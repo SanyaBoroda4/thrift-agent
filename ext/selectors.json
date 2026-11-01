@@ -42,7 +42,11 @@
           "input#title"
         ],
         "verified": true,
-        "seen": "2026-10-06, the first extension dry run on the Mac: the upload form, logged in"
+        "seen": "2026-10-06, the first extension dry run on the Mac: the upload form, logged in",
+        "also": [
+          "[data-testid='upload-form-save-button']"
+        ],
+        "also_how": "WO52 §2: `also` — the sell form known by another hook of its own when the recorded one was renamed (a learned title selector counts too); `label` on a step (a regular expression) overrides the field's default label words"
       }
     },
     "steps": {
@@ -363,7 +367,11 @@
           "[id='group-input']"
         ],
         "verified": true,
-        "seen": "2026-10-06, the first extension dry run on the Mac: the create form, logged in"
+        "seen": "2026-10-06, the first extension dry run on the Mac: the create form, logged in",
+        "also": [
+          "[data-testid='upload-input__input']"
+        ],
+        "also_how": "WO52 §2: `also` — the sell form known by another hook of its own when the recorded one was renamed (a learned title selector counts too); `label` on a step (a regular expression) overrides the field's default label words"
       }
     },
     "steps": {

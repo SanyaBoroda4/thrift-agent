@@ -100,10 +100,193 @@
   });
   T.waitFor = (selectors, { timeout = 8000, visible = true, root = document } = {}) =>
     T.until(() => T.$$(selectors, root).find((e) => !visible || T.visible(e)), timeout);
+  // ---- WO52 §2: a field found again when the site changed its form. In order: a selector learned before (the job's
+  // `learned`, tried first), the recorded one, the field's visible label / accessible name, then the model (the page's
+  // snapshot of its controls — labels, roles, the visible text of buttons and options, never an input's value — and ONE
+  // question, answered by the Mac through the bridge). The model is never shown, and never answered with, a control that
+  // publishes, saves or deletes (T.forbidden: the site's recorded submit / save / delete / never_click selectors, a
+  // submit button, or such words on something to press). What worked is reported as "learned" (its stable selector),
+  // kept on the Mac and sent with the next jobs. A step that still can't find its field fails as before.
+  T.learned = T.learned || {};
+  T.found = T.found || {};                     // field → the element a fallback found (the read-back reads it too)
+  T.asks = T.asks || new Map();
+  const LABELS = { title: /^(title|item title|listing title)\b/, description: /^(description|describe)/,
+                   price: /^(price|listing price)\b/, sku: /^sku\b/, brand: /^brand\b/, category: /^category\b/,
+                   size: /^size\b/, condition: /^condition\b/, color: /^colou?rs?\b/, colour: /^colou?rs?\b/,
+                   material: /^materials?\b/, package: /^(package|parcel)( size)?\b/, skirt_length: /length\b/,
+                   group: /^category\b/, variants: /^size\b/, source: /^source\b/, age: /^age\b/, style: /^style\b/,
+                   shippingMethods: /^(package|parcel)( size)?\b/ };
+  const HEALABLE = new Set(["title", "description", "price", "sku", "brand", "category", "size", "condition", "color",
+                            "colour", "material", "package", "skirt_length", "group", "variants", "source", "age",
+                            "style", "shippingMethods", "occasion"]);
+  T.fieldKey = (what) => String(what || "").replace(/-input$/, "").replace(/^attributes\./, "");
+  T.healable = (what) => HEALABLE.has(T.fieldKey(what)) || /^attributes\./.test(String(what || ""));
+  const PRESS = /\b(publish(ed|ing)?|post(ing)?|upload|list (this |an? |another )?item|list another|list it|save( changes| draft)?|delete|remove listing|submit|discard|buy( now)?|boost|bump|promote|mark as sold|hide|confirm|pay|checkout)\b/i;
+  const neverSelectors = () => {
+    const steps = (T.selectors && T.site && T.selectors[T.site] && T.selectors[T.site].steps) || {};
+    return ["submit", "edit_save", "delete_button", "delete_dialog", "never_click", "hide", "mark_sold", "list_item",
+            "publish", "save_draft", "upload"].flatMap((k) => [].concat((steps[k] && steps[k].selectors) || []));
+  };
+  T.typeable = T.typeable || ((el) => !!el && (el.tagName === "TEXTAREA" || (el.tagName === "INPUT"
+    && !/^(button|submit|checkbox|radio|file|image|reset|hidden)$/i.test(el.type || ""))));
+  T.labelOf = (el) => {
+    if (!el) return "";
+    const parts = [el.getAttribute("aria-label"), el.getAttribute("placeholder"), el.getAttribute("data-placeholder")];
+    const by = el.getAttribute("aria-labelledby");
+    if (by) for (const id of by.split(/\s+/)) parts.push(document.getElementById(id)?.textContent);
+    if (el.id) { try { parts.push(document.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.textContent); } catch (e) { /* */ } }
+    const lab = el.closest("label");
+    if (lab) parts.push(lab.textContent);
+    // a label beside it in its own field box ("Category" over a combobox moved to another section)
+    const box = el.parentElement && el.parentElement.closest("div, li, fieldset, section");
+    const own = box && [...box.querySelectorAll("label, legend")].filter((l) => !l.contains(el));
+    if (own && own.length === 1) parts.push(own[0].textContent);
+    return parts.filter(Boolean).map((x) => String(x).replace(/\s+/g, " ").trim()).join(" · ").slice(0, 120);
+  };
+  const pressable = (el) => {
+    const tag = el.tagName.toLowerCase(), role = (el.getAttribute("role") || "").toLowerCase();
+    return tag === "button" || tag === "a" || role === "button" || role === "link" || role === "menuitem"
+      || (tag === "input" && /^(button|submit|image|reset)$/i.test(el.type || ""));
+  };
+  T.forbidden = (el) => {
+    if (!el) return true;
+    for (const s of neverSelectors()) {
+      try { if (el.matches(s) || el.querySelector(s) || el.closest(s)) return true; } catch (e) { /* */ }
+    }
+    if (/^(submit|image|reset)$/i.test(el.getAttribute("type") || "") && el.tagName !== "SELECT") return true;
+    const words = [T.labelOf(el), pressable(el) ? el.textContent : "", el.getAttribute("data-testid") || "",
+                   el.getAttribute("name") || ""].join(" ");
+    return pressable(el) && PRESS.test(words);
+  };
+  const CONTROLS = "input:not([type=hidden]):not([type=file]),textarea,select,button,[role=combobox],[role=button],"
+    + "[role=listbox],[role=radio],[role=checkbox],[role=option],[role=menuitem],[contenteditable=true]";
+  // The form's controls as the model sees them: an id each (data-thrift-ai), labels, roles, the visible text of
+  // buttons and options — never an input's value (nothing personal leaves the page); forbidden controls left out.
+  T.snapshot = (els = null, cap = 150) => {
+    const out = [];
+    let n = 0;
+    const list = els || T.$$([CONTROLS]).filter(T.visible);
+    for (const el of list) {
+      if (out.length >= cap || T.forbidden(el)) continue;
+      const id = `e${++n}`;
+      el.setAttribute("data-thrift-ai", id);
+      const tag = el.tagName.toLowerCase();
+      let section = "";
+      for (let p = el.parentElement; p && !section; p = p.parentElement) {
+        const h = p.querySelector?.("h1, h2, h3, h4, legend, [role=heading]");
+        if (h && !h.contains(el)) section = h.textContent.replace(/\s+/g, " ").trim().slice(0, 40);
+      }
+      out.push({ id, tag, role: el.getAttribute("role") || "", type: (el.getAttribute("type") || "").toLowerCase(),
+                 testid: el.getAttribute("data-testid") || "", name: el.getAttribute("name") || "",
+                 label: T.labelOf(el), text: T.typeable(el) ? "" : (el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 60),
+                 section });
+    }
+    return out;
+  };
+  // ONE question to the Mac (the bridge's "ask" → the driver → heal.pick → an "answer" message): the id picked, or null.
+  T.ask = (kind, what, want, candidates, timeout = 90000) => new Promise((resolve) => {
+    if (!candidates.length || !T.jobId || !T.canAsk) return resolve(null);   // the Mac has no model wired: no question
+    const ask_id = `a${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    const timer = setTimeout(() => { T.asks.delete(ask_id); resolve(null); }, timeout);
+    T.asks.set(ask_id, (pick) => { clearTimeout(timer); T.asks.delete(ask_id); resolve(pick && pick !== "none" ? pick : null); });
+    T.emit({ event: "ask", job_id: T.jobId, ask_id, kind, field: what, want: String(want || ""), candidates });
+  });
+  T.answer = (msg) => { const f = T.asks.get(msg.ask_id); if (f) f(msg.pick); };
+  // A selector that names this element alone, from its own stable hooks (a test id, a name, a label) — else null.
+  T.stableSelector = (el) => {
+    const tag = el.tagName.toLowerCase();
+    const one = (s) => { try { return document.querySelectorAll(s).length === 1 && document.querySelector(s) === el ? s : null; } catch (e) { return null; } };
+    for (const a of ["data-testid", "name", "aria-label", "placeholder"]) {
+      const v = el.getAttribute(a);
+      if (v) { const s = one(`${tag}[${a}="${v.replace(/"/g, '\\"')}"]`); if (s) return s; }
+    }
+    if (el.id && !/\d{3,}|:/.test(el.id)) return one(`#${el.id}`);
+    return null;
+  };
+  T.learn = (what, el, how) => {
+    const selector = T.stableSelector(el);
+    T.found[T.fieldKey(what)] = el;
+    if (selector) T.learned[what] = [selector, ...(T.learned[what] || []).filter((x) => x !== selector)];
+    T.emit({ event: "learned", job_id: T.jobId, field: what, selector, how });
+    T.emit({ event: "progress", job_id: T.jobId, what: `${T.fieldKey(what)}: found by ${how === "ai" ? "the model" : "its label"}` });
+  };
+  // The field by its label: the one visible control whose label says the field's name.
+  T.byLabel = (what) => {
+    const rec = T.selectors && T.site && T.selectors[T.site]?.steps?.[what];
+    const re = rec && rec.label ? new RegExp(rec.label, "i") : LABELS[T.fieldKey(what)];
+    if (!re) return null;
+    const hits = T.$$([CONTROLS]).filter((el) => T.visible(el) && !T.forbidden(el)
+      && !/^(option|listbox|radio|checkbox|menuitem)$/i.test(el.getAttribute("role") || "")   // a field, not its list
+      && re.test(T.norm(T.labelOf(el))));
+    if (hits.length === 1) return hits[0];
+    const typing = hits.filter(T.typeable);
+    return typing.length === 1 && ["title", "description", "price", "sku"].includes(T.fieldKey(what)) ? typing[0] : null;
+  };
+  T.aiFind = async (what, want = "") => {
+    const cands = T.snapshot();
+    const pick = await T.ask("element", what, want, cands);
+    const el = pick ? document.querySelector(`[data-thrift-ai="${pick}"]`) : null;
+    return el && !T.forbidden(el) ? el : null;      // never a publish / save / delete control, whatever came back
+  };
+  // An option that means our value in the site's new wording: the model picks among `options` (elements) — only one
+  // that IS our value reworded; the read-back takes it as ours (`st.reworded`). -1 when none.
+  T.isReworded = (st, name, plan, shown) => ((st && st.reworded && st.reworded[name]) || [])
+    .some((x) => T.norm(x.plan) === T.norm(plan) && T.norm(x.shown) === T.norm(shown));
+  T.aiOption = async (st, name, value, options, textOf = null) => {
+    const els = options.filter((o) => !T.forbidden(o));
+    if (!els.length) return -1;
+    const norm = (el) => T.norm(textOf ? textOf(el) : el.textContent);
+    const known = ((st && st.reworded && st.reworded[name]) || []).find((x) => T.norm(x.plan) === T.norm(value));
+    if (known) {                                       // the same value asked again: its wording is known, no new question
+      const k = options.findIndex((o) => norm(o) === T.norm(known.shown));
+      if (k >= 0) return k;
+    }
+    const cands = T.snapshot(els, 200);
+    const pick = await T.ask("option", name, value, cands);
+    const el = pick ? document.querySelector(`[data-thrift-ai="${pick}"]`) : null;
+    const i = el ? options.indexOf(el) : -1;
+    if (i >= 0 && st) {
+      const shown = (textOf ? textOf(el) : el.textContent || "").replace(/\s+/g, " ").trim();
+      ((st.reworded = st.reworded || {})[name] = st.reworded[name] || []).push({ plan: value, shown });
+      st.notes.push(`${name}: '${shown}' taken for '${value}' (the site's new wording)`);
+    }
+    return i;
+  };
   T.need = async (selectors, what, opts = {}) => {
-    const el = await T.waitFor(selectors, opts);
-    if (!el) throw new Error(`${what}: not on the page (${[].concat(selectors).join(" | ")})`);
-    return el;
+    const mine = [].concat(T.learned[what] || []);
+    const el = await T.waitFor([...mine, ...[].concat(selectors || [])], opts);
+    if (el) return el;
+    // there but hidden (a field that shows only after an earlier step — the category — took): nothing moved, no healing
+    const present = T.$$([...mine, ...[].concat(selectors || [])]).length > 0;
+    const healed = opts.heal !== false && !present ? await T.heal(what, opts.want) : null;
+    if (healed) return healed;
+    const err = new Error(`${what}: not on the page (${[].concat(selectors).join(" | ")})`);
+    if (T.SiteChanged) Object.setPrototypeOf(err, T.SiteChanged.prototype);
+    throw err;
+  };
+  // The recorded lookup failed: the label, then the model; learned and reported when found. null when neither.
+  T.heal = async (what, want = "") => {
+    if (!T.healable(what)) return null;
+    const byLabel = T.byLabel(what);
+    if (byLabel) { T.learn(what, byLabel, "label"); return byLabel; }
+    const byAi = await T.aiFind(what, want);
+    if (byAi) { T.learn(what, byAi, "ai"); return byAi; }
+    return null;
+  };
+  // An element by its id — Depop's comboboxes are found by id — else the one a fallback found for it, else a learned
+  // selector for it (the id renamed: WO52 §2).
+  T.byId = (id) => {
+    const el = document.getElementById(id);
+    if (el) return el;
+    const f = T.found[T.fieldKey(id)];
+    if (f && f.isConnected && /-input$/.test(id)) return f;
+    return T.learned[id] ? T.$(T.learned[id]) : null;
+  };
+  // The field's element now: a fallback's find, else the learned / recorded selector (the read-backs use it).
+  T.field = (name, selectors) => {
+    const f = T.found[T.fieldKey(name)];
+    if (f && f.isConnected) return f;
+    return T.$([...(T.learned[name] || []), ...[].concat(selectors || [])]);
   };
   // The photos as a person sees them: images that have loaded (naturalWidth > 0).
   T.loaded = (selectors) => T.$$(selectors).filter((img) => img.complete && img.naturalWidth > 0).length;
@@ -318,7 +501,9 @@
     }
     if (conf.listing_url && new RegExp(conf.listing_url).test(location.href)) return "listing";
     if (conf.landing_url && new RegExp(conf.landing_url).test(location.href)) return "landing";   // WO33: after Upload
-    if (pages.form && T.$(pages.form.selectors)) return "form";
+    // WO52 §2: the form also by a title learned since (its recorded hook renamed) or another hook of its own (also)
+    if (pages.form && T.$([...[].concat(pages.form.selectors || []), ...(T.learned.title || []),
+                           ...[].concat(pages.form.also || [])])) return "form";
     return "unknown";
   };
   T.settled = async (site, timeout = 15000) => {
@@ -598,6 +783,10 @@
     const st = { job_id: job.job_id, failed: [], picked: {}, shown: {}, guesses: [], notes: [], left: {},
                  strict: job.mode === "publish" };
     T.jobId = job.job_id;
+    T.site = job.site;                               // WO52 §2: the field lookups heal on this site
+    T.learned = { ...(job.learned || {}) };          // the selectors learned before, tried first
+    T.found = {};
+    T.canAsk = !!job.heal;                           // the bridge set it: this site's driver answers "ask"
     T.noShots = job.mode === "orders";
     const fail = (stage, kind, message) => T.emit({ event: "error", job_id: job.job_id, stage, page: kind, message });
     if (T.off.has(job.job_id)) return fail("cancelled", "unknown", "called off by the bridge");
@@ -990,6 +1179,9 @@
         const ok = !!go && id === T.jobId;
         if (ok) go(msg.type === "submit");
         sendResponse({ ok: ok || msg.type === "cancel" });
+      } else if (msg.type === "answer") {               // WO52 §2: the Mac's answer to a field the page asked about
+        T.answer(msg);
+        sendResponse({ ok: true });
       } else if (msg.type === "ping") {                 // the worker's watchdog: still here
         sendResponse({ ok: true });
       } else if (msg.type === "classify") {
