@@ -342,3 +342,15 @@ def test_poshmarks_relaunch_closes_only_its_own_context(tmp_path, db, said):
 
     asyncio.run(go())
     assert closed == [made[0]]                  # its own dead context, nothing else
+
+
+def test_off_white_is_a_colour_not_a_mark():
+    """The WO51 audit: "Off-White" in a title is the colour ("Edikted Crochet Knit Mini Dress, Off-White size M")."""
+    own = brands.own_names("Edikted")
+    assert brands.guard("Edikted Crochet Knit Mini Dress V-Neck Flower Tie, Off-White size M", own)[1] == []
+
+
+def test_lounge_pants_in_sleepwear_are_no_wrong_family():
+    assert crosslist.family_problem("plaid lounge pants", "poshmark", ("Women", "Intimates & Sleepwear", "Pajamas")) is None
+    assert crosslist.family_problem("crochet-knit mini dress", "vinted",
+                                    "Women > Clothing > Jumpers & sweaters > Sweaters > V-neck sweaters")

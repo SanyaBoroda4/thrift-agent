@@ -38,6 +38,8 @@ COMPATIBLE = frozenset(frozenset(p) for p in (
     ("sweater", "top"), ("sweater", "outerwear"),
     ("bottoms", "shorts"), ("bottoms", "jumpsuit"), ("skirt", "shorts"),
     ("costume", "dress"), ("bag", "accessory"),
+    # WO51 audit (live): lounge / pajama pants, sleep shorts, sleep tees and nightdresses sit in Sleepwear rightly
+    ("sleepwear", "bottoms"), ("sleepwear", "shorts"), ("sleepwear", "top"), ("sleepwear", "dress"),
 ))
 
 _WORDS: dict[str, tuple[str, ...]] = {
