@@ -327,7 +327,14 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
       const menu = menuOf(cid);
       const cands = opts.map((o, k) => ({ k, t: texts[k], h: T.headerOf(o, menu) }))
         .filter((c) => T.norm(c.t) === T.norm(name));
-      const mine = cands.filter((c) => DEPARTMENT[T.norm(dept)]?.test(c.h));
+      let mine = cands.filter((c) => DEPARTMENT[T.norm(dept)]?.test(c.h));
+      // WO51 (live 2026-11-01, the Topten vest): "Vests" sits under Women › Coats and jackets AND Women › Suits — the
+      // heading that is our path's own ("Women > Coats and jackets") decides between them
+      const head = String(value).split(" > ").slice(0, -1).join(" > ");
+      if (mine.length > 1 && head) {
+        const exact = mine.filter((c) => T.norm(c.h || "") === T.norm(head));
+        if (exact.length) mine = exact;
+      }
       st.notes.push(`category menu: ${cands.map((c) => `${c.h || "?"} › ${c.t}`).join(", ") || "nothing named " + name}`);
       if (mine.length === 1) {
         i = mine[0].k;

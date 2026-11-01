@@ -71,6 +71,8 @@ if (F.shipping2026) {
 }
 const DEPTS ={"Men > Bottoms": ["Sweatpants", "Pants"], "Women > Bottoms": ["Sweatpants", "Pants", "Skirts"],
                "Kids > Bottoms": ["Sweatpants", "Pants"]};
+// WO51 (live 2026-11-01): "Vests" under Women › Coats and jackets AND Women › Suits (window.__FIXTURE.vests)
+if (F.vests) Object.assign(DEPTS, {"Women > Coats and jackets": ["Coats", "Jackets", "Vests"], "Women > Suits": ["Blazers", "Vests"]});
 const OPTIONS = {
   "brand-input": F.brands || ["J.Crew", "J.Crew Factory", "Tory Burch", "Mango"],   // WO36: F.brands
   "condition-input": ["Brand new", "Like new", "Used - Excellent", "Used - Good", "Used - Fair"],

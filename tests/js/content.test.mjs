@@ -1933,3 +1933,11 @@ test("Depop (WO51): a category menu that hasn't filtered yet is typed into again
   assert.equal(r.event, "result", JSON.stringify(r));
   assert.equal(p.w.__picked.category, "Women > Bottoms > Pants");
 });
+
+test("Depop (WO51): 'Vests' under two Women headings — the one our path names is chosen", async () => {
+  const p = page("depop", undefined, undefined, { ...DEPOP_FIX, vests: true });
+  await run(p, { ...DEPOP_JOB, fields: { ...DEPOP_JOB.fields, category: "Women > Coats and jackets > Vests" } });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(p.w.__picked.category, "Women > Coats and jackets > Vests");
+});
