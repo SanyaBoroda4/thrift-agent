@@ -1941,3 +1941,14 @@ test("Depop (WO51): 'Vests' under two Women headings — the one our path names 
   assert.equal(r.event, "result", JSON.stringify(r));
   assert.equal(p.w.__picked.category, "Women > Coats and jackets > Vests");
 });
+
+test("WO52 §3: a dry run's result carries the form's structure (labels, control types, hooks)", async () => {
+  const p = page("vinted");
+  await run(p, VINTED_JOB);
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.ok(Array.isArray(r.structure) && r.structure.length > 3, JSON.stringify(r.structure));
+  const keys = r.structure.map((f) => f.key);
+  assert.ok(keys.includes("brand-select-dropdown-input") && keys.includes("title--input"), JSON.stringify(keys));
+  assert.ok(r.structure.every((f) => typeof f.kind === "string" && "required" in f));
+});

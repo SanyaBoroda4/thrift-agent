@@ -178,6 +178,46 @@ def _joined(notes: list[str | None]) -> str | None:
     return "; ".join(n for n in notes if n) or None
 
 
+# WO52 §3: a form's structure — every control a person fills, with its visible label, its type, its hook and whether
+# it is required. The same reading as the extension's T.structure() (ext/content/common.js); compared by
+# thrift_agent.formcheck with the last good one.
+STRUCTURE_JS = r"""() => {
+  const norm = (t) => String(t || "").replace(/\s+/g, " ").trim().slice(0, 60);
+  const root = document.querySelector("form") || document.querySelector("main") || document.body;
+  const sel = "input:not([type=hidden]):not([type=submit]), textarea, select, [role=combobox], " +
+              "button[aria-haspopup], [role=radiogroup]";
+  const labelOf = (el) => {
+    const id = el.getAttribute("id");
+    const lab = id && document.querySelector(`label[for="${CSS.escape(id)}"]`);
+    const by = (el.getAttribute("aria-labelledby") || "").split(/\s+/).map((x) => document.getElementById(x))
+      .filter(Boolean).map((x) => x.textContent).join(" ");
+    let near = "";
+    for (let p = el.parentElement, k = 0; p && k < 4 && !near; p = p.parentElement, k++) {
+      const l = p.querySelector(":scope > label, :scope > legend, :scope > [class*=label i], :scope > h2, :scope > h3");
+      if (l && !l.contains(el)) near = l.textContent;
+    }
+    return norm(el.getAttribute("aria-label") || (lab && lab.textContent) || by || el.closest("label")?.textContent
+                || near || el.getAttribute("placeholder") || "");
+  };
+  const out = [], seen = new Set();
+  for (const el of root.querySelectorAll(sel)) {
+    if (el.closest("[role=option], [role=listbox], [role=menu]")) continue;
+    const tag = el.tagName.toLowerCase(), role = el.getAttribute("role");
+    const kind = role === "combobox" ? "combobox" : role === "radiogroup" ? "radio"
+      : tag === "input" ? (["radio", "checkbox"].includes(el.type) ? el.type : `input:${el.type || "text"}`) : tag;
+    const key = el.getAttribute("data-testid") || el.getAttribute("data-test") || el.getAttribute("data-vv-name")
+      || el.getAttribute("data-et-name") || el.getAttribute("id") || el.getAttribute("name") || "";
+    const label = labelOf(el);
+    const required = el.required || el.getAttribute("aria-required") === "true" || /\*\s*$/.test(label);
+    const k = `${label}|${kind}|${key}`;
+    if (seen.has(k) || (!label && !key)) continue;
+    seen.add(k);
+    out.push({ label, kind, key, required });
+  }
+  return out;
+}"""
+
+
 class Poster(ABC):
     name: str
     create_url: str
@@ -188,6 +228,8 @@ class Poster(ABC):
     # before the click that can't be undone; until then the form can still be left through discard().
     clicked: bool | None = None
     shot: Path | None = None    # this post's evidence path (<sku>-<site>-<time>.png): adapters add files next to it
+    capture_structure = False   # WO52 §3: a form check's dry run also reads the form's structure (last_structure)
+    last_structure: list | None = None
 
     @abstractmethod
     async def check_account(self, page: Page) -> None: ...
@@ -219,6 +261,14 @@ class Poster(ABC):
         """Leave the filled form without saving anything (no draft left behind). Returns a remark, or None when
         the site confirmed it."""
         return None
+
+    async def structure(self, page: Page) -> list | None:
+        """WO52 §3: every labelled control of the form (label, control type, hook, required) — STRUCTURE_JS, the same
+        reading as the extension's T.structure(). None when the page can't be read (never a failure)."""
+        try:
+            return await page.evaluate(STRUCTURE_JS)
+        except Exception:  # noqa: BLE001
+            return None
 
     async def drafts(self, page: Page) -> int | None:
         """How many drafts the site holds, read on the create page (counts_drafts adapters); None when unreadable."""
@@ -335,6 +385,8 @@ class Poster(ABC):
             await keep_evidence(page, shot, {"item": r.sku, "seen": seen, "expected": want, "diff": diff,
                                              "notes": self.notes})
             kept = True
+            if dry_run and self.capture_structure:    # WO52 §3: the form's controls, for the form check's diff
+                self.last_structure = await self.structure(page)
             if diff:
                 raise Mismatch(diff)
             if dry_run:

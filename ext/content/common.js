@@ -135,6 +135,48 @@
       .filter(Boolean).join(" ← ").slice(0, 300);
     return { message: `${name}: ${raw}${where ? ` (at ${where})` : ""}`, kind: "code", where };
   };
+  // ---- WO52 §3: the form's structure — every control a person fills: its visible label, type, hook, required. The
+  // same reading as STRUCTURE_JS in thrift_agent/post/base.py (Poshmark); thrift_agent.formcheck diffs it.
+  T.structure = () => {
+    const norm = (x) => String(x || "").replace(/\s+/g, " ").trim().slice(0, 60);
+    const root = document.querySelector("form") || document.querySelector("main") || document.body;
+    const sel = "input:not([type=hidden]):not([type=submit]), textarea, select, [role=combobox], "
+      + "button[aria-haspopup], [role=radiogroup]";
+    const labelOf = (el) => {
+      const id = el.getAttribute("id");
+      const lab = id && document.querySelector(`label[for="${(window.CSS && CSS.escape) ? CSS.escape(id) : id}"]`);
+      const by = (el.getAttribute("aria-labelledby") || "").split(/\s+/).map((x) => document.getElementById(x))
+        .filter(Boolean).map((x) => x.textContent).join(" ");
+      let near = "";
+      for (let p = el.parentElement, k = 0; p && k < 4 && !near; p = p.parentElement, k++) {
+        const l = p.querySelector(":scope > label, :scope > legend, :scope > [class*=label i], :scope > h2, :scope > h3");
+        if (l && !l.contains(el)) near = l.textContent;
+      }
+      return norm(el.getAttribute("aria-label") || (lab && lab.textContent) || by
+                  || (el.closest("label") && el.closest("label").textContent) || near
+                  || el.getAttribute("placeholder") || "");
+    };
+    const out = [], seen = new Set();
+    try {
+      for (const el of root.querySelectorAll(sel)) {
+        if (el.closest("[role=option], [role=listbox], [role=menu]")) continue;
+        const tag = el.tagName.toLowerCase(), role = el.getAttribute("role");
+        const kind = role === "combobox" ? "combobox" : role === "radiogroup" ? "radio"
+          : tag === "input" ? (["radio", "checkbox"].includes(el.type) ? el.type : `input:${el.type || "text"}`) : tag;
+        const key = el.getAttribute("data-testid") || el.getAttribute("data-test") || el.getAttribute("data-vv-name")
+          || el.getAttribute("data-et-name") || el.getAttribute("id") || el.getAttribute("name") || "";
+        const label = labelOf(el);
+        const required = !!el.required || el.getAttribute("aria-required") === "true" || /\*\s*$/.test(label);
+        const k = `${label}|${kind}|${key}`;
+        if (seen.has(k) || (!label && !key)) continue;
+        seen.add(k);
+        out.push({ label, kind, key, required });
+      }
+    } catch (e) {
+      return null;                                   // never the reason a dry run fails
+    }
+    return out;
+  };
   // ---- typing: the native setter, so a framework-controlled input takes the value as if typed — on a text box only
   // (WO51: never a <button> or a <div>: the page changed, said as such instead of the browser's "Illegal invocation")
   T.typeable = (el) => !!el && (el.tagName === "TEXTAREA" || (el.tagName === "INPUT"
@@ -685,6 +727,7 @@
     await T.screenshot("form");
     const report = { job_id: job.job_id, seen, failed: st.failed, guesses: st.guesses, notes: st.notes, shown: st.shown };
     if (job.mode === "dry_run" || (edit && job.dry)) {
+      if (job.mode === "dry_run") report.structure = T.structure();   // WO52 §3: the form check's diff
       return T.emit({ event: "result", dry_run: true, ...report });   // a cover dry run: moved on the page, never saved
     }
     if (T.off.has(job.job_id)) return fail("cancelled", "form", "called off by the bridge");

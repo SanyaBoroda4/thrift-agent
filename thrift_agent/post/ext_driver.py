@@ -259,6 +259,7 @@ class ExtensionPoster(Poster):
         self.learned_shop = None        # the shop name a listing page showed (Depop's shop link)
         self.fill_seconds = None        # how long the last form took to fill (the page's own clock)
         self.shot = None                # the evidence path of the job in hand
+        self.last_structure = None      # WO52 §3: the last dry run's form structure (formcheck)
         self.error_kind = None          # WO51: what the extension said a failure was ("code", "site") — health.kind_of
         self.strict = False
         self.notes, self.guesses = [], []
@@ -481,6 +482,7 @@ class ExtensionPoster(Poster):
             self.error_kind = ev.get("kind")              # WO51: "code" (our script threw) / "site" (the page changed)
             return Outcome("failed", screenshot=self._kept(job, "form"),
                            error=f"{self.site} {ev.get('stage') or 'form'}: {ev.get('message')}", note=_joined(self.notes))
+        self.last_structure = ev.get("structure")         # WO52 §3: the form's controls (a dry run's result)
         seen = ev.get("seen") or {}
         self.guesses += [g for g in ev.get("guesses") or [] if g]
         self.notes += [*(ev.get("notes") or []), *(f"step {x}" for x in ev.get("failed") or [])]

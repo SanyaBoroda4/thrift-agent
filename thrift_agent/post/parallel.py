@@ -27,7 +27,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from thrift_agent import alerts, catalogs, crosslist, daily, health, notify, orders, photocheck, power, pricedrop, sales
+from thrift_agent import (alerts, catalogs, crosslist, daily, formcheck, health, notify, orders, photocheck, power,
+                          pricedrop, sales)
 from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
 from thrift_agent.post import runner
@@ -187,6 +188,7 @@ async def run_parallel(s: Settings, db: DB, ps: dict, *, dry: bool, stage: str, 
     if bad := {mp: why for mp, why in catalogs.check().items() if why}:
         notify.say("❗ cross-listing off: " + "; ".join(f"{mp}: {why}" for mp, why in bad.items()))
     state = State()
+    formcheck.request(db, sites, "the poster started")          # WO52 §3: a form check after every start (a deploy)
     thread = None
     if "poshmark" in ps:
         thread = threading.Thread(target=_poshmark_thread, name="poshmark-worker", daemon=True,
@@ -310,6 +312,7 @@ class Browser:
             return False
         if not first:
             self.db.log(None, "browser_relaunched", {"site": "poshmark", "tries": self.tries})
+            formcheck.request(self.db, "poshmark", "its browser was reopened")      # WO52 §3
         if self.tries >= 3 and (health.state(self.db, "poshmark") or {}).get("kind") == health.INFRA:
             health.resume(self.db, "poshmark", "the browser was reopened")
         self.tries = 0
@@ -402,6 +405,13 @@ async def _poshmark_turn(s, db, ps, ctx, dry, stage, state, awake, failures, mar
     """One Poshmark turn: requests, take-downs, then one listing. True when it listed (or tried to)."""
     await runner.serve_requests(s, db, ps, ctx)
     if takedowns is not None and may_take_down(s, db, "poshmark") and await takedowns("poshmark", ps["poshmark"], db, ctx):
+        return True
+    if (why := formcheck.due(s, db, "poshmark")) and not runner._paused(db) and not s.flag_set("PAUSE"):
+        state.set("poshmark", "form check")       # WO52 §3: the canary's form filled and left — never published
+        try:
+            await formcheck.run_poshmark(s, db, ps["poshmark"], ctx, why)
+        finally:
+            state.set("poshmark", None)
         return True
     if crosslist.blocked(db, "poshmark"):
         test = health.test_due(db, "poshmark")
@@ -556,6 +566,14 @@ async def _cross_turn(s, db, ps, mp, dry, state, awake, takedowns) -> bool:
             and await listing_edit(s, db, mp, poster, None, list(ps), dry)):   # WO43: the owner's edit, any hour
         return True
     hours_ok, _ = can_post(s, 0, 0)
+    if (reachable and not runner._paused(db) and not s.flag_set("PAUSE") and not crosslist.account_blocked(db, mp)
+            and (why := formcheck.due(s, db, mp))):
+        state.set(mp, "form check")               # WO52 §3: the canary's form filled and left — never published
+        try:
+            await formcheck.run_cross(s, db, ps, mp, why)
+        finally:
+            state.set(mp, None)
+        return True
     if (crosslist.blocked(db, mp) and reachable and not dry and not runner._paused(db) and not s.flag_set("PAUSE")
             and (test := health.test_due(db, mp))):
         state.set(mp, "test")                     # WO51: a paused site's test run — its next item, never published

@@ -1323,6 +1323,37 @@ costume; Depop had removed the USPS / Other shipping radios. Each failure used a
   `tests/test_doctor_memory.py`, the WO51 part of `tests/js/content.test.mjs` (stand-in hooks `buttonBrand`,
   `prefillBrand`, `shipping2026`, `shippingLate`, `shippingNoTestId`, `aiColours`).
 
+## The twice-daily form check (WO52 §3, 2026-11-01)
+Site changes are found before her items find them (live Oct 27 → Nov 1: Vinted's rebuilt form and Depop's removed
+shipping choice were found only by her 12 items). `thrift_agent/formcheck.py`:
+- **When:** each site worker, on its next turn, at 08:30 and 14:30 local (`formcheck.slots`, the schedule's zone —
+  DST included; a slot missed while the Mac was off runs once when it is back), after every poster start (a deploy)
+  and after its browser was reopened (Poshmark's `parallel.Browser`, the Thrift Chrome started / restarted by the
+  bridge's watch) — kv `formcheck_request`. Never with PAUSE, the lid closed or the site showing a login / CAPTCHA
+  page. `formcheck.enabled` (on in config/settings.yaml; prod only — a test turns it on with `formcheck.anywhere`). `thrift canary --check <site|all>` asks for one now.
+- **The canary:** a copy of an old sold item (else the oldest live one whose photos are still here) — status `canary`,
+  `test` 1, in its own batch `b_canary` (status `canary`), its photos under `<var>/canary/<id>/` (never swept by the
+  cleanup), its renders' photo paths and SKU its own; no listing row, never `ready`, never carded, its sync mark
+  dropped (thrift-api never hears of it). Made by itself at the first check; `thrift canary --make [<item>]` makes it
+  again (the old one `retired_canary`); `thrift canary` shows it and each site's last check.
+- **The check:** the poster's own dry run of the canary — every field filled and read back, the form left (Poshmark:
+  Discard, its Drafts count before / after → `Outcome.draft_left` fails the check; Depop / Vinted: the extension's dry
+  run closes the tab, a draft "not checkable"). Never the publish button: the same dry-run paths as every other.
+- **The structure:** every labelled control (label, control type, hook — test id / data-test / vv-name / id / name —,
+  required): `post/base.STRUCTURE_JS` on Poshmark's page (`capture_structure`), `T.structure()` in the extension's
+  dry-run result; kept as the last good one in `<var>/formcheck/<site>.json`; a difference is ONE private line
+  ("🔎 Vinted's form changed: Brand is now a button; new field Package size."), even when the dry run passed (kv
+  `formcheck_said`); a passing check's structure is the new baseline, a failing one never replaces it.
+- **A failed check:** the site `degraded` (kv `formcheck_state`; `thrift status`, doctor); on the second failure in a
+  row, or at once with items waiting, `formcheck.failed()` — the 🚨 alarm's call point (`alarm.form_check_failed` when
+  WO52 §5's module exists, else one private line an episode); real items keep trying. Passing again: "✅ Vinted's form
+  check passed again." The job's health: `jobs.ok(db, "form_check")` when WO52 §4's module exists (else kv
+  `job_ok:form_check`).
+- **The 9 PM line:** the checks ride on the heartbeat (`cli.beat_info` → `formcheck.beat`: each site's ok, slot,
+  degraded and the day's slots); thrift-api's evening summary adds "Sites: Poshmark ✓ Depop ✓ Vinted ✓ — form checks
+  8:30, 2:30 passed." (`watch.sites_line`; nothing from a Mac before WO52).
+- Tests: `tests/test_wo52_formcheck.py`, `tests/api/test_api_wo52.py`, the WO52 part of `tests/js/content.test.mjs`.
+
 ## Big shares, every photo placed, a watchdog that waits for her (WO51 §6, 2026-11-01)
 Live: a 70-photo share (the API took 60 — only the iCloud copy had all 70; a share past 90 photos failed outright, "share
 it in smaller sets"), and at 1:15 PM "⏳ Share 12:39 PM (70 photos) stuck at carded since 12:44" while its cards were
