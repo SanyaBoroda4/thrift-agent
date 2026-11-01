@@ -1977,3 +1977,106 @@ test("Depop (WO52): a leaf missing under our heading goes to that heading's Othe
   assert.equal(r.seen.category_fallback, "Women > Coats and jackets > Other");
   assert.ok(r.guesses.some((g) => /Other \(closest/.test(g)), JSON.stringify(r.guesses));
 });
+
+// ---------------------------------------------------------------- WO52 §2: forms that heal themselves
+
+// A stand-in for the Mac's model (heal.pick): answers each "ask" with `choose(ask)` → a candidate id or "none". It sees
+// only what the page sent — and the page never sends a publish / save / delete control.
+function fakeModel(p, choose) {
+  const asked = [];
+  const send = p.w.chrome.runtime.sendMessage;
+  p.w.chrome.runtime.sendMessage = (m) => {
+    const out = send(m);
+    if (m.type === "event" && m.event === "ask") {
+      asked.push(plain(m));
+      const pick = choose(plain(m)) || "none";
+      setTimeout(() => p.tell({ type: "answer", job_id: m.job_id, ask_id: m.ask_id, pick }), 5);
+    }
+    return out;
+  };
+  return asked;
+}
+const PRESS_WORDS = /\b(upload|save|delete|post|publish|list|submit|discard)\b/i;
+
+test("WO52 Vinted: a renamed title field is found by its label, filled, read back and learned", async () => {
+  const p = page("vinted", undefined, undefined, { titleRenamed: true });
+  const asked = fakeModel(p, () => "none");
+  await run(p, { ...VINTED_JOB, heal: true });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(r.seen.title, VINTED_JOB.copy.title);
+  assert.equal(asked.length, 0);                                   // the label was enough: no model
+  const learned = p.events().map(plain).find((e) => e.event === "learned");
+  assert.equal(learned.field, "title");
+  assert.equal(learned.how, "label");
+  assert.equal(learned.selector, "input[data-testid=\"listing-headline-field\"]");
+});
+
+test("WO52 Vinted: a field nothing labels is found by the model, never shown a publish / save control", async () => {
+  const p = page("vinted", undefined, undefined, { titleRenamed: true, titleNoLabel: true });
+  const asked = fakeModel(p, (a) => a.candidates.find((c) => /headline/.test(c.testid))?.id);
+  await run(p, { ...VINTED_JOB, heal: true });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(r.seen.title, VINTED_JOB.copy.title);
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0].field, "title");
+  for (const c of asked[0].candidates) {                          // Upload and Save draft are never in the question
+    const pressable = c.tag === "button" || c.role === "button";
+    assert.ok(!(pressable && PRESS_WORDS.test(`${c.label} ${c.text} ${c.testid}`)), JSON.stringify(c));
+    if (c.tag === "input" || c.tag === "textarea") assert.equal(c.text, "");   // no input's value leaves the page
+  }
+  assert.equal(p.events().map(plain).find((e) => e.event === "learned").how, "ai");
+});
+
+test("WO52 Vinted: an answer naming the Upload button is refused on the page too", async () => {
+  const p = page("vinted", undefined, undefined, { titleRenamed: true, titleNoLabel: true });
+  const up = p.d.querySelector("[data-testid='upload-form-save-button']");
+  fakeModel(p, () => { up.setAttribute("data-thrift-ai", "e999"); return "e999"; });   // a model gone wrong
+  await run(p, { ...VINTED_JOB, heal: true });
+  const r = plain(p.last());
+  assert.ok(!p.fetches.some((u) => u.includes("upload-click")));   // never pressed
+  assert.match(JSON.stringify(r), /title: not on the page/);
+});
+
+test("WO52 Vinted: a dropdown that turned into a button is found by its label and read back", async () => {
+  const p = page("vinted", undefined, undefined, { conditionButton: true });
+  fakeModel(p, () => "none");
+  await run(p, { ...VINTED_JOB, heal: true });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.deepEqual(r.seen.condition, ["New without tags"]);
+});
+
+test("WO52 Vinted: an option in the site's new wording is taken by the model and read back as ours", async () => {
+  const p = page("vinted", undefined, undefined, { conditionWording: true });
+  const asked = fakeModel(p, (a) => (a.kind === "option" ? a.candidates.find((c) => /no tags/i.test(c.text))?.id : null));
+  await run(p, { ...VINTED_JOB, heal: true });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.ok(asked.some((a) => a.kind === "option" && a.field === "condition" && a.want === "New without tags"));
+  assert.deepEqual(r.seen.reworded.condition, [{ plan: "New without tags", shown: "Brand new and no tags" }]);
+  assert.deepEqual(r.seen.condition, ["Brand new and no tags"]);     // the driver reads it as ours (ext_driver.reworded)
+});
+
+test("WO52 Depop: a combobox renamed and moved to another section is found by its label, chosen and read back", async () => {
+  const p = page("depop", undefined, undefined, { ...DEPOP_FIX, conditionMoved: true });
+  fakeModel(p, () => "none");
+  await run(p, { ...DEPOP_JOB, heal: true });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(p.w.__picked["condition-input"], "Like new");
+  assert.deepEqual(r.seen["condition-input"], ["Like new"]);
+  const learned = p.events().map(plain).find((e) => e.event === "learned");
+  assert.equal(learned.field, "condition-input");
+});
+
+test("WO52: a learned selector is tried first, before the recorded one", async () => {
+  const p = page("vinted", undefined, undefined, { titleRenamed: true, titleNoLabel: true });
+  const asked = fakeModel(p, () => "none");
+  await run(p, { ...VINTED_JOB, heal: true, learned: { title: ["input[data-testid=\"listing-headline-field\"]"] } });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(r.seen.title, VINTED_JOB.copy.title);
+  assert.equal(asked.length, 0);
+});

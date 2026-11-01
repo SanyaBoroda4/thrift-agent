@@ -109,7 +109,8 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
     }
   };
 
-  const menuOf = (cid) => document.getElementById(S().combo.menu.replace("{id}", cid.replace(/-input$/, "")));
+  const menuOf = (cid) => document.getElementById(S().combo.menu.replace("{id}", cid.replace(/-input$/, "")))
+    || document.getElementById(T.byId(cid)?.getAttribute("aria-controls") || "\u0000");   // WO52: a renamed id
   const optionsOf = (menu) => (menu ? [...menu.querySelectorAll(S().combo.options)].filter(T.visible) : []);
   const textOf = (el) => el.textContent.replace(/\s+/g, " ").trim();
 
@@ -139,9 +140,10 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
   // A combobox, once the form shows it (the size and the attributes come after the category: fast, they may not be
   // there yet — the live miss, WO32b), then a real click.
   async function open(cid, timeout = 5000) {
-    const box = await T.until(() => { const b = document.getElementById(cid); return b && T.visible(b) ? b : null; },
-                              timeout);
-    if (!box) throw new Error(`${cid}: not on the page`);
+    let box = await T.until(() => { const b = T.byId(cid); return b && T.visible(b) ? b : null; },
+                            timeout);
+    if (!box) box = await T.heal(cid);                  // WO52 §2: the field by its label, else by the model
+    if (!box) throw new T.SiteChanged(`${cid}: not on the page`);
     await T.click(box);
     return box;
   }
@@ -152,7 +154,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
     const group = opt.closest("[role='group']");
     if (group && menu.contains(group)) {
       const by = group.getAttribute("aria-labelledby");
-      const label = group.getAttribute("aria-label") || (by && document.getElementById(by)?.textContent);
+      const label = group.getAttribute("aria-label") || (by && T.byId(by)?.textContent);
       if (label && label.trim()) return label.trim();
     }
     let best = "";
@@ -166,7 +168,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
 
   // A multi-select's chosen values: its chips, each with a "Remove <value>" button (recorded 2026-10-06).
   const chipButtons = (cid) => {
-    const box = document.getElementById(cid);
+    const box = T.byId(cid);
     return box ? [...box.parentElement.querySelectorAll(S().combo.chip_remove)] : [];
   };
   const chipValue = (b) => (b.getAttribute("aria-label") || "").replace(/^remove\s+/i, "").trim();
@@ -231,7 +233,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
   // plan at the click is said in the notes — never a cancelled listing).
   const packageBelow = (shown, want) => packageRank(shown) < packageRank(want);     // empty or unknown: below
   async function packageAtLeast(st, cid, want, when) {
-    const current = (document.getElementById(cid)?.value || "").trim();
+    const current = (T.byId(cid)?.value || "").trim();
     if (current && !packageBelow(current, want)) {
       if (packageRank(current) > packageRank(want) && !st.packageKept) {
         st.packageKept = current;
@@ -268,14 +270,14 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
     await T.until(() => !optionsOf(menuOf(cid)).length, 1500);
     // the choice as the FORM shows it (the option's text carries its sub-line, "MediumUnder 1lb" — live 2026-10-18,
     // the second mismatch): the input's value once the menu closed, else the option's first line
-    const shown = (document.getElementById(cid)?.value || "").trim() || String(pick.t).split(/\n|Under/)[0].trim();
+    const shown = (T.byId(cid)?.value || "").trim() || String(pick.t).split(/\n|Under/)[0].trim();
     T.picked(st, cid, want, shown);
     st.packageChoice = shown;
     st.guesses.push(`package size set to '${shown}' (Depop offers no '${want}': ${texts.map((t) => t.split(/\n|Under/)[0].trim()).join(", ")})`);
   }
 
   async function choose(st, cid, value, { typed = null, category = false, optional = false, prefix = false } = {}) {
-    if (optional && !(await T.until(() => document.getElementById(cid), 1500))) {
+    if (optional && !(await T.until(() => T.byId(cid), 1500))) {
       st.notes.push(`${cid}: not on this form, left out`);
       return;
     }
@@ -283,7 +285,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
       T.picked(st, cid, value, value);                   // chosen already (Depop's own suggestion): never clicked again
       return;
     }
-    const current = document.getElementById(cid)?.value || "";
+    const current = T.byId(cid)?.value || "";
     if (single(cid) && !category && current &&            // a single choice already ours (live 2026-10-11: Depop had
         (prefix ? T.norm(current).startsWith(T.norm(value)) : T.norm(current) === T.norm(value))) {   // put "Small" in,
       T.picked(st, cid, value, current);                  // and its menu answered "No option" to "Small" typed again)
@@ -357,6 +359,13 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
         }
       }
     }
+    if (i < 0 && !category && opts.length) {           // WO52 §2: the site's new wording for our value, by the model
+      const k = await T.aiOption(st, cid, value, opts);
+      if (k >= 0) {
+        i = k;
+        shown = texts[k];
+      }
+    }
     if (i < 0) {
       await T.screenshot(`menu-${cid}`);                // the open menu, for the record
       escape(box);
@@ -381,7 +390,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
 
   // WO51: a multi-select's own text box holds no leftover text (a pick that didn't take, a menu closed mid-typing)
   const clearTyped = (cid) => {
-    const box = document.getElementById(cid);
+    const box = T.byId(cid);
     if (box && !single(cid) && T.typeable(box) && (box.value || "").trim()) {
       T.setValue(box, "");
       box.dispatchEvent(new Event("change", { bubbles: true }));
@@ -433,7 +442,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
   // Depop offered. Depop's own fill-in (it puts a brand in once the photos are up) is kept when it IS one of our names.
   async function brand(st, value, typed, names = [value]) {
     const cid = S().combo.ids.brand;
-    const box = document.getElementById(cid);
+    const box = T.byId(cid);
     const theirs = box && box.value;
     const own = theirs ? T.brandChoose(names, [theirs]) : { choice: null };
     if (own.choice && own.how === "exact") {             // Depop filled one of our names in by itself
@@ -539,7 +548,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
     out[ids.age] = f.age ? [f.age] : [];
     out[ids.style] = [];                                 // never (the owner, 2026-10-12): Depop's Style stays empty
     for (const [name, values] of Object.entries(f.attributes || {})) out[ids.attribute.replace("{name}", name)] = values;
-    for (const cid of Object.keys(out)) if (!document.getElementById(cid)) delete out[cid];
+    for (const cid of Object.keys(out)) if (!T.byId(cid)) delete out[cid];
     return out;
   };
 
@@ -664,7 +673,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
       // the fast pace its suggestions could land after our own picks and replace them (live 2026-10-07: the package
       // set to Medium after ours): they are waited for (8 s at most) and for the page to settle; ours go over them.
       await T.step("suggestions", st, async () => {
-        const theirs = () => document.getElementById(ids.brand)?.value || document.getElementById(ids.package)?.value ||
+        const theirs = () => T.byId(ids.brand)?.value || T.byId(ids.package)?.value ||
           T.chipsOf(ids.colour).length;
         const came = await T.until(theirs, 8000);
         if (came) await T.quiet(600, 3000);
@@ -713,7 +722,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
       await T.step("shipping", st, async () => shipping(st, f));
       await T.step("package", st, async () => {
         const how = await packageAtLeast(st, ids.package, f.package_size, "before ours");
-        st.package = document.getElementById(ids.package)?.value || null;
+        st.package = T.byId(ids.package)?.value || null;
         return `${st.package || "none"} (${how})`;
       });
       // Boost is paid: never on. One that is on by itself is turned off, with a real click.
@@ -730,7 +739,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
         // WO36 §4: the required single choices read back — one that isn't ours is chosen again, once (the category
         // first: the size and the attributes come after it)
         const leaf = String(f.category || "").split(" > ").pop();
-        const valueOf = (cid) => document.getElementById(cid)?.value || "";
+        const valueOf = (cid) => T.byId(cid)?.value || "";
         if (st.picked[ids.category] && !st.categoryFallback && T.norm(valueOf(ids.category)) !== T.norm(leaf)) {
           st.notes.push(`the category read '${valueOf(ids.category)}': chosen again`);
           await choose(st, ids.category, f.category, { typed: leaf, category: true });
@@ -743,7 +752,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
           st.notes.push(`the condition read '${valueOf(ids.condition)}': chosen again`);
           await choose(st, ids.condition, f.condition);
         }
-        const brandBox = document.getElementById(ids.brand);
+        const brandBox = T.byId(ids.brand);
         if ((!f.brand || st.brandOther) && brandBox && T.norm(brandBox.value) !== "other") {
           st.notes.push(`Depop changed the brand to '${brandBox.value}': set back to Other`);
           await brandOther(st, f.brand || null);
@@ -751,7 +760,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
         // A single choice Depop replaced after ours (its suggestions came late) with a SMALLER one: ours again — the
         // size chosen for this form (WO45: the nearest offered when Depop's menu has no "Extra small"), never one the
         // menu lacks; a bigger one of Depop's is kept (2026-10-22, the rule above packageAtLeast)
-        const pkg = document.getElementById(ids.package);
+        const pkg = T.byId(ids.package);
         const pkgWant = st.packageChoice || f.package_size;
         if (pkgWant && pkg) {
           await T.until(() => ((pkg.value || "").trim() ? true : null), 3000);   // Depop redraws it after a chip change
@@ -790,7 +799,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
     async refill(job, st) {
       const f = job.fields || {};
       const ids = S().combo.ids;
-      const of = (cid) => document.getElementById(cid)?.value || "";
+      const of = (cid) => T.byId(cid)?.value || "";
       st.refilled = [];
       await T.quiet(600, 4000);
       if (f.category && !of(ids.category)) {
@@ -798,11 +807,11 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
           choose(st, ids.category, f.category, { typed: f.category.split(" > ").pop(), category: true }));
         st.refilled.push("category");
       }
-      if (f.size && document.getElementById(ids.size) && !of(ids.size)) {
+      if (f.size && T.byId(ids.size) && !of(ids.size)) {
         await T.step("size", st, async () => size(st, f.size));
         st.refilled.push("size");
       }
-      if (document.getElementById(ids.brand) && !of(ids.brand)) {
+      if (T.byId(ids.brand) && !of(ids.brand)) {
         await T.step("brand", st, async () => (f.brand ? brand(st, f.brand, f.brand_typed, T.brandNames(f))
           : brandOther(st, null)), { limit: 60000 });
         st.refilled.push("brand");
@@ -811,7 +820,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
         await T.step("condition", st, async () => choose(st, ids.condition, f.condition));
         st.refilled.push("condition");
       }
-      if ((f.colors || []).length && document.getElementById(ids.colour) && !T.chipsOf(ids.colour).length) {
+      if ((f.colors || []).length && T.byId(ids.colour) && !T.chipsOf(ids.colour).length) {
         for (const c of f.colors.slice(0, 2)) {
           await T.step(ids.colour, st, async () => choose(st, ids.colour, c, { optional: true }));
         }
@@ -825,7 +834,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
     async setFields(job, st) {
       const f = job.fields || {};
       const ids = S().combo.ids;
-      const before = { condition: document.getElementById(ids.condition)?.value || "" };   // the listing's own
+      const before = { condition: T.byId(ids.condition)?.value || "" };   // the listing's own
       if (f.category) {
         await T.step("category", st, async () =>
           choose(st, ids.category, f.category, { typed: f.category.split(" > ").pop(), category: true }));
@@ -834,7 +843,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
         await T.quiet(600, 4000);                        // the size menu follows the category
         await T.step("size", st, async () => size(st, f.size));
       }
-      const of = (cid) => document.getElementById(cid)?.value || "";
+      const of = (cid) => T.byId(cid)?.value || "";
       const condition = before.condition || f.condition;
       if (condition && !of(ids.condition)) {             // emptied with the category: the listing's own set back
         await T.step("condition", st, async () => choose(st, ids.condition, condition));
@@ -846,7 +855,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
     },
     fieldsSeen(job, st) {
       const ids = S().combo.ids;
-      const of = (cid) => document.getElementById(cid)?.value || "";
+      const of = (cid) => T.byId(cid)?.value || "";
       return { category: of(ids.category), size: of(ids.size), condition: of(ids.condition), brand: of(ids.brand),
                size_menu: st.sizeMenu || null, picked: st.picked ? { ...st.picked } : null };
     },
@@ -860,7 +869,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
         const el = T.$(sel);
         return el ? el.value : null;
       };
-      const of = (cid) => document.getElementById(cid)?.value || "";
+      const of = (cid) => T.byId(cid)?.value || "";
       const seen = {
         description: value(S().description.selectors), price: value(S().price.selectors),
         sku: S().sku ? value(S().sku.selectors) : null,
@@ -879,6 +888,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
       seen.brand_choice = st.brandChoice || null;         // WO36: what the brand step picked, and how
       for (const cid of Object.keys(planned(f))) seen[cid] = T.chipsOf(cid);
       seen.left = st.left;                                 // WO36 §3: optional values the form didn't offer
+      seen.reworded = st.reworded || {};                   // WO52 §2: an option in the site's new wording (the model's)
       seen.typed_left = T.typedLeft();                     // WO51: text typed in a multi-select that never became a chip
       return seen;
     },
@@ -902,7 +912,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
       // pick), a bigger one of Depop's stays; 2026-10-22: a size that can't be set back no longer stops the listing —
       // the form's own (non-empty) size goes, said in the notes (a note event: the row's "check:" line)
       const ids = S().combo.ids;
-      const pkg = document.getElementById(ids.package);
+      const pkg = T.byId(ids.package);
       const pkgWant = st.packageChoice || (job.fields && job.fields.package_size);
       const text = (e) => String(e && e.message ? e.message : e).slice(0, 200);
       if (pkg && pkgWant) {

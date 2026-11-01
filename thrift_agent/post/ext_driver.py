@@ -36,7 +36,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-from thrift_agent import brands, bridge as bridge_mod
+from thrift_agent import brands, bridge as bridge_mod, heal
 from thrift_agent.post.base import (AccountBlocked, Mode, Outcome, Poster, PosterError, _joined, _norm, _shows_price,
                                     compare)
 from thrift_agent.post.cross import Chosen
@@ -206,6 +206,47 @@ DEPOP_MULTI = ("colour-input", "source-input", "age-input", "style-input")
 DEPOP_SINGLE = ("group-input", "variants-input", "condition-input", "brand-input", "shippingMethods-input")
 
 
+def reworded(seen: dict) -> dict:
+    """WO52 §2: an option the site now words differently ("Very good condition" for our "Very good"), chosen by the
+    model as meaning the same value — the page reports {field: [{"plan", "shown"}]} under `reworded` — reads back as
+    our value, only where the field shows exactly that wording."""
+    out = dict(seen)
+    for name, pairs in (seen.get("reworded") or {}).items():
+        for pair in pairs or []:
+            plan, shown = str(pair.get("plan") or ""), str(pair.get("shown") or "")
+            if not plan or not shown:
+                continue
+            got = out.get(name)
+            if isinstance(got, list):
+                out[name] = [plan if _same(x, shown) else x for x in got]
+            elif isinstance(got, str) and _same(got, shown):
+                out[name] = plan
+    return out
+
+
+def _same(a, b) -> bool:
+    return " ".join(str(a).split()).lower() == " ".join(str(b).split()).lower()
+
+
+def site_hooks(bridge, mine: str, learned_for, on_learned):
+    """The bridge's one learned_for and on_learned, each site answered by its own driver (both sites' drivers share
+    one bridge: wiring one never unwires the other)."""
+    hooks = getattr(bridge, "_site_hooks", None)
+    if hooks is None:
+        hooks = bridge._site_hooks = {}
+    hooks[mine] = (learned_for, on_learned)
+
+    def learned(site: str) -> dict:
+        h = hooks.get(site)
+        return h[0](site) if h is not None else {}
+
+    def told(site: str, ev: dict) -> None:
+        h = hooks.get(site)
+        if h is not None:
+            h[1](ev)
+    return learned, told
+
+
 def selectors(path: Path = SELECTORS) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -266,6 +307,9 @@ class ExtensionPoster(Poster):
         self.selectors_path = SELECTORS
         self.held: set[str] = set()     # addresses other items hold on this site: never taken for this one (WO35)
         self.confirmed_in = None        # seconds from the click to the confirmed address (WO35 §5)
+        self.learned = None             # WO52 §2: heal.Learned (the store beside the database), made when first needed
+        self.ask = None                 # WO52 §2: brain.llm.ask (a fake in the tests)
+        self.heal_model = None          # WO52 §2: the model that names a moved field (settings models.heal)
 
     # ------------------------------------------------------------ the Playwright posters' page steps: not here
 
@@ -347,7 +391,45 @@ class ExtensionPoster(Poster):
     def _bridge(self) -> bridge_mod.Bridge:
         if self.bridge is None:
             raise PosterError(f"{self.site}: the extension bridge isn't running")
+        self._heal_hooks(self.bridge)
         return self.bridge
+
+    # ------------------------------------------------------------ WO52 §2: forms that heal themselves
+
+    def _heal_hooks(self, bridge) -> None:
+        """This site's answers to its pages' questions, the learned selectors sent with every job, a new one kept."""
+        if self.learned is None:
+            self.learned = heal.store()
+        bridge.askers[self.name] = self.answer_ask
+        bridge.learned_for, bridge.on_learned = site_hooks(bridge, self.name, self.learned.for_site, self.on_learned)
+
+    def answer_ask(self, job, ev: dict) -> str | None:
+        """A page couldn't find a field (or an option with our value's wording): the model picks from the page's
+        snapshot — never a control that publishes, saves or deletes (heal.pick). Runs in a thread (a model call)."""
+        from thrift_agent.brain import llm
+        image = None
+        for shot in reversed(getattr(job, "shots", []) or []):      # the page as it looked when it asked
+            if shot.get("png"):
+                try:
+                    image = Path(shot["png"]).read_bytes()
+                except OSError:
+                    image = None
+                break
+        chosen = heal.pick(self.ask or llm.ask, str(ev.get("kind") or "element"), self.name,
+                           str(ev.get("field") or ""), str(ev.get("want") or ""), list(ev.get("candidates") or []),
+                           self.heal_model or heal.model_for(), image)
+        self._say(f"{ev.get('field')}: asked the model — {chosen or 'no answer'}")
+        return chosen
+
+    def on_learned(self, ev: dict) -> None:
+        """A field found by its label or by the model: its selector kept (used first next time); ONE private line the
+        first time ("Vinted's brand field moved — learned the new one")."""
+        field_ = str(ev.get("field") or "")
+        if self.learned is None:
+            self.learned = heal.store()
+        if self.learned.learn(self.name, field_, ev.get("selector"), str(ev.get("how") or "label")):
+            from thrift_agent import notify
+            notify.say(heal.moved_line(self.name, field_))
 
     def _title(self) -> str:
         f = self.fields
@@ -494,6 +576,7 @@ class ExtensionPoster(Poster):
             self.fill_seconds = round(seen["fill_ms"] / 1000, 1)
             self._say(f"filled in {self.fill_seconds} s")
         want = self.expected(r, seen)
+        seen = reworded(seen)                         # WO52 §2: an option the model matched by meaning reads as ours
         diff = compare(seen, want)
         self._record(job, {"item": r.sku, "seen": seen, "expected": want, "diff": diff})
         screenshot = self._kept(job, "form")

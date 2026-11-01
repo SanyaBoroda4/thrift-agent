@@ -69,6 +69,11 @@ def posters(s: Settings) -> dict[str, Poster]:
             out[mp] = DepopApiPoster(shop)
         else:
             out[mp] = DepopPoster(shop, brands.for_settings(s)) if mp == "depop" else VintedPoster(shop)
+    from thrift_agent import heal          # WO52 §2: the learned selectors beside the database, the model that heals
+    learned, model = heal.store(s), heal.model_for(s)
+    for p in out.values():
+        if hasattr(p, "learned"):
+            p.learned, p.heal_model = learned, model
     return out
 
 

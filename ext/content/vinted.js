@@ -32,14 +32,19 @@
   // A row's own words: its title cell when it has one (Vinted's rows carry a title and sometimes a description).
   const rowText = (r) => (T.$(S().rows.title, r) || r).textContent.replace(/\s+/g, " ").trim();
 
-  async function clickRow(text, timeout = 8000) {
+  async function clickRow(text, timeout = 8000, { st = null, name = null } = {}) {
     let texts = [];
-    const found = await T.until(() => {                  // the row, as soon as the panel shows it
+    let found = await T.until(() => {                    // the row, as soon as the panel shows it
       const rows = T.$$(S().rows.selectors).filter(T.visible);
       texts = rows.map(rowText);
       const i = texts.findIndex((t) => T.norm(t) === T.norm(text) || T.norm(t.split(" | ")[0]) === T.norm(text));
       return i >= 0 ? { row: rows[i], shown: texts[i] } : null;
     }, timeout);
+    if (!found && st && name) {                          // WO52 §2: the site's new wording for our value, by the model
+      const rows = T.$$(S().rows.selectors).filter(T.visible);
+      const i = rows.length ? await T.aiOption(st, name, text, rows, rowText) : -1;
+      if (i >= 0) found = { row: rows[i], shown: rowText(rows[i]) };
+    }
     if (!found) {
       await T.screenshot(`menu-${T.norm(text).replace(/[^a-z0-9]+/g, "-").slice(0, 30)}`);   // the open list
       throw new Error(`no '${text}' (offered: ${texts.slice(0, 8).join(", ")})`);
@@ -136,7 +141,7 @@
     const input = await open(name);
     let shown;
     try {
-      shown = await clickRow(value);
+      shown = await clickRow(value, 8000, { st, name });
     } catch (e) {
       if (!optional) throw e;
       (st.left[name] = st.left[name] || []).push(value);   // WO36 §3: left empty — never another row
@@ -151,7 +156,7 @@
   // WO51 (live 2026-11-01): Vinted rebuilt its form — every dropdown is now a <button> (a Radix menu trigger) whose
   // choice is drawn in its `<testid>--value` span ("Select a size" while none, the button marked data-placeholder);
   // its .value is always "". A field's value is what it SHOWS (T.fieldValue); the old <input>s still read as before.
-  const valueOf = (name) => T.fieldValue(T.$(S()[name]?.selectors)) || "";
+  const valueOf = (name) => T.fieldValue(T.field(name, S()[name]?.selectors)) || "";   // WO52: a healed field too
   // WO36 §4: a field's values as it shows them (a multi-select lists its choices, comma-separated)
   const valuesOf = (name) => valueOf(name).split(",").map((x) => x.trim()).filter(Boolean);
 
@@ -356,9 +361,9 @@
   async function check(st, f) {
     const fixed = [];
     for (const [name, want] of [["size", f.size], ["condition", f.condition], ["skirt_length", f.skirt_length]]) {
-      if (!want || !T.$(S()[name]?.selectors)) continue;
+      if (!want || !T.field(name, S()[name]?.selectors)) continue;
       const got = valuesOf(name)[0] || "";
-      if (T.norm(got) !== T.norm(want)) {
+      if (T.norm(got) !== T.norm(want) && !T.isReworded(st, name, want, got)) {   // WO52: the model's match is ours
         st.notes.push(`${name} read '${got}': chosen again`);
         await pick(st, name, want);
         fixed.push(name);
@@ -554,24 +559,26 @@
     },
 
     readBack(job, st) {
-      const value = (sel) => {
-        const el = T.$(sel);
+      const value = (name) => {                             // WO52 §2: the field a fallback found, else its selectors
+        const el = T.field(name, S()[name]?.selectors);
         return el ? T.fieldValue(el) : null;                // WO51: what a field SHOWS (a <button> draws its choice)
       };
       const seen = {
-        title: value(S().title.selectors), description: value(S().description.selectors),
-        price: value(S().price.selectors), photos: String(T.$$(S().photos.thumbs).length),
+        title: value("title"), description: value("description"),
+        price: value("price"), photos: String(T.$$(S().photos.thumbs).length),
         photos_loaded: String(T.loaded(S().photos.thumbs)), package: chosenPackage(), ...st.picked,
       };
       // The form's own values (a multi-select's input lists its choices, comma-separated).
-      const list = (name) => (value(S()[name].selectors) || "").split(",").map((x) => x.trim()).filter(Boolean);
-      for (const name of ["size", "condition", "skirt_length"]) if (T.$(S()[name]?.selectors)) seen[name] = list(name).slice(0, 1);
-      for (const name of ["color", "material"]) if (T.$(S()[name].selectors)) seen[name] = list(name);
-      if (T.$(S().brand.selectors)) seen.brand_shown = value(S().brand.selectors);
+      const list = (name) => (value(name) || "").split(",").map((x) => x.trim()).filter(Boolean);
+      const there = (name) => T.field(name, S()[name]?.selectors);
+      for (const name of ["size", "condition", "skirt_length"]) if (there(name)) seen[name] = list(name).slice(0, 1);
+      for (const name of ["color", "material"]) if (there(name)) seen[name] = list(name);
+      if (there("brand")) seen.brand_shown = value("brand");
       seen.brand_choice = st.brandChoice ?? null;         // WO36: what the brand step picked ("" = without a brand)
       seen.left = st.left;                                 // WO36 §3: optional values the form didn't offer
+      seen.reworded = st.reworded || {};                   // WO52 §2: an option in the site's new wording (the model's)
       // The category input shows the leaf's name: our path only when it is that name.
-      const cat = value(S().category.selectors) || "";
+      const cat = value("category") || "";
       const leaf = String(job.fields.category_path || "").split(" > ").pop();
       seen.category = cat ? [T.norm(cat) === T.norm(leaf) ? job.fields.category_path : cat] : [];
       return seen;

@@ -51,6 +51,27 @@ img{width:40px;height:40px} .hidden-until-category{display:none}</style></head>
 </main>
 <script>
 const F = window.__FIXTURE || {};
+// WO52 §2: the site changed its form — window.__FIXTURE.titleRenamed: the title's test id and id renamed (labelled
+// "Title" unless titleNoLabel: then only the model finds it); conditionButton: the condition's readonly input became a
+// <button aria-label="Condition"> with a new test id; conditionWording: Vinted words its conditions anew.
+if (F.titleRenamed) {
+  const old = document.getElementById("title");
+  old.setAttribute("data-testid", "listing-headline-field");
+  old.id = "listing-headline";
+  if (!F.titleNoLabel) {
+    const lab = document.createElement("label");
+    lab.setAttribute("for", "listing-headline");
+    lab.textContent = "Title";
+    old.parentNode.insertBefore(lab, old);
+  }
+}
+if (F.conditionButton) {
+  const old = document.getElementById("condition");
+  const b = document.createElement("button");
+  b.type = "button"; b.id = "condition"; b.setAttribute("data-testid", "item-condition-picker");
+  b.setAttribute("aria-label", "Condition");
+  old.replaceWith(b);
+}
 if (F.verify) {
   document.getElementById("main").innerHTML = "<h1>Verify your phone number before you list</h1>";
 }
@@ -59,7 +80,9 @@ const TREE = {"Women": {"Clothing": {"Skirts": 5523, "Pants & leggings": {"Wide-
               "Men": {"Clothing": {"Pants": 1234}}, "Kids": {}, "Home": {}};
 const IDS = {"Women": 1904, "Men": 5, "Kids": 1193, "Home": 1918};
 const SIZES = [["XS / US 2", 2], ["S / US 4-6", 3], ["M / US 8-10", 4]];
-const CONDITIONS = [["New with tags", 6], ["New without tags", 1], ["Very good", 2], ["Good", 3], ["Satisfactory", 4]];
+const CONDITIONS = F.conditionWording
+  ? [["Brand new with tags attached", 6], ["Brand new and no tags", 1], ["Very good shape", 2], ["Good shape", 3], ["Fair", 4]]
+  : [["New with tags", 6], ["New without tags", 1], ["Very good", 2], ["Good", 3], ["Satisfactory", 4]];
 const COLORS = [["Black", 1], ["Gray", 3], ["Cream", 20], ["Red", 7]];
 const MATERIALS = [["Cotton", 44], ["Wool", 46], ["Leather", 43]];
 const BRANDS = F.brands || ["J.Crew", "J.Crew Factory", "Tory Burch", "Mango", "Solid & Striped"];   // WO36: F.brands
@@ -186,6 +209,7 @@ function panel(name, rows, multi) {
           if (multi) now = now.includes(t) ? now.filter((x) => x !== t) : [...now, t];
           else now = [t];
           input.value = now.join(", ");
+          if (input.tagName === "BUTTON") input.textContent = input.value;   // a button draws its choice (WO52)
           if (name === "size") choosePackage(2);
           if (!multi) content.innerHTML = "";
         });

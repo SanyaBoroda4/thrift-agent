@@ -216,7 +216,9 @@ rows were copied in once (kv `listings_migrated`); `posts` is left as it was.
 7. **All selectors live in `post/<marketplace>.py:SEL`.** Role/label/placeholder/text locators or the form's own hooks
    (data-vv-name, data-et-name, data-test, ids); a CSS class only where it was verified on the live form. Real clicks
    only (a JS `element.click()` on Poshmark's subcategory `<li>` does not register). Unverified entries are listed
-   in `UNVERIFIED`; `submit()` refuses to publish or draft while a step it needs is in it.
+   in `UNVERIFIED`; `submit()` refuses to publish or draft while a step it needs is in it. WO52 §2: the one other
+   place — a FILL field's selector learned when the site moved it (`learned_selectors.json` beside the database,
+   said once in the private chat, to be copied into SEL / ext/selectors.json); never a publish, save or delete control.
 8. **Shipping guard.** `HOLD_UNSHIPPED` flag pauses posting. Marketplaces restrict accounts with late shipments;
    listing faster without shipping discipline makes that worse.
    - `HOLD_UNSHIPPED` blocks publish only; drafts and dry-runs still run.
@@ -1370,6 +1372,36 @@ costume; Depop had removed the USPS / Other shipping radios. Each failure used a
 - Tests: `tests/test_wo51_health.py`, `tests/test_families.py`, `tests/test_dst.py`, `tests/api/test_api_dst.py`,
   `tests/test_doctor_memory.py`, the WO51 part of `tests/js/content.test.mjs` (stand-in hooks `buttonBrand`,
   `prefillBrand`, `shipping2026`, `shippingLate`, `shippingNoTestId`, `aiColours`).
+
+## Forms that heal themselves (WO52 §2, 2026-11-01)
+Between Oct 27 and Nov 1 Vinted turned its dropdowns into buttons and moved its brand search, and Depop dropped its
+shipping radios — nobody knew until her items failed. A fill step now finds its field again (`thrift_agent/heal.py`):
+- **In order:** a selector learned before (sent with every job as `learned`, tried first) → the recorded one
+  (ext/selectors.json, post/poshmark.py SEL) → the field's visible label / accessible name (`T.byLabel`: aria-label,
+  aria-labelledby, label[for], a label beside it in its own field box, the placeholder; a `label` regex on a step
+  overrides the default words; Poshmark: `get_by_label` / `get_by_placeholder`, `HEAL_LABELS`) → the model.
+- **The model** (`models.heal`, Sonnet; `heal.pick` through brain/llm.ask): the page's snapshot of its controls
+  (`T.snapshot` / `heal.SNAPSHOT_JS`: an id each — `data-thrift-ai` —, tag, role, test id, label, the visible text of
+  buttons and options, the section's heading; NEVER an input's value: nothing personal leaves the page; ≤ 150) and a
+  screenshot; ONE tool call whose answer is an enum of the offered ids or "none". The extension asks through the bridge
+  (`{"event": "ask", ask_id, kind, field, want, candidates}` → the driver's `answer_ask` in a thread →
+  `{"type": "answer", job_id, ask_id, pick}` back to the page); Poshmark in process (`PoshmarkPoster._find`).
+  `kind: "option"`: an option list in the site's new wording — the model may only take an option that IS our value
+  reworded; the page reports `seen.reworded` and the driver reads that wording as ours (`ext_driver.reworded`).
+- **Never Publish, Save or Delete (invariant 3):** a control that publishes, posts, uploads, lists, saves, deletes,
+  submits, discards, boosts, bumps, hides or confirms (its words on something to press), a submit button, or anything
+  matching a site's recorded submit / save / delete / never_click selectors (Poshmark: `NEVER`) is left out of the
+  snapshot (`T.forbidden`, `heal.allowed`) and an answer naming one is refused on both sides (`heal.pick`, `T.aiFind`).
+  Those controls stay recorded-and-verified only, pressed by code alone.
+- **The read-back decides as before:** a healed field is read back through the element found (`T.field`, `T.byId` for
+  Depop's comboboxes, `PoshmarkPoster._loc`); a field none of the four finds fails its step as before (a SiteChanged).
+- **Learned:** the page's `{"event": "learned", field, selector, how}` (a stable selector: test id, name, aria-label,
+  placeholder or a plain id) → `heal.Learned` (`learned_selectors.json` beside the database: per site and field, newest
+  first, with its date and how) and ONE private line the first time ("🩹 Vinted's brand field moved — learned the new
+  one."). The sell form is also known by another hook of its own (`pages.form.also`) or a learned title.
+- Tests: `tests/test_wo52_heal.py` (the forbidden filter and refusal, the enum, the store, the bridge's ask / answer,
+  the driver, Poshmark's label and model fallbacks on Chrome); the WO52 part of `tests/js/content.test.mjs` (stand-in
+  hooks `titleRenamed`, `titleNoLabel`, `conditionButton`, `conditionWording` on Vinted, `conditionMoved` on Depop).
 
 ## Big shares, every photo placed, a watchdog that waits for her (WO51 §6, 2026-11-01)
 Live: a 70-photo share (the API took 60 — only the iCloud copy had all 70; a share past 90 photos failed outright, "share

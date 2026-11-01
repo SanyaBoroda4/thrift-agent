@@ -161,6 +161,11 @@ class Bridge:
         self.refused = 0                        # ... of them with a token that isn't ours
         self.log: list[str] = []
         self.ext_hash = files_hash(ext_dir)     # what the extension was told; a deploy that changes ext/ is re-announced
+        # WO52 §2: the forms that heal themselves — per site, the driver's answer to a page's "ask" (sync, run in a
+        # thread: a model call), the selectors learned before (sent with every job) and what to do with a new one
+        self.askers: dict[str, object] = {}
+        self.learned_for = None                 # (site) -> {field: [selectors]}
+        self.on_learned = None                  # (site, event) -> None
 
     # ------------------------------------------------------------ lifecycle
 
@@ -227,8 +232,14 @@ class Bridge:
         now = time.monotonic()
         for jid in [j.id for j in self.jobs.values() if j.done and j.final is not None and now - j.created > 3600]:
             del self.jobs[jid]                    # finished an hour ago: nothing will come for it any more
+        learned = {}
+        if self.learned_for is not None:          # WO52 §2: the selectors learned for this site, tried first
+            try:
+                learned = self.learned_for(site) or {}
+            except Exception as e:  # noqa: BLE001 — a store that can't be read: the recorded selectors only
+                self.log.append(f"learned: {type(e).__name__}: {e}")
         job = Job(id=f"{site}-{uuid.uuid4().hex[:10]}", site=site, mode=mode,
-                  payload={"pace": self.pace, **payload}, shot=shot)
+                  payload={"pace": self.pace, "learned": learned, "heal": site in self.askers, **payload}, shot=shot)
         self.jobs[job.id] = job
         self.queue.append(job)
         self._push()
@@ -242,7 +253,10 @@ class Bridge:
             if job.cancelled:
                 return
             job.cancelled = True
-        msg = {"type": kind, "job_id": job.id}
+        self._send(job, {"type": kind, "job_id": job.id})
+
+    def _send(self, job: Job, msg: dict) -> None:
+        """A message for the job's page: over its socket first, else held for the HTTP path's answer."""
         job.commands.append(msg)
         for sock in sorted(self.sockets, key=lambda x: x is not job.sock):      # the job's own socket first
             if sock.ready and sock.send(msg):
@@ -330,6 +344,13 @@ class Bridge:
             self._keep_shot(job, ev)
         elif kind == "step":
             job.steps.append({k: ev.get(k) for k in ("name", "ok", "detail", "clicked", "ms")})
+        if kind == "ask":                        # WO52 §2: a field the page couldn't find — the driver answers
+            self._ask(job, ev)
+        elif kind == "learned" and self.on_learned is not None:
+            try:
+                self.on_learned(job.site, ev)
+            except Exception as e:  # noqa: BLE001 — never breaks the job
+                self.log.append(f"learned: {type(e).__name__}: {e}")
         if kind in ("step", "progress", "note") and job.listener is not None:   # note: a line for the row's notes
             try:
                 job.listener(ev)
@@ -345,6 +366,30 @@ class Bridge:
         if kind in FINAL:
             self._push()
         return out
+
+    def _ask(self, job: Job, ev: dict) -> None:
+        """WO52 §2: the page asks which control is a field (or which option means our value). The site's asker (the
+        driver: heal.pick — forbidden controls never offered, never accepted) runs in a thread; its answer goes to the
+        page as {"type": "answer", "job_id", "ask_id", "pick"} — "none" when there is no asker or no answer."""
+        asker = self.askers.get(job.site)
+
+        def say(chosen) -> None:
+            if not job.done:
+                self._send(job, {"type": "answer", "job_id": job.id, "ask_id": ev.get("ask_id"),
+                                 "pick": chosen or "none"})
+
+        async def answer() -> None:
+            chosen = None
+            if asker is not None:
+                try:
+                    chosen = await asyncio.to_thread(asker, job, ev)
+                except Exception as e:  # noqa: BLE001 — a failed question is "none": the step fails as before
+                    self.log.append(f"ask: {type(e).__name__}: {e}")
+            say(chosen)
+        try:
+            asyncio.get_running_loop().create_task(answer())
+        except RuntimeError:                      # no loop (a bare test): answered "none" at once
+            say(None)
 
     def _keep_shot(self, job: Job, ev: dict) -> None:
         label = "".join(c for c in str(ev.get("label") or "page") if c.isalnum() or c in "-_")[:40] or "page"
