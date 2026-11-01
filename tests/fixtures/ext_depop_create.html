@@ -118,7 +118,9 @@ function wire(id) {
   const input = document.getElementById(id);
   const menu = document.getElementById(id.replace(/-input$/, "") + "-menu");
   const render = () => {
-    const q = input.value.trim().toLowerCase();
+    let q = input.value.trim().toLowerCase();
+    // WO51 (live 2026-11-01, the Topten vest): the category menu kept its unfiltered list after "Vests" was typed
+    if (id === "group-input" && F.groupFilterLate && q && !window.__groupLagged) { window.__groupLagged = true; q = ""; }
     menu.innerHTML = "";
     if (id === "group-input") {
       for (const [heading, names] of Object.entries(DEPTS)) {

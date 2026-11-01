@@ -1925,3 +1925,11 @@ test("Depop (WO51): Depop's own Red + Pink make room for ours; two colours, no t
   assert.equal(p.d.getElementById("colour-input").value, "");
   assert.deepEqual(r.seen.typed_left, []);
 });
+
+test("Depop (WO51): a category menu that hasn't filtered yet is typed into again, never failed", async () => {
+  const p = page("depop", undefined, undefined, { ...DEPOP_FIX, groupFilterLate: true });
+  await run(p, DEPOP_JOB);
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(p.w.__picked.category, "Women > Bottoms > Pants");
+});

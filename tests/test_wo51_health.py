@@ -360,3 +360,10 @@ def test_astr_the_label_is_its_own_spelling():
     """Live 2026-11-01: Depop skipped 'ASTR the Label Cowl Neck Satin Slip Dress …' as an all-caps word."""
     from thrift_agent import titles
     assert not titles.check("ASTR the Label Cowl Neck Satin Slip Dress, Champagne Pink, size S")
+
+
+def test_the_brand_named_twice_in_a_title_is_said_once():
+    """Live 2026-11-01: "Zara TRF Collection 100% Genuine Leather Zara Moto Jacket" was held on every site."""
+    from thrift_agent import titles
+    t = titles.fix("Zara TRF Collection 100% Genuine Leather Zara Moto Jacket Black size S", brand="Zara")
+    assert t == "Zara TRF Collection 100% Genuine Leather Moto Jacket Black size S" and not titles.check(t)

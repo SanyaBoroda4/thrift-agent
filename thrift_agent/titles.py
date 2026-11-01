@@ -209,12 +209,17 @@ def fix(title: str, brand: str | None = None, condition: str | None = None, max_
         t = re.sub(rf"(?<![\w-]){re.escape(code)}(?![\w-])", " ", t)
     t = " ".join(w if (shown and w in shown.split()) else _soften(w, strict) for w in t.split())
     t = re.sub(r"\bsize\s+(?:size\s+)+", "size ", t, flags=re.I)
-    words, seen = [], set()
+    words, seen, seen_brand = [], set(), set()
     for w in t.split():
         k = re.sub(r"[^a-z']", "", w.lower())
-        if k and len(k) >= 3 and k not in SMALL and k in seen and not (shown and w in shown.split()):
+        brand_word = bool(shown and w in shown.split())
+        # a repeat goes — a brand word only once the brand itself has shown it (WO51, live: "Zara TRF Collection …
+        # Zara Moto Jacket"); a brand word after the same word elsewhere stays (the brand is never cut)
+        if k and len(k) >= 3 and k not in SMALL and k in seen and (not brand_word or k in seen_brand):
             continue
         seen.add(k)
+        if brand_word:
+            seen_brand.add(k)
         words.append(w)
     t = " ".join(words)
     safe = float(rules()["title"].get("caps_share_safe", rules()["title"]["caps_share_max"]))

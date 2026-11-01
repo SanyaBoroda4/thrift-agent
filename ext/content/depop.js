@@ -296,7 +296,13 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
     const leaf = T.norm(String(value).split(" > ").pop());
     const want = (texts) => (prefix ? texts.some((t) => T.norm(t).startsWith(T.norm(value)))
       : T.matchOption(texts, value, category) >= 0 || (category && texts.some((t) => T.norm(t) === leaf)));
-    await T.until(() => want(optionsOf(menuOf(cid)).map(textOf)), 4000);
+    if (!(await T.until(() => want(optionsOf(menuOf(cid)).map(textOf)), 4000)) && category) {
+      // WO51 (live 2026-11-01, the Topten vest): Depop's menu still showed its unfiltered list (T-shirts, Jerseys …)
+      // 4 s after "Vests" was typed, and filtered a moment later — typed once more and waited for longer
+      st.notes.push(`${cid}: the menu hadn't filtered for '${typed ?? value}' — typed again`);
+      await T.type(box, typed ?? value);
+      await T.until(() => want(optionsOf(menuOf(cid)).map(textOf)), 8000);
+    }
     const opts = await options(cid);
     const texts = opts.map(textOf);
     let i = prefix ? texts.findIndex((t) => T.norm(t).startsWith(T.norm(value))) : T.matchOption(texts, value, category);
