@@ -253,14 +253,15 @@ def test_kids_shoes_go_up_a_half_size_only_where_the_menu_has_none():
     assert _ds("103", "4.5", dept="Kids", cat="Shoes", cy="Y")[0] == "5 (adult)"
 
 
-def test_a_size_is_never_invented():
+def test_a_size_is_never_invented_and_never_blocks():
+    """WO52 §1 (the owner, 2026-11-01: "never leave it unposted"): no size at all is the only skip; a size the menu
+    lacks takes the nearest value, else the menu's neutral choice — said in the note."""
     with pytest.raises(MappingError):
         _vs("size_0", None)
-    with pytest.raises(MappingError):
-        _vs("size_0", "Q")
-    with pytest.raises(MappingError):
-        _ds("100", "XL", dept="Kids", cat="Shirts & Tops")         # kids letters: not on Depop's kids sizes
-    assert _vs("size_4", "One Size", cat="Accessories")[0].title == "One size"   # only when the item is one size
+    o, note = _vs("size_0", "Q")
+    assert o.title == "One size" and "nothing near Q" in note
+    assert _ds("100", "XL", dept="Kids", cat="Shirts & Tops")[0] == "16 years"     # kids letters: the top of the range
+    assert _vs("size_4", "One Size", cat="Accessories")[0].title == "One size"
 
 
 # ---------------------------------------------------------------- condition, colour, material, package
@@ -352,9 +353,8 @@ def test_depop_keeps_8_photos_with_every_flaw():
     assert len(v.photos) == 14                                                       # up to 20 on Vinted
 
 
-def test_a_required_size_that_doesnt_fit_skips_only_that_site():
+def test_a_kids_letter_size_goes_on_depops_ages_menu():
     item = view(dept="Kids", cat="Shirts & Tops", sub="Tees - Short Sleeve", item_type="tee", size_value="XL",
                 size_us="XL", kids="girls", tab="Girls")
-    with pytest.raises(MappingError):
-        map_depop(item, ask=no_model)                  # Depop's kids sizes are ages only
+    assert map_depop(item, ask=no_model).size == "16 years"     # WO52 §1: never skipped (Depop's kids sizes are ages)
     assert map_vinted(item, ask=no_model, ask_length=no_model).size == "XL"

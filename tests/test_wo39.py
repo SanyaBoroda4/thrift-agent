@@ -212,8 +212,8 @@ def test_the_done_line_names_what_waits_for_her_and_all_done_only_when_nothing_d
     assert crosslist.done_line([], {daily.SIZE_WAIT: ["Alo Yoga Sports Bralette Mauve Taupe"]}) == \
         "💤 Done for now — waiting for a size: Alo Yoga Sports Bralette Mauve Taupe."
     assert crosslist.done_line(["vinted"], {daily.SIZE_WAIT: ["A"], daily.RETRY_WAIT: ["B"]}) == \
-        "💤 Done for now — waiting for a size: A; waiting for your 'retry': B. Vinted catches up next time."
-    assert crosslist.done_line([], {daily.SIZE_WAIT: [], daily.RETRY_WAIT: []}) == "💤 All done — you can close the Mac."
+        "💤 Done for now — waiting for a size: A; waiting for your 'retry': B. Vinted catches up by itself."
+    assert crosslist.done_line([], {daily.SIZE_WAIT: [], daily.RETRY_WAIT: []}) == "💤 All done — nothing is waiting."
     assert crosslist.done_line(None, {daily.SIZE_WAIT: ["A"]}) is None                # work left: no line
 
 

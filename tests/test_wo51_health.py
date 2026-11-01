@@ -229,7 +229,8 @@ def test_a_closed_poshmark_browser_is_reopened_and_its_login_checked(tmp_path, d
 
     first = asyncio.run(go())
     assert len(opened) == 2 and b.ctx is not first and Poster.checked == 1
-    assert said == []
+    assert said == ["Poshmark's Chrome was closed on the Mac — reopened. Please don't quit the Chrome windows on the "
+                    "Mac."]                                    # WO52 §4: one plain line
 
 
 def test_a_browser_that_wont_reopen_backs_off_and_pauses_once(tmp_path, db, said, monkeypatch):
@@ -367,3 +368,16 @@ def test_the_brand_named_twice_in_a_title_is_said_once():
     from thrift_agent import titles
     t = titles.fix("Zara TRF Collection 100% Genuine Leather Zara Moto Jacket Black size S", brand="Zara")
     assert t == "Zara TRF Collection 100% Genuine Leather Moto Jacket Black size S" and not titles.check(t)
+
+
+def test_no_message_assumes_the_mac_sleeps():
+    """WO52 §6: the Mac stays on — no "safe to close", "close the Mac", "next time the Mac is open / wakes"."""
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    bad = re.compile(r"Safe to close|close the Mac|next time the Mac|Mac is (?:next )?open|when the Mac wakes", re.I)
+    for f in [*(root / "thrift_agent").rglob("*.py"), *(root / "api" / "thrift_api").rglob("*.py")]:
+        for n, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            code = line.split("#", 1)[0]
+            strings = re.findall(r"""f?["']([^"']*)["']""", code)
+            assert not any(bad.search(s) for s in strings), f"{f.name}:{n}: {line.strip()}"

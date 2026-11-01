@@ -1,5 +1,5 @@
 """Shares from the API (WO45 §2), the Mac's side: the iPhone's Shortcut POSTs each photo of a share to thrift-api and
-then the share's end (api/thrift_api/uploads.py); while the Mac is open it asks the API for new shares every 30 s,
+then the share's end (api/thrift_api/uploads.py); while it is awake it asks the API for new shares every 30 s,
 downloads them and drops each into the inbox as a folder named by the share id — the same name the Shortcut gives the
 iCloud copy — so the intake takes it like an iCloud folder (`_done.txt` with "done <count>"; `_source.txt` "azure";
 `_test` "1" for a test share, the Shortcut's test copy). Live 2026-10-17: three shares' photos sat on the iPhone for

@@ -946,6 +946,9 @@ class PoshmarkPoster(Poster):
             self.chosen["brand"] = None
             if choice is not None:
                 note = f"brand left empty: '{choice}' didn't take{brands.offered(options)}"
+            if brands.big(r.brand):                        # WO52 §1: never "no brand" for Zara, Forever 21, Nike…
+                raise PosterError(f"brand: the search found no '{r.brand}' — a big brand is never left empty "
+                                  f"(tried {', '.join(names)}){brands.offered(options)}")
         if note:
             self.guesses.append(note)
         await settle(page)
@@ -1583,6 +1586,74 @@ class PoshmarkPoster(Poster):
             return {**out, "ok": price is not None and float(price) == float(new)}
         finally:
             await page.close()
+
+    async def set_brand(self, ctx: BrowserContext, url: str, payload: dict, dry: bool = False,
+                        shots: Path | None = None, go=None) -> dict:
+        """WO52 §0/§1: the listing's brand on its edit page — the brand box cleared and our names tried in order, as the
+        create form does (`_brand`: the brand, the label's text, aliases, then the parent of a sub-line — "Zara TRF
+        Collection" → Zara); nothing else touched; the box read back; then — never in a dry run, and only when `go()`
+        says yes — Update and the Share Listing panel's List This Item for THIS edit (WO40), pressed once; then the
+        public listing's JSON read until it shows the brand. {"ok", "saved", "seen", "live", "error", "shot"}."""
+        m = SEL["listing_url"].search(urlparse(url or "").path)
+        if m is None:
+            raise PosterError(f"not a Poshmark listing address: {url!r}")
+        r = Render.model_validate(payload["render"])
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.shot = (shots or Path(".")) / f"{r.sku}-poshmark-{stamp}-brand{'-dry' if dry else ''}.png"
+        out: dict = {"ok": False, "saved": False, "shot": str(self.shot)}
+        self._roots, self._state, self._render, self.chosen, self.guesses = {}, {}, r, {}, []
+        names = brands.candidates(r.brand, r.brand_label, self.aliases)
+        page = await ctx.new_page()
+        try:
+            resp = await page.goto(SEL["edit_url"].format(base=self.base_url, id=m["id"]))
+            await page.wait_for_load_state("domcontentloaded")
+            if resp is not None and resp.status == 404:
+                return {**out, "error": "the edit page is gone (404)"}
+            box = SEL["brand"](page).first
+            try:
+                await box.wait_for(state="visible", timeout=UPDATE_TIMEOUT_MS)
+            except PlaywrightTimeout:
+                await keep_evidence(page, self.shot, {"url": url, "found": False})
+                return {**out, "error": "no brand field on the edit page"}
+            await box.fill("")
+            try:
+                await self._brand(page, r)
+            except PosterError as e:
+                await keep_evidence(page, self.shot, {"url": url, "error": str(e)})
+                return {**out, "error": f"{e}: nothing saved"}
+            await settle(page)
+            shown = await box.input_value()
+            out["seen"] = {"brand": shown}
+            out["guesses"] = list(self.guesses)
+            await keep_evidence(page, self.shot, {"url": url, "names": names, "seen": out["seen"], "dry": dry})
+            if not any(_key(n) == _key(shown) or brands.extends(n, shown) for n in names):
+                return {**out, "error": f"the brand box reads '{shown}' (ours: {', '.join(names)}): nothing saved"}
+            if dry:
+                return {**out, "ok": True}
+            if go is not None and not go():
+                return {**out, "error": "stopped before Save"}
+            await SEL["update_listing"](page).first.click()
+            out["saved"] = True
+            out["save"] = await self._save_edit(page, m["id"])
+            from thrift_agent.crosslist import poshmark_listing
+            end = time.monotonic() + PUBLIC_CHECK_S * 3
+            live = None
+            while True:
+                live = await asyncio.to_thread(poshmark_listing, url)
+                if (live and _key(live.get("brand") or "") == _key(shown)) or time.monotonic() >= end:
+                    break
+                await asyncio.sleep(PUBLIC_EVERY_S)
+            out["live"] = live
+            out["ok"] = bool(live and _key(live.get("brand") or "") == _key(shown))
+            out["note"] = f"the public page shows brand {live.get('brand') if live else None}"
+            if not out["ok"]:
+                out["error"] = f"saved; the public page shows brand {live.get('brand') if live else None}"
+            return out
+        finally:
+            try:
+                await page.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     async def set_category(self, ctx: BrowserContext, url: str, payload: dict, dry: bool = False,
                            shots: Path | None = None, go=None) -> dict:

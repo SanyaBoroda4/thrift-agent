@@ -134,6 +134,12 @@ def _claim(db: DB, key: str, every: float, force: bool = False) -> bool:
 
 # ---------------------------------------------------------------- what /sync gets
 
+def _priced_at(db: DB, iid: str) -> str | None:
+    """When the owner priced the item (its first price_set event)."""
+    row = db.conn.execute("SELECT ts FROM events WHERE ref=? AND kind='price_set' ORDER BY rowid LIMIT 1", (iid,)).fetchone()
+    return row["ts"] if row else None
+
+
 def item_doc(db: DB, iid: str) -> dict | None:
     it = db.item(iid)
     if it is None:
@@ -145,6 +151,7 @@ def item_doc(db: DB, iid: str) -> dict | None:
             # WO45 §7: the API's safety net for an item priced but not live — the status, whether the owner priced
             # it, a test item (never listed), and how many photos it has
             "status": it["status"], "priced": bool(it["owner_price"]), "test": bool(it["test"]),
+            "priced_at": _priced_at(db, iid) if it["owner_price"] else None,      # WO52 §5: the 2-hour net's clock
             "photos": len((render.get("photos") or [])),
             # WO41: the price-drop clock and stage
             "all_live_at": it["all_live_at"], "drop_stage": it["drop_stage"] or 0, "next_drop_at": it["next_drop_at"],
@@ -262,21 +269,25 @@ def tick(db: DB, force_beat: bool = False, info: dict | None = None) -> dict:
     if client is None:
         say_off(db)
         return {"off": True}
+    from thrift_agent import jobs
     done = {}
     try:
         if _due(db, LAST_PUSH, PUSH_EVERY, force_beat):
             done["synced"] = push(db, client)
             done["flushed"] = flush(db, client)
             _stamp(db, LAST_PUSH)
+            jobs.ok(db, "sync")                                                         # WO52 §4
         if _due(db, LAST_BEAT, BEAT_EVERY, force_beat):
             beat = client.post("/heartbeat", {"source": "mac", "info": info or {}})
             _stamp(db, LAST_BEAT)
+            jobs.ok(db, "heartbeat")
             done["beat"] = True
             when = beat.get("go_live_at") if beat.get("mode") == "live" else None
             if when and db.kv_get(GOLIVE) != when:
                 done["golive"] = golive_check(db, client, when)
     except ApiError as e:
         db.log(None, "api_down", {"error": str(e)})
+        jobs.failed(db, "sync", str(e))
         done["error"] = str(e)
     return done
 
@@ -329,11 +340,14 @@ def fetch_tasks(db: DB, sites: list[str], force: bool = False) -> int:
     client = api()
     if client is None or not sites or not _claim(db, LAST_TASKS, TASKS_EVERY, force):
         return 0                                    # (the API down: asked again after TASKS_EVERY, never a storm)
+    from thrift_agent import jobs
     try:
         answer = client.get("/tasks", {"sites": ",".join(sites)})
     except ApiError as e:
         db.log(None, "api_down", {"path": "/tasks", "error": str(e)})
+        jobs.failed(db, "takedowns", f"GET /tasks: {e}")                               # WO52 §4
         return 0
+    jobs.ok(db, "takedowns")
     got = answer.get("tasks") or []
     for iid in answer.get("sold") or []:            # sold anywhere: never listed after the sale (A1)
         skip_sold(db, iid)

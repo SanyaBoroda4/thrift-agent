@@ -460,13 +460,13 @@ def test_a_dry_run_reads_back_and_never_clicks(tmp_path, selectors):
 @pytest.mark.parametrize("mp,key,shown,dry,ok", [
     ("depop", "brand-input", "Halogen", True, False),          # another brand: never (the Alo set's menu offered it)
     ("depop", "brand-input", "Halogen", False, False),         # a publish: cancelled, nothing clicked — it waits
-    ("depop", "brand-input", "Other", True, True),             # Depop's own fallback when none of ours is listed
+    ("depop", "brand-input", "Other", True, False),            # WO52: a big brand (Tory Burch) is never "Other"
     ("depop", "brand-input", "Tory Burch Sport", True, True),  # ours followed by more words (the one the step took)
     ("depop", "brand-input", "Tory", True, False),             # never a shorter name
     ("depop", "style-input", ["Casual"], True, False),         # Depop's Style: never (the owner, 2026-10-12)
     ("depop", "occasion-input", ["Party"], True, False),       # any other multi-select of Depop's own: empty
     ("vinted", "brand_shown", "H&M", True, False),             # live 2026-10-09: the silk pants read Vinted's own H&M
-    ("vinted", "brand_shown", "List without brand", True, True),
+    ("vinted", "brand_shown", "List without brand", True, False),   # WO52: never for a big brand
     ("vinted", "color", ["Red", "Black"], True, False),        # a colour we didn't ask for
 ])
 def test_the_read_back_takes_only_our_values(tmp_path, selectors, monkeypatch, mp, key, shown, dry, ok):

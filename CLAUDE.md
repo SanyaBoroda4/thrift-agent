@@ -1281,6 +1281,54 @@ item goes up on all three sites or she is told why (§7); she only taps (§8); e
   the focus); the cover dialog's checkmark on the first thumb is waited for (it came a moment after the 11th
   thumbnail), and a cover dialog still open when the form is left is cancelled first. Stand-in: `oneSizeMenu`.
 
+## Never again "she shared and nothing was posted" (WO52 §0, §1, §4–§7, 2026-11-01)
+The owner's rules: no field ever leaves an item unposted; site changes are found before her items find them; no
+browser stays dead; anything that still needs a code fix is ONE 🚨 alarm within 20 minutes; every background job
+proves it is alive.
+- **Brands (§1, `brands.candidates` / `parents` / `big`):** our names, then a sub-line's PARENT (`data/brand_parents.json`:
+  "Zara TRF Collection" → "Zara TRF" → "Zara", "ASTR the Label" → "ASTR", "Free People Movement" → Free People; `keep`:
+  "Lauren Ralph Lauren" stays itself), then the alias file, then the site's search with variants, only then the site's
+  no-brand choice — and NEVER that for a big brand (`data/big_brands.json`, ~330 resale brands): the read-back refuses
+  "Other" / "List without brand" / an empty Poshmark brand for one (`BrandOf(names, [])`, Poshmark's `_brand` raises
+  "a big brand is never left empty" — a site failure, the 🚨 path). Vinted: its own fill that is one of our names is
+  kept (live: Vinted had filled "Forever 21" and the step clicked "List without brand" over it); its 'Use "<brand>" as
+  brand' row lists our exact brand when its list lacks it (never for a big brand).
+- **Live brand fixes:** `thrift brand-fix <item> [--marketplace m] [--brand B] [--dry-run]` — an edit kind "brand"
+  (`edits.queue_brand`): Poshmark's edit page (`PoshmarkPoster.set_brand`: the box cleared, our names tried, read back,
+  Update → List This Item for this edit, the public JSON's brand), Depop / Vinted through the extension's "fields" job
+  (`setFields` with `fields.brand`; `_fields_match` reads the brand back). Nothing else on the listing changes.
+- **Sizes (§1, `catalogs/sizes.py` `depop_size` / `vinted_size`):** the exact value, else the size without its fit mark
+  ("27P" → 27"), else the menu's nearest (WO50's `menu_size`), else the menu's neutral choice (One size / Other) — each
+  fallback in the note; kids letters on Depop's ages menu (XS → 5 … XL → 16 years). Only "no size at all" skips.
+  (Live: the Madewell 27P jeans skipped on Depop since Oct 27 — Depop 88 vs 89.)
+- **Categories (§1, depop.js):** our leaf under our heading; a name under two headings of one department by the heading
+  our path names (the Topten vest); none there → that heading's own "Other" (`seen.category_fallback`, accepted by the
+  read-back, a check line "category set to … › Other (closest)").
+- **Jobs (§4, `thrift_agent/jobs.py`, kv `job_health`):** order sweeps, photo checks, take-downs, price drops, sync,
+  heartbeat, cleanup record their last success / error; no success for 12 h (24 for daily jobs) → ONE private line
+  naming the job and its last error, "✅ … works again" after; `thrift doctor` lists them.
+- **Browsers (§4):** Poshmark's context probed every 5 minutes even when idle (`Browser.ensure`, `PROBE_EVERY`), reopened
+  when gone; closed by hand (its own close event) → "Poshmark's Chrome was closed on the Mac — reopened. Please don't
+  quit the Chrome windows on the Mac." (`runner.closed_line`, ≤ once per 6 h); the Thrift Chrome found quit when the
+  bridge restarts it → the same line for it.
+- **The alarm (§5, `thrift_agent/alarm.py`, kv `alarms`):** a site paused 20 minutes with items waiting (not the owner's
+  pause, not a login / CAPTCHA page) → ONE private "🚨 <Site> posting is blocked since … — N items waiting. Step …: …
+  Evidence: …" with a ready-to-paste Claude Code request in a code block; again only after 4 h, ≤ twice a day; cleared
+  by health's "✅ <Site> back to normal — posting resumed, N items going up." `alarm.raise_for` is the call point for
+  the form check. **thrift-api's 2-hour net** (`watch.not_live`, the 15-minute timer): an item priced ≥ 2 h ago (within
+  3 days; `items.priced_at` synced from the Mac's first `price_set`) not live on all three sites → ONE 🚨 private line
+  naming each missing site's reason, whatever it is.
+- **Wording (§6):** no "safe to close", "close the Mac", "next time the Mac is open / wakes" anywhere (a grep test);
+  "💤 All done — nothing is waiting."; a failed site on the ✅ card says "next try 4:45 PM" (`crosslist.next_try`); the
+  status message's daily cap counts Poshmark's own listings (live: 36 across all sites read as "cap reached" →
+  "after 08:00" at 4 PM).
+- **Memory (§7, `thrift_agent/memory.py`):** `top`'s footprints grouped by browser (ours: the Thrift Chrome, Poshmark's
+  Chrome; the Mac's own: Safari, her Chrome); `thrift doctor` "Memory by app"; pressure warning+ with the Thrift Chrome
+  over 3 GB and the sites idle → it is restarted through its LaunchAgent (≤ every 12 h, one line); critical for 30 min
+  → one line naming the biggest users (Safari's tabs named when they lead).
+- Tests: `tests/test_wo52_brands.py`, `tests/test_wo52_watch.py`, `tests/api/test_api_wo52.py`, the WO52 part of
+  `tests/js/content.test.mjs` (stand-in hooks `customBrand`, `otherOnly`, `vests`).
+
 ## Posting that heals itself; brands, shipping, families (WO51 §2–§5, 2026-11-01)
 Live: her 70-photo share's first three priced items failed on all three sites within 22 seconds, none of it about the
 items — Poshmark's Chrome had been quit by hand from the Dock on Oct 28 and the poster called `new_page` on the dead

@@ -1,14 +1,14 @@
-"""The daily window (WO28): the Mac is opened about once a day for ~30 minutes, often on battery, then closed.
+"""The daily window (WO28; since WO51 the Mac stays on — a window is the owner's day, not the lid).
 
 On worker start and on every wake: the same catch-up as a restart — the inbox looked at, the queue looked after (never
 a message sent twice, WO37) — and ONE line, "Back online — …", when there is work. During the
-window, ONE status message per window is kept up to date by editing it: "⏳ Working …, please don't close the Mac
-yet" while items are processed or listings published, "✓ Safe to close …" once only the owner's answers (or the listing
-hours) are left, "💤 All done — you can close the Mac." when nothing is (WO39: nor waits for her reply). Nothing is
+window, ONE status message per window is kept up to date by editing it: "⏳ Working …"
+while items are processed or listings published, "⏸ Waiting — …" once only the owner's answers (or the listing
+hours) are left, "💤 All done — nothing is waiting." when nothing is (WO39: nor waits for her reply). Nothing is
 said while the lid is closed (the Mac's short maintenance wakes at night). The estimate uses the real timings of the last runs.
 
 WO29 (a quiet group): "Back online" and the status message go to the OPS chat (the owner's private chat; `thrift
-status` shows the message too). The group's only "safe to close" is the line the last "Posted ✓" of a window carries
+status` shows the message too). The group's only "all done" is the line the last "Posted ✓" of a window carries
 (all_done); the battery line is one of the group's plain action-needed lines."""
 from __future__ import annotations
 
@@ -33,8 +33,8 @@ SESSION_KEY = "daily_session"      # kv: when the current window began (worker s
 STATUS_KEY = "daily_status"        # kv: {"session", "message_id", "text", "worked"} — the window's status message
 DEFAULT_S = {"batch": 60.0, "item": 120.0, "post": 180.0}   # until the event log has real timings
 LAST_N = 20                        # the timings are the medians of this many latest runs
-ALL_DONE = "💤 All done — you can close the Mac."   # WO39: the group card's words (WO34) — the old ✓ wording is gone
-DONT_CLOSE = "Please don't close the Mac yet."
+ALL_DONE = "💤 All done — nothing is waiting."   # WO52 §6: the Mac stays on — no Mac-closing wording any more
+DONT_CLOSE = ""
 
 
 def _now() -> datetime:
@@ -207,9 +207,11 @@ def blocked(s: Settings, db: DB, now: datetime | None = None) -> tuple[bool, str
     if db.kv_get(power.BATTERY_KEY):
         return hours_open, "the battery is low — they go on once the Mac is charging", opens
     hour_ago, midnight = windows(now, sch["timezone"])
-    ok, why = can_post(s, db.listed_since(hour_ago), db.listed_since(midnight), now)
+    # WO52 §6 (live 2026-11-01 4:08 PM: "will go up after 08:00" at 4 PM): Poshmark's own listings against its cap —
+    # every site's together had counted (36 > 25)
+    ok, why = can_post(s, db.listed_since(hour_ago, "poshmark"), db.listed_since(midnight, "poshmark"), now)
     if not ok and why == "daily cap reached":
-        return False, None, opens
+        return False, "today's limit reached — they go up tomorrow from " + opens, opens
     return hours_open, None, opens
 
 
@@ -227,17 +229,17 @@ def status_text(w: Work, p: PosterNow, t: Timing, hours_open: bool, block: str |
         if w.busy:
             left = [x for x in ((_n(w.new_shares, "new share") if w.new_shares else ""),
                                 _n(w.processing + (w.to_publish if publishing else 0), "item")) if x]
-            head = f"⏳ Working — {' and '.join(left)} left, about {mins} min. {DONT_CLOSE}"
+            head = f"⏳ Working — {' and '.join(left)} left, about {mins} min."
         else:
             nxt = "publishing now" if p.busy else (f"next in ~{max(1, math.ceil(wait_next / 60))} min"
                                                    if wait_next >= 30 else "next in a moment")
-            head = f"⏳ {_n(w.to_publish, 'listing')} still to publish, {nxt}. {DONT_CLOSE}"
+            head = f"⏳ {_n(w.to_publish, 'listing')} still to publish, {nxt}."
         also = f"\n{_n(w.cards, 'card is', 'cards are')} also waiting for your answer." if w.cards else ""
         return head + also
     parts = []
     if w.to_publish:
         if not hours_open:
-            parts.append(f"{_n(w.to_publish, 'listing')} will go up after {opens} next time the Mac is open")
+            parts.append(f"{_n(w.to_publish, 'listing')} go up at {opens}")
         elif block:
             parts.append(f"{_n(w.to_publish, 'listing')} wait: {block}")
         elif not (p.running and p.live):
@@ -250,7 +252,7 @@ def status_text(w: Work, p: PosterNow, t: Timing, hours_open: bool, block: str |
                      "(answers within 24 h are kept)")
     for what, names in w.waits:                         # WO39: never "All done" while her reply is waited for
         parts.append(f"waiting for {what}: {', '.join(names[:3])}{f' (+{len(names) - 3} more)' if len(names) > 3 else ''}")
-    return f"✓ Safe to close — {'; '.join(parts)}" if parts else ALL_DONE
+    return f"⏸ Waiting — {'; '.join(parts)}" if parts else ALL_DONE
 
 
 def all_done(s: Settings, db: DB) -> bool:
@@ -265,7 +267,7 @@ def all_done(s: Settings, db: DB) -> bool:
 def done_state(s: Settings, db: DB) -> list[str] | None:
     """WO34: None while there is work; [] when nothing is left on ANY site ("💤 All done"); else the sites that still
     have listings to put up but are stopped for the window, at their cap or without their Chrome ("💤 Done for now …
-    Vinted catches up next time") — live, those had counted as done and the group heard "safe to close the Mac" while
+    Vinted catches up next time") — live, those had counted as done and the group heard "all done" while
     three sets waited for Vinted."""
     if not all_done(s, db):
         return None

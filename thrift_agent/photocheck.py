@@ -17,7 +17,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from thrift_agent import crosslist, edits, notify
+from thrift_agent import jobs, crosslist, edits, notify
 from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
 
@@ -103,10 +103,13 @@ async def bulk_reads(s: Settings, db: DB, ps: dict, sites: list[str], now: datet
             bulk = await poster.read_shop()
         except Exception as e:  # noqa: BLE001
             db.log(None, "photocheck_bulk_failed", {"site": mp, "error": f"{type(e).__name__}: {e}"[:200]})
+            jobs.failed(db, f"photo_check:{mp}", f"{type(e).__name__}: {e}")            # WO52 §4
             continue
         if bulk.get("error"):
             db.log(None, "photocheck_bulk_failed", {"site": mp, "error": str(bulk["error"])[:200]})
+            jobs.failed(db, f"photo_check:{mp}", str(bulk["error"]))
             continue
+        jobs.ok(db, f"photo_check:{mp}")
         stamps[mp] = now.isoformat(timespec="seconds")
         db.kv_set(BULK_AT, json.dumps(stamps))
         if bulk.get("shape") and said.get(mp) != bulk["shape"]:

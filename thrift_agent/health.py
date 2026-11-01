@@ -57,7 +57,7 @@ SITE_RE = re.compile(
     r"nothing happened for \d+ ?s|differs from the recording|not recorded yet|no search box|did not show|didn't show|"
     r"neither showed|can't tell whether|offered: ?\)|not offered \(\s*\)|system error|didn't take|stayed disabled|"
     r"toggles|didn't preselect|did not preselect|isn't (?:there|on the form)|^Mismatch: |no 'List without brand'|"
-    r"photos? \d+ of \d+|the page reloaded", re.I)
+    r"photos? \d+ of \d+|the page reloaded|a big brand is never", re.I)
 ITEM_RE = re.compile(r"refused the form: (?!no error shown)|\bFill in |\(offered: [^)\s][^)]*\)|"
                      r"not offered \([^)\s][^)]*\)|\bskipped: ", re.I)
 
@@ -239,7 +239,9 @@ def resume(db: DB, mp: str, why: str = "test passed", say: bool = True, force: b
     db.kv_set(STREAK, json.dumps(streak))
     db.log(None, "site_resumed", {"mp": mp, "why": why, "kind": was.get("kind"), "tests": was.get("tests")})
     if say and (was.get("said") or force):
-        notify.say(f"✅ {LABEL.get(mp, mp)} back to normal — posting resumed.")
+        n = waiting(db, mp)
+        going = f", {n} item{'s' if n != 1 else ''} going up" if n else ""
+        notify.say(f"✅ {LABEL.get(mp, mp)} back to normal — posting resumed{going}.")
     return True
 
 

@@ -598,7 +598,7 @@ def test_the_card_names_a_failed_sites_step_and_the_next_try(tmp_path):
     db.upsert_listing(iid, "vinted", status="failed", error="Mismatch: photos 0 of 8 on the form", attempts=1)
     text = crosslist.card_text(s, db, iid)
     assert "⏳ Depop — later" in text
-    assert "⏳ Vinted — photos failed, next try when the Mac is next open" in text
+    assert "⏳ Vinted — photos failed, next try " in text and "Mac" not in text
     db.upsert_listing(iid, "vinted", status="failed", error="unconfirmed publish: x", attempts=1)
     assert "⏳ Vinted — later" in crosslist.card_text(s, db, iid)     # settled by the site's own data, as before
 
@@ -783,7 +783,7 @@ class CardBot:
 
 def test_the_card_is_edited_in_place_and_the_sleep_line_rides_on_the_newest(tmp_path, quiet, monkeypatch):
     """WO34, the owner: one message per item, edited — never a second one — when a site posts later; "💤 Done for now —
-    … Vinted catches up next time." while a stopped site still has listings, "💤 All done" once it caught up; the 💤
+    … Vinted catches up by itself." while a stopped site still has listings, "💤 All done" once it caught up; the 💤
     line is the newest card's only; the posters' notes go to the ops chat, once each."""
     from thrift_agent import approve
     bot = CardBot()

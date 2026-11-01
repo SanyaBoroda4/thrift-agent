@@ -37,7 +37,8 @@ def every_15_min(db: Database, now: datetime | None = None, mode: str | None = N
             "reminders": reminders(db, now, mode), "gmail": gmail_watch(db, now, mode),   # take-downs' safety net)
             "mac": mac_watch(db, now, mode),
             "retried": retry_failed(db, now, mode), "late_takedowns": core.say_late_takedowns(db, now, mode),
-            "unposted": watch.unposted(db, now, mode)}          # WO45 §7: an item priced but not live on a site
+            "unposted": watch.unposted(db, now, mode),          # WO45 §7: an item priced but not live on a site
+            "not_live": watch.not_live(db, now, mode)}          # WO52 §5: … 2 h after its price, whatever the reason
 
 
 def every_5_min(db: Database, now: datetime | None = None, mode: str | None = None) -> dict:

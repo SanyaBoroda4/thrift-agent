@@ -283,7 +283,7 @@ def _now() -> str:
 
 # ---------------------------------------------------------------- §2, the sweep
 
-EVERY = timedelta(hours=6)              # every 6 hours while the Mac is open
+EVERY = timedelta(hours=6)              # every 6 hours
 FIRST_HOUR = 8                          # the day's first sweep: the first moment the Mac is awake after 08:00
 RETRY = timedelta(minutes=30)           # a sweep that failed is tried again after this
 BUDGET = 60.0                           # inside the pause after a listing only when this much of it is left
@@ -396,6 +396,8 @@ async def sweep(s: Settings, db, site: str, read, now: datetime | None = None) -
         except Exception as e:  # noqa: BLE001 — tried again after RETRY; never the poster's end
             _put(db, KV_FAILED, site, _iso(now))
             db.log(None, "orders_failed", {"site": site, "error": f"{type(e).__name__}: {e}"[:300]})
+            from thrift_agent import jobs
+            jobs.failed(db, f"order_sweep:{site}", f"{type(e).__name__}: {e}")      # WO52 §4
             return {"site": site, "status": "failed", "error": f"{type(e).__name__}: {e}"[:300]}
         moment = now or datetime.now(timezone.utc)
         orders, unknown = [], []
@@ -420,6 +422,8 @@ async def sweep(s: Settings, db, site: str, read, now: datetime | None = None) -
         counts: dict[str, int] = {}
         for order in orders:
             counts[order["status"]] = counts.get(order["status"], 0) + 1
+        from thrift_agent import jobs
+        jobs.ok(db, f"order_sweep:{site}")                                            # WO52 §4
         db.log(None, "orders_swept", {"site": site, "orders": len(orders), "statuses": counts, "sent": sent,
                                       "seconds": round(time.monotonic() - t0, 1),
                                       "source": getattr(found, "source", None), "note": getattr(found, "note", None)})

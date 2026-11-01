@@ -340,6 +340,22 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
         i = mine[0].k;
         shown = `${mine[0].h} › ${mine[0].t}`;
       }
+      if (i < 0 && head) {
+        // WO52 §1 (the owner: "never leave it unposted — pick the closest category logically"): our leaf isn't under
+        // our heading here — the heading's own "Other" (the family's Other), typed and picked, said in a check line
+        await T.type(box, "Other");
+        await T.until(() => optionsOf(menuOf(cid)).some((o) => T.norm(textOf(o)) === "other"), 4000);
+        const all = await options(cid);
+        const k = all.findIndex((o) => T.norm(textOf(o)) === "other" && T.norm(T.headerOf(o, menuOf(cid)) || "") === T.norm(head));
+        if (k >= 0) {
+          await T.click(all[k]);
+          T.picked(st, cid, value, `${head} › Other`);
+          st.categoryFallback = `${head} > Other`;
+          st.guesses.push(`Depop: category set to ${head} › Other (closest: Depop had no '${name}' there)`);
+          await T.until(() => !optionsOf(menuOf(cid)).length, 1500);
+          return;
+        }
+      }
     }
     if (i < 0) {
       await T.screenshot(`menu-${cid}`);                // the open menu, for the record
@@ -715,7 +731,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
         // first: the size and the attributes come after it)
         const leaf = String(f.category || "").split(" > ").pop();
         const valueOf = (cid) => document.getElementById(cid)?.value || "";
-        if (st.picked[ids.category] && T.norm(valueOf(ids.category)) !== T.norm(leaf)) {
+        if (st.picked[ids.category] && !st.categoryFallback && T.norm(valueOf(ids.category)) !== T.norm(leaf)) {
           st.notes.push(`the category read '${valueOf(ids.category)}': chosen again`);
           await choose(st, ids.category, f.category, { typed: leaf, category: true });
         }
@@ -823,11 +839,15 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
       if (condition && !of(ids.condition)) {             // emptied with the category: the listing's own set back
         await T.step("condition", st, async () => choose(st, ids.condition, condition));
       }
+      if (f.brand) {                                     // WO52 §0/§1: the brand itself changed (the owner's fix)
+        await T.step("brand", st, async () => brand(st, f.brand, f.brand_typed || f.brand, T.brandNames(f)),
+                     { limit: 60000 });
+      }
     },
     fieldsSeen(job, st) {
       const ids = S().combo.ids;
       const of = (cid) => document.getElementById(cid)?.value || "";
-      return { category: of(ids.category), size: of(ids.size), condition: of(ids.condition),
+      return { category: of(ids.category), size: of(ids.size), condition: of(ids.condition), brand: of(ids.brand),
                size_menu: st.sizeMenu || null, picked: st.picked ? { ...st.picked } : null };
     },
 
@@ -851,7 +871,9 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
       };
       const leaf = String(f.category || "").split(" > ").pop();
       const cat = of(ids.category);
-      seen[ids.category] = cat ? [T.norm(cat) === T.norm(leaf) && st.picked[ids.category] ? f.category : cat] : [];
+      seen[ids.category] = cat ? [T.norm(cat) === T.norm(leaf) && st.picked[ids.category] ? f.category
+        : st.categoryFallback && T.norm(cat) === "other" ? st.categoryFallback : cat] : [];
+      seen.category_fallback = st.categoryFallback || null;      // WO52 §1: the family's Other, chosen on purpose
       for (const cid of [ids.condition, ids.size, ids.package]) if (of(cid)) seen[cid] = [of(cid)];
       seen[ids.brand] = of(ids.brand) || null;
       seen.brand_choice = st.brandChoice || null;         // WO36: what the brand step picked, and how

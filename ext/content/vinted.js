@@ -232,6 +232,17 @@
   }
 
   async function brand(st, f) {
+    const names0 = f.brand ? T.brandNames(f) : [];
+    const already = valueOf("brand");
+    // WO52 §1 (live 2026-11-01, the Forever 21 jacket): Vinted had filled "Forever 21" itself — ours — and the step
+    // searched anyway, saw no rows and clicked "List without brand" over it. Vinted's own fill is kept when it is ours.
+    const mine = already && names0.find((n) => T.brandKey(n) === T.brandKey(already));
+    if (mine) {
+      T.picked(st, "brand", f.brand, already);
+      st.brandChoice = already;
+      if (T.brandKey(already) !== T.brandKey(f.brand)) st.guesses.push(T.brandNote(f.brand, already));
+      return;
+    }
     await open("brand");
     let search = await T.waitFor(S().brand.search, { timeout: 3000 });
     if (!search) {                                       // the panel opened late: once more, then never a guess
@@ -279,6 +290,23 @@
       if (hit) return take(hit, `brand set to '${hit.text}' (from '${longer.from}')`);
     }
     if (f.brand) await T.screenshot("menu-brand");
+    // WO52 §1: Vinted offers 'Use "<text>" as brand' for a name its list lacks (live: 'Use "Relibeauty" as brand') —
+    // our brand as written, before "List without brand" (never for a big brand: that is a failed search, the read-back
+    // refuses it and the item waits)
+    if (f.brand && !f.brand_big) {
+      const custom = await find(f.brand, (texts) => texts.findIndex((t) => {
+        const m = /^use\s+["“']?(.+?)["”']?\s+as\s+(?:a\s+)?brand$/i.exec(T.norm(t));
+        return !!m && T.brandKey(m[1]) === T.brandKey(f.brand);
+      }));
+      if (custom) {
+        await T.click(custom.row);
+        T.picked(st, "brand", f.brand, f.brand);
+        st.brandChoice = f.brand;
+        st.guesses.push(`brand '${f.brand}' added as Vinted's own entry (its list has none)`);
+        escape();
+        return;
+      }
+    }
     const none = await noBrandOption();
     if (!none) {
       await T.screenshot("menu-no-brand");
@@ -505,7 +533,10 @@
       }
       // live 2026-10-18: a new category empties the brand ("Fill in brand to continue" — Vinted refused the Save), the
       // condition and the package size — the listing's own set back, the same brand searched as the sell form does
-      if (before.brand && !valueOf("brand").trim()) {
+      if (f.brand) {                                     // WO52 §0/§1: the brand itself changed (the owner's fix)
+        await T.step("brand", st, async () => brand(st, { brand: f.brand, brand_candidates: f.brand_candidates || [f.brand],
+                                                         brand_big: !!f.brand_big }), { limit: 60000 });
+      } else if (before.brand && !valueOf("brand").trim()) {
         await T.step("brand", st, async () => brand(st, { brand: before.brand, brand_candidates: [before.brand] }),
                      { limit: 60000 });
       }

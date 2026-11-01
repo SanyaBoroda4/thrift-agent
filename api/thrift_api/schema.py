@@ -79,7 +79,8 @@ TABLES = (
 COLUMNS = {
     "items": {"all_live_at": "TEXT", "drop_stage": "INTEGER", "next_drop_at": "TEXT", "no_drop": "TEXT",
               # WO45 §7: the safety net — the Mac's status, whether the owner priced it, a test item, its photos
-              "status": "TEXT", "priced": "INTEGER", "test": "INTEGER", "photos": "INTEGER"},
+              "status": "TEXT", "priced": "INTEGER", "test": "INTEGER", "photos": "INTEGER",
+              "priced_at": "TEXT"},                                      # WO52 §5: the 2-hour net's clock
     "listings": {"price_live": "DOUBLE PRECISION", "price_read_at": "TEXT",
                  # WO45 §6/§7: the row's reason, the photos sent and the photos the site shows
                  "error": "TEXT", "photos_sent": "INTEGER", "photos_live": "INTEGER", "photos_read_at": "TEXT"},

@@ -247,6 +247,13 @@ document.getElementById("brand").addEventListener("click", () => {
       d.addEventListener("click", () => { brandSet(b); content.innerHTML = ""; });
       ul.appendChild(li);
     });
+    // WO52 (live 2026-11-01): 'Use "Relibeauty" as brand' for a name the list lacks (window.__FIXTURE.customBrand)
+    if (F.customBrand && search.value.trim() && !BRANDS.some((b) => b.toLowerCase() === search.value.trim().toLowerCase())) {
+      const typed = search.value.trim();
+      const [cli, cd] = cell(`Use "${typed}" as brand`, "custom-brand", "button");
+      cd.addEventListener("click", () => { brandSet(typed); window.__customBrand = typed; content.innerHTML = ""; });
+      ul.appendChild(cli);
+    }
     const [li, d] = cell("List without brand", "empty-brand", "radio");      // "No brand indicated" (WO35)
     d.addEventListener("click", () => {
       brandSet("List without brand"); window.__noBrand = true;   // as live (2026-10-11)

@@ -2,7 +2,7 @@
 name the link, "⏳ <Site> — later" while it hasn't posted — an empty line between, and the 💤 line last."""
 DOT = {"poshmark": "🟣", "depop": "🔴", "vinted": "🟢"}
 LABEL = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted"}
-ALL_DONE = "💤 All done — you can close the Mac."
+ALL_DONE = "💤 All done — nothing is waiting."
 
 
 def card(name: str, price, sites: list[tuple[str, str | None]], last: str | None = None) -> str:
@@ -17,4 +17,5 @@ def card(name: str, price, sites: list[tuple[str, str | None]], last: str | None
 def done_for_now(*sites: str) -> str:
     names = [LABEL[s] for s in sites]
     joined = names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
-    return f"💤 Done for now — you can close the Mac. {joined} catch{'es' if len(names) == 1 else ''} up next time."
+    by = "itself" if len(names) == 1 else "themselves"
+    return f"💤 Done for now. {joined} catch{'es' if len(names) == 1 else ''} up by {by}."

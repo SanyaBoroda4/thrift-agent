@@ -836,6 +836,18 @@ def titles(review: bool = typer.Option(False, "--review", help="every live title
 SITES = ("poshmark", "depop", "vinted")
 
 
+@app.command("brand-fix")
+def brand_fix(item_id: str,
+              marketplace: str = typer.Option(None, "--marketplace", help="poshmark | depop | vinted (default: all live)"),
+              brand: str = typer.Option(None, "--brand", help="the brand to set (default: the item's own)"),
+              dry_run: bool = typer.Option(False, "--dry-run", help="fill the edit page, never save")) -> None:
+    """WO52 §0: a live listing's brand set on its edit page (our names, then a sub-line's parent — "Zara TRF
+    Collection" → Zara), nothing else changed; made by the running poster, read back."""
+    from thrift_agent import edits
+    made = edits.queue_brand(settings(), _db(), item_id, [marketplace] if marketplace else None, brand, dry=dry_run)
+    print(f"{len(made)} brand edit(s) queued{' (dry runs)' if dry_run else ''} — the running poster makes them")
+
+
 @app.command()
 def pause(site: str) -> None:
     """WO51: the owner's pause of one site (poshmark | depop | vinted) — no new listing there until `thrift resume`;

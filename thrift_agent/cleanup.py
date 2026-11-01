@@ -434,6 +434,9 @@ def run(s: Settings, db: DB, dry: bool = False, now: datetime | None = None, api
         freed += r.bytes
     summary = {"at": now.isoformat(timespec="seconds"), "dry": dry, "freed": freed, "removed": len(removed),
                "failed": len(failed), "kept": len(kept)}
+    if not dry:
+        from thrift_agent import jobs
+        jobs.ok(db, "cleanup")                                                          # WO52 §4
     db.log(None, "cleanup", {**summary, "removals": [{**asdict(r), "path": Path(r.path).name, "files": len(r.files)}
                                                       for r in removed],
                              "failures": [{**f, "path": Path(f["path"]).name} for f in failed], "notes": kept})

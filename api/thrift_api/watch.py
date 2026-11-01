@@ -28,7 +28,8 @@ EVENING_DONE = "evening_line_day"         # settings: the local day the 📊 lin
 KEEP_REASONS = ("no size on the item", "shared again", "already live", "sold", "not published automatically",
                 "unconfirmed publish", "mismatch", "retried by the safety net", "skipped: already",
                 "refused the form",
-                "waiting for the brand", "isn't the item's family")   # the Mac's own re-check settles a refused form (WO39; live 2026-10-20 the net
+                "waiting for the brand",
+                "isn't the item's family")   # the Mac's own re-check settles a refused form (WO39; live 2026-10-20 the net
 #                                       re-queued the Tory Burch before that re-check could run)
 
 
@@ -183,6 +184,49 @@ def _unposted_rows(db: Database, now: datetime) -> list[dict]:
             continue
         out.append(dict(row))
     return out
+
+
+NOT_LIVE_AFTER = timedelta(hours=2)       # WO52 §5: priced this long ago and not live on all three sites
+NOT_LIVE_WINDOW = timedelta(days=3)       # … priced within this (history is never replayed)
+NOT_LIVE_SAID = "not_live_said:"          # settings: + item — the 🚨 line said (once)
+SITES = ("poshmark", "depop", "vinted")
+
+
+def not_live(db: Database, now: datetime | None = None, mode: str | None = None) -> list[str]:
+    """WO52 §5 (the owner, 2026-11-01): the net that needs no reason — any priced item (never a test item) priced 2
+    hours ago and not live on all three sites gets ONE private 🚨 line, WHATEVER the recorded reason (the 1-hour net
+    above skips the reasons the Mac settles itself; this one names them): "🚨 Zara Moto Jacket isn't live everywhere 2 h
+    after its price — Depop: refused the form …; Vinted: not tried yet". Returns the items said."""
+    now, mode = (util.aware(now) if now else util.utcnow()), mode or util.mode()
+    if mode != "live":
+        return []
+    out = core.Outbox(now, mode)
+    said = []
+    with db.tx():
+        rows = db.query("SELECT id, title, priced_at FROM items WHERE COALESCE(priced, 0) = 1 AND COALESCE(test, 0) = 0 "
+                        "AND COALESCE(status, '') NOT IN ('dropped', 'sold') AND priced_at IS NOT NULL AND priced_at <= ? "
+                        "AND priced_at >= ?", (iso(now - NOT_LIVE_AFTER), iso(now - NOT_LIVE_WINDOW)))
+        for it in rows:
+            if core.setting(db, NOT_LIVE_SAID + it["id"]):
+                continue
+            listings = {r["marketplace"]: r for r in db.query(
+                "SELECT marketplace, status, error FROM listings WHERE item_id = ?", (it["id"],))}
+            if any((listings.get(mp) or {}).get("status") in ("sold", "delisted") for mp in SITES):
+                continue                                      # sold or taken down somewhere: not this net's
+            missing = [mp for mp in SITES if (listings.get(mp) or {}).get("status") != "posted"]
+            if not missing:
+                continue
+            parts = []
+            for mp in missing:
+                r = listings.get(mp) or {}
+                why = (r.get("error") or ({"queued": "waiting in line", "posting": "being posted now"}
+                                          .get(r.get("status") or "", r.get("status") or "not tried yet"))).strip()
+                parts.append(f"{site_name(mp)}: {why[:140]}")
+            out.ops(f"🚨 {it['title'] or 'An item'} isn't live everywhere 2 h after its price — " + "; ".join(parts))
+            core.put_setting(db, NOT_LIVE_SAID + it["id"], iso(now))
+            said.append(it["id"])
+    out.flush()
+    return said
 
 
 def unposted(db: Database, now: datetime | None = None, mode: str | None = None) -> dict:

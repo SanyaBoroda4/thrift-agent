@@ -146,6 +146,13 @@ def report(s: Settings, db: DB, now: datetime | None = None, api=None,
                    + (f" · PAUSED: {why}" if why else ""))
     from thrift_agent import health
     out += [f"  {line}" for line in health.summary(db)]          # WO51: each pause and its next test
+    from thrift_agent import jobs, memory
+    if tops := memory.top_lines():                                 # WO52 §7: who holds the memory
+        out.append("Memory by app: " + " · ".join(tops))
+    job_lines = jobs.lines(db)                                     # WO52 §4: each job's last success
+    if job_lines:
+        out.append("Jobs:")
+        out += [f"  {line}" for line in job_lines]
     # take-downs not done
     rows = db.conn.execute("SELECT item_id, marketplace, status, attempts, error, fetched_at FROM takedowns "
                            "WHERE status NOT IN ('done', 'not_found', 'sold') ORDER BY fetched_at").fetchall()

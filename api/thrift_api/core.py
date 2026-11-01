@@ -50,7 +50,7 @@ SITE_SORT = "CASE {0}marketplace WHEN 'poshmark' THEN 0 WHEN 'depop' THEN 1 WHEN
 TASK_ORDER = f"created_at, {SITE_SORT.format('')}, id"
 ITEM_COLUMNS = ("title", "brand", "size", "price", "created_at",
                 "all_live_at", "drop_stage", "next_drop_at", "no_drop",              # WO41: the price-drop clock
-                "status", "priced", "test", "photos")                                 # WO45 §7: the safety net
+                "status", "priced", "test", "photos", "priced_at")                    # WO45 §7, WO52 §5: the safety nets
 LISTING_COLUMNS = ("status", "url", "listing_id", "sku", "price", "posted_at", "price_live", "price_read_at",
                    "error", "photos_sent", "photos_live", "photos_read_at")          # WO45 §6/§7
 PRICE_COLUMNS = ("item_id", "marketplace", "stage", "old_price", "new_price", "pct", "status", "attempts", "error",
@@ -62,7 +62,7 @@ NUMBERS = ("price", "price_live", "old_price", "new_price", "pct")
 INTEGERS = ("drop_stage", "attempts", "priced", "test", "photos", "photos_sent", "photos_live", "expected", "received",
             "items", "cards")
 TIMES = ("created_at", "posted_at", "all_live_at", "next_drop_at", "no_drop", "price_read_at", "due_at", "done_at",
-         "photos_read_at", "received_at", "complete_at", "grouped_at", "carded_at", "outcome_at", "moved_at")
+         "photos_read_at", "received_at", "complete_at", "grouped_at", "carded_at", "outcome_at", "moved_at", "priced_at")
 
 
 class Outbox:

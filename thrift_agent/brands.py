@@ -147,7 +147,73 @@ def candidates(brand: str | None, label: str | None = None, aliases: "Aliases | 
         for p in parts(n):
             add(p)
             add(aliases.alias(p) if aliases is not None else None)
+    for n in list(out):                     # WO52 §1: then the parent of a sub-line ("Zara TRF Collection" → "Zara")
+        for p in parents(n):
+            add(p)
+            add(aliases.alias(p) if aliases is not None else None)
     return out
+
+
+# ---------------------------------------------------------------- WO52 §1: parent brands, big brands
+
+PARENTS = ROOT / "data" / "brand_parents.json"
+BIG = ROOT / "data" / "big_brands.json"
+_PARENTS: dict | None = None
+_BIG: set[str] | None = None
+
+
+def _parents_data() -> dict:
+    global _PARENTS
+    if _PARENTS is None:
+        try:
+            _PARENTS = json.loads(PARENTS.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            _PARENTS = {}
+    return _PARENTS
+
+
+def parents(name: str | None) -> list[str]:
+    """The names a sub-line falls back to, nearest first: the table's parent ("Free People Movement" → Free People),
+    else the name without its trailing sub-line words one at a time ("Zara TRF Collection" → "Zara TRF" → "Zara",
+    "ASTR the Label" → "ASTR"; never the first word alone dropped). A name in `keep` stays itself."""
+    d = _parents_data()
+    n = (name or "").strip()
+    if not n or key(n) in {key(k) for k in d.get("keep") or []}:
+        return []
+    out: list[str] = []
+    explicit = {key(k): v for k, v in (d.get("explicit") or {}).items()}
+    subs = sorted((s.lower() for s in d.get("sub_lines") or []), key=len, reverse=True)
+    cur = n
+    for _ in range(6):
+        if key(cur) in explicit:
+            nxt = explicit[key(cur)]
+        else:
+            nxt = None
+            for s in subs:
+                m = re.match(rf"^(.+?)[\s\-]+{re.escape(s)}$", cur, re.I)
+                if m and m.group(1).strip():
+                    nxt = m.group(1).strip(" -,")
+                    break
+        if not nxt or key(nxt) == key(cur) or key(nxt) in {key(o) for o in out}:
+            break
+        out.append(nxt)
+        if key(nxt) in {key(k) for k in d.get("keep") or []}:
+            break
+        cur = nxt
+    return out
+
+
+def big(name: str | None, extra: list[str] | None = None) -> bool:
+    """WO52 §1: a brand common in resale (data/big_brands.json, the price table's brands via `extra`) — or a sub-line
+    of one — never ends a listing as "no brand"."""
+    global _BIG
+    if _BIG is None:
+        try:
+            _BIG = {key(b) for b in json.loads(BIG.read_text(encoding="utf-8")).get("brands") or []}
+        except (OSError, ValueError):
+            _BIG = set()
+    keys = _BIG | {key(b) for b in extra or []}
+    return any(key(n) in keys for n in [name, *parents(name)] if n)
 
 
 # ---------------------------------------------------------------- WO51 §3: the trademark guard

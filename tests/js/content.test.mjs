@@ -1941,3 +1941,39 @@ test("Depop (WO51): 'Vests' under two Women headings — the one our path names 
   assert.equal(r.event, "result", JSON.stringify(r));
   assert.equal(p.w.__picked.category, "Women > Coats and jackets > Vests");
 });
+
+// ---------------------------------------------------------------- WO52 §1 (live 2026-11-01)
+
+test("Vinted (WO52): its own fill that is our brand is kept — never 'List without brand' over it (Forever 21)", async () => {
+  const p = page("vinted", undefined, undefined, { buttonBrand: true, prefillBrand: "J.Crew" });
+  await run(p, VINTED_JOB);
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(p.w.__brandShown(), "J.Crew");
+  assert.notEqual(p.w.__noBrand, true);
+});
+
+test("Vinted (WO52): a brand its list lacks goes in as Vinted's own entry ('Use \"Relibeauty\" as brand')", async () => {
+  const p = page("vinted", undefined, undefined, { buttonBrand: true, customBrand: true });
+  await run(p, { ...VINTED_JOB, fields: { ...VINTED_JOB.fields, brand: "Relibeauty", brand_candidates: ["Relibeauty"] } });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(p.w.__customBrand, "Relibeauty");
+  assert.notEqual(p.w.__noBrand, true);
+});
+
+test("Vinted (WO52): a big brand is never put in as Vinted's own entry", async () => {
+  const p = page("vinted", undefined, undefined, { buttonBrand: true, customBrand: true });
+  await run(p, { ...VINTED_JOB, fields: { ...VINTED_JOB.fields, brand: "Madewell", brand_candidates: ["Madewell"], brand_big: true } });
+  assert.notEqual(p.w.__customBrand, "Madewell");
+});
+
+test("Depop (WO52): a leaf missing under our heading goes to that heading's Other — never skipped", async () => {
+  const p = page("depop", undefined, undefined, { ...DEPOP_FIX, otherOnly: true });
+  await run(p, { ...DEPOP_JOB, fields: { ...DEPOP_JOB.fields, category: "Women > Coats and jackets > Gilets" } });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(p.w.__picked.category, "Women > Coats and jackets > Other");
+  assert.equal(r.seen.category_fallback, "Women > Coats and jackets > Other");
+  assert.ok(r.guesses.some((g) => /Other \(closest/.test(g)), JSON.stringify(r.guesses));
+});

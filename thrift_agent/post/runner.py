@@ -149,8 +149,12 @@ async def open_bridge(s: Settings, db: DB | None, ps: dict, watch: bool = True, 
             notify.say(text)
 
     def start_chrome() -> None:
+        quit_by_hand = thrift_chrome_running() is False
         out = start_thrift_chrome(s)
-        db.log(None, "thrift_chrome_started", {"why": "no extension for 2 min", "out": out})
+        db.log(None, "thrift_chrome_started", {"why": "no extension for 2 min", "out": out, "was_closed": quit_by_hand})
+        if quit_by_hand:                         # WO52 §4: one plain line (at most every 6 h)
+            closed_line(db, "thrift", "The Thrift Chrome was closed on the Mac — reopened. Please don't quit the "
+                                      "Chrome windows on the Mac.")
 
     def restart_chrome() -> None:
         out = restart_thrift_chrome(s)
@@ -159,6 +163,20 @@ async def open_bridge(s: Settings, db: DB | None, ps: dict, watch: bool = True, 
     task = asyncio.create_task(b.watch(in_window=lambda: power.lid_closed() is not True, start_chrome=start_chrome,
                                        say=say, state=state, restart_chrome=restart_chrome))
     return b, task
+
+
+CLOSED_SAID = "browser_closed_said"     # kv: {which: epoch} — WO52 §4's line, at most every 6 h per browser
+
+
+def closed_line(db: DB, which: str, text: str, every: float = 6 * 3600) -> bool:
+    """WO52 §4: "<browser> was closed on the Mac — reopened…", once per `every` per browser. True when said."""
+    said = loads(db.kv_get(CLOSED_SAID)) or {}
+    if time.time() - float(said.get(which) or 0) < every:
+        return False
+    said[which] = time.time()
+    db.kv_set(CLOSED_SAID, json.dumps(said))
+    notify.say(text)
+    return True
 
 
 def thrift_chrome_running() -> bool | None:

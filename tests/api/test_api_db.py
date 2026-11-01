@@ -16,7 +16,7 @@ from thrift_api.schema import migrate
 COLUMNS = {
     "items": ["id", "title", "brand", "size", "price", "created_at", "updated_at",
               "all_live_at", "drop_stage", "next_drop_at", "no_drop",                                # WO41
-              "status", "priced", "test", "photos"],                                                 # WO45 §7
+              "status", "priced", "test", "photos", "priced_at"],                                                 # WO45 §7
     "listings": ["item_id", "marketplace", "status", "url", "listing_id", "sku", "price", "posted_at", "updated_at",
                  "price_live", "price_read_at",                                                      # WO41
                  "error", "photos_sent", "photos_live", "photos_read_at"],                            # WO45 §6/§7

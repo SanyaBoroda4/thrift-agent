@@ -144,13 +144,13 @@ def undual(s: SizeIn) -> tuple[SizeIn, str | None]:
     return replace(s, value=big), f"size {big} (the bigger of the label's {s.value})"
 
 
-def vinted_size(s: SizeIn, lib: str, options: list[Option]) -> tuple[Option, str | None]:
+def _vinted_exact(s: SizeIn, lib: str, options: list[Option]) -> tuple[Option, str | None]:
     """(the option, a guess to report or None) for the leaf's size library. MappingError when nothing fits."""
     if not s.value:
         raise MappingError("no size on the item")
     s, dual = undual(s)
     if dual:
-        o, note = vinted_size(s, lib, options)
+        o, note = _vinted_exact(s, lib, options)
         return o, note or dual
     guess = None
 
@@ -237,7 +237,9 @@ D_KIDS = {"PREEMIE": "0-3 months", "NEWBORN": "0-3 months", "0-3 MONTHS": "0-3 m
           "18 MONTHS": "12-18 months", "18-24 MONTHS": "18-24 months", "24 MONTHS": "18-24 months",
           "2T": "2 years", "3T": "3 years", "4T": "4 years", "4": "4 years", "5T": "5 years", "5": "5 years",
           "6": "6 years", "6X": "6 years", "7": "7 years", "8": "8 years", "9": "9 years", "10": "10 years",
-          "11": "11 years", "12": "12 years", "13": "13 years", "14": "14 years", "15": "15 years", "16": "16 years"}
+          "11": "11 years", "12": "12 years", "13": "13 years", "14": "14 years", "15": "15 years", "16": "16 years",
+          # WO52 §1: kids letter sizes on Depop's ages-only menu — the top of each range (girls' / boys' charts)
+          "XS": "5 years", "S": "6 years", "M": "8 years", "L": "12 years", "XL": "16 years", "XXL": "16 years"}
 D_KIDS_SHOE_C = {0: "0-0.5 (newborn)", 0.5: "0-0.5 (newborn)", 1: "1-1.5 (baby)", 1.5: "1-1.5 (baby)", 2: "2-2.5",
                  2.5: "2-2.5", 3: "3-3.5", 3.5: "3-3.5", 4: "4-4.5", 4.5: "4-4.5", 5: "5-5.5", 5.5: "5-5.5",
                  6: "6-6.5", 6.5: "6-6.5", 7: "7-7.5", 7.5: "7-7.5", 8: "8", 8.5: "8.5", 9: "9-9.5", 9.5: "9-9.5",
@@ -249,7 +251,7 @@ D_PLUS_X = {"0": "L", "1": "XL", "2": "XXL", "3": "3XL", "4": "4XL", "5": "5XL",
 NECK_TO_LETTER = ((14.5, "S"), (15.5, "M"), (16.5, "L"), (17.5, "XL"), (18.5, "XXL"), (19.5, "3XL"))
 
 
-def depop_size(s: SizeIn, sizes: list[str], set_path: str) -> tuple[str, str | None]:
+def _depop_exact(s: SizeIn, sizes: list[str], set_path: str) -> tuple[str, str | None]:
     """(the size set's value, a guess or None). `sizes` is the set ("Women > Bottoms > US")."""
     if not sizes:
         raise MappingError("no size field")
@@ -257,7 +259,7 @@ def depop_size(s: SizeIn, sizes: list[str], set_path: str) -> tuple[str, str | N
         raise MappingError("no size on the item")
     s, dual = undual(s)                                   # WO50: "S/M" is M
     if dual:
-        v, note = depop_size(s, sizes, set_path)
+        v, note = _depop_exact(s, sizes, set_path)
         return v, note or dual
     have = {v.lower(): v for v in sizes}
 
@@ -301,3 +303,77 @@ def depop_size(s: SizeIn, sizes: list[str], set_path: str) -> tuple[str, str | N
             return pick("0", "Depop size set to '0' (from 00)")
         return pick(n)
     raise MappingError(f"size {s.value!r} isn't on Depop's {set_path} sizes")
+
+
+# ---------------------------------------------------------------- WO52 §1: no size ever blocks an item
+
+FIT_MARK = re.compile(r"^\s*(.+?)\s*(?:P|T|R|S|L|Petite|Tall|Regular|Short|Long|Jrs?|Juniors?)\s*$", re.I)
+NEUTRAL = ("One size", "One Size", "Other", "OS")
+
+
+def _plain(s: SizeIn) -> SizeIn | None:
+    """The size without a fit mark ("27P" → 27, "8 Petite" → 8, "M Tall" → M), else None."""
+    from dataclasses import replace
+    v = (s.value or "").strip()
+    m = FIT_MARK.match(v)
+    if not m or letter(v) or m.group(1) == v:
+        return None
+    return replace(s, value=m.group(1).strip(), tab=None if (s.tab or "") in ("Petite", "Juniors") else s.tab)
+
+
+def vinted_size(s: SizeIn, lib: str, options: list[Option]) -> tuple[Option, str | None]:
+    """WO52 §1 (the owner: "never leave it unposted"): the exact value; else the size without its fit mark ("27P" →
+    27); else the menu's nearest value in the same system (WO50's `menu_size`); else the menu's neutral choice (One
+    size / Other) — each fallback said in the note. MappingError only for an item with no size at all, or a menu
+    with no size the item could take (then the caller skips the site, said)."""
+    from thrift_agent.post.fallback import menu_size
+    try:
+        return _vinted_exact(s, lib, options)
+    except MappingError as e:
+        if not s.value or not options:
+            raise
+        first = e
+    if (plain := _plain(s)) is not None:
+        try:
+            o, note = _vinted_exact(plain, lib, options)
+            return o, note or f"size {o.title} (from {s.value}: the menu has no {s.value})"
+        except MappingError:
+            pass
+    titles = [o.title for o in options]
+    hit = menu_size((plain or s).value or "", titles, s.item_type)
+    if hit is not None:
+        o = _by_title(options, hit[0])
+        if o is not None:
+            return o, f"size {o.title} ({hit[1]}: Vinted's menu has no {s.value})"
+    neutral = next((o for o in options if o.title.strip() in NEUTRAL), None)
+    if neutral is not None:
+        return neutral, f"size '{neutral.title}' (Vinted's menu has nothing near {s.value})"
+    raise first
+
+
+def depop_size(s: SizeIn, sizes: list[str], set_path: str) -> tuple[str, str | None]:
+    """WO52 §1: as `vinted_size` — exact, the size without its fit mark, the nearest on the set, the set's neutral
+    choice; never skipped for a size the set lacks."""
+    from thrift_agent.post.fallback import menu_size
+    try:
+        return _depop_exact(s, sizes, set_path)
+    except MappingError as e:
+        if not s.value or not sizes:
+            raise
+        first = e
+    if (plain := _plain(s)) is not None:
+        try:
+            v, note = _depop_exact(plain, sizes, set_path)
+            return v, note or f"size {v} (from {s.value}: Depop has no {s.value})"
+        except MappingError:
+            pass
+    base = (plain or s).value or ""
+    if (w := waist(plain or s)) is not None and "Bottoms" in set_path:
+        base = f'{w}"'
+    hit = menu_size(base, sizes, s.item_type)
+    if hit is not None:
+        return hit[0], f"size {hit[0]} ({hit[1]}: Depop's set has no {s.value})"
+    neutral = next((v for v in sizes if v.strip() in NEUTRAL), None)
+    if neutral is not None:
+        return neutral, f"size '{neutral}' (Depop's set has nothing near {s.value})"
+    raise first

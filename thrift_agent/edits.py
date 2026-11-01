@@ -23,7 +23,7 @@ from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads, new_id
 from thrift_agent.schema import Facts, Render
 
-KINDS = ("category", "photos", "text")   # WO43: a category change; WO45 §6: photos added; WO50: a title / description
+KINDS = ("category", "photos", "text", "brand")   # WO43: a category change; WO45 §6: photos added; WO50: a title / description
 MAX_ATTEMPTS = 3
 RETRY_AFTER = timedelta(hours=1)
 OPEN = ("pending", "saving", "unconfirmed")
@@ -248,6 +248,8 @@ async def run_one(s: Settings, db: DB, site: str, poster, ctx, sites: list[str],
             else f"titled “{payload.get('title') or payload.get('first_line')}”"
             if row["kind"] == "text" and (payload.get("title") or payload.get("first_line"))
             else "with its new description" if row["kind"] == "text"
+            else f"brand {(payload.get('fields') or {}).get('brand') or (payload.get('render') or {}).get('brand')}"
+            if row["kind"] == "brand"
             else path_text(payload.get("path") or payload.get("want") or {}) or row["kind"])
     shots = s.path("failed") / "shots"
     shots.mkdir(parents=True, exist_ok=True)
@@ -293,6 +295,8 @@ async def run_one(s: Settings, db: DB, site: str, poster, ctx, sites: list[str],
             else:
                 out = await poster.add_photos(url, payload.get("files") or [], dry=dry, shots=shots, go=go, sku=iid,
                                               had=int(payload.get("had") or 0))
+        elif row["kind"] == "brand" and site == "poshmark":    # WO52: the brand, nothing else
+            out = await poster.set_brand(ctx, url, payload, dry=dry, shots=shots, go=go)
         elif site == "poshmark":
             out = await poster.set_category(ctx, url, payload, dry=dry, shots=shots, go=go)
         else:
@@ -346,6 +350,10 @@ async def _shows(site: str, poster, url: str, payload: dict, iid: str, shots: Pa
                         == " ".join(str(payload["title"]).split()))
         from thrift_agent.post.ext_driver import _text_shows
         return _text_shows(await poster.read_text(url, shots, iid), payload)
+    if "brand_names" in payload and site == "poshmark":           # WO52: the brand
+        live = await asyncio.to_thread(crosslist.poshmark_listing, url) or {}
+        from thrift_agent import brands
+        return any(brands.key(n) == brands.key(live.get("brand") or "") for n in payload["brand_names"])
     if "files" in payload:                                        # WO45 §6: the photo count
         need = int(payload.get("had") or 0) + int(payload.get("add") or 0)
         if site == "poshmark":
@@ -399,6 +407,33 @@ def _mirror(db: DB, iid: str, site: str, payload: dict) -> None:
     else:
         fields.update(payload.get("fields") or {})
     db.upsert_listing(iid, site, fields_json=fields)
+
+
+def queue_brand(s: Settings, db: DB, iid: str, sites: list[str] | None = None, brand: str | None = None,
+                dry: bool = False) -> list[str]:
+    """WO52 §0/§1: one "brand" edit per live site of the item — our names in order (the brand, the label's text,
+    aliases, then a sub-line's parent: "Zara TRF Collection" → Zara), nothing else changed on the listing."""
+    from thrift_agent import brands
+    it = db.item(iid)
+    if it is None:
+        return []
+    renders = loads(it["renders"]) or {}
+    posh = renders.get("poshmark") or {}
+    name = brand or posh.get("brand") or ((loads(it["facts"]) or {}).get("brand") or {}).get("value")
+    if not name:
+        return []
+    names = brands.candidates(name, posh.get("brand_label"), brands.for_settings(s))
+    payloads = {}
+    for site in sites or ["poshmark", "depop", "vinted"]:
+        row = db.listing(iid, site)
+        if row is None or row["status"] != "posted" or not row["url"]:
+            continue
+        if site == "poshmark":
+            payloads[site] = {"render": {**posh, "brand": name}, "brand_names": names}
+        else:
+            payloads[site] = {"fields": {"brand": name, "brand_typed": name, "brand_candidates": names,
+                                         "brand_big": brands.big(name)}}
+    return queue(db, iid, "brand", payloads, dry=dry)
 
 
 def queue_photos(s: Settings, db: DB, iid: str, site: str, files: list[str], had: int, dry: bool = False) -> list[str]:

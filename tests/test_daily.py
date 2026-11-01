@@ -251,7 +251,7 @@ def test_the_status_message_is_sent_once_then_edited_and_a_new_window_gets_its_o
     db.set_item(item, status="awaiting_price", gate={"decision": "publish"},
                 renders={"poshmark": RENDER.model_dump()})
     text = w.update()
-    assert text == ("✓ Safe to close — 1 card is waiting for your answer in Telegram (answers within 24 h are kept)")
+    assert text == ("⏸ Waiting — 1 card is waiting for your answer in Telegram (answers within 24 h are kept)")
     assert bot.calls[-1] == ("edit", 41, text) and [c[0] for c in bot.calls] == ["send", "edit"]
     db.set_item(item, status="posted")
     assert w.update() == daily.ALL_DONE and bot.calls[-1] == ("edit", 41, daily.ALL_DONE)
@@ -280,30 +280,30 @@ TIMING = daily.Timing(batch=60, item=150, post=120, gap=240)
 
 @pytest.mark.parametrize("work,poster,hours_open,block,want", [
     (daily.Work(0, 4, 0, 0, 0), daily.PosterNow(True, True), True, None,
-     "⏳ Working — 4 items left, about 10 min. Please don't close the Mac yet."),
+     "⏳ Working — 4 items left, about 10 min."),
     (daily.Work(1, 1, 2, 0, 0), daily.PosterNow(True, True), True, None,
-     "⏳ Working — 1 new share and 1 item left, about 4 min. Please don't close the Mac yet.\n"
+     "⏳ Working — 1 new share and 1 item left, about 4 min.\n"
      "2 cards are also waiting for your answer."),
     (daily.Work(0, 0, 0, 3, 0), daily.PosterNow(True, True, next_at=NOW + timedelta(minutes=4)), True, None,
-     "⏳ 3 listings still to publish, next in ~4 min. Please don't close the Mac yet."),
+     "⏳ 3 listings still to publish, next in ~4 min."),
     (daily.Work(0, 0, 0, 2, 0), daily.PosterNow(True, True, busy="i_1"), True, None,
-     "⏳ 2 listings still to publish, publishing now. Please don't close the Mac yet."),
+     "⏳ 2 listings still to publish, publishing now."),
     (daily.Work(0, 2, 0, 3, 0), daily.PosterNow(True, True), True, None,
-     "⏳ Working — 5 items left, about 19 min. Please don't close the Mac yet."),   # 2x150 + 3x120 + 2x240 s
-    (daily.Work(0, 0, 0, 0, 0), daily.PosterNow(True, True), True, None, "💤 All done — you can close the Mac."),
+     "⏳ Working — 5 items left, about 19 min."),   # 2x150 + 3x120 + 2x240 s
+    (daily.Work(0, 0, 0, 0, 0), daily.PosterNow(True, True), True, None, "💤 All done — nothing is waiting."),
     (daily.Work(0, 0, 2, 0, 0), daily.PosterNow(True, True), True, None,
-     "✓ Safe to close — 2 cards are waiting for your answer in Telegram (answers within 24 h are kept)"),
+     "⏸ Waiting — 2 cards are waiting for your answer in Telegram (answers within 24 h are kept)"),
     (daily.Work(0, 0, 0, 3, 0), daily.PosterNow(True, True), False, None,
-     "✓ Safe to close — 3 listings will go up after 08:00 next time the Mac is open"),
+     "⏸ Waiting — 3 listings go up at 08:00"),
     (daily.Work(0, 0, 1, 3, 0), daily.PosterNow(True, True), False, None,
-     "✓ Safe to close — 3 listings will go up after 08:00 next time the Mac is open; 1 card is waiting for your "
+     "⏸ Waiting — 3 listings go up at 08:00; 1 card is waiting for your "
      "answer in Telegram (answers within 24 h are kept)"),
     (daily.Work(0, 0, 0, 1, 0), daily.PosterNow(True, True), True, "the battery is low — they go on once the Mac is "
-     "charging", "✓ Safe to close — 1 listing wait: the battery is low — they go on once the Mac is charging"),
+     "charging", "⏸ Waiting — 1 listing wait: the battery is low — they go on once the Mac is charging"),
     (daily.Work(0, 0, 0, 2, 0), daily.PosterNow(False), True, None,
-     "✓ Safe to close — 2 listings wait for the poster (it isn't running)"),
+     "⏸ Waiting — 2 listings wait for the poster (it isn't running)"),
     (daily.Work(0, 0, 0, 0, 1), daily.PosterNow(True, True), True, None,
-     "✓ Safe to close — 1 listing needs your look before publishing (see “Not published automatically”)"),
+     "⏸ Waiting — 1 listing needs your look before publishing (see “Not published automatically”)"),
 ])
 def test_what_the_status_message_says(work, poster, hours_open, block, want):
     assert daily.status_text(work, poster, TIMING, hours_open, block, "08:00", NOW) == want
@@ -495,4 +495,4 @@ def test_the_listing_being_published_keeps_the_window_working(tmp_path):
     assert w.to_publish == 1
     daily.poster_beat(db, live=True, busy=iid)
     text = daily.status_text(w, daily.poster_now(db), TIMING, True, None, "08:00", NOW)
-    assert text == "⏳ 1 listing still to publish, publishing now. Please don't close the Mac yet."
+    assert text == "⏳ 1 listing still to publish, publishing now."

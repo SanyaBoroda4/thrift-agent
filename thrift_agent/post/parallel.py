@@ -227,6 +227,7 @@ def _poshmark_thread(s, poster, dry, stage, halt, state, opener, takedowns) -> N
 CLOSED = ("TargetClosedError", "Target page, context or browser has been closed", "browser has been closed",
           "Browser has been closed", "browser has disconnected", "Target closed", "Browser closed")
 RELAUNCH_WAITS = (0.0, 30.0, 120.0, 600.0)    # WO51: Poshmark's browser reopened at once, then after these pauses
+PROBE_EVERY = 300.0           # WO52 §4: the browser checked this often even when nothing is posted
 
 
 def browser_closed(error) -> bool:
@@ -247,6 +248,8 @@ class Browser:
         self.alive = False
         self.opened = False           # the first opening (the poster's start) checks no login: the first listing does
         self.tries, self.next_try = 0, 0.0
+        self.why = ""                 # why it was lost: "the browser closed" (its own event) = closed by hand
+        self.probed = time.monotonic()
 
     def _watch(self, ctx) -> None:
         self.alive = True
@@ -260,6 +263,7 @@ class Browser:
     def lost(self, why: str = "") -> None:
         if self.alive:
             self.alive = False
+            self.why = str(why)
             self.db.log(None, "browser_lost", {"site": "poshmark", "why": str(why)[:200]})
 
     async def _close_quietly(self) -> None:
@@ -275,7 +279,14 @@ class Browser:
         """The browser is there (reopened if it closed, the back-off permitting). False: not now (paused after the
         third failed reopening — one line — and tried again at the back-off's pace)."""
         if self.alive and self.ctx is not None:
-            return True
+            if time.monotonic() - self.probed >= PROBE_EVERY:      # WO52 §4: alive even with nothing to post?
+                self.probed = time.monotonic()
+                try:
+                    await self.ctx.cookies()
+                except Exception as e:  # noqa: BLE001 — gone without saying so: reopened below
+                    self.lost(f"probe: {type(e).__name__}: {e}")
+            if self.alive:
+                return True
         if time.monotonic() < self.next_try:
             return False
         first = not self.opened
@@ -309,7 +320,10 @@ class Browser:
                              error=f"the browser couldn't be reopened ({err[:120]})")
             return False
         if not first:
-            self.db.log(None, "browser_relaunched", {"site": "poshmark", "tries": self.tries})
+            self.db.log(None, "browser_relaunched", {"site": "poshmark", "tries": self.tries, "why": self.why[:200]})
+            if self.why == "the browser closed":                  # its own close event: quit on the Mac by hand
+                runner.closed_line(self.db, "poshmark", "Poshmark's Chrome was closed on the Mac — reopened. Please "
+                                                        "don't quit the Chrome windows on the Mac.")
         if self.tries >= 3 and (health.state(self.db, "poshmark") or {}).get("kind") == health.INFRA:
             health.resume(self.db, "poshmark", "the browser was reopened")
         self.tries = 0
@@ -595,6 +609,8 @@ async def _sweep(s, db, site: str, read, gap: float | None, poster=None, lost=No
         await orders.maybe_sweep(s, db, site, read, gap, poster)
     except Exception as e:  # noqa: BLE001 — logged; the sweep comes back next time
         db.log(None, "orders_failed", {"site": site, "error": f"{type(e).__name__}: {e}"[:300]})
+        from thrift_agent import jobs
+        jobs.failed(db, f"order_sweep:{site}", f"{type(e).__name__}: {e}")          # WO52 §4
         if lost is not None and browser_closed(e):
             lost(f"{type(e).__name__}: {e}")
 
@@ -638,9 +654,16 @@ async def _housekeeping(s, db, ps, cross, dry, stop, state, sites, until_idle) -
                 if planned is None or time.monotonic() - planned >= PLAN_EVERY:
                     pricedrop.plan(db)
                     planned = time.monotonic()
+                    from thrift_agent import jobs
+                    jobs.ok(db, "price_drops")                # WO52 §4
                 pricedrop.announce(s, db)
             if not dry and photocheck.due(db) and not runner._paused(db):   # WO45 §6: every listing read back
                 await photocheck.run(s, db, ps)
+            if not dry:                                       # WO52 §4/§5: jobs alive, one alarm per blocked site
+                from thrift_agent import alarm, jobs, memory
+                jobs.check(db)
+                alarm.tick(db)
+                memory.tick(s, db, idle=state.all_idle(sites) and not runner._paused(db))   # WO52 §7
             if until_idle and state.all_idle(sites) and _nothing_left(s, db, sites, dry):
                 stop.set()
                 return

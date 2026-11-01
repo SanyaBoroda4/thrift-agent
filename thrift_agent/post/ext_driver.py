@@ -304,17 +304,23 @@ class ExtensionPoster(Poster):
             # WO51: never "" — Vinted requires a brand (an empty field is refused at Upload), and on its rebuilt form
             # (2026-11) an unread <button> read as "" had passed as "without a brand" while it showed Vinted's own
             # "Disney"; its own no-brand choice is what the field must show then
-            want["brand_shown"] = BrandOf(names, ["List without brand", "No brand", "No brand indicated"])
+            # WO52 §1: a big brand (Zara, Forever 21…) never ends as "no brand" — that is a failed search
+            want["brand_shown"] = BrandOf(names, [] if brands.big(f.brand) else
+                                          ["List without brand", "No brand", "No brand indicated"])
             want["color"] = Chosen(ours("color", f.colors[:2]))
             want["material"] = Chosen(ours("material", f.materials[:3]))
         if self.name == "depop":
             if "sku" not in unverified("depop", self.selectors_path):
                 want["sku"] = r.sku                    # WO33 A4: compared once a Mac dry run has recorded it filled
-            want["brand-input"] = BrandOf(names, ["Other"])
+            want["brand-input"] = BrandOf(names, [] if brands.big(f.brand) else ["Other"])   # WO52 §1
             want["colour-input"] = Chosen(ours("colour-input", f.colors[:2]))
             want["source-input"] = Chosen(ours("source-input", f.source))
             want["age-input"] = Chosen(ours("age-input", [f.age] if f.age else []))
             want["style-input"] = Chosen([])           # never (the owner, 2026-10-12)
+            if (fb := (seen or {}).get("category_fallback")) and str(fb).startswith(
+                    " > ".join(str(f.category or "").split(" > ")[:-1])):
+                want["group-input"] = Chosen([fb])         # WO52 §1: the family's Other, chosen on purpose (noted)
+                self.guesses.append(f"Depop: category set to {fb.replace(' > ', ' › ')} (closest)")
             want["typed_left"] = []                    # WO51: no text typed in a multi-select that never became a chip
             for name, values in (f.attributes or {}).items():
                 want[f"attributes.{name}-input"] = Chosen(ours(f"attributes.{name}-input", values))
@@ -356,7 +362,7 @@ class ExtensionPoster(Poster):
         names = brands.candidates(f.brand, getattr(f, "brand_label", None), self.aliases)
         if self.name == "vinted":
             fields = {"category_id": f.category_id, "category_path": f.category_path, "brand": f.brand,
-                      "brand_candidates": names,
+                      "brand_candidates": names, "brand_big": brands.big(f.brand),
                       "size": f.size, "condition": f.condition, "colors": list(f.colors), "materials": list(f.materials),
                       "skirt_length": f.skirt_length, "package_sizes": list(f.package_sizes)}
             copy = {"title": f.title, "description": f.description}
@@ -1160,6 +1166,9 @@ class ExtensionPoster(Poster):
             ok = ok and _norm(str(fields["size"])) in _norm(str(seen.get("size") or ""))
         if fields.get("condition") and "condition" in seen:     # emptied by the category change: must be back
             ok = ok and bool(str(seen.get("condition") or "").strip())
+        if fields.get("brand"):                                 # WO52: a brand edit — the page shows one of our names
+            names = fields.get("brand_candidates") or brands.candidates(fields["brand"])
+            ok = ok and BrandOf(names, []).matches(seen.get("brand"))
         return bool(ok)
 
     async def _fields(self, bridge: bridge_mod.Bridge, job: bridge_mod.Job, url: str, fields: dict, dry: bool,

@@ -43,7 +43,7 @@ ALERTS = {"login": "{site} needs you to log in on the Mac.",
           "verify": "{site} asks for a check — open it on the Mac.",
           "block": "{site} turned the Mac away for now — I'll try again by myself later."}
 DRIVERS = {"depop": ("extension", "playwright", "api"), "vinted": ("extension", "playwright")}
-ALL_DONE_LINE = "💤 All done — you can close the Mac."          # WO34: the group card's last line
+ALL_DONE_LINE = "💤 All done — nothing is waiting."             # WO34: the group card's last line (WO52 §6: no Mac)
 DOT = {"poshmark": "🟣", "depop": "🔴", "vinted": "🟢"}
 CARRIER = "posted_done_carrier"         # kv: the item whose group card carries the 💤 line now (WO34)
 LATER = ("queued", "posting", "dryrun", "failed")   # a site still to come: "⏳ Vinted — later"
@@ -212,6 +212,16 @@ def retry_failed(s: Settings, db: DB, at: datetime | None = None) -> list[tuple[
             runner.ask_skipped(db, iid, mp, _title_of(db, iid), f"{MAX_ATTEMPTS} tries — {step_text(row['error'])}")
         out.append((iid, mp))
     return out
+
+
+def next_try(row) -> str:
+    """WO52 §6: when a failed row is tried again — RETRY_AFTER after its failure, as a local time ("4:45 PM")."""
+    try:
+        t = datetime.fromisoformat(str(row["updated_at"]))
+    except (TypeError, ValueError, KeyError, IndexError):
+        return "in about 30 min"
+    t = (t if t.tzinfo else t.replace(tzinfo=timezone.utc)) + timedelta(seconds=RETRY_AFTER)
+    return t.astimezone().strftime("%I:%M %p").lstrip("0")
 
 
 def step_text(error: str | None) -> str:
@@ -682,8 +692,8 @@ def _joined(names: list[str]) -> str:
 
 
 def done_line(state: list[str] | None, waits: dict[str, list[str]] | None = None) -> str | None:
-    """The card's last line (WO34): "💤 All done — you can close the Mac." when nothing is left on any site and nothing
-    waits for the owner; "💤 Done for now — you can close the Mac. Vinted catches up next time." when a stopped site
+    """The card's last line (WO34): "💤 All done — nothing is waiting." when nothing is left on any site and nothing
+    waits for the owner; "💤 Done for now. Vinted catches up by itself." (WO52 §6) when a stopped site
     still has listings; WO39: "💤 Done for now — waiting for a size: Alo Yoga Sports Bralette Mauve Taupe." when an
     item waits for her reply (a size, a 'retry'); None while there is work."""
     if state is None:
@@ -692,11 +702,12 @@ def done_line(state: list[str] | None, waits: dict[str, list[str]] | None = None
             for what, names in (waits or {}).items() if names]
     if not state and not said:
         return ALL_DONE_LINE
-    head = "💤 Done for now — " + ("; ".join(said) + "." if said else "you can close the Mac.")
+    head = "💤 Done for now" + (" — " + "; ".join(said) + "." if said else ".")
     if not state:
         return head
     names = [LABEL.get(mp, mp) for mp in state]
-    return f"{head} {_joined(names)} catch{'es' if len(names) == 1 else ''} up next time."
+    by = "itself" if len(names) == 1 else "themselves"
+    return f"{head} {_joined(names)} catch{'es' if len(names) == 1 else ''} up by {by}."
 
 
 def item_name(db: DB, iid: str, limit: int = 40) -> str:
@@ -745,8 +756,7 @@ def card_text(s: Settings, db: DB, iid: str, last: str | None = None) -> str:
                 and not (row["status"] == "dryrun" and not (s is not None and live(s, mp))):
             if row["status"] == "failed" and row["error"] and not row["error"].startswith(UNCONFIRMED):
                 # the Vinted incident of 2026-10-20 (the owner): a failed site names its step and the next try
-                lines.append(f"⏳ {LABEL.get(mp, mp)} — {step_name(row['error'])} failed, next try when the Mac is "
-                             f"next open")
+                lines.append(f"⏳ {LABEL.get(mp, mp)} — {step_name(row['error'])} failed, next try {next_try(row)}")
             else:
                 lines.append(f"⏳ {LABEL.get(mp, mp)} — later")     # a dry run on a site that won't publish: left out
     if last:
@@ -1023,7 +1033,16 @@ def poshmark_listing(url: str) -> dict | None:
             "size": d.get("size"), "for_sale": status == "available" if status else None,
             "status": status or None, "sold": "sold" in status,          # WO49: sold_out vs not_for_sale
             "photos": photos, "price": price,
-            "title": d.get("title"), "description": d.get("description")}     # WO50: a text edit read back
+            "title": d.get("title"), "description": d.get("description"),     # WO50: a text edit read back
+            "brand": _brand_of(d)}                                            # WO52: a brand edit read back
+
+
+def _brand_of(d: dict) -> str | None:
+    """Poshmark's listing JSON names the brand as a string or an object (display / canonical_name / name)."""
+    b = d.get("brand") or d.get("brand_obj")
+    if isinstance(b, dict):
+        b = b.get("display") or b.get("canonical_name") or b.get("name")
+    return str(b) if b else None
 
 
 def poshmark_cover(url: str) -> str | None:
