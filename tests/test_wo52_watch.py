@@ -194,3 +194,9 @@ def test_poshmarks_chrome_quit_by_hand_is_reopened_with_one_line_and_probed_when
     asyncio.run(go())
     assert len(made) == 3
     assert said == ["Poshmark's Chrome was closed on the Mac — reopened. Please don't quit the Chrome windows on the Mac."]
+
+
+def test_a_process_of_no_browser_is_named_by_itself():
+    ps = PS + "174 1 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer -daemon\n"
+    groups = dict(memory.by_group(memory.processes("PID MEM\n174 1755M\n", ps)))
+    assert groups == {"WindowServer": 1755}

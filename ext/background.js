@@ -711,7 +711,35 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   }
   await connect();
   await poll();
+  await tidyTabs(now);
 });
+
+// WO52 §7 (live 2026-11-01: the Thrift Chrome held ~27 old pages — 8.4 GB — and --restore-last-session brought them
+// all back after every restart): every 30 minutes, with no job running, the pages on the three sites nobody has looked
+// at for 6 hours (Chrome's own lastAccessed) are closed, and a site's second idle page; never a job's tab, never the
+// active tab of a window, never another site's page. A login / CAPTCHA page left for the owner goes after 6 hours too.
+const TIDY_EVERY = 30 * 60 * 1000, TIDY_OLD = 6 * 3600 * 1000;
+const OURS = /^https:\/\/([a-z0-9-]+\.)?(vinted\.com|depop\.com|poshmark\.com)\//i;
+async function tidyTabs(now) {
+  const { tidied_at: last = 0 } = await chrome.storage.local.get("tidied_at");
+  if (now - last < TIDY_EVERY || Object.values(jobs).some(Boolean)) return;
+  await chrome.storage.local.set({ tidied_at: now });
+  const tabs = await chrome.tabs.query({});
+  const idleSeen = new Set(), close = [];
+  for (const tab of tabs) {
+    if (tab.active || byTab(tab.id)) continue;
+    const idle = /idle\.html\?site=([a-z]+)/.exec(tab.url || "");
+    if (idle && tab.url.startsWith(chrome.runtime.getURL(""))) {
+      if (idleSeen.has(idle[1])) close.push(tab.id); else idleSeen.add(idle[1]);
+    } else if (OURS.test(tab.url || "") && tab.lastAccessed && now - tab.lastAccessed > TIDY_OLD) {
+      close.push(tab.id);
+    }
+  }
+  if (close.length) {
+    try { await chrome.tabs.remove(close); } catch (e) { /* gone already */ }
+    await send({ event: "tidied", closed: close.length });
+  }
+}
 
 // The owner closed a job's tab (or its window): the job ends there (nothing more can happen in it).
 chrome.tabs.onRemoved.addListener(async (tabId) => {

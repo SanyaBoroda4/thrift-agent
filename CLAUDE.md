@@ -1327,7 +1327,10 @@ proves it is alive.
 - **Memory (§7, `thrift_agent/memory.py`):** `top`'s footprints grouped by browser (ours: the Thrift Chrome, Poshmark's
   Chrome; the Mac's own: Safari, her Chrome); `thrift doctor` "Memory by app"; pressure warning+ with the Thrift Chrome
   over 3 GB and the sites idle → it is restarted through its LaunchAgent (≤ every 12 h, one line); critical for 30 min
-  → one line naming the biggest users (Safari's tabs named when they lead).
+  → one line naming the biggest users (Safari's tabs named when they lead). The extension tidies the Thrift Chrome
+  every 30 minutes with no job running (`background.js tidyTabs`): pages on the three sites nobody looked at for 6 hours
+  (Chrome's `lastAccessed`) and a site's second idle page are closed — never a job's tab or a window's active tab (live:
+  ~27 old pages, 8.4 GB, restored by --restore-last-session after every restart).
 - Tests: `tests/test_wo52_brands.py`, `tests/test_wo52_watch.py`, `tests/api/test_api_wo52.py`, the WO52 part of
   `tests/js/content.test.mjs` (stand-in hooks `customBrand`, `otherOnly`, `vests`).
 

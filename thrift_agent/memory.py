@@ -65,7 +65,7 @@ def processes(top_out: str | None = None, ps_out: str | None = None) -> list[dic
 
 
 def _group(pid: int, procs: dict[int, dict]) -> str:
-    seen = set()
+    own, seen = pid, set()
     while pid in procs and pid not in seen:
         seen.add(pid)
         args = procs[pid]["args"]
@@ -77,8 +77,8 @@ def _group(pid: int, procs: dict[int, dict]) -> str:
         if "Google Chrome" in args and "--type=" not in args:
             return "Google Chrome (the owner's own)"
         pid = procs[pid]["ppid"]
-    args = procs.get(pid, {}).get("args", "?")
-    return re.sub(r".*/", "", args.split(" --")[0])[:40] or "?"
+    args = procs.get(own, {}).get("args", "?")             # not a browser's: the process's own name
+    return re.sub(r".*/", "", args.split(" -")[0]).strip()[:40] or "?"
 
 
 def by_group(procs: list[dict]) -> list[tuple[str, float]]:
