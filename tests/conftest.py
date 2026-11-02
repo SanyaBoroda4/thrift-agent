@@ -139,3 +139,11 @@ def _arrival_by_mtime(monkeypatch):
     tests/test_inbox.py checks that rule with arrival times of its own."""
     from thrift_agent import pipeline
     monkeypatch.setattr(pipeline, "arrived", lambda p: p.stat().st_mtime)
+
+
+@pytest.fixture(autouse=True)
+def no_real_power(monkeypatch):
+    """Never the machine's own battery or lid (live 2026-11-01: the Mac's pre-deploy run at 10% on battery — 24 runner
+    tests got "🔋 Mac battery low" and the deploy rolled back). A test that needs them patches its own."""
+    monkeypatch.setattr("thrift_agent.power.battery", lambda: None)
+    monkeypatch.setattr("thrift_agent.power.lid_closed", lambda: None)
