@@ -866,7 +866,15 @@ Both sites turn away any browser driven over DevTools; the extension runs in the
   practice run (Cancel), its other button pressed ONCE (`ExtensionPoster.vinted_delete`; a reload ends the job, never a
   second press); gone from Vinted's own data before the row goes back to `queued`; the new listing keeps the ORIGINAL
   `posted_at` (the price-drop clock), its fields carry `reposted_at` / `reposted_from`, the ✅ card is edited
-  (`crosslist.refresh_card`), one private line.
+  (`crosslist.refresh_card`), one private line. Recorded live 2026-11-01: Vinted's inbox entries carry NO item id
+  (id, item_count, description, unread, updated_at, opposite_user, item_photos) — a conversation is matched by the
+  listing's own photo ids / file names (validated on two sold listings: 1 and 2); the delete dialog is "Delete item? By
+  deleting this item, you confirm you have not sold it on Vinted." [Cancel `item-delete-cancelation-button`] [Delete
+  `item-delete-confirmation-button`]; `--probe-delete` proves the job reaches the listing with nothing pressed.
+- **The extension reloads itself after a deploy** only when its loaded files' hash differs from the bridge's
+  (`background.js maybeReload`); a restarted service worker hashes the files on disk while Chrome may still run the old
+  background script (live 2026-11-01: a new job mode opened the sell page). `bridge.HASH_SALT` / background.js
+  `HASH_SALT` (the same value) is changed to force every loaded copy to reload once.
 ## Sales, take-downs, thrift-api
 - **thrift-api** (`api/`: Python 3.12 Azure Function, Flex Consumption, App Insights capped 0.1 GB/day, $5 budget alert
   on `thrift-rg`; database `thrift` on the owner's Postgres, login `thrift_app`; SQLite in tests).
