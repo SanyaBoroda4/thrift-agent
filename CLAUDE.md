@@ -91,7 +91,7 @@ on all three sites at once, and takes an item down everywhere when it sells.
   commands (`doctor`, `shares`, `sales`, `show`), `thrift telegram test`, restarting the poster as above.
 - **Never over SSH (the owner's):** `thrift poster --publish-first`, `thrift login`, starting the poster outside a
   deploy restart or anything else that publishes or touches the live accounts by hand, `thrift mark-posted`, deleting
-  data, changing `config/settings.local.yaml` or `.env`, switching autopublish or dry-run keys. Never click a site's
+  data (a Vinted listing only through `thrift vinted-repost`, per item, with the owner's go-ahead), changing `config/settings.local.yaml` or `.env`, switching autopublish or dry-run keys. Never click a site's
   publish / save / delete control from a probe; `--verify` / `--practice` / `--dry-run` paths only. Before any edit of a
   live listing compare live vs posted; never undo her change.
 
@@ -859,6 +859,14 @@ Both sites turn away any browser driven over DevTools; the extension runs in the
   data has no count or fewer than sent (≤ once a day per listing, 6 a run). `listings.photos_live` / `price_live`. Fewer
   photos → ONE "photos" edit with the missing ones (kv `photocheck_asked`); a different price → `price_differs`.
 
+- **A Vinted listing posted again with its brand** (`thrift_agent/vinted_repost.py`, `thrift vinted-repost <item>
+  --check | --practice | --go`, served by the running poster; the owner's decision 2026-11-01 — Vinted refuses a brand
+  change on a live listing, "Create new listing to change to luxury brand"): only with no likes, no conversations (offers
+  live there) and not reserved — a count Vinted didn't give is never "none". The delete dialog is recorded once by a
+  practice run (Cancel), its other button pressed ONCE (`ExtensionPoster.vinted_delete`; a reload ends the job, never a
+  second press); gone from Vinted's own data before the row goes back to `queued`; the new listing keeps the ORIGINAL
+  `posted_at` (the price-drop clock), its fields carry `reposted_at` / `reposted_from`, the ✅ card is edited
+  (`crosslist.refresh_card`), one private line.
 ## Sales, take-downs, thrift-api
 - **thrift-api** (`api/`: Python 3.12 Azure Function, Flex Consumption, App Insights capped 0.1 GB/day, $5 budget alert
   on `thrift-rg`; database `thrift` on the owner's Postgres, login `thrift_app`; SQLite in tests).
