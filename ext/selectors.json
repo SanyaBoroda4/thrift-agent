@@ -165,11 +165,13 @@
       },
       "skirt_length": {
         "selectors": [
+          "[data-testid='category-skirt_length-single-list-input']",
           "[data-testid*='skirt_length' i] input",
           "input#skirt_length",
           "input[name='skirt_length']"
         ],
-        "verified": false
+        "verified": false,
+        "seen": "2026-11-01 (WO52, a live dry run's page): the rebuilt form's skirt length is button[data-testid=category-skirt_length-single-list-input] (its choice in --value), like the other fields"
       },
       "rows": {
         "selectors": [

@@ -90,6 +90,11 @@ async def serve(db: DB, ps: dict) -> list[str]:
                            f"Cancel pressed, nothing deleted")
             elif step == "go":
                 await go(db, poster, iid, row, title)
+            elif step == "probe":                       # the delete job with "cancel" as its button: reaches the
+                ok = await poster.vinted_delete_probe(row["url"])   # listing page, presses nothing
+                db.log(iid, "vinted_delete_probe", {"ok": ok})
+                notify.say(f"🧪 Vinted delete probe ({title}): " + ("the listing page is reached — nothing pressed"
+                                                                   if ok else "the job did NOT reach the listing page"))
         except Exception as e:  # noqa: BLE001 — never the poster's end; nothing is retried by itself
             db.log(iid, "vinted_repost_failed", {"step": step, "error": f"{type(e).__name__}: {e}"[:300]})
             notify.say(f"❌ Vinted repost ({step}) of {title}: {type(e).__name__}: {e}")
@@ -110,9 +115,11 @@ async def go(db: DB, poster, iid: str, row, title: str) -> bool:
         return False
     before = {"url": row["url"], "listing_id": row["listing_id"], "posted_at": row["posted_at"],
               "price": row["price"], "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
-    db.kv_set(BEFORE + iid, json.dumps(before))
     db.log(iid, "vinted_repost_delete", {"url": row["url"], "confirm": text})
-    await poster.vinted_delete(row["url"], text)
+    await poster.vinted_delete(row["url"], text)      # raises unless the listing is gone from Vinted's data
+    # kept only now (live 2026-11-01: kept before a delete that never happened, the sweep took the OLD listing for
+    # the new one); then the row back in line, in one go
+    db.kv_set(BEFORE + iid, json.dumps(before))
     db.upsert_listing(iid, "vinted", status="queued", url=None, listing_id=None, attempts=0, error=None)
     db.log(iid, "vinted_repost_queued", before)
     return True
@@ -127,8 +134,8 @@ def after_posted(s, db: DB, iid: str, mp: str) -> bool:
     if not before:
         return False
     row = db.listing(iid, "vinted")
-    if row is None or row["status"] != "posted" or not row["url"]:
-        return False
+    if row is None or row["status"] != "posted" or not row["url"] or row["url"] == before.get("url"):
+        return False                                   # not posted again yet (the old listing is never the new one)
     fields = loads(row["fields_json"]) or {}
     fields.update({"reposted_at": row["posted_at"], "reposted_from": before.get("url")})
     db.upsert_listing(iid, "vinted", posted_at=before.get("posted_at") or row["posted_at"], fields_json=fields)

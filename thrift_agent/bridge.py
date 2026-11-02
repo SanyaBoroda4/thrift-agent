@@ -87,9 +87,13 @@ def new_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+HASH_SALT = b"wo52-reload-1\n"
+
+
 def files_hash(ext_dir: Path = EXT_DIR) -> str:
     """The extension's files as background.js hashes them: the path, a newline, the bytes, a newline, in FILES order."""
     h = hashlib.sha256()
+    h.update(HASH_SALT)                  # WO52: changed once to make every loaded copy reload (see background.js)
     for name in EXT_FILES:
         h.update(f"{name}\n".encode())
         try:

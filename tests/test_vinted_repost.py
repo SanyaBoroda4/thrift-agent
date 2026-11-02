@@ -101,3 +101,18 @@ def test_posted_again_keeps_the_price_drop_clock_and_edits_the_card(db, said, mo
     assert fields["reposted_from"] == OLD and fields["reposted_at"] == "2026-11-02T01:00:00+00:00"
     assert cards == [db.iid] and NEW in said[-1] and OLD in said[-1]
     assert not vinted_repost.after_posted(Settings({"machine_role": "dev"}), db, db.iid, "vinted")   # once
+
+
+def test_a_delete_that_fails_keeps_nothing_and_the_old_listing_is_never_the_new_one(db, said):
+    """Live 2026-11-01 (Talbots): the delete job never reached the listing; the 'before' record had been kept already
+    and the sweep took the OLD listing for the reposted one — a wrong line in the private chat."""
+    class Failing(Fake):
+        async def vinted_delete(self, url, text):
+            raise RuntimeError("Vinted delete: not a listing page: https://www.vinted.com/items/new")
+    db.kv_set(vinted_repost.WINDOW, json.dumps({"buttons": ["cancel", "delete"]}))
+    vinted_repost.ask(db, db.iid, "go")
+    asyncio.run(vinted_repost.serve(db, {"vinted": Failing(FREE)}))
+    assert not db.kv_get(vinted_repost.BEFORE + db.iid)
+    assert db.listing(db.iid, "vinted")["status"] == "posted"
+    db.kv_set(vinted_repost.BEFORE + db.iid, json.dumps({"url": OLD, "posted_at": "2026-10-27T20:03:06+00:00"}))
+    assert not vinted_repost.after_posted(Settings({"machine_role": "dev"}), db, db.iid, "vinted")

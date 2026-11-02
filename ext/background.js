@@ -81,9 +81,10 @@ const byId = (id) => Object.values(jobs).find((j) => j && j.job_id === id) || nu
 const byTab = (tabId) => Object.values(jobs).find((j) => j && j.tabId === tabId) || null;
 const anyJob = () => Object.values(jobs).some(Boolean);
 
+const HASH_SALT = "wo52-reload-1\n";
 async function filesHash() {
   const enc = new TextEncoder();
-  const parts = [];
+  const parts = [enc.encode(HASH_SALT)];      // WO52: the same salt as bridge.files_hash
   for (const f of FILES) {
     const bytes = new Uint8Array(await (await fetch(chrome.runtime.getURL(f))).arrayBuffer());
     parts.push(enc.encode(`${f}\n`), bytes, enc.encode("\n"));

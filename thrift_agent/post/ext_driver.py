@@ -862,6 +862,15 @@ class ExtensionPoster(Poster):
             raise PosterError(f"Vinted practice {address}: {ev.get('message')}")
         return {"window": ev.get("window") or {}, "closed": bool(ev.get("closed")), "shot": str(self.shot)}
 
+    async def vinted_delete_probe(self, url: str) -> bool:
+        """The delete job sent with "cancel" as its button: the page refuses that before opening the dialog — so it
+        tells whether the job reaches the listing page, with nothing pressed. True when it does."""
+        address = self.listing_address(url)
+        if self.name != "vinted" or address is None:
+            raise PosterError(f"not a Vinted listing address: {url!r}")
+        ev = await self._job("delete", {"listing_url": address, "confirm_text": "cancel"}, 120)
+        return ev.get("event") == "error" and "no confirm text" in str(ev.get("message") or "")
+
     async def vinted_delete(self, url: str, confirm_text: str) -> bool:
         """The listing deleted: the dialog's `confirm_text` button (as the practice run recorded it) pressed ONCE; then
         Vinted's own data must no longer list it. True: gone. Never pressed twice (a reload ends the job)."""
