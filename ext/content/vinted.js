@@ -130,7 +130,9 @@
       if (x) {
         return { id: String(x.id), title: String(x.title || ""), price: x.price ?? null,
                  is_reserved: !!x.is_reserved, is_hidden: !!x.is_hidden, is_closed: !!x.is_closed,
-                 is_draft: !!x.is_draft };
+                 is_draft: !!x.is_draft,
+                 // WO52 follow-up: the buyers' interest — likes and views as Vinted counts them (null: not given)
+                 favourite_count: x.favourite_count ?? x.favourites_count ?? null, view_count: x.view_count ?? null };
       }
       if (items.length < 96) return null;
     }
@@ -653,6 +655,72 @@
       return did;
     },
 
+    // WO52 follow-up (the owner, 2026-11-01: delete and post again with its brand — Vinted refuses the brand change on
+    // a live listing): the listing page's Delete [data-testid=item-delete-button] (WO33, seen, never pressed before)
+    // and the dialog it opens. `practice`: the dialog recorded, its Cancel pressed — never the delete. `remove`: the
+    // button whose text is the one the practice recorded (job.confirm_text), pressed ONCE, then the dialog's end waited.
+    async openDeleteDialog(job) {
+      const button = await T.until(() => T.$$(S().delete_item?.selectors || ["[data-testid='item-delete-button']"])
+        .find(T.visible), 15000);
+      if (!button) {
+        await T.screenshot("no-delete");
+        T.emit({ event: "error", job_id: job.job_id, stage: "delete_item", page: "listing",
+                 message: "no Delete button on the listing page" });
+        return null;
+      }
+      await T.click(button);
+      const dialog = await T.until(() => T.$$(["[role='dialog']", "[aria-modal='true']", "[data-testid*='modal' i]"])
+        .find((d) => T.visible(d) && /delete/i.test(T.norm(d.textContent))), 8000);
+      if (!dialog) {
+        await T.screenshot("delete-no-dialog");
+        T.emit({ event: "error", job_id: job.job_id, stage: "delete_dialog", page: "listing",
+                 message: "Delete pressed, but no confirmation dialog showed" });
+        return null;
+      }
+      return dialog;
+    },
+
+    async practice(job, st) {
+      const dialog = await T.sites.vinted.openDeleteDialog(job);
+      if (!dialog) return;
+      const buttons = T.$$("button", dialog).filter(T.visible);
+      const seen = { text: T.norm(dialog.textContent).slice(0, 300),
+                     buttons: buttons.map((b) => T.norm(b.textContent || b.getAttribute("aria-label") || "")),
+                     testids: buttons.map((b) => b.getAttribute("data-testid") || "") };
+      await T.screenshot("delete-window");
+      const cancel = buttons.find((b) => /^(cancel|no|keep|keep listing|go back|back|close)$/i.test(
+        T.norm(b.textContent || b.getAttribute("aria-label") || "")));
+      if (!cancel) {
+        return T.emit({ event: "error", job_id: job.job_id, stage: "delete_cancel", page: "listing",
+                        message: `the dialog has no Cancel (${JSON.stringify(seen).slice(0, 300)})` });
+      }
+      await T.click(cancel);
+      const closed = await T.until(() => !dialog.isConnected || !T.visible(dialog), 6000);
+      await T.screenshot("after-cancel");
+      T.emit({ event: "result", job_id: job.job_id, practice: true, window: seen, closed: !!closed, url: location.href });
+    },
+
+    async remove(job, st) {
+      const want = T.norm(job.confirm_text || "");
+      if (!want || /^(cancel|no|keep|back|close)/i.test(want)) {
+        return T.emit({ event: "error", job_id: job.job_id, stage: "delete_confirm", page: "listing",
+                        message: "no confirm text recorded by a practice run" });
+      }
+      const dialog = await T.sites.vinted.openDeleteDialog(job);
+      if (!dialog) return;
+      const yes = T.$$("button", dialog).filter(T.visible).find((b) => T.norm(b.textContent || "") === want);
+      if (!yes) {
+        await T.screenshot("delete-window");
+        return T.emit({ event: "error", job_id: job.job_id, stage: "delete_confirm", page: "listing",
+                        message: `the dialog has no '${job.confirm_text}' button` });
+      }
+      T.emit({ event: "step", job_id: job.job_id, name: "delete_item", ok: true, clicked: true });
+      await T.click(yes);
+      await T.until(() => !dialog.isConnected || !T.visible(dialog), 15000);
+      await T.screenshot("deleted");
+      T.emit({ event: "result", job_id: job.job_id, delete_pressed: true, url: location.href });
+    },
+
     async delist(job, st) {
       // The listing this agent created: its Hide, and the confirmation if one shows. Never Delete (WO32 §4).
       const re = new RegExp(S().hide.text, "i");
@@ -731,6 +799,34 @@
       return { source: "json", orders };
     },
 
+    // WO52 follow-up (the owner, 2026-11-01): the conversations about one of our listings — Vinted's offers happen in
+    // conversations, so none means no offer either. Its inbox JSON (same origin) is read page by page and each entry
+    // searched for the listing's id; only the COUNT leaves the page, never a buyer, a message or a name. null: the
+    // inbox couldn't be read — never taken as "none".
+    async conversationsAbout(id) {
+      const tpl = String(S().inbox?.url || "/api/v2/inbox?page={n}&per_page=50");
+      const has = (o, depth = 0) => {
+        if (o == null || depth > 6) return false;
+        if (typeof o === "number" || typeof o === "string") return String(o) === String(id);
+        if (Array.isArray(o)) return o.some((x) => has(x, depth + 1));
+        if (typeof o === "object") return Object.values(o).some((x) => has(x, depth + 1));
+        return false;
+      };
+      let n = 0, read = 0;
+      for (let page = 1; page <= 6; page++) {
+        const r = await fetch(new URL(tpl.replace("{n}", String(page)), location.origin).href,
+                              { credentials: "include", headers: { Accept: "application/json" } });
+        if (!r.ok) return { count: null, read, error: `HTTP ${r.status}` };
+        const data = await r.json();
+        const list = data.conversations || data.inbox || data.items || [];
+        if (!Array.isArray(list)) return { count: null, read, error: "no conversation list in the answer" };
+        read += list.length;
+        n += list.filter((c) => has(c)).length;
+        if (list.length < 50) break;
+      }
+      return { count: n, read };
+    },
+
     async find(job, st) {
       // WO35: Vinted's own JSON of the seller's newest items (same origin, from the member page): each listing's exact
       // title and address — the confirmation after an upload. The tiles below only when the JSON can't be read.
@@ -742,6 +838,19 @@
           const all = await wardrobeAll(member);
           return T.emit({ event: "result", job_id: job.job_id, listings: all.items, shape: all.shape,
                           source: "wardrobe", url: location.href });
+        } catch (e) {
+          return T.emit({ event: "error", job_id: job.job_id, stage: "find", page: "unknown",
+                          message: String(e && e.message ? e.message : e).slice(0, 200) });
+        }
+      }
+      if (job.item_id && job.interest) {                // WO52 follow-up: likes, views and conversations, read only
+        if (!member) return T.emit({ event: "error", job_id: job.job_id, stage: "find", page: "unknown",
+                                     message: "no member page to read Vinted's data from" });
+        try {
+          const item = await wardrobeItem(member, job.item_id);
+          const talks = await T.sites.vinted.conversationsAbout(job.item_id);
+          return T.emit({ event: "result", job_id: job.job_id, item, conversations: talks.count,
+                          inbox_read: talks.read, inbox_error: talks.error || null, url: location.href });
         } catch (e) {
           return T.emit({ event: "error", job_id: job.job_id, stage: "find", page: "unknown",
                           message: String(e && e.message ? e.message : e).slice(0, 200) });

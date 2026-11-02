@@ -828,6 +828,63 @@ class ExtensionPoster(Poster):
 
     # ---- WO41: a price drop on the listing's edit page
 
+    # ---- WO52 follow-up (the owner, 2026-11-01): a Vinted listing deleted and posted again with its brand
+
+    async def vinted_interest(self, url: str) -> dict:
+        """The buyers' interest in a Vinted listing, read only: its likes and views (Vinted's JSON of the seller's
+        items) and how many inbox conversations name it (offers happen in conversations). {"likes", "views",
+        "conversations", "gone"} — a count None when Vinted didn't give it (never taken as none)."""
+        m = re.search(r"/items/(\d+)", url or "")
+        shop = self.shop or self.learned_shop or ""
+        if self.name != "vinted" or m is None or not shop:
+            raise PosterError(f"not a Vinted listing address, or no member page: {url!r}")
+        ev = await self._job("find", {"shop": shop, "wardrobe": True, "item_id": m[1], "interest": True}, 180)
+        if ev.get("event") == "error":
+            if ev.get("page") in STOP_PAGES:
+                raise self._stop(ev)
+            raise PosterError(f"Vinted interest {url}: {ev.get('message')}")
+        item = ev.get("item")
+        return {"gone": not isinstance(item, dict), "likes": (item or {}).get("favourite_count"),
+                "views": (item or {}).get("view_count"), "conversations": ev.get("conversations"),
+                "inbox_read": ev.get("inbox_read"), "inbox_error": ev.get("inbox_error"),
+                "reserved": bool((item or {}).get("is_reserved")), "hidden": bool((item or {}).get("is_hidden"))}
+
+    async def vinted_practice_delete(self, url: str) -> dict:
+        """The delete dialog opened on the listing page, recorded, and its Cancel pressed — never the delete."""
+        address = self.listing_address(url)
+        if self.name != "vinted" or address is None:
+            raise PosterError(f"not a Vinted listing address: {url!r}")
+        ev = await self._job("practice", {"listing_url": address}, 120, shot=self.shot)
+        if ev.get("event") == "error":
+            if ev.get("page") in STOP_PAGES:
+                raise self._stop(ev)
+            raise PosterError(f"Vinted practice {address}: {ev.get('message')}")
+        return {"window": ev.get("window") or {}, "closed": bool(ev.get("closed")), "shot": str(self.shot)}
+
+    async def vinted_delete(self, url: str, confirm_text: str) -> bool:
+        """The listing deleted: the dialog's `confirm_text` button (as the practice run recorded it) pressed ONCE; then
+        Vinted's own data must no longer list it. True: gone. Never pressed twice (a reload ends the job)."""
+        address = self.listing_address(url)
+        if self.name != "vinted" or address is None:
+            raise PosterError(f"not a Vinted listing address: {url!r}")
+        self.lines = []
+        ev = await self._job("delete", {"listing_url": address, "confirm_text": confirm_text}, 180, shot=self.shot)
+        pressed = ev.get("delete_pressed") or any(line.startswith("delete_item") for line in self.lines)
+        if ev.get("event") == "error" and not pressed:
+            if ev.get("page") in STOP_PAGES:
+                raise self._stop(ev)
+            after = await self.vinted_interest(address)
+            if after["gone"]:
+                self.notes.append(f"the delete job ended with '{str(ev.get('message'))[:80]}', but {address} is gone")
+                return True
+            raise PosterError(f"Vinted delete {address}: {ev.get('message')}")
+        for _ in range(6):                               # Vinted's data may lag a moment behind the delete
+            after = await self.vinted_interest(address)
+            if after["gone"]:
+                return True
+            await asyncio.sleep(10)
+        raise PosterError(f"Vinted: Delete pressed, but {address} is still in Vinted's data")
+
     async def read_price(self, ctx, url: str) -> dict:
         """The listing's price as the site's own data shows it: Vinted — its JSON of the seller's items (the listing by
         its id: the price, and whether it is reserved, hidden or closed); Depop — the listing page's JSON-LD (the price,

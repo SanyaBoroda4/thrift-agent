@@ -363,6 +363,9 @@ def record(s: Settings, db: DB, iid: str, mp: str, title: str, out, fields: dict
                       error=error if out.status != "cancelled" else out.note,
                       posted_at=stamp if out.status in ("posted", "dryrun") else None,
                       fields_json={**fields, "guesses": guesses, "note": out.note})
+    if out.status == "posted" and mp == "vinted":       # WO52 follow-up: a repost keeps its price-drop clock
+        from thrift_agent import vinted_repost
+        vinted_repost.after_posted(s, db, iid, mp)
     db.log(iid, f"post_{out.status}", {"mp": mp, "url": out.url, "error": error, "shot": out.screenshot,
                                        "note": out.note, "clicked": out.clicked, "guesses": guesses,
                                        "seconds": round(seconds, 1) if seconds else None, "slept": slept or None,
@@ -762,6 +765,21 @@ def card_text(s: Settings, db: DB, iid: str, last: str | None = None) -> str:
     if last:
         lines.append(last)
     return "\n\n".join(lines)
+
+
+def refresh_card(s: Settings, db: DB, iid: str) -> None:
+    """The item's ✅ card re-rendered from its listings as they are now and edited in place (its 💤 line kept) — a
+    site's address changed after the card went out (WO52: a Vinted listing posted again)."""
+    row = db.conn.execute("SELECT text FROM outbox WHERE kind='posted' AND ref=? ORDER BY rowid DESC LIMIT 1",
+                          (iid,)).fetchone()
+    if row is None:
+        return
+    text = card_text(s, db, iid, None)
+    old = row["text"] or ""
+    if "\n\n💤" in old:
+        text += old[old.index("\n\n💤"):]
+    if text != old:
+        _card(s, db, iid, text, edit=True)
 
 
 def _card(s: Settings, db: DB, iid: str, text: str, edit: bool) -> None:

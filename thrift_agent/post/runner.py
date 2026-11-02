@@ -1160,6 +1160,12 @@ async def serve_cross_requests(s: Settings, db: DB, ps: dict, ctx) -> list[str]:
     """The dry runs `thrift crosslist --dry-run` asked for: each marketplace's form filled for the item, the screenshot
     and the mapped fields to the ops chat, the tab closed — nothing published, no row changed. And the login checks
     `thrift crosslist --check-login` asked for (WO32)."""
+    from thrift_agent import vinted_repost             # WO52 follow-up: a Vinted listing deleted and posted again
+    for (key,) in db.conn.execute("SELECT key FROM kv WHERE key LIKE ? AND value != ''",
+                                  (vinted_repost.BEFORE + "%",)).fetchall():
+        vinted_repost.after_posted(s, db, key[len(vinted_repost.BEFORE):], "vinted")
+    if "vinted" in ps:
+        await vinted_repost.serve(db, ps)
     with db.tx():
         reqs = loads(db.kv_get(CROSSLIST_REQUESTS)) or []
         if reqs:

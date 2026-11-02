@@ -412,7 +412,7 @@ async function fetchPhotos(urls) {
 function urlFor(job, site) {
   if (["cover", "price", "fields", "photos", "text"].includes(job.mode)) return job.edit_url;   // WO37/41/43/45/50: edit page
   if (job.mode === "orders") return job.orders_url;                  // WO38: the sold orders, read only
-  if (["verify", "delist", "probe", "practice"].includes(job.mode)) return job.listing_url;
+  if (["verify", "delist", "probe", "practice", "delete"].includes(job.mode)) return job.listing_url;
   if (job.mode === "find") return site.shop_url.replace("{shop}", encodeURIComponent(job.shop || ""));
   return site.sell_url;
 }
@@ -513,8 +513,10 @@ async function afterClickTimeout(jobId) {
 // Vinted take-down's (WO40 — the UGG's died on Vinted's /session-refresh; Depop's delete never) is handed again, with
 // `pressed` when its Hide was already clicked: then the new page only says whether it took (a click never repeated).
 async function onNavigatedMidJob(j) {
-  if (j.readyAt || (j.mode === "delist" && j.site !== "vinted") || (j.reloads || 0) >= 2) {
+  if (j.readyAt || (j.mode === "delist" && j.site !== "vinted") || j.mode === "delete" || (j.reloads || 0) >= 2) {
+    // WO52 follow-up: a delete is never handed again (no second press) — the driver reads the listing's address
     const why = j.readyAt ? "the page reloaded while it waited for POST — nothing was published"
+      : j.mode === "delete" ? "the page reloaded during the delete"
       : j.mode === "delist" ? "the page reloaded during the take-down" : "the page keeps reloading";
     return finish({ event: "error", job_id: j.job_id, stage: "reloaded", page: "unknown", message: why });
   }

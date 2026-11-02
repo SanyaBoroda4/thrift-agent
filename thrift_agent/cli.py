@@ -837,6 +837,21 @@ def titles(review: bool = typer.Option(False, "--review", help="every live title
 SITES = ("poshmark", "depop", "vinted")
 
 
+@app.command("vinted-repost")
+def vinted_repost_cmd(item_id: str,
+                      check: bool = typer.Option(False, "--check", help="likes, views, conversations — read only"),
+                      practice: bool = typer.Option(False, "--practice", help="the delete dialog opened and Cancelled"),
+                      go: bool = typer.Option(False, "--go", help="checked again, deleted, posted again with its brand")) -> None:
+    """WO52 follow-up: a Vinted listing with no brand deleted and posted again with it — only with no likes, offers or
+    conversations; the running poster does it (its listing keeps its price-drop clock; the ✅ card follows)."""
+    from thrift_agent import vinted_repost
+    steps = [n for n, on in (("check", check), ("practice", practice), ("go", go)) if on]
+    if len(steps) != 1:
+        raise typer.BadParameter("one of --check, --practice, --go")
+    vinted_repost.ask(_db(), item_id, steps[0])
+    print(f"asked the running poster: {steps[0]} for {item_id} on Vinted (its lines go to the private chat)")
+
+
 @app.command("brand-fix")
 def brand_fix(item_id: str,
               marketplace: str = typer.Option(None, "--marketplace", help="poshmark | depop | vinted (default: all live)"),

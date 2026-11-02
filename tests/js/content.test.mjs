@@ -2091,3 +2091,37 @@ test("WO52 §3: a dry run's result carries the form's structure (labels, control
   assert.ok(keys.includes("brand-select-dropdown-input") && keys.includes("title--input"), JSON.stringify(keys));
   assert.ok(r.structure.every((f) => typeof f.kind === "string" && "required" in f));
 });
+
+// ---------------------------------------------------------------- WO52 follow-up: a Vinted listing deleted to post again
+const DELETE_DIALOG = `<button data-testid="item-delete-button" onclick="document.getElementById('dlg').hidden=false">Delete</button>
+  <div id="dlg" role="dialog" hidden><h2>Delete this item?</h2><p>Are you sure you want to delete this item?</p>
+    <button onclick="window.clicks.push('cancel'); document.getElementById('dlg').remove()">Cancel</button>
+    <button onclick="window.clicks.push('delete'); document.getElementById('dlg').remove()">Delete</button></div>`;
+
+test("vinted (WO52): the delete practice records the dialog and presses Cancel — never Delete", async () => {
+  const p = page("vinted", vintedSeller(DELETE_DIALOG), LISTING_PAGES.vinted.url);
+  await run(p, { job_id: "v-practice", site: "vinted", mode: "practice", listing_url: LISTING_PAGES.vinted.url });
+  await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
+  const r = plain(p.events().find((e) => e.event === "result"));
+  assert.ok(r && r.practice && r.closed, JSON.stringify(plain(p.events())));
+  assert.deepEqual(r.window.buttons, ["cancel", "delete"]);   // T.norm: lower-case
+  assert.deepEqual(plain(p.w.clicks), ["cancel"]);
+});
+
+test("vinted (WO52): the delete presses the recorded button once", async () => {
+  const p = page("vinted", vintedSeller(DELETE_DIALOG), LISTING_PAGES.vinted.url);
+  await run(p, { job_id: "v-delete", site: "vinted", mode: "delete", confirm_text: "Delete",
+                 listing_url: LISTING_PAGES.vinted.url });
+  await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
+  assert.ok(p.events().some((e) => e.event === "result" && e.delete_pressed), JSON.stringify(plain(p.events())));
+  assert.deepEqual(plain(p.w.clicks), ["delete"]);
+});
+
+test("vinted (WO52): no recorded confirm text — nothing pressed", async () => {
+  const p = page("vinted", vintedSeller(DELETE_DIALOG), LISTING_PAGES.vinted.url);
+  await run(p, { job_id: "v-delete2", site: "vinted", mode: "delete", confirm_text: "Cancel",
+                 listing_url: LISTING_PAGES.vinted.url });
+  await until(() => p.events().some((e) => e.event === "result" || e.event === "error"));
+  assert.ok(p.events().some((e) => e.event === "error" && /no confirm text/.test(e.message)));
+  assert.deepEqual(plain(p.w.clicks), []);
+});

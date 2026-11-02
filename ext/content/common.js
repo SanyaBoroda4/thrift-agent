@@ -872,6 +872,10 @@
       if (page !== "listing" || !site.practice) return fail("practice", "unknown", `not a listing page: ${location.href}`);
       return site.practice(job, st);
     }
+    if (job.mode === "delete") {                      // WO52 follow-up: Vinted's delete, its confirm text recorded first
+      if (page !== "listing" || !site.remove) return fail("delete", "unknown", `not a listing page: ${location.href}`);
+      return site.remove(job, st);
+    }
     if (job.mode === "probe") {                       // WO33: the take-down control looked for — never clicked
       if (page !== "listing") return fail("probe", "unknown", `not a listing page: ${location.href}`);
       return site.probe(job, st);
