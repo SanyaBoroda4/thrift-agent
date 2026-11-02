@@ -1299,6 +1299,12 @@ proves it is alive.
   (`edits.queue_brand`): Poshmark's edit page (`PoshmarkPoster.set_brand`: the box cleared, our names tried, read back,
   Update → List This Item for this edit, the public JSON's brand), Depop / Vinted through the extension's "fields" job
   (`setFields` with `fields.brand`; `_fields_match` reads the brand back). Nothing else on the listing changes.
+  **Recorded live 2026-11-01:** Poshmark's edit page asks "You are allowed to edit the brand on your listing 3 times. Do
+  you want to continue?" [No] [Yes] — at the click, the first keystroke or the pick, by listing; unanswered it swallows
+  the search and its backdrop blocks Update (`_brand_warning`: provoked before the search, answered after the pick).
+  Its edit-page search offered nothing for Mango, Free People, Victoria's Secret (Zara, Astr worked). Vinted refuses a
+  brand change on an existing listing to many brands: "Create new listing to change to luxury brand" (Madewell,
+  Talbots, Lauren Ralph Lauren…) — only a new listing could; its edit page has no 'Use "<brand>" as brand' row.
 - **Sizes (§1, `catalogs/sizes.py` `depop_size` / `vinted_size`):** the exact value, else the size without its fit mark
   ("27P" → 27"), else the menu's nearest (WO50's `menu_size`), else the menu's neutral choice (One size / Other) — each
   fallback in the note; kids letters on Depop's ages menu (XS → 5 … XL → 16 years). Only "no size at all" skips.
