@@ -132,7 +132,11 @@
                  is_reserved: !!x.is_reserved, is_hidden: !!x.is_hidden, is_closed: !!x.is_closed,
                  is_draft: !!x.is_draft,
                  // WO52 follow-up: the buyers' interest — likes and views as Vinted counts them (null: not given)
-                 favourite_count: x.favourite_count ?? x.favourites_count ?? null, view_count: x.view_count ?? null };
+                 favourite_count: x.favourite_count ?? x.favourites_count ?? null, view_count: x.view_count ?? null,
+                 // WO52 follow-up: the photos' ids and file names — an inbox entry names its item only by its photos
+                 photo_keys: [...(x.photos || []), x.photo].filter(Boolean)
+                   .flatMap((p) => [p.id, String(p.url || p.full_size_url || "").split("?")[0].split("/").pop()])
+                   .filter((k) => k !== undefined && k !== null && String(k).length > 2).map(String) };
       }
       if (items.length < 96) return null;
     }
@@ -803,7 +807,10 @@
     // conversations, so none means no offer either. Its inbox JSON (same origin) is read page by page and each entry
     // searched for the listing's id; only the COUNT leaves the page, never a buyer, a message or a name. null: the
     // inbox couldn't be read — never taken as "none".
-    async conversationsAbout(id) {
+    async conversationsAbout(id, photoKeys = []) {
+      const mine = new Set((photoKeys || []).map(String));
+      const byPhoto = (c) => (c.item_photos || []).some((p) => p && (mine.has(String(p.id))
+        || mine.has(String(p.url || p.full_size_url || "").split("?")[0].split("/").pop())));
       const tpl = String(S().inbox?.url || "/api/v2/inbox?page={n}&per_page=50");
       const has = (o, depth = 0) => {
         if (o == null || depth > 6) return false;
@@ -822,7 +829,7 @@
         if (!Array.isArray(list)) return { count: null, read, error: "no conversation list in the answer" };
         read += list.length;
         if (!keys && list[0] && typeof list[0] === "object") keys = Object.keys(list[0]).slice(0, 40);   // names only
-        n += list.filter((c) => has(c)).length;
+        n += list.filter((c) => has(c) || (mine.size && byPhoto(c))).length;
         if (list.length < 50) break;
       }
       return { count: n, read, keys };
@@ -849,7 +856,10 @@
                                      message: "no member page to read Vinted's data from" });
         try {
           const item = await wardrobeItem(member, job.item_id);
-          const talks = await T.sites.vinted.conversationsAbout(job.item_id);
+          // a listing whose photos can't be read can't be matched: its conversations are unknown, never "none"
+          const talks = item && (item.photo_keys || []).length
+            ? await T.sites.vinted.conversationsAbout(job.item_id, item.photo_keys)
+            : { count: null, read: 0, error: "the listing's photos aren't in Vinted's data" };
           return T.emit({ event: "result", job_id: job.job_id, item, conversations: talks.count,
                           inbox_read: talks.read, inbox_error: talks.error || null, inbox_keys: talks.keys || null,
                           url: location.href });

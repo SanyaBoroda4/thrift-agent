@@ -2125,3 +2125,16 @@ test("vinted (WO52): no recorded confirm text — nothing pressed", async () => 
   assert.ok(p.events().some((e) => e.event === "error" && /no confirm text/.test(e.message)));
   assert.deepEqual(plain(p.w.clicks), []);
 });
+
+test("vinted (WO52): a conversation is matched by the listing's photos (inbox entries carry no item id)", async () => {
+  const p = page("vinted", vintedSeller(""), LISTING_PAGES.vinted.url);
+  const inbox = { conversations: [
+    { id: 1, item_count: 1, description: "hi", item_photos: [{ id: 555, url: "https://images1.vinted.net/t/01_abc/f800/aaa.jpeg?s=1" }] },
+    { id: 2, item_count: 1, description: "hey", item_photos: [{ id: 777, url: "https://images1.vinted.net/t/02/f800/zzz.jpeg" }] }] };
+  p.w.fetch = async () => ({ ok: true, json: async () => inbox });
+  p.w.Thrift.selectors = SELECTORS;                                         // a job sets them before any step
+  const v = p.w.Thrift.sites.vinted;
+  assert.equal((await v.conversationsAbout("123", ["555"])).count, 1);          // by the photo's id
+  assert.equal((await v.conversationsAbout("123", ["aaa.jpeg"])).count, 1);     // by its file name
+  assert.equal((await v.conversationsAbout("123", ["999"])).count, 0);
+});
