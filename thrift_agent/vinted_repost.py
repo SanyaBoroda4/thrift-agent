@@ -72,7 +72,7 @@ async def serve(db: DB, ps: dict) -> list[str]:
         iid, step = req.get("item"), req.get("step")
         row = db.listing(iid, "vinted")
         title = _title(db, iid)
-        if poster is None or row is None or row["status"] != "posted" or not row["url"]:
+        if poster is None or row is None or not row["url"] or (row["status"] != "posted" and step != "check"):
             notify.say(f"♻️ Vinted repost of {title}: nothing to do (not live on Vinted, or Vinted off)")
             continue
         try:

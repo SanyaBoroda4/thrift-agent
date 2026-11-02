@@ -847,6 +847,7 @@ class ExtensionPoster(Poster):
         return {"gone": not isinstance(item, dict), "likes": (item or {}).get("favourite_count"),
                 "views": (item or {}).get("view_count"), "conversations": ev.get("conversations"),
                 "inbox_read": ev.get("inbox_read"), "inbox_error": ev.get("inbox_error"),
+                "inbox_keys": ev.get("inbox_keys"),
                 "reserved": bool((item or {}).get("is_reserved")), "hidden": bool((item or {}).get("is_hidden"))}
 
     async def vinted_practice_delete(self, url: str) -> dict:

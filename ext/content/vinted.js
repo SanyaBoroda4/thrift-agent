@@ -812,7 +812,7 @@
         if (typeof o === "object") return Object.values(o).some((x) => has(x, depth + 1));
         return false;
       };
-      let n = 0, read = 0;
+      let n = 0, read = 0, keys = null;
       for (let page = 1; page <= 6; page++) {
         const r = await fetch(new URL(tpl.replace("{n}", String(page)), location.origin).href,
                               { credentials: "include", headers: { Accept: "application/json" } });
@@ -821,10 +821,11 @@
         const list = data.conversations || data.inbox || data.items || [];
         if (!Array.isArray(list)) return { count: null, read, error: "no conversation list in the answer" };
         read += list.length;
+        if (!keys && list[0] && typeof list[0] === "object") keys = Object.keys(list[0]).slice(0, 40);   // names only
         n += list.filter((c) => has(c)).length;
         if (list.length < 50) break;
       }
-      return { count: n, read };
+      return { count: n, read, keys };
     },
 
     async find(job, st) {
@@ -850,7 +851,8 @@
           const item = await wardrobeItem(member, job.item_id);
           const talks = await T.sites.vinted.conversationsAbout(job.item_id);
           return T.emit({ event: "result", job_id: job.job_id, item, conversations: talks.count,
-                          inbox_read: talks.read, inbox_error: talks.error || null, url: location.href });
+                          inbox_read: talks.read, inbox_error: talks.error || null, inbox_keys: talks.keys || null,
+                          url: location.href });
         } catch (e) {
           return T.emit({ event: "error", job_id: job.job_id, stage: "find", page: "unknown",
                           message: String(e && e.message ? e.message : e).slice(0, 200) });
