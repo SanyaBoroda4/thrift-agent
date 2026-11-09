@@ -377,7 +377,8 @@ def test_no_message_assumes_the_mac_sleeps():
     import re
     from pathlib import Path
     root = Path(__file__).resolve().parents[1]
-    bad = re.compile(r"Safe to close|close the Mac|next time the Mac|Mac is (?:next )?open|when the Mac wakes", re.I)
+    bad = re.compile(r"Safe to close|close the Mac|next time the Mac|Mac is (?:next )?open|when the Mac wakes|"
+                     r"until it'?s open|wait until the Mac", re.I)          # WO53 §4: thrift-api's too
     for f in [*(root / "thrift_agent").rglob("*.py"), *(root / "api" / "thrift_api").rglob("*.py")]:
         for n, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
             code = line.split("#", 1)[0]

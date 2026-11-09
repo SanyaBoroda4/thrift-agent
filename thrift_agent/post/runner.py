@@ -940,8 +940,31 @@ def map_fields(mp: str, view: ItemView):
     return map_depop(view) if mp == "depop" else map_vinted(view)
 
 
+_SITE_LOCKS: dict[tuple[int, str], asyncio.Lock] = {}
+
+
+def site_lock(mp: str) -> asyncio.Lock:
+    """WO53: ONE Depop / Vinted job at a time per site — the poster object carries the job's planned fields, its strict
+    flag and its go-ahead (the row's claim). Live 2026-11-08 01:01: an asked-for dry run (the housekeeping's) ran beside
+    the site's own form check and the canary's form was compared with the dress's plan; the same race could have
+    cleared a real publish's go-ahead. Keyed by the running loop (each test runs its own)."""
+    key = (id(asyncio.get_running_loop()), mp)
+    lock = _SITE_LOCKS.get(key)
+    if lock is None:
+        lock = _SITE_LOCKS[key] = asyncio.Lock()
+    return lock
+
+
 async def run_cross(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, *, dry: bool, hold: bool = False,
                     request: bool = False, progress=None, quiet: bool = False) -> Outcome | None:
+    """One item on Depop or Vinted (`_run_cross`), never beside another job of the same site (`site_lock`)."""
+    async with site_lock(mp):
+        return await _run_cross(s, db, ps, ctx, iid, mp, dry=dry, hold=hold, request=request, progress=progress,
+                                quiet=quiet)
+
+
+async def _run_cross(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, *, dry: bool, hold: bool = False,
+                     request: bool = False, progress=None, quiet: bool = False) -> Outcome | None:
     """One item on Depop or Vinted (WO30): map its values from the catalogs (a value that can't be mapped skips this
     marketplace only), keep them on the row, take the row ('posting' before the form opens, invariant 4), fill the
     form — a dry run leaves without publishing — and record what happened. A logged-out / CAPTCHA / verification wall

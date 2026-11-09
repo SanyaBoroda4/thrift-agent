@@ -1538,6 +1538,21 @@ def shop_window_title(s: Settings, title: str, facts: Facts, it=None) -> tuple[s
     return title, f"title breaks the shop-window rules: {'; '.join(problems)}"
 
 
+def menu_label_line(description: str, facts: Facts) -> str:
+    """WO53 §0.6 (live 2026-11-08: Southern Tide chinos labelled 9, listed under Boys "10" — the menu has no 9; the
+    owner's rule: list the bigger size, say the label's in the description): a size on none of the category's menus
+    goes up as the nearest — the description says "Label size 9.". Nothing when the menu has it, there is no menu or
+    no size, or the description already quotes the label's size."""
+    value = (facts.size_us.value or "").strip()
+    if not value or not taxonomy.size_menus(facts.department, facts.category, facts.subcategory):
+        return description
+    if sizes.poshmark_size(facts) is not None:
+        return description
+    if re.search(rf"label size:?\s*{re.escape(value)}(?!\w)(?!\.\d)", description or "", re.I):
+        return description
+    return f"{(description or '').rstrip()}\nLabel size {value}."
+
+
 def size_menu_note(facts: Facts, choice: tuple[str, str] | None) -> str | None:
     """A size read that is on none of the category's size menus (WO25): no question (WO33) — the card shows it and the
     poster takes the nearest value of the menu; a reply 'size …' changes it."""
@@ -1812,6 +1827,8 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
     final.poshmark_description = copywriter.ensure_retail_line(final.poshmark_description, facts)
     final.poshmark_description = copywriter.ensure_label_size(final.poshmark_description, facts)   # "104 cm / 4 ans"
     final.depop_description = copywriter.ensure_label_size(final.depop_description, facts)
+    final.poshmark_description = menu_label_line(final.poshmark_description, facts)    # WO53: "Label size 9."
+    final.depop_description = menu_label_line(final.depop_description, facts)
     final.poshmark_description = copywriter.ensure_piece_sizes(final.poshmark_description, facts)  # "Pants: size XS."
     final.depop_description = copywriter.ensure_piece_sizes(final.depop_description, facts)
     final.poshmark_style_tags = []                       # none, ever (the owner, 2026-10-12: "Coord Sets" deleted)

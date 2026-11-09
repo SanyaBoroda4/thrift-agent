@@ -23,6 +23,7 @@ REPOST = "repost:"                        # settings: + item|site — the retry 
 UNPOSTED_SAID = "unposted_said:"          # settings: + item|site — the ⚠️ line said (once)
 POSTING_HOURS = (8, 22)                   # local hours in which a missing listing is chased
 EVENING_HOUR = 21
+MAC_OFFLINE = timedelta(minutes=30)       # WO53 §4: the 9 PM line says the Mac is offline (its figures as of then)
 EVENING_DONE = "evening_line_day"         # settings: the local day the 📊 line went
 # a listing row left as it is — its reason is the owner's to settle, or a state of its own (the Mac says those itself)
 KEEP_REASONS = ("no size on the item", "shared again", "already live", "sold", "not published automatically",
@@ -298,42 +299,74 @@ def _cleanup_today(db: Database, day: str) -> str:
 SITE_LABEL = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted"}
 
 
-def sites_line(db: Database, day: str) -> str:
-    """WO52 §3: the sites' health from the Mac's twice-daily form checks (its heartbeat's `formcheck`) — "Sites:
-    Poshmark ✓ Depop ✓ Vinted ✓ — form checks 8:30, 2:30 passed." on its own line; a site whose last check failed
-    "Vinted ✗ (form check failed)". Nothing when the heartbeat carries no checks (a Mac before WO52)."""
+ACCOUNT_WORDS = {"login": "logged out", "captcha": "shows a CAPTCHA", "verify": "asks for a check",
+                 "block": "turned the Mac away"}
+
+
+def _slot(slot) -> str:
+    try:
+        hh, mm = str(slot).split(":")
+        return f"{int(hh) % 12 or 12}:{mm}"
+    except ValueError:
+        return str(slot)
+
+
+def sites_line(db: Database, day: str, now: datetime | None = None) -> str:
+    """WO52 §3 → WO53 §3: each site's state, true and whole, from the Mac's heartbeat — "Sites: Poshmark ✓ · Depop ✗
+    logged out since Sun Nov 8, 4:04 PM EST · Vinted ✓ — form checks today: Poshmark 8:30 ✓ 2:30 ✓, Depop 2:30 ✓."
+    A site is ✗ for what it is (its pause: a login page, failures, the owner's pause; today's failed check, its step and
+    time) — never for a stale check of another day (live 2026-11-08: Nov 7's checks shown as "one failed"); a 🚨 is
+    named only when one was said in the last day ("see the 🚨 line" with none sent). Nothing for a Mac that sends
+    neither checks nor pauses."""
     import json
     beat = db.one("SELECT info FROM heartbeats WHERE source = 'mac'")
     try:
         info = json.loads(beat["info"]) if beat and beat["info"] else {}
     except (TypeError, ValueError):
         info = {}
-    checks = info.get("formcheck") if isinstance(info, dict) else None
-    if not isinstance(checks, dict) or not checks:
+    info = info if isinstance(info, dict) else {}
+    checks = info.get("formcheck") if isinstance(info.get("formcheck"), dict) else {}
+    paused = info.get("sites") if isinstance(info.get("sites"), dict) else {}
+    alarms = info.get("alarms") if isinstance(info.get("alarms"), dict) else {}
+    if not checks and not paused:
         return ""
-    marks, slots, all_ok = [], set(), True
+    from .timers import clock
+    marks, done = [], []
     for site in util.SITES:
-        c = checks.get(site)
-        if not isinstance(c, dict):
-            continue
-        ok = bool(c.get("ok")) and not c.get("degraded")
-        all_ok = all_ok and ok
-        marks.append(f"{SITE_LABEL.get(site, site)} {'✓' if ok else '✗'}")
-        today = c.get("today") if isinstance(c.get("today"), dict) else {}
-        named = [*(today.get("passed") or []), *(today.get("failed") or [])] if today.get("day") == day else []
+        label = SITE_LABEL.get(site, site)
+        c = checks.get(site) if isinstance(checks.get(site), dict) else None
+        p = paused.get(site) if isinstance(paused.get(site), dict) else None
+        if c is None and p is None:
+            continue                                  # nothing known about it: never a ✓ it didn't earn
+        c = c or {}
+        today = c.get("today") if isinstance(c.get("today"), dict) and c["today"].get("day") == day else {}
+        passed, failed = list(today.get("passed") or []), list(today.get("failed") or [])
         at = parse_time(c.get("at"))
-        if not named and at is not None and deadlines.local(at).date().isoformat() == day and c.get("slot"):
-            named = [c["slot"]]                      # a Mac that sends only the last check
-        for slot in named:
-            try:
-                hh, mm = str(slot).split(":")
-                slots.add((int(hh), mm))
-            except ValueError:
-                continue
-    if not marks:
-        return ""
-    when = (" — form checks " + ", ".join(f"{h % 12 or 12}:{m}" for h, m in sorted(slots))) if slots else " — form checks"
-    return "\nSites: " + " ".join(marks) + when + (" passed." if all_ok else ": one failed — see the 🚨 line.")
+        if not today and at is not None and deadlines.local(at).date().isoformat() == day and c.get("slot"):
+            (passed if c.get("ok") and not c.get("degraded") else failed).append(c["slot"])   # only its last check
+        alarmed = any(str(k).split(":", 1)[0] == site for k in alarms)
+        if p:
+            since = clock(parse_time(p.get("since")), now)
+            if p.get("kind") == "account":
+                why = ACCOUNT_WORDS.get(p.get("page") or "", "stopped by a page it showed")
+            elif p.get("owner"):
+                why = "paused by you"
+            else:
+                why = f"paused: {p.get('reason') or 'a problem'}"
+            marks.append(f"{label} ✗ {why} since {since}" + (" (see the 🚨 line)" if alarmed else ""))
+        elif failed:
+            err = str(c.get("error") or "").split("\n", 1)[0][:90]
+            marks.append(f"{label} ✗ form check {', '.join(_slot(x) for x in failed)} failed"
+                         + (f" ({err})" if err else "") + (" (see the 🚨 line)" if alarmed else ""))
+        elif (not c.get("ok") or c.get("degraded")) and not passed and at is not None:
+            marks.append(f"{label} ✗ its last form check failed ({clock(at, now)})"
+                         + (" (see the 🚨 line)" if alarmed else ""))
+        else:
+            marks.append(f"{label} ✓")
+        if passed or failed:
+            done.append(f"{label} " + " ".join([*(f"{_slot(x)} ✓" for x in passed), *(f"{_slot(x)} ✗" for x in failed)]))
+    when = (" — form checks today: " + ", ".join(done)) if done else " — no form check ran today"
+    return "\nSites: " + " · ".join(marks) + when + "."
 
 
 def evening_line(db: Database, now: datetime | None = None, mode: str | None = None) -> str | None:
@@ -346,7 +379,10 @@ def evening_line(db: Database, now: datetime | None = None, mode: str | None = N
     day = local.date().isoformat()
     if core.setting(db, EVENING_DONE) == day:
         return None
-    shares = [r for r in shares_today(db, now) if not r.get("test")]
+    shares = {r["id"] for r in shares_today(db, now) if not r.get("test")}
+    # WO53 §4: Azure's own ledger too — her photos reach it while the Mac is off
+    shares |= {r["share_id"] for r in db.query("SELECT share_id FROM shares_in WHERE share_id LIKE ? AND "
+                                               "COALESCE(test, 0) = 0", (f"{day}%",))}
     items = db.query("SELECT id FROM items WHERE created_at LIKE ? AND COALESCE(test, 0) = 0", (f"{day}%",))
     item_ids = [r["id"] for r in items]
     live_all = 0
@@ -361,10 +397,15 @@ def evening_line(db: Database, now: datetime | None = None, mode: str | None = N
                      "l.status = 'skipped' AND LOWER(COALESCE(l.error, '')) LIKE '%no size on the item%' AND "
                      "COALESCE(i.status, '') <> 'posted' AND COALESCE(i.test, 0) = 0")
     n_wait = int(waiting["n"]) if waiting else 0
-    text = (f"📊 Today: {len(shares)} share{'s' if len(shares) != 1 else ''} → {len(item_ids)} item"
+    beat = db.one("SELECT last_seen FROM heartbeats WHERE source = 'mac'")
+    seen = parse_time(beat["last_seen"]) if beat else None
+    from .timers import clock
+    head = (f"📊 Today (the Mac is offline since {clock(seen, now)} — its figures as of then)"
+            if seen is not None and now - seen > MAC_OFFLINE else "📊 Today")
+    text = (f"{head}: {len(shares)} share{'s' if len(shares) != 1 else ''} → {len(item_ids)} item"
             f"{'s' if len(item_ids) != 1 else ''}, {live_all} live on all {len(util.SITES)} sites with all photos"
             + (f", {n_wait} waiting for a size" if n_wait else "") + "." + _cleanup_today(db, day)
-            + sites_line(db, day))
+            + sites_line(db, day, now))
     out = core.Outbox(now, mode)
     with db.tx():
         core.put_setting(db, EVENING_DONE, day)

@@ -306,9 +306,10 @@ def beat_info(db) -> dict:
             return json.loads(value) if value and value[:1] in "{[" else value
         except ValueError:
             return value
-    from thrift_agent import formcheck
+    from thrift_agent import alarm, formcheck, health
     return {"inbox_look": kv(alerts.SCAN_DONE), "progress": kv(alerts.PROGRESS), "uploads_poll": kv(uploads.LAST_POLL),
-            "cleanup": kv(cleanup.LAST), "formcheck": formcheck.beat(db)}   # WO52 §3: the 9 PM sites line
+            "cleanup": kv(cleanup.LAST), "formcheck": formcheck.beat(db),   # WO52 §3: the 9 PM sites line
+            "sites": health.beat(db), "alarms": alarm.beat(db)}            # WO53 §3: why a site is ✗, the 🚨 said
 
 
 def _safe_window(db, fn) -> None:
@@ -835,6 +836,53 @@ def titles(review: bool = typer.Option(False, "--review", help="every live title
 
 
 SITES = ("poshmark", "depop", "vinted")
+
+
+@app.command("text")
+def text_cmd(item_id: str,
+             add_line: str = typer.Option(None, "--add-line", help="a line added to the description, e.g. 'Label size 9.'"),
+             title: str = typer.Option(None, "--title", help="the title, exactly (only the sites showing another one)"),
+             dry_run: bool = typer.Option(False, "--dry-run", help="each site's edit page filled, never saved")) -> None:
+    """WO53 §0.6: a live item's title set, and/or one line added to its description, on every site it is live on —
+    the edit page, read back, saved once (the running poster); a site already showing it is left out, and a site whose
+    text she changed by hand is left as it is; the record follows. Depop: its title is its description's first line,
+    an added line goes before its hashtags."""
+    from thrift_agent import edits
+    if not add_line and not title:
+        print("[red]nothing to set[/]: give --title and/or --add-line")
+        raise typer.Exit(1)
+    s, db = settings(), _db()
+    it = db.item(item_id)
+    if it is None:
+        print(f"[red]unknown item[/] {item_id}")
+        raise typer.Exit(1)
+    line, title = (add_line or "").strip(), (title or "").strip()
+    posh = (loads(it["renders"]) or {}).get("poshmark") or {}
+    descriptions, titled = {}, []
+    for row in db.listings_for(item_id):
+        site = row["marketplace"]
+        if row["status"] != "posted" or not row["url"]:
+            continue
+        fields = loads(row["fields_json"]) or {}
+        current = str(posh.get("description") or "") if site == "poshmark" else str(fields.get("description") or "")
+        shown_title = posh.get("title") if site == "poshmark" else fields.get("title") if site == "vinted" else \
+            current.split("\n", 1)[0]
+        if title and (shown_title or "").strip() != title:
+            titled.append(site)
+        if line and current and line.lower() not in current.lower():
+            descriptions[site] = edits.add_line(current, line)
+    made = []
+    if titled:                                       # one text edit per site: the title, and its line when it needs one
+        made += edits.queue_text(db, item_id, title=title, sites=titled,
+                                 descriptions={k: v for k, v in descriptions.items() if k in titled} or None,
+                                 dry=dry_run)
+    if rest := {k: v for k, v in descriptions.items() if k not in titled}:
+        made += edits.queue_text(db, item_id, descriptions=rest, sites=list(rest), dry=dry_run)
+    if not made:
+        print(f"nothing to change: {item_id} shows that on every site it is live on")
+        return
+    print(f"[green]queued[/] {len(made)} text edit(s) for {item_id}"
+          + (" — dry runs: filled, never saved" if dry_run else " — the running poster saves each once"))
 
 
 @app.command("vinted-repost")

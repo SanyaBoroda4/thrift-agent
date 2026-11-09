@@ -448,6 +448,16 @@ def behind(db: DB, mp: str, ids: list, key=lambda x: x) -> list:
     return [x for x in ids if key(x) not in later] + [x for x in ids if key(x) in later]
 
 
+def beat(db: DB) -> dict:
+    """WO53 §3: each paused site for the heartbeat (the 9 PM line says what it is, since when): {site: {"kind",
+    "page", "owner", "since", "reason"}} — the reason in the owner's words, never cut mid-word."""
+    out = {}
+    for mp, p in _all(db).items():
+        out[mp] = {"kind": p.get("kind"), "page": p.get("page"), "owner": bool(p.get("owner")), "since": p.get("since"),
+                   "reason": plain(mp, p.get("reason"), p.get("kind") or "")}
+    return out
+
+
 def summary(db: DB) -> list[str]:
     """One line per paused site, for `thrift status` / doctor."""
     out = []

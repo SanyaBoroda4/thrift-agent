@@ -60,7 +60,7 @@ def test_the_macs_silence_is_told_in_new_york_daytime_only(db, live, sent):
     assert timers.mac_watch(db, at(2026, 11, 1, 12, 30), "live") == "night"     # 07:30 EST (−4 would tell at 08:30)
     assert sent == []
     assert timers.mac_watch(db, at(2026, 11, 1, 13, 5), "live") == "offline"    # 08:05 EST: told once
-    assert len(sent) == 1 and "offline since" in sent[0][1]
+    assert len(sent) == 1 and "stopped answering at 4:00 AM" in sent[0][1]
 
 
 def test_the_unposted_net_works_in_new_york_posting_hours(db, live, monkeypatch):

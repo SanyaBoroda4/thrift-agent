@@ -159,6 +159,29 @@ def test_a_brand_is_never_all_lowercase_in_a_title():
     assert titles.display_in_text("A know one cares dress.", "know one cares") == "A Know One Cares dress."
 
 
+def test_a_size_on_no_menu_goes_up_as_the_nearest_and_the_description_says_the_label(facts):
+    """§0.6: the Southern Tide chinos were labelled 9 and listed as Boys "10" (no 9 on the menu) — the description
+    never said 9. Now "Label size 9." is added; nothing when the menu has the size."""
+    from thrift_agent import pipeline
+    from thrift_agent.schema import Ev
+    pants = facts(item_type="chino pants", department="Kids", category="Bottoms", subcategory="Casual",
+                  kids_gender="boys", size_printed=Ev(value="9", photos=[1], source="photo", confidence=0.95),
+                  size_us=Ev(value="9", photos=[1], source="photo", confidence=0.95))
+    assert pipeline.menu_label_line("Khaki chinos.\nNew with tags.", pants) == \
+        "Khaki chinos.\nNew with tags.\nLabel size 9."
+    assert pipeline.menu_label_line("Khaki chinos.\nLabel size 9.", pants) == "Khaki chinos.\nLabel size 9."
+    shorts = pants.model_copy(update={"size_us": Ev(value="4", photos=[1], source="photo", confidence=0.95)})
+    assert pipeline.menu_label_line("Khaki shorts.", shorts) == "Khaki shorts."            # Boys 4 is on the menu
+
+
+def test_a_line_added_to_a_description_goes_before_depops_hashtags():
+    from thrift_agent import edits
+    assert edits.add_line("Khaki chinos.\nNew with tags.", "Label size 9.") == \
+        "Khaki chinos.\nNew with tags.\nLabel size 9."
+    assert edits.add_line("Southern Tide Chino Pants\n\nKhaki chinos.\n#southerntide #chinos", "Label size 9.") == \
+        "Southern Tide Chino Pants\n\nKhaki chinos.\nLabel size 9.\n#southerntide #chinos"
+
+
 # ---------------------------------------------------------------- §2: verifying — the schedule and rule 3
 
 def test_the_looks_after_the_click():
@@ -489,6 +512,66 @@ def test_a_new_landing_is_said_once(tmp_path, said):
     assert not postcheck.landed(db, "poshmark", "other:share", say=said.ops.append)
     assert said.ops == ["🩹 Poshmark now lands on a new page (share) after List — handled."]
     assert postcheck.landing_kind("poshmark", f"{POSH}/closet/{USER}?created_listing_id={DRESS[1]}") == "closet"
+
+
+def test_two_jobs_of_one_site_never_run_side_by_side(monkeypatch):
+    """Live 2026-11-09 01:01: an asked-for dry run beside the site's own form check — the canary's form compared with
+    the dress's plan (the poster object carries the job's fields and its go-ahead). Another site still runs beside."""
+    running, overlap, order = set(), [], []
+
+    async def fake(s, db, ps, ctx, iid, mp, **kw):
+        if mp in running:
+            overlap.append(iid)
+        running.add(mp)
+        order.append((iid, mp, "start"))
+        await asyncio.sleep(0.05)
+        running.discard(mp)
+        order.append((iid, mp, "end"))
+
+    monkeypatch.setattr(runner, "_run_cross", fake)
+
+    async def go():
+        await asyncio.gather(runner.run_cross(None, None, {}, None, "a", "vinted", dry=True),
+                             runner.run_cross(None, None, {}, None, "b", "vinted", dry=True),
+                             runner.run_cross(None, None, {}, None, "c", "depop", dry=True))
+    asyncio.run(go())
+    assert overlap == []
+    vinted = [x for x in order if x[1] == "vinted"]
+    assert [x[2] for x in vinted] == ["start", "end", "start", "end"]
+    assert order.index(("c", "depop", "start")) < order.index(("a", "vinted", "end"))   # Depop beside Vinted
+
+
+def test_a_brands_own_repeated_word_is_never_cut():
+    """WO53 (tonight's review proposed "Lauren Ralph Striped Dress Shirt"): a brand's own name repeats no word; a brand
+    word repeated after it still goes (WO51: "… Zara Moto Jacket")."""
+    from thrift_agent import titles
+    t = "Lauren Ralph Lauren Striped Dress Shirt Classic Fit Cotton size 15.5"
+    assert titles.check(t) == [] and titles.fix(t, "Lauren Ralph Lauren") == t
+    assert titles.fix("Zara TRF Collection Leather Zara Moto Jacket size S", "Zara") == \
+        "Zara TRF Collection Leather Moto Jacket size S"
+
+
+def test_thrift_text_sets_a_title_only_where_it_differs_and_adds_a_line(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from thrift_agent import cli, edits
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid, r = _posh_item(db, tmp_path)
+    db.upsert_listing(iid, "poshmark", status="posted", url=f"{POSH}/listing/{DRESS[2]}-{DRESS[1]}")
+    new = "Know One Cares Floral Twist-Front Maxi Dress Cream & Pink size S"
+    db.upsert_listing(iid, "vinted", status="posted", url="https://www.vinted.com/items/10730867983",
+                      fields_json={"title": new, "description": "Dress.\nNew with tags."})
+    monkeypatch.setattr(cli, "settings", lambda: s)
+    monkeypatch.setattr(cli, "_db", lambda: db)
+    out = CliRunner().invoke(cli.app, ["text", iid, "--title", new, "--add-line", "Label size 9."],
+                             terminal_width=200)
+    assert out.exit_code == 0, out.output
+    rows = {r_["marketplace"]: json.loads(r_["payload"]) for r_ in db.conn.execute(
+        "SELECT marketplace, payload FROM listing_edits WHERE item_id=? AND kind='text'", (iid,))}
+    assert rows["poshmark"]["title"] == new and rows["poshmark"]["description"].endswith("\nLabel size 9.")
+    assert "title" not in rows["vinted"] and rows["vinted"]["description"] == "Dress.\nNew with tags.\nLabel size 9."
+    assert edits.add_line("a\n#x #y", "b") == "a\nb\n#x #y"
 
 
 # ---------------------------------------------------------------- grep: nobody is asked to check a site

@@ -57,16 +57,28 @@ def evening(db: Database, now: datetime | None = None, mode: str | None = None) 
     return {"line": watch.evening_line(db, now, mode)}
 
 
-MAC_SILENCE = timedelta(hours=2)
+MAC_SILENCE = timedelta(minutes=30)      # WO53 §4: 2 h was most of the evening's outage (asleep 5:19 PM, told 7:30)
 MAC_DOWN = "mac_down_since"              # settings: the outage, while it lasts
 MAC_HOURS = (8, 23)                      # local hours in which the silence is told
 
 
+def clock(moment: datetime | None, now: datetime | None = None) -> str:
+    """"5:19 PM" (the owner's zone) — with the day when it isn't today ("Sun Nov 8, 5:19 PM EST")."""
+    if moment is None:
+        return "when it last spoke"
+    when = deadlines.local(moment)
+    if now is not None and deadlines.local(now).date() != when.date():
+        return core.local_text(moment)
+    return f"{when.hour % 12 or 12}:{when.minute:02d} {'AM' if when.hour < 12 else 'PM'}"
+
+
 def mac_watch(db: Database, now: datetime, mode: str) -> str:
-    """WO42: the Mac's heartbeat (every 15 minutes while it is open, and on every wake) missing for MAC_SILENCE
-    between 08:00 and 23:00 local → ONE private line per outage, "The Mac has been offline since 2:10 PM — shares and
-    posting wait until it's open."; nothing at night (said in the morning if it is still silent), nothing when it is
-    back. "ok" | "offline" (said, or already said) | "night" (silent, not said) | "back" | "never"."""
+    """WO42 → WO53 §4: the Mac's heartbeat (every 15 minutes while it is open, and on every wake) missing for 30
+    minutes between 08:00 and 23:00 local → ONE private line per outage, in plain words that say what to check: "The
+    Mac stopped answering at 5:19 PM. Is it plugged in, with the lid open? Her photos are safe in the cloud and will go
+    up when it's back."; nothing at night (said in the morning if it is still silent); when it is back, ONE line: "Mac
+    back at 9:12 PM — 2 shares waiting, working on them." "ok" | "offline" (said, or already said) | "night" (silent,
+    not said) | "back" | "never"."""
     beat = db.one("SELECT last_seen FROM heartbeats WHERE source = 'mac'")
     if beat is None:
         return "never"
@@ -75,7 +87,14 @@ def mac_watch(db: Database, now: datetime, mode: str) -> str:
     down = core.setting(db, MAC_DOWN)
     if not silent:
         if down:
-            core.drop_setting(db, MAC_DOWN)
+            waiting = [s for s in uploads.pending(db)["shares"] if not s["test"]]
+            n = len(waiting)
+            out = core.Outbox(now, mode)
+            with db.tx():
+                core.drop_setting(db, MAC_DOWN)
+                out.ops(f"Mac back at {clock(seen, now)}" + (f" — {n} share{'s' if n != 1 else ''} waiting, working on "
+                                                              f"{'them' if n != 1 else 'it'}." if n else "."))
+            out.flush()
             return "back"
         return "ok"
     if down:
@@ -85,8 +104,8 @@ def mac_watch(db: Database, now: datetime, mode: str) -> str:
     out = core.Outbox(now, mode)
     with db.tx():
         core.put_setting(db, MAC_DOWN, beat["last_seen"])
-        since = core.local_text(seen) if seen else "it last spoke"
-        out.ops(f"The Mac has been offline since {since} — shares and posting wait until it's open.")
+        out.ops(f"The Mac stopped answering at {clock(seen, now)}. Is it plugged in, with the lid open? Her photos are "
+                f"safe in the cloud and will go up when it's back.")
     out.flush()
     return "offline"
 

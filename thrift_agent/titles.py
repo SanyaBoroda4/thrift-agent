@@ -47,6 +47,33 @@ def _acronyms() -> set[str]:
     return {a.upper() for a in rules()["title"]["acronyms"]}
 
 
+_NAMES: set[str] | None = None
+
+
+def _known_names() -> set[str]:
+    """The brands whose own name may repeat a word (data/big_brands.json and the display table), as `_key`s."""
+    global _NAMES
+    if _NAMES is None:
+        from thrift_agent import brands
+        try:
+            big = json.loads(brands.BIG.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            big = []
+        names = big if isinstance(big, list) else list(big.get("brands") or [])
+        _NAMES = {_key(n) for n in names} | set(_display()) | {_key(v) for v in _display().values()}
+    return _NAMES
+
+
+def brand_prefix(title: str) -> int:
+    """WO53: how many leading words of `title` are a known brand's own name — "Lauren Ralph Lauren" is the name, never a
+    repeated word (a review proposed "Lauren Ralph Striped Dress Shirt")."""
+    words = (title or "").split()
+    for n in range(min(5, len(words)), 1, -1):
+        if _key(" ".join(words[:n])) in _known_names():
+            return n
+    return 0
+
+
 def site_rule(site: str | None, name: str, default=None):
     if site and name in (rules()["sites"].get(site) or {}):
         return rules()["sites"][site][name]
@@ -128,7 +155,8 @@ NEW_BRANDS = re.compile(r"\bNew(?= (?:Balance|Look|York|Era|Republic|Directions)
 
 def _dupes(title: str, brand: str | None = None) -> list[str]:
     seen, out = set(), []
-    for w in re.findall(r"[A-Za-z][A-Za-z'’]+", NEW_BRANDS.sub("", title)):
+    rest = " ".join((title or "").split()[brand_prefix(title):])   # WO53: a brand's own name repeats nothing
+    for w in re.findall(r"[A-Za-z][A-Za-z'’]+", NEW_BRANDS.sub("", rest)):
         k = w.lower().replace("’", "'")
         if k in SMALL or len(k) < 3:
             continue
@@ -218,9 +246,16 @@ def fix(title: str, brand: str | None = None, condition: str | None = None, max_
     t = " ".join(w if (shown and w in shown.split()) else _soften(w, strict) for w in t.split())
     t = re.sub(r"\bsize\s+(?:size\s+)+", "size ", t, flags=re.I)
     words, seen, seen_brand = [], set(), set()
-    for w in t.split():
+    protected = brand_prefix(t)                      # WO53: "Lauren Ralph Lauren" kept whole
+    for i, w in enumerate(t.split()):
         k = re.sub(r"[^a-z']", "", w.lower())
         brand_word = bool(shown and w in shown.split())
+        if i < protected:
+            seen.add(k)
+            if brand_word:
+                seen_brand.add(k)
+            words.append(w)
+            continue
         # a repeat goes — a brand word only once the brand itself has shown it (WO51, live: "Zara TRF Collection …
         # Zara Moto Jacket"); a brand word after the same word elsewhere stays (the brand is never cut)
         if k and len(k) >= 3 and k not in SMALL and k in seen and (not brand_word or k in seen_brand):

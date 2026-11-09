@@ -181,6 +181,18 @@ def tick(db: DB, at: datetime | None = None, hours_open: bool = True) -> list[st
     return out
 
 
+def beat(db: DB, at: datetime | None = None) -> dict:
+    """WO53 §3: the alarms said in the last day, for the heartbeat — the 9 PM line points to a 🚨 only when one went
+    (live 2026-11-08: "see the 🚨 line" with no 🚨 anywhere). {key: [iso, …]}."""
+    t = at or _now()
+    out = {}
+    for key, a in _all(db).items():
+        said = [s for s in (a.get("said") or []) if (w := _when(s)) is not None and t - w < timedelta(days=1)]
+        if said:
+            out[key] = said
+    return out
+
+
 def form_check_failed(db: DB, site: str, error: str, shot=None, n_waiting: int | None = None) -> bool:
     """WO52 §3's call point: a form check failed twice in a row (or once with items waiting) — the site's alarm."""
     step, rest = health._step_of(site, error or "")

@@ -446,6 +446,17 @@ def queue_photos(s: Settings, db: DB, iid: str, site: str, files: list[str], had
     return queue(db, iid, "photos", {site: {"files": files, "had": had, "add": len(files), "limit": limit}}, dry=dry)
 
 
+def add_line(text: str, line: str) -> str:
+    """WO53 §0.6: `line` added at the end of a description — before Depop's closing hashtags, which stay last."""
+    lines = (text or "").rstrip().split("\n")
+    tags = len(lines)
+    while tags > 0 and lines[tags - 1].strip().startswith("#"):
+        tags -= 1
+    if tags < len(lines):
+        return "\n".join([*lines[:tags], line, *lines[tags:]])
+    return f"{(text or '').rstrip()}\n{line}"
+
+
 def queue_text(db: DB, iid: str, title: str | None = None, sites: list[str] | None = None,
                descriptions: dict[str, str] | None = None, dry: bool = False) -> list[str]:
     """WO50: one "text" edit per site the item is live on — the new title (Poshmark and Vinted: their title; Depop:
