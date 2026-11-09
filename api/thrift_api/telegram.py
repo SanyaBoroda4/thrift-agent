@@ -3,9 +3,11 @@ webhook, because the Mac's worker is the bot's one reader (long polling) and a s
 (tests/api/test_no_polling.py keeps it that way).
 
 `send(text, chat)` — chat "group" (TELEGRAM_GROUP_CHAT_ID: the owner's group) or "ops" (TELEGRAM_OPS_CHAT_ID: the
-developer's private chat), with TELEGRAM_BOT_TOKEN. In the quiet hours (23:00-08:00 America/New_York,
-deadlines.quiet) a message goes out silently (`disable_notification`), never later. SALES_MODE replay: every message
-goes to the ops chat as "[replay] …"; off: nothing is sent. Plain text, no parse mode, so a title needs no escaping.
+developer's private chat), with TELEGRAM_BOT_TOKEN. In the night hours (WO54 §3: 22:00-07:00 America/New_York,
+deadlines.night) a message goes out silently (`disable_notification`), never later. The owner's daytime quiet hours
+(8:30 AM – 2:00 PM) change nothing here: a sale's 💰 line goes out then as always; only the nets that judge the Mac
+rest (quiet.py). SALES_MODE replay: every message goes to the ops chat as "[replay] …"; off: nothing is sent. Plain
+text, no parse mode, so a title needs no escaping.
 
 `SENDER(chat, text, silent) -> bool` does the HTTP call (urllib, 10 s); the tests replace it. A failed send is logged
 (without the token) and dropped: a message is never retried or sent twice."""
@@ -70,7 +72,7 @@ def send(text: str, chat: str = "group", now: datetime | None = None, mode: str 
         chat, text = "ops", REPLAY_PREFIX + text
     if len(text) > LIMIT:
         text = text[:LIMIT - 1] + "…"
-    silent = deadlines.quiet(now or util.utcnow())
+    silent = deadlines.night(now or util.utcnow())
     try:
         return bool(SENDER(chat, text, silent))
     except Exception as e:  # noqa: BLE001 — a message never takes a request or a timer down with it

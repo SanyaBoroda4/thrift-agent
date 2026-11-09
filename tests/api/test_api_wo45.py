@@ -10,7 +10,7 @@ from thrift_api import core, dashboard, http, timers, watch
 
 
 @pytest.fixture
-def live(db, monkeypatch):
+def live(db, monkeypatch, no_quiet_hours):      # 11:00 AM: WO54 quiet hours off (test_api_wo54_quiet.py)
     monkeypatch.setenv("SALES_MODE", "live")
     core.put_setting(db, "go_live_at", "2026-10-01T00:00:00+00:00")
 
@@ -91,7 +91,8 @@ def test_an_item_priced_an_hour_ago_and_not_live_gets_one_retry_then_one_line(db
     core.sync(db, {"items": [], "listings": [{"item_id": "i_2", "marketplace": "poshmark", "status": "failed",
                                               "error": "boom", "updated_at": (night - timedelta(hours=2)).isoformat()}]},
               night)
-    assert watch.unposted(db, night, "live") == {"asked": [], "said": []}                         # not at night
+    # WO54 §3: the Mac posts at every hour but the quiet hours now — the net chases at night too (it rested 22–08)
+    assert watch.unposted(db, night, "live") == {"asked": ["i_2|poshmark"], "said": []}
     assert watch.unposted(db, NOW, "replay") == {"asked": [], "said": []}                           # live only
 
 

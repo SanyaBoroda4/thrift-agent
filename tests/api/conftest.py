@@ -29,6 +29,15 @@ def sent(monkeypatch):
 
 
 @pytest.fixture
+def no_quiet_hours(monkeypatch):
+    """WO54 §3: the owner's quiet hours (8:30 AM – 2:00 PM New York, on by default — thrift_api.quiet.DEFAULTS) turned
+    off, as a Mac whose heartbeat says {"quiet": {"enabled": false}}. For the tests of the nets themselves, whose clock
+    (apitools.NOW: Thu Oct 8, 11:00 AM) sits inside the quiet hours; test_api_wo54_quiet.py tests the quiet hours."""
+    from thrift_api import quiet
+    monkeypatch.setitem(quiet.DEFAULTS, "enabled", False)
+
+
+@pytest.fixture
 def db():
     """A migrated in-memory SQLite database."""
     from thrift_api.db import Database
