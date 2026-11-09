@@ -97,6 +97,17 @@ def no_cleanup_tick(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def quiet_hours_off(request):
+    """WO54: the owner's quiet hours (8:30 AM - 2:00 PM, config/settings.yaml `quiet`) are off in every test that doesn't
+    ask for them (`@pytest.mark.quiet_on`): the suite's fixed clocks and the Mac's own pre-deploy run at any hour must
+    not find the agent quiet."""
+    if request.node.get_closest_marker("quiet_on") is None:
+        s = config.settings()
+        s.data = config._merge(s.data, {"quiet": {"enabled": False}})
+    yield
+
+
+@pytest.fixture(autouse=True)
 def no_thrift_chrome(monkeypatch):
     """WO32: no test ever starts the Mac's Thrift Chrome (services.sh start chrome) — the suite runs there at deploy."""
     monkeypatch.setattr("thrift_agent.post.runner.start_thrift_chrome", lambda s: "not in a test")

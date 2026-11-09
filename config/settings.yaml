@@ -149,6 +149,14 @@ bridge:                    # WO32: the extension's link to the poster, on 127.0.
 ext:
   pace: fast               # WO32b: each field set in one go, waits only for the page; "human": typed in chunks, paused
 
+quiet:                     # WO54 §3 (the owner, 2026-11-09: the Mac is her working laptop): from 8:20 nothing new starts,
+  enabled: true            #   8:30-14:00 the agent does NOTHING on the Mac (launchd unloads the worker, the poster and both
+  start: "08:30"           #   Chromes: deploy/quiet.sh); Azure keeps taking her shares and the sales emails. Every other
+  end: "14:00"             #   hour everything runs. "post now" in the ops chat lifts them for that day, "quiet now" brings
+  timezone: America/New_York  # them back. DST-safe (thrift_agent/quiet.py); mirrored to thrift-api by the heartbeat.
+  days: all
+  allow_takedowns: false   # take-downs wait too (the owner can turn this on)
+
 schedule:
   timezone: America/New_York
   hours: ["09:00", "21:00"]

@@ -33,6 +33,7 @@ include = ["thrift_agent*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["quiet_on: the owner's quiet hours (WO54) stay on in this test (off in every other)"]
 
 [tool.ruff]
 line-length = 130
