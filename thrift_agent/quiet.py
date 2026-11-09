@@ -229,3 +229,67 @@ def clock(t: datetime, q: Quiet | None = None) -> str:
     """ "2:00 PM" in the quiet hours' zone."""
     q = q or cfg()
     return t.astimezone(q.tz).strftime("%I:%M %p").lstrip("0")
+
+
+# ---------------------------------------------------------------- WO54 §3: additions for the Mac's side
+
+def advance(since: datetime, seconds: float, s=None, q: Quiet | None = None) -> datetime:
+    """The wall time at which `seconds` of ACTIVE time (outside the quiet windows) have passed since `since` — the
+    inverse of active_seconds: a verifying publish's next look, counted in active time, lands after the quiet hours,
+    never inside them. A moment that falls exactly on a window's start is moved to its end."""
+    t, q = _now(since), q or cfg(s)
+    left = max(0.0, float(seconds))
+    for _ in range(4000):                                   # windows are daily: this is years of them
+        ahead = [w for w in windows(t, t + timedelta(days=2), q) if w[1] > t]
+        if not ahead:
+            if left <= 2 * 86400:
+                return t + timedelta(seconds=left)
+            t, left = t + timedelta(days=2), left - 2 * 86400
+            continue
+        a, b = ahead[0]
+        if a <= t:                                          # inside a window: no time passes until its end
+            t = b
+            continue
+        gap = (a - t).total_seconds()
+        if left < gap:
+            return t + timedelta(seconds=left)
+        left -= gap
+        t = b
+    return t + timedelta(seconds=left)
+
+
+SILENT = ("22:00", "07:00")      # WO54 §3: Telegram messages between these local times go out without a sound
+
+
+def silent(now: datetime | None = None, s=None) -> bool:
+    """10 PM – 7 AM in the quiet hours' zone (settings `telegram.silent_hours`, else SILENT): a message then is sent
+    with disable_notification — her phone stays quiet at night; the message is still there in the morning."""
+    q = cfg(s)
+    try:
+        if s is None:
+            from thrift_agent.config import settings
+            s = settings()
+        hours = s.get("telegram.silent_hours") if hasattr(s, "get") else None
+    except Exception:  # noqa: BLE001 — never the reason a message isn't sent
+        hours = None
+    hours = hours if isinstance(hours, (list, tuple)) and len(hours) == 2 else SILENT
+    a, b = _time(hours[0], SILENT[0]), _time(hours[1], SILENT[1])
+    t = _now(now).astimezone(q.tz).time()
+    if a == b:
+        return False
+    return a <= t < b if a < b else (t >= a or t < b)
+
+
+def state(now: datetime | None = None, db=None, s=None) -> str:
+    """One word for scripts and status lines: "off" (no quiet hours), "lifted" (the owner's "post now" holds for
+    today), "quiet" (8:30 AM – 2:00 PM: nothing at all), "closing" (from 8:20: nothing new starts), else "open"."""
+    now, q = _now(now), cfg(s)
+    if not q.enabled or not q.days:
+        return "off"
+    if _override(db, now, q) == POST_NOW and resume_at(now, q=q) is not None:
+        return "lifted"
+    if current(now, q) is not None:
+        return "quiet"
+    if resume_at(now, q=q) is not None:
+        return "closing"
+    return "open"

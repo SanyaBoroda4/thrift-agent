@@ -53,6 +53,23 @@ for svc in worker poster; do
 done
 sed "s#__HOME__#$HOME#g" deploy/com.thrift.chrome-cross.plist > "$HOME/Library/LaunchAgents/com.thrift.chrome-cross.plist"
 
+# WO54 §3: the quiet hours' calendar job (8:30 AM – 2:00 PM: the agent stopped, then started again) — installed AND
+# loaded by every setup, never left out: without it nothing stops the agent at 8:30 or starts it at 2:00 PM. Reloaded
+# only when its file changed (a load runs one tick: it decides by the current time, so a deploy at 3 PM changes
+# nothing and one inside the window keeps the agent stopped).
+QUIET_PLIST="$HOME/Library/LaunchAgents/com.thriftagent.quiet.plist"
+QUIET_JOB="gui/$(id -u)/com.thriftagent.quiet"
+sed "s#__HOME__#$HOME#g" deploy/com.thriftagent.quiet.plist > "$QUIET_PLIST.new"
+if ! launchctl print "$QUIET_JOB" >/dev/null 2>&1 || ! cmp -s "$QUIET_PLIST.new" "$QUIET_PLIST"; then
+  mv "$QUIET_PLIST.new" "$QUIET_PLIST"
+  launchctl bootout "$QUIET_JOB" >/dev/null 2>&1 || true
+  launchctl bootstrap "gui/$(id -u)" "$QUIET_PLIST"
+  echo "quiet hours: the calendar job com.thriftagent.quiet loaded ($(.venv/bin/python -I -m thrift_agent.quietctl status))"
+else
+  rm -f "$QUIET_PLIST.new"
+fi
+launchctl print "$QUIET_JOB" >/dev/null 2>&1 || { echo "the quiet hours' calendar job didn't load" >&2; exit 1; }
+
 [ -n "${THRIFT_DEPLOY:-}" ] && exit 0                 # deploy/mac_deploy.sh goes on from here
 cat <<MSG
 

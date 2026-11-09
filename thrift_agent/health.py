@@ -280,29 +280,10 @@ def resume(db: DB, mp: str, why: str = "test passed", say: bool = True, force: b
 
 
 def going_text(db: DB, mp: str, hours_open: bool | None = None) -> str:
-    """", 3 items going up" — WO53 §3: true about the hours (live 2026-11-08 10:59 PM: "3 items going up" a minute
-    before the 11 PM end of the listing hours, and nothing went up): outside them (`hours_open` False, the poster's
-    can_post), only items already live elsewhere go up (rule 6), the rest at the opening hour."""
+    """", 3 items going up" — WO53 §3: true about what happens next. WO54 §3: no listing hours any more — they go up
+    now, at any hour (a test runs only outside the owner's quiet hours); `hours_open` is kept for the callers."""
     n = waiting(db, mp)
-    if not n:
-        return ""
-    items = f"{n} item{'s' if n != 1 else ''}"
-    if hours_open is not False:
-        return f", {items} going up"
-    try:
-        from thrift_agent.config import settings
-        opens = str(settings()["schedule"]["hours"][0]).strip()
-    except Exception:  # noqa: BLE001 — no settings here: the usual opening
-        opens = "08:00"
-    from thrift_agent import crosslist
-    rows = db.conn.execute("SELECT DISTINCT item_id FROM listings WHERE marketplace=? AND status='queued'",
-                           (mp,)).fetchall()
-    now_n = sum(1 for r in rows if crosslist.live_elsewhere(db, r["item_id"], mp))
-    if now_n >= n:
-        return f", {items} going up now (live elsewhere: finished tonight)"
-    if now_n:
-        return f", {now_n} going up now (live elsewhere), {n - now_n} at {opens}"
-    return f", {items} waiting — they go up at {opens}"
+    return f", {n} item{'s' if n != 1 else ''} going up" if n else ""
 
 
 def test_due(db: DB, mp: str, at: datetime | None = None) -> str | None:

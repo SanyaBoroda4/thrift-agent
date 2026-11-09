@@ -58,7 +58,8 @@ def test_can_post_windows_and_caps(tmp_path):
     s = _settings(tmp_path)
     noon_ny = datetime(2026, 9, 24, 16, 0, tzinfo=timezone.utc)      # 12:00 EDT; zoneinfo needs tzdata on Windows
     assert can_post(s, 0, 0, noon_ny) == (True, "ok")
-    assert can_post(s, 0, 0, datetime(2026, 9, 24, 3, 0, tzinfo=timezone.utc))[0] is False   # 23:00 EDT
+    # WO54 §3: no posting hours any more (the `hours` key is ignored) — 23:00 EDT posts like noon
+    assert can_post(s, 0, 0, datetime(2026, 9, 24, 3, 0, tzinfo=timezone.utc)) == (True, "ok")
     assert can_post(s, 10, 0, noon_ny)[1] == "hourly cap reached"
     assert can_post(s, 0, 25, noon_ny)[1] == "daily cap reached"
 

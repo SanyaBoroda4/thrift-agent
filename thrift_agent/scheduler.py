@@ -38,16 +38,14 @@ def in_hours(now_local: datetime, hours: list) -> bool:
 
 
 def can_post(s: Settings, posted_last_hour: int, posted_today: int, now: datetime | None = None) -> tuple[bool, str]:
-    """May the poster touch the site at all? PAUSE, listing hours and the pacing caps.
+    """May the poster touch the site at all? PAUSE and the pacing caps — WO54 §3 (the owner, 2026-11-09): at EVERY
+    hour; the only hours the agent keeps off are her quiet hours (thrift_agent/quiet.py: the poster isn't even running
+    then, and from 8:20 it starts nothing new — post/parallel.quiet_hold). `now` is kept for the callers.
 
     HOLD_UNSHIPPED is not checked here: it holds *publishing* only (runner.next_job), drafts and dry-runs still run."""
     sch = s["schedule"]
-    now = now or datetime.now(timezone.utc)
-    local = now.astimezone(ZoneInfo(sch["timezone"]))
     if s.flag_set("PAUSE"):
         return False, "PAUSE flag set"
-    if not in_hours(local, sch["hours"]):
-        return False, f"outside listing hours {sch['hours']}"
     if posted_last_hour >= sch["per_hour_max"]:
         return False, "hourly cap reached"
     if posted_today >= sch["daily_cap"]:
@@ -56,9 +54,9 @@ def can_post(s: Settings, posted_last_hour: int, posted_today: int, now: datetim
 
 
 def outside_hours(why: str | None) -> bool:
-    """WO53 rule 6: can_post said no only because of the listing hours (not PAUSE, not a cap) — an item already live on
-    another site is still finished on the others that night."""
-    return bool(why) and str(why).startswith("outside listing hours")
+    """WO53 rule 6 ("an item live on one site is finished on the others the same night") is moot since WO54 §3: there
+    are no listing hours to be outside of — can_post never says so. Always False; kept for the callers."""
+    return False
 
 
 def windows(now: datetime | None = None, tz: str = "America/New_York") -> tuple[str, str]:

@@ -3,8 +3,8 @@
 On worker start and on every wake: the same catch-up as a restart — the inbox looked at, the queue looked after (never
 a message sent twice, WO37) — and ONE line, "Back online — …", when there is work. During the
 window, ONE status message per window is kept up to date by editing it: "⏳ Working …"
-while items are processed or listings published, "⏸ Waiting — …" once only the owner's answers (or the listing
-hours) are left, "💤 All done — nothing is waiting." when nothing is (WO39: nor waits for her reply). Nothing is
+while items are processed or listings published, "⏸ Waiting — …" once only the owner's answers (or her quiet hours,
+WO54) are left, "💤 All done — nothing is waiting." when nothing is (WO39: nor waits for her reply). Nothing is
 said while the lid is closed (the Mac's short maintenance wakes at night). The estimate uses the real timings of the last runs.
 
 WO29 (a quiet group): "Back online" and the status message go to the OPS chat (the owner's private chat; `thrift
@@ -19,12 +19,11 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Callable
-from zoneinfo import ZoneInfo
 
 from thrift_agent import approve, notify, power
 from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
-from thrift_agent.scheduler import can_post, in_hours, windows
+from thrift_agent.scheduler import can_post, windows
 
 POSTER_STATE = "poster_state"      # kv: the poster's heartbeat and what it is doing (runner writes it)
 POSTER_FRESH_S = 180               # an older heartbeat: the poster isn't running — unless it said why it is quiet:
@@ -55,7 +54,7 @@ class Work:
     to_publish: int        # approved listings the poster will publish
     held: int              # approved listings that need the owner first (never published by the loop)
     waits: tuple = ()      # WO39: (what, names) the owner's reply is waited for — a size, a brand
-    tonight: int = 0       # WO53 rule 6: of to_publish, those live on another site — they go up at any hour
+    tonight: int = 0       # WO53 rule 6: of to_publish, those live on another site (WO54: all go up at any hour)
 
     @property
     def busy(self) -> bool:
@@ -189,33 +188,35 @@ def poster_now(db: DB, now: datetime | None = None) -> PosterNow:
 
 
 def blocked(s: Settings, db: DB, now: datetime | None = None) -> tuple[bool, str | None, str]:
-    """(inside the listing hours, why listings can't go up now or None, the hour they open). The daily cap counts as
-    outside the hours: the listings go up next time."""
+    """(True, why listings can't go up now or None, "") — WO54 §3: no listing hours any more (the first and last
+    values stay for the callers); the owner's quiet hours (from 8:20), PAUSE, the unshipped hold, a low battery and
+    Poshmark's daily cap are what stop them."""
+    from thrift_agent import quiet
     now = now or _now()
     sch = s["schedule"]
-    local = now.astimezone(ZoneInfo(sch["timezone"]))
-    opens = str(sch["hours"][0]).strip()
-    hours_open = in_hours(local, sch["hours"])
+    if quiet.closing(now, db) and (back := quiet.resume_at(now)) is not None:
+        return True, f"the quiet hours ({quiet.cfg().label()}) — they go up from {quiet.clock(back)}", ""
     if s.flag_set("PAUSE"):
-        return hours_open, "publishing is paused (the PAUSE file in iCloud Drive → Posh)", opens
+        return True, "publishing is paused (the PAUSE file in iCloud Drive → Posh)", ""
     if s.flag_set("HOLD_UNSHIPPED"):
-        return hours_open, "unshipped orders hold publishing", opens
+        return True, "unshipped orders hold publishing", ""
     if db.kv_get(power.BATTERY_KEY):
-        return hours_open, "the battery is low — they go on once the Mac is charging", opens
+        return True, "the battery is low — they go on once the Mac is charging", ""
     hour_ago, midnight = windows(now, sch["timezone"])
-    # WO52 §6 (live 2026-11-01 4:08 PM: "will go up after 08:00" at 4 PM): Poshmark's own listings against its cap —
-    # every site's together had counted (36 > 25)
+    # WO52 §6 (live 2026-11-01 4:08 PM: a line about the next morning at 4 PM): Poshmark's own listings against its
+    # cap — every site's together had counted (36 > 25)
     ok, why = can_post(s, db.listed_since(hour_ago, "poshmark"), db.listed_since(midnight, "poshmark"), now)
     if not ok and why == "daily cap reached":
-        return False, "today's limit reached — they go up tomorrow from " + opens, opens
-    return hours_open, None, opens
+        return True, "today's limit reached — they go up after midnight", ""
+    return True, None, ""
 
 
 def status_text(w: Work, p: PosterNow, t: Timing, hours_open: bool, block: str | None, opens: str,
                 now: datetime) -> str:
     """The window's status line (WO28 §2). Waiting for the owner is never "working"; approved listings are, while
-    the poster can publish them (inside the hours, nothing blocking, the poster running and live)."""
-    n_now = w.to_publish if hours_open else min(w.tonight, w.to_publish)   # WO53 rule 6: live elsewhere = tonight
+    the poster can publish them (nothing blocking, the poster running and live). WO54 §3: no listing hours any more —
+    `hours_open` and `opens` are kept for the callers and not read."""
+    n_now = w.to_publish
     publishing = n_now > 0 and block is None and p.running and p.live
     if w.busy or publishing:
         wait_next = max(0.0, (p.next_at - now).total_seconds()) if p.next_at and not p.busy else 0.0
@@ -231,15 +232,11 @@ def status_text(w: Work, p: PosterNow, t: Timing, hours_open: bool, block: str |
             nxt = "publishing now" if p.busy else (f"next in ~{max(1, math.ceil(wait_next / 60))} min"
                                                    if wait_next >= 30 else "next in a moment")
             head = f"⏳ {_n(n_now, 'listing')} still to publish, {nxt}."
-        later = w.to_publish - n_now if publishing else 0
-        rest = f"\n{_n(later, 'listing')} go up at {opens}." if later > 0 else ""
         also = f"\n{_n(w.cards, 'card is', 'cards are')} also waiting for your answer." if w.cards else ""
-        return head + rest + also
+        return head + also
     parts = []
     if w.to_publish:
-        if not hours_open:
-            parts.append(f"{_n(w.to_publish, 'listing')} go up at {opens}")
-        elif block:
+        if block:
             parts.append(f"{_n(w.to_publish, 'listing')} wait: {block}")
         elif not (p.running and p.live):
             parts.append(f"{_n(w.to_publish, 'listing')} wait for the poster (it isn't running)")

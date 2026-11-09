@@ -12,8 +12,9 @@ cheaper on every site; 30 days later, if it still hasn't sold, 10% again; then n
   hand counts), whole dollars rounded DOWN from 90% ($25 → $22, $95 → $85, $110 → $99): every cut is 10% or more (a
   Poshmark drop of 10% notifies the likers). A site under `price_drop.floor` (off by default) or its own minimum is
   skipped for that stage — never a smaller cut. Nothing else on the listing changes.
-- The work (`run_one`, from each site worker on an idle turn, inside the posting hours — take-downs and new listings
-  first): one row per item, site and stage; the price read, the edit page filled, the ONE Save, the site's own data
+- The work (`run_one`, from each site worker on an idle turn, at any hour outside the owner's quiet hours (WO54) —
+  take-downs and new listings first): one row per item, site and stage; the price read, the edit page filled, the ONE
+  Save, the site's own data
   read until it shows the new price. Unclear → `unconfirmed`: read again before anything else, never a second Save
   without that read. A failure is tried again the next window (6 hours later); 3 → the owner is asked in the private
   chat. A sale that arrives mid-drop (GET /tasks asked once more right before the Save) stops it.
@@ -268,7 +269,7 @@ def due_rows(db: DB, site: str, now: datetime | None = None) -> list:
 
 
 def may_drop(s: Settings, db: DB, site: str, dry: bool) -> bool:
-    """Inside the posting hours, the poster LIVE, never with PAUSE, the lid closed or the site stopped for the window."""
+    """The poster LIVE (any hour: WO54 §3), never with PAUSE, the lid closed or the site stopped for the window."""
     from thrift_agent import power
     from thrift_agent.post import runner
     from thrift_agent.scheduler import can_post

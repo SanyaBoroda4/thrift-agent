@@ -206,6 +206,7 @@ def _tick_unless_worker(s, db) -> None:
 
 POLL_LINK = {"fails": 0, "since": None, "kinds": {}, "first": ""}   # the Telegram link's outage now (Alex, 10-27)
 POLL_TIMEOUT_MAX = 25        # a long poll stays under 30 s (Alex, 2026-10-27): the settings' value is capped here
+QUIET_NAP = 15               # WO54 §3: the Telegram thread's pause between looks at the clock in the quiet hours
 
 
 def poll_backoff(fails: int) -> float:
@@ -265,11 +266,36 @@ def _safe_pump(s, db) -> None:
             pass
 
 
+def _quiet_turn(s, db) -> str | None:
+    """WO54 §3, the owner's quiet hours, in the worker: "closing" from 8:20 (nothing new starts — no inbox take, no
+    batch or model call, no late photos, no cleanup, no card from this thread, no window catch-up; a model call in hand
+    has finished: this runs between jobs) — the changes made so far still go to thrift-api; "quiet" from 8:30 to 2:00
+    PM (nothing at all; the worker asks for its own stop when the calendar job didn't come); else None. The Telegram
+    thread still applies her answers until 8:30."""
+    from thrift_agent import quiet, quietctl
+    try:
+        if not quiet.closing(None, db):
+            return None
+        inside = quiet.is_quiet(None, db)
+        if inside:
+            quietctl.ask_stop(s, db, "worker")
+        alerts.progress(db, "quiet hours")               # WO49's watcher: a turn idle on purpose is no stall
+        return "quiet" if inside else "closing"
+    except Exception as e:  # noqa: BLE001 — the quiet hours never stop the worker
+        db.log(None, "error", f"quiet hours: {type(e).__name__}: {e}")
+        return None
+
+
 def _worker_iteration(s, db, interval: int, window: daily.Window | None = None) -> None:
     """One turn of the worker's main thread: notice a wake (the daily window's catch-up and "Back online"), process
     the inbox in the queue's order, send the next question if none is open, bring the window's status message up to
     date, sleep. Telegram's side (replies, buttons, the next question after an answer) runs on its own thread, so the
-    owner is answered at once while items are still being processed."""
+    owner is answered at once while items are still being processed. WO54 §3: in the owner's quiet hours none of it."""
+    if quiet_turn := _quiet_turn(s, db):
+        if quiet_turn == "closing":
+            _safe_sales(db)                               # what changed before 8:20 still reaches thrift-api
+        time.sleep(interval)
+        return
     began = None
     if window is not None:
         try:
@@ -306,10 +332,11 @@ def beat_info(db) -> dict:
             return json.loads(value) if value and value[:1] in "{[" else value
         except ValueError:
             return value
-    from thrift_agent import alarm, formcheck, health
+    from thrift_agent import alarm, formcheck, health, quiet
     return {"inbox_look": kv(alerts.SCAN_DONE), "progress": kv(alerts.PROGRESS), "uploads_poll": kv(uploads.LAST_POLL),
             "cleanup": kv(cleanup.LAST), "formcheck": formcheck.beat(db),   # WO52 §3: the 9 PM sites line
-            "sites": health.beat(db), "alarms": alarm.beat(db)}            # WO53 §3: why a site is ✗, the 🚨 said
+            "sites": health.beat(db), "alarms": alarm.beat(db),            # WO53 §3: why a site is ✗, the 🚨 said
+            "quiet": quiet.beat(db)}                       # WO54 §3: thrift-api mirrors the owner's quiet hours
 
 
 def _safe_window(db, fn) -> None:
@@ -326,7 +353,12 @@ def _safe_window(db, fn) -> None:
 def _telegram_iteration(s, db, bot, state: dict) -> None:
     """One turn of the Telegram thread: long-poll for the owner's replies and button presses (each answer sends the
     next question), make sure one question is out, and every RESEND_CHECK_SECONDS look after the queue
-    (resend_pending: since WO37 nothing is ever sent twice)."""
+    (resend_pending: since WO37 nothing is ever sent twice). WO54 §3: inside the owner's quiet hours it reads nothing
+    either — her answers wait on Telegram (kept 24 h) and are taken at 2:00 PM, answered then."""
+    from thrift_agent import quiet
+    if quiet.is_quiet(None, db):
+        time.sleep(QUIET_NAP)
+        return
     _safe_poll(s, db, bot, int(s.get("telegram.poll_timeout", 25)))
     _safe_pump(s, db)
     if started := alerts.scan_stuck(db):                   # the main thread waits on macOS's permission prompt
@@ -972,6 +1004,48 @@ def doctor() -> None:
         print(escape(line))
 
 
+@app.command("quiet")
+def quiet_cmd(status_: bool = typer.Option(False, "--status", help="the quiet hours now: next stop / back at (default)"),
+              tick: bool = typer.Option(False, "--tick", help="what the calendar job does now, done now (on the Mac: "
+                                                              "deploy/quiet.sh tick; elsewhere: its decision only)"),
+              post_now: bool = typer.Option(False, "--post-now", help="lift the quiet hours for today (the twin of "
+                                                                      "'post now' in the private chat)"),
+              quiet_now: bool = typer.Option(False, "--quiet-now", help="bring them back (the twin of 'quiet now')")) -> None:
+    """WO54 §3: the owner's quiet hours (8:30 AM – 2:00 PM America/New_York): the agent does nothing on the Mac then —
+    launchd unloads the worker, the poster and both Chromes (deploy/quiet.sh, the calendar job com.thriftagent.quiet),
+    and starts them again at 2:00 PM."""
+    import subprocess
+    import sys
+    from thrift_agent import quiet, quietctl
+    if sum((tick, post_now, quiet_now)) > 1:
+        raise typer.BadParameter("one of --status, --tick, --post-now, --quiet-now")
+    s, db = settings(), _db()
+    if post_now:
+        day = quiet.set_post_now(db)
+        beat = quietctl.beat_now(db)                     # thrift-api mirrors it at once (the lead, WO54 §3)
+        how = quietctl.after_override(s, db)
+        print(f"{quietctl.LIFTED_TEXT} ({day}{f'; {how}' if how else ''}{'' if beat else '; heartbeat not sent'})")
+        approve.announce(s, "CLI: quiet hours lifted for today ('post now')")
+        return
+    if quiet_now:
+        had = quiet.clear_override(db)
+        beat = quietctl.beat_now(db)
+        how = quietctl.after_override(s, db)
+        print(f"✓ Quiet hours back{'' if had else ' (they were not lifted)'}{f' — {how}' if how else ''}"
+              f"{'' if beat else ' (heartbeat not sent)'}")
+        return
+    if tick:
+        if quietctl.on_mac(s):
+            r = subprocess.run(["bash", str(quietctl.QUIET_SH), "tick"], capture_output=True, text=True, timeout=900,
+                               check=False)
+            print(escape((r.stdout + r.stderr).strip() or "tick done (see ~/thrift/logs/quiet.log)"))
+            raise typer.Exit(r.returncode)
+        print(f"decision: {quietctl.decide(None, db, s)} (not on the Mac: nothing is stopped or started here)")
+        return
+    print(escape(quietctl.status_line(None, db, s)))
+    print(f"state: {quiet.state(None, db, s)} · platform {sys.platform}")
+
+
 @app.command()
 def status() -> None:
     """What's in the pipeline."""
@@ -984,6 +1058,8 @@ def status() -> None:
                  f"{cleanup.human(last.get('freed', 0))}" if last else " · no cleanup yet"))
     except OSError:
         pass
+    from thrift_agent import quietctl
+    print(escape(quietctl.status_line(None, db)))       # WO54 §3: the owner's quiet hours, next stop / back at
     t = Table("item", "status", "title", "price", "gate", "listings")
     for row in db.conn.execute("SELECT * FROM items ORDER BY created_at DESC LIMIT 30"):
         renders, gate, pr = loads(row["renders"]) or {}, loads(row["gate"]) or {}, loads(row["price"]) or {}

@@ -1,7 +1,8 @@
 """WO52 §4 (the owner, 2026-11-01): every periodic job proves it is alive. Live: Poshmark's order sweep failed every 30
 minutes for four days on a closed browser and nobody heard. Each job records its last success and its last error here
-(kv `job_health`); a job with no success for its limit — 12 hours, 24 for the daily ones — says ONE private line naming
-the job and its last error, once per episode ("✅ … works again" when it recovers); `thrift doctor` shows them all.
+(kv `job_health`); a job with no success for its limit — 12 hours, 24 for the daily ones, counted outside the owner's
+quiet hours (WO54 §3) — says ONE private line naming the job and its last error, once per episode ("✅ … works again"
+when it recovers); `thrift doctor` shows them all.
 
     jobs.ok(db, "order_sweep:poshmark")            # after a run that worked
     jobs.failed(db, "order_sweep:poshmark", err)   # after one that didn't
@@ -86,13 +87,20 @@ def limit_h(job: str) -> int:
     return LIMITS.get(job.partition(":")[0], 12)
 
 
+def _active_h(since: datetime, t: datetime) -> float:
+    """WO54 §3: hours of ACTIVE time — the owner's quiet hours left out (no job runs then on purpose)."""
+    from thrift_agent import quiet
+    return quiet.active_seconds(since, t) / 3600
+
+
 def stale(db: DB, at: datetime | None = None) -> list[tuple[str, dict]]:
-    """The jobs with no success for their limit — judged from their last success, else their first record."""
+    """The jobs with no success for their limit — judged from their last success, else their first record; in active
+    time (WO54 §3: the quiet hours don't count)."""
     t = at or _now()
     out = []
     for job, j in _all(db).items():
         since = _when(j.get("ok")) or _when(j.get("first"))
-        if since is not None and t - since >= timedelta(hours=limit_h(job)):
+        if since is not None and _active_h(since, t) >= limit_h(job):
             out.append((job, j))
     return out
 
@@ -107,7 +115,7 @@ def check(db: DB, at: datetime | None = None) -> list[str]:
         if j.get("said"):
             continue
         since = _when(j.get("ok")) or _when(j.get("first"))
-        hours = int((t - since).total_seconds() // 3600) if since else limit_h(job)
+        hours = int(_active_h(since, t)) if since else limit_h(job)
         last = f" — last error: {j['error'][:160]}" if j.get("error") else ""
         never = " (no success recorded yet)" if not j.get("ok") else ""
         notify.say(f"⚠️ {name_of(job)} hasn't worked for {hours} h{last}{never}.")
@@ -126,7 +134,7 @@ def lines(db: DB, at: datetime | None = None) -> list[str]:
         okt = _when(j.get("ok"))
         age = f"{int((t - okt).total_seconds() // 3600)} h ago" if okt and t - okt >= timedelta(hours=1) else \
             (f"{int((t - okt).total_seconds() // 60)} min ago" if okt else "never")
-        bad = okt is None or t - okt >= timedelta(hours=limit_h(job))
+        bad = okt is None or _active_h(okt, t) >= limit_h(job)
         newer = (_when(j.get("error_at")) or t) > (okt or t - timedelta(days=999))
         err = f" · last error: {j['error'][:80]}" if j.get("error") and newer else ""
         out.append(f"{'⚠️' if bad else '✓'} {name_of(job)}: last success {age}{err}")

@@ -293,11 +293,13 @@ TIMING = daily.Timing(batch=60, item=150, post=120, gap=240)
     (daily.Work(0, 0, 0, 0, 0), daily.PosterNow(True, True), True, None, "💤 All done — nothing is waiting."),
     (daily.Work(0, 0, 2, 0, 0), daily.PosterNow(True, True), True, None,
      "⏸ Waiting — 2 cards are waiting for your answer in Telegram (answers within 24 h are kept)"),
+    # WO54 §3: no listing hours any more — the owner's quiet hours are what make them wait
     (daily.Work(0, 0, 0, 3, 0), daily.PosterNow(True, True), False, None,
-     "⏸ Waiting — 3 listings go up at 08:00"),
-    (daily.Work(0, 0, 1, 3, 0), daily.PosterNow(True, True), False, None,
-     "⏸ Waiting — 3 listings go up at 08:00; 1 card is waiting for your "
-     "answer in Telegram (answers within 24 h are kept)"),
+     "⏳ 3 listings still to publish, next in a moment."),
+    (daily.Work(0, 0, 1, 3, 0), daily.PosterNow(True, True), True,
+     "the quiet hours (8:30 AM – 2:00 PM) — they go up from 2:00 PM",
+     "⏸ Waiting — 3 listings wait: the quiet hours (8:30 AM – 2:00 PM) — they go up from 2:00 PM; 1 card is waiting "
+     "for your answer in Telegram (answers within 24 h are kept)"),
     (daily.Work(0, 0, 0, 1, 0), daily.PosterNow(True, True), True, "the battery is low — they go on once the Mac is "
      "charging", "⏸ Waiting — 1 listing wait: the battery is low — they go on once the Mac is charging"),
     (daily.Work(0, 0, 0, 2, 0), daily.PosterNow(False), True, None,
@@ -350,12 +352,13 @@ def test_the_poster_says_what_it_does(tmp_path):
     assert not daily.poster_now(db).running
 
 
-def test_outside_the_hours_the_listings_wait_for_next_time(tmp_path):
+def test_listings_go_up_at_every_hour_only_pause_and_the_cap_hold_them(tmp_path):
+    """WO54 §3 (the owner, 2026-11-09): every hour outside her quiet hours, posting included — midnight too."""
     s = _settings(tmp_path)
     db = DB(s.path("db"))
     night = datetime(2026, 10, 6, 4, 0, tzinfo=timezone.utc)              # 00:00 in New York
-    assert daily.blocked(s, db, night) == (False, None, "08:00")
-    assert daily.blocked(s, db, NOW) == (True, None, "08:00")
+    assert daily.blocked(s, db, night) == (True, None, "")
+    assert daily.blocked(s, db, NOW) == (True, None, "")
     s.flag("PAUSE").write_text("x", encoding="utf-8")
     assert daily.blocked(s, db, NOW)[1].startswith("publishing is paused")
 

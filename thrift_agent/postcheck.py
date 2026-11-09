@@ -30,7 +30,7 @@ import json
 import math
 import re
 import unicodedata
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 from urllib.parse import urlparse
@@ -77,29 +77,39 @@ def iso(t: datetime) -> str:
 
 # ---------------------------------------------------------------- the schedule and rule 3
 
+def _active(since: datetime, until: datetime) -> float:
+    """WO54 §3: seconds of ACTIVE time — the owner's quiet hours (8:30 AM – 2:00 PM, the poster stopped) left out: the
+    verifying clock pauses while the agent is quiet on purpose (wall time when they are off)."""
+    from thrift_agent import quiet
+    return quiet.active_seconds(since, until)
+
+
 def next_due(clicked: datetime, at: datetime) -> datetime:
-    """The next look after `at`: SCHEDULE_S after the click, then every EVERY_S (counted from the click)."""
+    """The next look after `at`: SCHEDULE_S after the click, then every EVERY_S (counted from the click) — in active
+    time (WO54 §3): a look never falls due inside the quiet hours; the schedule goes on after them."""
+    from thrift_agent import quiet
+    done = _active(clicked, at)
     for s in SCHEDULE_S:
-        t = clicked + timedelta(seconds=s)
-        if t > at:
-            return t
+        if s > done:
+            return quiet.advance(clicked, s)
     last = SCHEDULE_S[-1]
-    k = math.floor(((at - clicked).total_seconds() - last) / EVERY_S) + 1
-    return clicked + timedelta(seconds=last + k * EVERY_S)
+    k = math.floor((done - last) / EVERY_S) + 1
+    return quiet.advance(clicked, last + k * EVERY_S)
 
 
 def absent_proven(reads: list[dict], clicked: datetime) -> bool:
     """Rule 3: two reads that showed the listing absent, at least ABSENT_GAP_S apart, the last at least ABSENT_AFTER_S
-    after the click. A read that couldn't be made never counts."""
+    after the click — both in active time (WO54 §3). A read that couldn't be made never counts."""
     times = sorted(t for r in reads or [] if r.get("result") == "absent" and (t := utc(r.get("at"))) is not None)
-    if len(times) < 2 or (times[-1] - clicked).total_seconds() < ABSENT_AFTER_S:
+    if len(times) < 2 or _active(clicked, times[-1]) < ABSENT_AFTER_S:
         return False
-    return any((times[-1] - t).total_seconds() >= ABSENT_GAP_S for t in times[:-1])
+    return any(_active(t, times[-1]) >= ABSENT_GAP_S for t in times[:-1])
 
 
 def overdue(clicked: datetime, at: datetime) -> bool:
-    """Still unknown this long after the click: the one 🚨."""
-    return (at - clicked).total_seconds() >= ALARM_AFTER_S
+    """Still unknown this long after the click: the one 🚨 — in active time (WO54 §3: the 2 hours stand still in the
+    quiet hours; a listing clicked at 8:15 is not "overdue" at 2:00 PM)."""
+    return _active(clicked, at) >= ALARM_AFTER_S
 
 
 # ---------------------------------------------------------------- Poshmark's public pages

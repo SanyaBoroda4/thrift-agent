@@ -157,9 +157,8 @@ quiet:                     # WO54 §3 (the owner, 2026-11-09: the Mac is her wor
   days: all
   allow_takedowns: false   # take-downs wait too (the owner can turn this on)
 
-schedule:
+schedule:                  # WO54 §3: no posting hours — every hour outside the owner's quiet hours (`quiet` above)
   timezone: America/New_York
-  hours: ["09:00", "21:00"]
   per_hour_max: 60         # WO37: a site goes straight on — 10 an hour made it wait out the hour
   daily_cap: 25            # per site (the owner decides if it changes)
   gap_seconds: [0, 0]      # no pause after a Poshmark listing, no occasional longer break (the owner, WO37)
@@ -168,5 +167,6 @@ telegram:
   enabled: false
   resend_after_hours: 6    # a batch or item still waiting this long gets its message sent again (Telegram keeps updates 24 h)
   poll_timeout: 15         # getUpdates long-poll seconds; the worker ticks between polls
+  silent_hours: ["22:00", "07:00"]   # WO54 §3: the Mac's messages then make no sound (disable_notification; quiet.timezone)
   ops_chat_id: null        # the owner's private chat with the bot (WO29): everything technical goes there, the group
                            # gets only the cards and "Posted ✓"; TELEGRAM_OPS_CHAT_ID wins (set it in private/)

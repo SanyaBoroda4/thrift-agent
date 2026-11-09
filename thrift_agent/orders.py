@@ -284,7 +284,7 @@ def _now() -> str:
 # ---------------------------------------------------------------- §2, the sweep
 
 EVERY = timedelta(hours=6)              # every 6 hours
-FIRST_HOUR = 8                          # the day's first sweep: the first moment the Mac is awake after 08:00
+FIRST_HOUR = 8                          # the day's first sweep: the first moment the Mac is awake from 8 AM
 RETRY = timedelta(minutes=30)           # a sweep that failed is tried again after this
 BUDGET = 60.0                           # inside the pause after a listing only when this much of it is left
 RECENT = timedelta(days=60)             # older orders are not sent
@@ -359,7 +359,8 @@ def enabled(s: Settings) -> bool:
 
 def due(db, site: str, now: datetime | None = None, tz: str = "America/New_York") -> bool:
     """The lid open, the site not stopped today (a login / CAPTCHA page), no failure in the last RETRY, and: never
-    read yet (from 08:00), or the last sweep 6 hours old, or the day's first after 08:00."""
+    read yet (from 8 AM), or the last sweep 6 hours old, or the day's first from 8 AM (WO54 §3: never inside the
+    owner's quiet hours — post/parallel._sweep holds it from 8:20 to 2:00 PM)."""
     now = now or datetime.now(timezone.utc)
     if power.lid_closed():
         return False

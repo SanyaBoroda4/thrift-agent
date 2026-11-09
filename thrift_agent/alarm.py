@@ -42,6 +42,13 @@ def _local(t: datetime) -> str:
     return t.astimezone().strftime("%I:%M %p").lstrip("0")
 
 
+def _elapsed(since: datetime, t: datetime) -> float:
+    """WO54 §3: seconds a site has been paused, in ACTIVE time — the owner's quiet hours left out (the agent is
+    stopped then on purpose: a pause at 8:25 is no 20-minute 🚨 at 2:00 PM)."""
+    from thrift_agent import quiet
+    return quiet.active_seconds(since, t)
+
+
 def request_text(site: str, step: str | None, error: str, evidence: str | None, waiting: int,
                  why: str = "blocked", label: str | None = None) -> str:
     """The request for Claude Code, ready to paste."""
@@ -164,7 +171,7 @@ def tick(db: DB, at: datetime | None = None, hours_open: bool = True) -> list[st
         if p.get("owner"):
             continue
         since = _when(p.get("since"))
-        if since is None or t - since < AFTER or health.waiting(db, mp) <= 0:
+        if since is None or _elapsed(since, t) < AFTER.total_seconds() or health.waiting(db, mp) <= 0:
             continue
         if p.get("kind") == "account":
             if not hours_open:
