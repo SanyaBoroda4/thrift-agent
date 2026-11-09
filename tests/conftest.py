@@ -109,8 +109,12 @@ def quiet_hours_off(request):
 
 @pytest.fixture(autouse=True)
 def no_thrift_chrome(monkeypatch):
-    """WO32: no test ever starts the Mac's Thrift Chrome (services.sh start chrome) — the suite runs there at deploy."""
+    """WO32: no test ever starts the Mac's Thrift Chrome (services.sh start chrome) — the suite runs there at deploy.
+    WO54: nor asks whether it runs (live 2026-11-09 14:09: the deploy's test run, the Thrift Chrome stopped for the
+    quiet hours — pgrep found none, the bridge watch said "closed by hand" and test_bridge failed; the deploy rolled
+    back). A test that wants an answer patches thrift_chrome_running itself."""
     monkeypatch.setattr("thrift_agent.post.runner.start_thrift_chrome", lambda s: "not in a test")
+    monkeypatch.setattr("thrift_agent.post.runner.thrift_chrome_running", lambda: None)
 
 
 @pytest.fixture
