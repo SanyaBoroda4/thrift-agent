@@ -155,7 +155,7 @@ async function connect() {
     wsReady = false;
     clearInterval(pingTimer);
     later();
-    if (was) abandon("the bridge went away before the go-ahead (the poster or the CLI stopped)");
+    if (was) abandon("the bridge went away before the go-ahead (the poster stopped, or the Mac slept)");
   };
   sock.onerror = () => {};
 }
@@ -234,7 +234,7 @@ async function send(event) {
     } catch (e) { /* tried again below */ }
   }
   // nothing listens on the port: the bridge that gave the job is gone
-  if (event.job_id) abandon("the bridge went away before the go-ahead (the poster or the CLI stopped)", event.job_id);
+  if (event.job_id) abandon("the bridge went away before the go-ahead (the poster stopped, or the Mac slept)", event.job_id);
 }
 
 // The bridge that gave a job went away (a Ctrl+C at the terminal, the poster stopped) before its go-ahead: nothing can
@@ -750,25 +750,32 @@ async function tidyTabs(now) {
   await chrome.storage.local.set({ tidied_at: now });
   const tabs = await chrome.tabs.query({});
   const idleSeen = new Set(), close = [], bySite = {};
+  const why = { idle: 0, old: 0, extra: 0 };    // WO54: what each closed page was (the bridge logs it: ext_tidied)
   for (const tab of tabs) {
     if (tab.active || byTab(tab.id)) continue;
     const idle = /idle\.html\?site=([a-z]+)/.exec(tab.url || "");
     if (idle && tab.url.startsWith(chrome.runtime.getURL(""))) {
-      if (idleSeen.has(idle[1])) close.push(tab.id); else idleSeen.add(idle[1]);
+      if (idleSeen.has(idle[1])) { close.push(tab.id); why.idle += 1; } else idleSeen.add(idle[1]);
     } else if (OURS.test(tab.url || "") && tab.lastAccessed && now - tab.lastAccessed > TIDY_OLD) {
       close.push(tab.id);
+      why.old += 1;
     } else if (OURS.test(tab.url || "")) {
       (bySite[OURS.exec(tab.url)[2].toLowerCase()] ||= []).push(tab);
     }
   }
   for (const list of Object.values(bySite)) {             // WO53: a site's extra idle pages, oldest first
     list.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
-    close.push(...list.slice(PER_SITE).map((t) => t.id));
+    const extra = list.slice(PER_SITE).map((t) => t.id);
+    close.push(...extra);
+    why.extra += extra.length;
   }
   if (close.length) {
     try { await chrome.tabs.remove(close); } catch (e) { /* gone already */ }
-    await send({ event: "tidied", closed: close.length });
   }
+  // WO54 (left from WO53: the tidy couldn't be proven from the logs): every run is told, even one that closed nothing
+  // — the agent's pages kept (its three sites and idle pages) and all the tabs of this Chrome
+  const ours = tabs.filter((t) => OURS.test(t.url || "") || /idle\.html\?site=/.test(t.url || "")).length;
+  await send({ event: "tidied", closed: close.length, kept: Math.max(0, ours - close.length), tabs: tabs.length, why });
 }
 
 // The owner closed a job's tab (or its window): the job ends there (nothing more can happen in it).

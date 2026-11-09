@@ -7,12 +7,24 @@ iCloud copy — so the intake takes it like an iCloud folder (`_done.txt` with "
 
 A share is taken when it is ended with every photo in (received >= count), or ended and short but quiet for two
 minutes (a photo that never went: the iCloud copy completes the folder later, WO42's partial rule tells the owner), or
-never ended but started ten minutes ago with photos (the Shortcut died: what came). The photos are downloaded into
+never ended but started ten minutes ago with photos and none for five minutes (the Shortcut died: what came — WO54:
+never while its photos are still coming in). The photos are downloaded into
 work/uploads/<share id> first (each written as a dot-file and renamed; a file already there with the right size is
 kept) and verified by SHA-256 — a mismatch drops the file (event `upload_bad_hash`) and the share is tried again next
 time — then the folder is moved whole into the inbox, so the intake never sees it half-written. A folder of that share
 already in the inbox or the archive (the iCloud copy came first: `YYYYMMDD_<share id>` there) is never doubled: the
 share is only marked fetched (event `share_same_as_icloud`).
+
+WO54 (live 2026-11-08, the 127-photo share 2026-11-08_223855_3036): at 10:49 PM, ten minutes after its first photo
+and still uploading (104 of 127 in, a photo every few seconds), the share counted as "never ended"; its iCloud folder
+was in the inbox — empty, iCloud still bringing it — and was taken as "the share": the API was told "fetched" (its
+blobs deleted, the 23 photos that came after never fetched), and at 11:08 PM the group heard "📭 … still on the
+iPhone" while Azure had every photo; the iCloud copy was whole only at 12:02 AM. Now: a share still receiving photos
+is never taken as "never ended" (STALE_QUIET); a WHOLE upload always wins at once over an iCloud copy not taken yet,
+whole or not; a short upload is never settled on an iCloud copy that is neither taken nor whole — the copy with more
+photos in hand is taken (the upload on a tie: the Mac's own disk), else the Mac waits and Azure keeps its copy
+(`choose`). The last answer's shares are kept (kv `uploads_pending`): no "📭 still on the iPhone" for a share Azure
+holds photos of (`holds`, pipeline.take_share).
 
 How it is called (the worker's inbox scan — not wired here):
 
@@ -22,6 +34,7 @@ How it is called (the worker's inbox scan — not wired here):
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -37,7 +50,10 @@ from thrift_agent.db import DB
 POLL_EVERY = 30                          # seconds between looks at GET /shares/pending
 LAST_POLL = "uploads_last_poll"          # kv: the last look (sales._claim's stamp)
 QUIET_AFTER = 120                        # an ended share short of its count: taken once its last photo is this old
-STALE_AFTER = 600                        # a share never ended: taken this long after it started, with what came
+STALE_AFTER = 600                        # a share never ended: taken this long after it started, with what came …
+STALE_QUIET = 300                        # … and only once no photo came for this long (WO54: a 127-photo upload was
+#                                          taken at minute 10 with 104 photos while the rest were still coming in)
+PENDING = "uploads_pending"              # kv: {share id: {"received", "count", "ended", "at"}} — the last answer's shares
 DOWNLOAD_TIMEOUT = 60.0                  # a 30 MB photo over the owner's Wi-Fi
 STAGING = "uploads"                      # work/uploads/<share id>: the download, moved whole into the inbox
 SOURCE_FILE, TEST_FILE, DONE_FILE = "_source.txt", "_test", "_done.txt"
@@ -63,8 +79,10 @@ def fetch_new(s: Settings, db: DB, client=None, now: datetime | None = None) -> 
         db.log(None, "api_down", {"path": "/shares/pending", "error": str(e)})
         return []
     done = []
-    for share in (answer.get("shares") or []) if isinstance(answer, dict) else []:
-        sid = str(share.get("share_id") or "") if isinstance(share, dict) else ""
+    listed = [x for x in (answer.get("shares") or []) if isinstance(x, dict)] if isinstance(answer, dict) else []
+    remember(db, listed, now)
+    for share in listed:
+        sid = str(share.get("share_id") or "")
         if not SHARE_ID.fullmatch(sid):
             db.log(None, "upload_bad_id", {"share_id": sid[:80]})          # never a path the API made up
             continue
@@ -81,21 +99,57 @@ def fetch_new(s: Settings, db: DB, client=None, now: datetime | None = None) -> 
     return done
 
 
+def remember(db: DB, shares: list[dict], now: datetime) -> None:
+    """WO54: the shares Azure holds now, as the last answer listed them (kv `uploads_pending`, replaced at every look
+    that reached the API) — what `holds` reads before anyone says a share's photos are still on the iPhone."""
+    out = {}
+    for share in shares:
+        sid = str(share.get("share_id") or "")
+        if SHARE_ID.fullmatch(sid):
+            out[sid] = {"received": int(share.get("received") or 0), "count": share.get("count"),
+                        "ended": bool(share.get("ended")), "at": now.isoformat(timespec="seconds")}
+    try:
+        db.kv_set(PENDING, json.dumps(out))
+    except Exception as e:  # noqa: BLE001 — a record: never the reason a share isn't fetched
+        db.log(None, "uploads_pending_unsaved", f"{type(e).__name__}: {e}"[:200])
+
+
+def holds(db: DB, sid: str, more_than: int = 0) -> bool:
+    """WO54: Azure holds photos of this share — more than `more_than` —, not yet fetched (the last answer listed it):
+    its photos are NOT on the iPhone, no "📭 still on the iPhone" for it (live 2026-11-08, 11:08 PM: said while Azure
+    had all 127); and an iCloud copy with fewer photos is never taken "partial" over it (pipeline.take_share)."""
+    try:
+        known = json.loads(db.kv_get(PENDING) or "{}")
+    except ValueError:
+        return False
+    row = known.get(sid) if isinstance(known, dict) else None
+    return isinstance(row, dict) and int(row.get("received") or 0) > max(0, int(more_than))
+
+
+def whole(share: dict) -> bool:
+    """The upload is whole: ended, with every photo the Shortcut counted."""
+    count, received = share.get("count"), int(share.get("received") or 0)
+    return bool(share.get("ended")) and isinstance(count, int) and count > 0 and received >= count
+
+
 def takeable(share: dict, now: datetime) -> bool:
-    """Whole (ended, every photo in); ended and short but quiet QUIET_AFTER; never ended but STALE_AFTER old — with at
-    least one photo in every case."""
+    """Whole (ended, every photo in); ended and short but quiet QUIET_AFTER; never ended but STALE_AFTER old and quiet
+    STALE_QUIET (WO54: a share still receiving photos is not one the Shortcut gave up on) — with at least one photo in
+    every case."""
     photos = share.get("photos") or []
     received = int(share.get("received") or 0)
     if not photos or received <= 0:
         return False
     count = share.get("count")
+    last = _time(share.get("last_received_at"))
     if share.get("ended"):
         if not isinstance(count, int) or received >= count:
             return True
-        last = _time(share.get("last_received_at"))
         return last is not None and (now - last).total_seconds() >= QUIET_AFTER
     started = _time(share.get("started_at"))
-    return started is not None and (now - started).total_seconds() >= STALE_AFTER
+    if started is None or (now - started).total_seconds() < STALE_AFTER:
+        return False
+    return last is None or (now - last).total_seconds() >= STALE_QUIET
 
 
 def take(s: Settings, db: DB, client, share: dict, sid: str) -> bool:
@@ -103,13 +157,16 @@ def take(s: Settings, db: DB, client, share: dict, sid: str) -> bool:
 
     WO46 (her Shortcut saves the iCloud copy FIRST, then uploads): the iCloud folder is usually on the Mac before the
     upload ends — often with its photos still cloud-only, or not all there (live 2026-10-17: the folder and its
-    `_done` came at once, the photos never). Such a copy, not taken yet, never wins over a WHOLE upload
-    (`icloud_behind`): it is set aside in the archive (`set_aside`, a rename inside iCloud Drive) and the upload is
-    taken. A whole iCloud copy, or one already taken, is the share as before."""
+    `_done` came at once, the photos never). WO54: which copy is the share is `choose`'s — a whole upload always wins
+    over an iCloud copy not taken yet (the copy is deleted, WO47); a short upload never gives its photos up for an
+    iCloud copy that is neither taken nor whole (False: it waits, Azure keeps it). A copy already taken is the share."""
     names = [n for n in (safe_name(p.get("name")) for p in share.get("photos") or [] if isinstance(p, dict)) if n]
     test = bool(share.get("test"))
     found = known_folder(s, sid)
-    if found is not None and not icloud_behind(s, db, found, share):
+    pick = choose(s, db, found, share) if found is not None else UPLOAD
+    if pick == WAIT:
+        return False
+    if pick == KNOWN:
         _settle_known(db, client, sid, found, names, test)
         return True
     staging = s.path("work") / STAGING / sid
@@ -117,7 +174,10 @@ def take(s: Settings, db: DB, client, share: dict, sid: str) -> bool:
         return False
     write_marks(staging, share)
     found = known_folder(s, sid)                      # the iCloud copy may have landed during the download
-    if found is not None and not icloud_behind(s, db, found, share):
+    pick = choose(s, db, found, share) if found is not None else UPLOAD
+    if pick == WAIT:
+        return False                                  # the staging stays: the next look downloads nothing twice
+    if pick == KNOWN:
         shutil.rmtree(staging, ignore_errors=True)
         _settle_known(db, client, sid, found, names, test)
         return True
@@ -125,8 +185,11 @@ def take(s: Settings, db: DB, client, share: dict, sid: str) -> bool:
     if found is not None and found.parent == s.path("inbox"):
         # WO47: no duplicates — the iCloud copy goes. WO49 (live 2026-10-24: iCloud held the copy 71 minutes in
         # "Resource deadlock avoided" and the whole upload waited behind it): the upload never waits for that — a copy
-        # iCloud holds now is deleted when it lets go (`register` knows it by its share id: never a second batch)
-        if cleanup.delete_copy(s, db, sid, found, "the upload is whole; the iCloud copy wasn't (WO47: no duplicates)"):
+        # iCloud holds now is deleted when it lets go (`register` knows it by its share id: never a second batch;
+        # WO54: nor a "📭 still on the iPhone" for it — pipeline.take_share)
+        why = ("the upload is whole; the iCloud copy wasn't" if whole(share) else
+               "the upload has more photos in hand than the iCloud copy")
+        if cleanup.delete_copy(s, db, sid, found, f"{why} (WO47: no duplicates)"):
             deleted = found.name
         else:
             db.log(sid, "share_icloud_copy_left", {"share_id": sid, "folder": found.name})
@@ -143,31 +206,61 @@ def take(s: Settings, db: DB, client, share: dict, sid: str) -> bool:
 
 
 ASIDE = "-icloud"                       # WO46's archive name of an iCloud copy set aside (WO47 deletes it instead)
+UPLOAD, KNOWN, WAIT = "upload", "known", "wait"     # `choose`: take the upload · the folder found is the share · not yet
+
+
+def choose(s: Settings, db: DB, found: Path, share: dict) -> str:
+    """Which copy of a share is THE share, the upload (takeable) or the folder found for it (WO46, WO54):
+    - KNOWN: the folder is ours (an upload taken before), in the archive, or an iCloud copy already taken (a batch) —
+      or the share was taken from another of its copies;
+    - UPLOAD: the upload is whole — it wins at once over an iCloud copy not taken yet, whole or not (WO54: never a
+      share held to a slower copy); or it is short and has at least as many photos in hand as the iCloud copy has
+      on the Mac (the iCloud copy unreadable: none);
+    - KNOWN too: a short upload beside an iCloud copy that is whole (marker, every file downloaded, the count covered);
+    - WAIT: a short upload beside an iCloud copy with MORE photos in hand, neither taken nor whole — the iCloud copy's
+      own rules take it (whole, or partial after 30 min), and only then is the upload settled; until then Azure keeps
+      its copy (WO54: the API was told "fetched" for an iCloud copy that was empty, and Azure's photos were gone)."""
+    if found.parent != s.path("inbox") or source_of(found) == "azure":
+        return KNOWN
+    if db.conn.execute("SELECT 1 FROM batches WHERE src_dir=?", (str(found),)).fetchone():
+        return KNOWN                                  # taken already: it is the share
+    from thrift_agent import pipeline, shares
+    if pipeline._taken_as(db, str(share.get("share_id") or shares.share_id_of(found)), found) is not None:
+        return KNOWN                                  # taken from another copy ("<id> 2", "-late"): never a 2nd batch
+    if whole(share):
+        return UPLOAD
+    have = icloud_in_hand(s, found)
+    if have is None:
+        return UPLOAD                                 # iCloud still coordinating it: the upload's photos are here now
+    photos, covered = have
+    if covered:
+        return KNOWN                                  # the iCloud copy is whole; the upload is short
+    return UPLOAD if int(share.get("received") or 0) >= photos else WAIT
 
 
 def icloud_behind(s: Settings, db: DB, found: Path, share: dict) -> bool:
-    """WO46: the share's iCloud folder is in the inbox, not taken yet, and not whole — files still cloud-only, no end
-    mark, or fewer photos (with their companions) than the Shortcut counted — while the upload is whole (ended, every
-    photo in). Then the upload is the copy to take. Anything else: the iCloud copy stands (WO42's rules)."""
-    if found.parent != s.path("inbox") or source_of(found) == "azure":
-        return False
-    if db.conn.execute("SELECT 1 FROM batches WHERE src_dir=?", (str(found),)).fetchone():
-        return False                                  # taken already: it is the share
-    count, received = share.get("count"), int(share.get("received") or 0)
-    if not share.get("ended") or not isinstance(count, int) or count <= 0 or received < count:
-        return False                                  # the upload is short too: the iCloud copy's own rules decide
+    """WO46's question, kept for its callers: the upload is the copy to take (`choose`)."""
+    return choose(s, db, found, share) == UPLOAD
+
+
+def icloud_in_hand(s: Settings, found: Path) -> tuple[int, bool] | None:
+    """The iCloud copy's photos on the Mac now (cloud-only ones not counted) and whether it is whole — the Shortcut's
+    end mark there, nothing cloud-only, its count covered by the photos with their companions (WO42). None when macOS
+    can't read it now (iCloud busy with it)."""
     from thrift_agent import pipeline
     from thrift_agent.ingest import prep
     try:
-        if prep.icloud_placeholders(found):
-            return True
+        pending = prep.icloud_placeholders(found)
         files = [f for f in found.iterdir() if not f.name.startswith(".")]
         marker = pipeline.marker_of(found, s["inbox"]["done_marker"])
+        cloud = {p.name for p in pending}
+        photos = [f for f in files if prep.is_photo(f) and f.name not in cloud]
+        media = [f for f in files if f.is_file() and f.suffix.lower() in pipeline.MEDIA_EXT and f.name not in cloud]
+        want = pipeline.expected_photos(marker) if marker is not None else None
     except OSError:
-        return True                                   # iCloud still coordinating it: the upload is whole now
-    photos = [f for f in files if prep.is_photo(f)]
-    media = [f for f in files if f.is_file() and f.suffix.lower() in pipeline.MEDIA_EXT]
-    return marker is None or len(photos) + len(media) < count
+        return None
+    covered = marker is not None and not pending and bool(photos) and (want is None or len(photos) + len(media) >= want)
+    return len(photos), covered
 
 
 def free_name(path: Path, sep: str = " ") -> Path:

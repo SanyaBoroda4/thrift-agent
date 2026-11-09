@@ -358,8 +358,9 @@ def test_evidence_older_than_14_days_goes_except_an_items_with_a_problem_still_o
 
 
 def test_the_evidence_folder_is_capped_oldest_first_and_its_pages_gzipped(env):
-    """WO53 §5 (2.2 GB on 2026-11-08): over the cap the oldest files go first — never an open problem's; pages older
-    than an hour are kept gzipped."""
+    """WO53 §5 (2.2 GB on 2026-11-08): over the cap the oldest files go first; pages older than an hour are kept
+    gzipped. WO54 (2026-11-09: the folder stayed at 516 MB, its 300 MB cap held by open problems): an open problem's
+    files count too and go LAST, the oldest of them first — its newest evidence is what stays."""
     import gzip
     import os
     s, db, said = env
@@ -368,7 +369,7 @@ def test_the_evidence_folder_is_capped_oldest_first_and_its_pages_gzipped(env):
     _, _, [stuck, idle] = batch(s, db, "2026-10-01_100000_1112", "split", OLD, items=2)
     db.upsert_listing(stuck, "vinted", status="failed", error="Mismatch: photos 0 of 8 on the form")
     old_cap = cleanup.EVIDENCE_CAP
-    cleanup.EVIDENCE_CAP = 250
+    cleanup.EVIDENCE_CAP = 650
     try:
         def shot(name: str, hours: float, size: int = 100) -> Path:
             p = shots / name
@@ -379,13 +380,23 @@ def test_the_evidence_folder_is_capped_oldest_first_and_its_pages_gzipped(env):
         oldest = shot(f"{idle}-depop-20261101-120000.png", 48)
         middle = shot(f"{idle}-depop-20261102-120000.png", 24)
         newest = shot(f"{idle}-depop-20261103-120000.png", 2)
-        problem = shot(f"{stuck}-vinted-20261101-120000.png", 72, 400)          # over the cap alone: still kept
+        problem_old = shot(f"{stuck}-vinted-20261101-120000.png", 72, 200)
+        problem_new = shot(f"{stuck}-vinted-20261103-180000.png", 1, 200)
         page = shot(f"{idle}-vinted-20261103-120000.html", 3, 50)
-        out = cleanup.trim_evidence(s, db, NOW)
-        assert not oldest.exists() and problem.exists() and newest.exists()
-        assert out["files"] >= 1 and out["freed"] >= 100
+        out = cleanup.trim_evidence(s, db, NOW)                 # 750 bytes over a 650 cap: only the oldest goes
+        assert not oldest.exists() and middle.exists() and newest.exists()
+        assert problem_old.exists() and problem_new.exists()
+        assert out["files"] == 1 and out["freed"] == 100
         assert not page.exists() and gzip.decompress(page.with_name(page.name + ".gz").read_bytes()) == b"x" * 50
-        assert middle.exists()                       # 350 bytes over a 250 cap: only the oldest (100) had to go
+        cleanup.EVIDENCE_CAP = 250                              # the open problem's files too, last, oldest first
+        kept: list[str] = []
+        plan = cleanup.evidence_plan(s, db, NOW, kept)
+        assert any(r.ref == stuck and "an open problem's last" in r.why for r in plan)
+        assert any(n.startswith(f"{stuck}: 1 evidence file removed though its vinted listing is failed") for n in kept)
+        cleanup.trim_evidence(s, db, NOW)
+        assert not middle.exists() and not newest.exists() and not problem_old.exists()
+        assert problem_new.exists()                             # its newest evidence stays
+        assert sum(p.stat().st_size for p in shots.iterdir()) <= cleanup.EVIDENCE_CAP
     finally:
         cleanup.EVIDENCE_CAP = old_cap
 

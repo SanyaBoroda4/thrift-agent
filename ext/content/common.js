@@ -134,7 +134,11 @@
                             "style", "shippingMethods", "occasion"]);
   T.fieldKey = (what) => String(what || "").replace(/-input$/, "").replace(/^attributes\./, "");
   T.healable = (what) => HEALABLE.has(T.fieldKey(what)) || /^attributes\./.test(String(what || ""));
-  const PRESS = /\b(publish(ed|ing)?|post(ing)?|upload|list (this |an? |another )?item|list another|list it|save( changes| draft)?|delete|remove listing|submit|discard|buy( now)?|boost|bump|promote|mark as sold|hide|confirm|pay|checkout)\b/i;
+  // WO54 (left from WO53: Depop's ship-from address has a "Remove" button with no aria-label — the model could have
+  // picked it): remove, delete, discard, deactivate, sign / log out, address and payment are never offered either
+  // (thrift_agent/heal.py FORBIDDEN says the same words), nor a link that leads there whatever its words (NEVER_HREF).
+  const PRESS = /\b(publish(ed|ing)?|post(ing)?|upload|list (this |an? |another )?item|list another|list it|save( changes| draft)?|delet(e|es|ed|ing)|remov(e|es|ed|ing)|submit|discard|buy( now)?|boost|bump|promote|mark as sold|hide|confirm|pay|payments?|checkout|deactivat(e|es|ed|ing)|sign\s*-?\s*out|log\s*-?\s*out|addresse?s?)\b/i;
+  const NEVER_HREF = /log-?out|sign-?_?out|\/settings|\/account|payment|address|\/wallet|\/balance/i;
   const neverSelectors = () => {
     const steps = (T.selectors && T.site && T.selectors[T.site] && T.selectors[T.site].steps) || {};
     return ["submit", "edit_save", "delete_button", "delete_dialog", "never_click", "hide", "mark_sold", "list_item",
@@ -167,6 +171,8 @@
       try { if (el.matches(s) || el.querySelector(s) || el.closest(s)) return true; } catch (e) { /* */ }
     }
     if (/^(submit|image|reset)$/i.test(el.getAttribute("type") || "") && el.tagName !== "SELECT") return true;
+    const link = el.closest && el.closest("a[href]");
+    if (link && NEVER_HREF.test(link.getAttribute("href") || "")) return true;     // WO54: an icon that signs out…
     const words = [T.labelOf(el), pressable(el) ? el.textContent : "", el.getAttribute("data-testid") || "",
                    el.getAttribute("name") || ""].join(" ");
     return pressable(el) && PRESS.test(words);

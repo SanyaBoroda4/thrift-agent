@@ -167,6 +167,8 @@ def test_a_bad_hash_is_dropped_and_fetched_again(env):
 @pytest.mark.parametrize("where, name", [("inbox", SID), ("inbox", f"{SID}-late"), ("archive", f"20261018_{SID}"),
                                          ("archive", f"20261018_{SID}_2")])
 def test_the_icloud_copy_that_came_first_is_never_doubled(env, where, name):
+    """The iCloud copy TAKEN first (archived, or in the inbox with its batch — WO54: a copy not taken yet gives way
+    to a whole upload, `test_a_whole_upload_wins_at_once_over_an_icloud_copy_not_taken_yet`)."""
     s, db = env
     api = FakeApi()
     share(api)
@@ -175,6 +177,7 @@ def test_the_icloud_copy_that_came_first_is_never_doubled(env, where, name):
     (folder / "IMG_1.jpeg").write_bytes(JPEG)
     if where == "inbox":                                                                # WO46: whole in the inbox
         (folder / "IMG_2.HEIC").write_bytes(HEIC)
+        db.add_batch(str(folder), 2)                                                    # … and taken by the intake
     (folder / "_done.txt").write_text("done 2")
     here = sorted(p.name for p in folder.iterdir())
     assert uploads.fetch_new(s, db, api, NOW) == [SID]
@@ -185,6 +188,49 @@ def test_the_icloud_copy_that_came_first_is_never_doubled(env, where, name):
     assert events(db, "share_same_as_icloud") == [{"share_id": SID, "folder": name,
                                                    "photos": ["IMG_1.jpeg", "IMG_2.HEIC"], "test": False}]
     assert events(db, "share_fetched") == [] and api.fetches == []                      # nothing downloaded
+
+
+@pytest.mark.parametrize("name", [SID, f"{SID}-late"])
+def test_a_whole_upload_wins_at_once_over_an_icloud_copy_not_taken_yet(env, name):
+    """WO54 (live 2026-11-08: a 127-photo share held to its iCloud copy for 73 minutes while Azure had every photo): a
+    WHOLE upload always wins at once over an iCloud copy the intake hasn't taken — even one that looks whole; the copy
+    is deleted (WO47: no duplicates), the upload taken from the Mac's own disk."""
+    s, db = env
+    api = FakeApi()
+    share(api)
+    folder = s.path("inbox") / name
+    folder.mkdir()
+    (folder / "IMG_1.jpeg").write_bytes(JPEG)
+    (folder / "IMG_2.HEIC").write_bytes(HEIC)
+    (folder / "_done.txt").write_text("done 2")
+    assert uploads.choose(s, db, folder, api.shares[0]) == uploads.UPLOAD
+    assert uploads.fetch_new(s, db, api, NOW) == [SID]
+    assert (intake(s) / SID / "IMG_2.HEIC").read_bytes() == HEIC and not folder.exists()
+    assert events(db, "share_same_as_icloud") == [] and events(db, "share_fetched")[0]["icloud_deleted"] == name
+    assert api.posts == [(f"/shares/{SID}/fetched", {"names": ["IMG_1.jpeg", "IMG_2.HEIC"]})]
+
+
+def test_a_share_taken_from_its_icloud_copy_is_never_taken_again_from_the_upload(env):
+    """WO54: the whole upload wins only over a copy NOT taken — the share taken from its iCloud folder (archived since)
+    and iCloud's second folder of it ("<id> 2") in the inbox: settled, nothing downloaded, never a second batch."""
+    s, db = env
+    api = FakeApi()
+    share(api)
+    first = s.path("inbox") / SID
+    first.mkdir()
+    (first / "IMG_1.jpeg").write_bytes(JPEG)
+    from thrift_agent import pipeline
+    bid = pipeline.register(s, db, first)                                            # the intake took it
+    assert bid is not None
+    pipeline.archive_share(s, db, bid, first)
+    second = s.path("inbox") / f"{SID} 2"
+    second.mkdir()
+    (second / "IMG_1.jpeg").write_bytes(JPEG)
+    assert uploads.known_folder(s, SID) == second
+    assert uploads.choose(s, db, second, api.shares[0]) == uploads.KNOWN
+    assert uploads.fetch_new(s, db, api, NOW) == [SID]
+    assert api.fetches == [] and events(db, "share_fetched") == [] and events(db, "share_same_as_icloud")
+    assert db.conn.execute("SELECT COUNT(*) FROM batches").fetchone()[0] == 1
 
 
 @pytest.mark.parametrize("state", ["short", "cloud_only", "no_mark"])
@@ -216,7 +262,7 @@ def test_an_icloud_copy_not_whole_gives_way_to_a_whole_upload(env, state):
     assert shares.share_id_of(f"20261018_{SID}-icloud") == SID and shares.share_id_of(f"{SID} 2") == SID
 
 
-def test_an_icloud_copy_already_taken_or_a_short_upload_stays_the_share(env):
+def test_an_icloud_copy_already_taken_stays_the_share(env):
     s, db = env
     api = FakeApi()
     share(api)
@@ -231,14 +277,41 @@ def test_an_icloud_copy_already_taken_or_a_short_upload_stays_the_share(env):
     assert events(db, "share_same_as_icloud") and not events(db, "share_copy_deleted") and api.fetches == []
     row = db.conn.execute("SELECT source FROM shares WHERE id=?", (SID,)).fetchone()
     assert row["source"] == "both"                                                   # WO47: the ledger knows both came
-    s2, db2 = s, DB(s.path("db").with_name("other.db"))
-    api2 = FakeApi()
-    share(api2, sid="2026-10-18_160000_1111", count=3, last=NOW - timedelta(minutes=5))   # ended, short, quiet
-    other = s2.path("inbox") / "2026-10-18_160000_1111"
+
+
+def test_a_short_upload_is_never_given_up_for_an_icloud_copy_neither_taken_nor_whole(env):
+    """WO54: a short upload (ended, quiet) beside an iCloud copy not taken: the copy with more photos in hand is the
+    share — the upload on a tie (the Mac's own disk) — and the API is told "fetched" (its blobs deleted) only once the
+    Mac has the share; an iCloud copy that is whole is the share as before."""
+    s, db = env
+    sid = "2026-10-18_160000_1111"
+    api = FakeApi()
+    share(api, sid=sid, count=3, last=NOW - timedelta(minutes=5))                    # ended, 2 of 3, quiet
+    other = s.path("inbox") / sid
     other.mkdir()
-    (other / "IMG_1.jpeg").write_bytes(JPEG)
-    assert uploads.fetch_new(s2, db2, api2, NOW) == ["2026-10-18_160000_1111"]
-    assert events(db2, "share_same_as_icloud") and not events(db2, "share_copy_deleted")
+    (other / "IMG_1.jpeg").write_bytes(JPEG)                                         # 1 in hand, no end mark yet
+    assert uploads.choose(s, db, other, api.shares[0]) == uploads.UPLOAD
+    assert uploads.fetch_new(s, db, api, NOW) == [sid]
+    assert (intake(s) / sid / "IMG_2.HEIC").is_file() and not other.exists()        # the upload: more in hand
+    ev = events(db, "share_copy_deleted")
+    assert len(ev) == 1 and "more photos in hand" in ev[0]["why"] and events(db, "share_same_as_icloud") == []
+    # the iCloud copy ahead (3 photos in hand, no mark yet): the Mac waits; Azure keeps its copy
+    s2, db2 = s, DB(s.path("db").with_name("other.db"))
+    sid2 = "2026-10-18_170000_2222"
+    api2 = FakeApi()
+    share(api2, sid=sid2, count=3, last=NOW - timedelta(minutes=5))
+    ahead = s2.path("inbox") / sid2
+    ahead.mkdir()
+    for n in (1, 2, 3):
+        (ahead / f"IMG_{n}.jpeg").write_bytes(JPEG + bytes([n]))
+    assert uploads.choose(s2, db2, ahead, api2.shares[0]) == uploads.WAIT
+    assert uploads.fetch_new(s2, db2, api2, NOW) == [] and api2.posts == []           # never "fetched": nothing lost
+    assert events(db2, "share_same_as_icloud") == [] and ahead.is_dir()
+    assert uploads.holds(db2, sid2)                                                  # no 📭 for it meanwhile
+    (ahead / "_done.txt").write_text("done 3")                                       # whole now: it is the share
+    assert uploads.choose(s2, db2, ahead, api2.shares[0]) == uploads.KNOWN
+    assert uploads.fetch_new(s2, db2, api2, NOW) == [sid2]
+    assert events(db2, "share_same_as_icloud") and api2.posts[-1][0] == f"/shares/{sid2}/fetched"
 
 
 def test_an_upload_never_lands_inside_a_folder_icloud_put_back(env, monkeypatch):
@@ -369,3 +442,8 @@ def test_takeable_rules():
     assert not uploads.takeable({**base, "ended": False}, NOW + timedelta(minutes=9))
     assert uploads.takeable({**base, "ended": False}, NOW + timedelta(minutes=10))
     assert not uploads.takeable({**base, "ended": False, "started_at": "garbage"}, NOW + timedelta(days=1))
+    # WO54: never ended, started 10 minutes ago, but its photos still coming in — not a share the Shortcut gave up on
+    receiving = {**base, "ended": False, "last_received_at": iso(NOW + timedelta(minutes=9, seconds=57))}
+    assert not uploads.takeable(receiving, NOW + timedelta(minutes=10))
+    assert not uploads.takeable(receiving, NOW + timedelta(minutes=14, seconds=56))
+    assert uploads.takeable(receiving, NOW + timedelta(minutes=14, seconds=57))      # five quiet minutes

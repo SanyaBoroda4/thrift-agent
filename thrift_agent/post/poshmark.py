@@ -586,7 +586,7 @@ class PoshmarkPoster(Poster):
                      ("INPUT", "TEXTAREA")]
             if len(shown) == 1:
                 return await self._learned_loc(page, key, shown[0], "label")
-        cands = await page.evaluate(heal.SNAPSHOT_JS, [NEVER, heal.MAX_CANDIDATES])
+        cands = await page.evaluate(heal.SNAPSHOT_JS, [NEVER, heal.MAX_CANDIDATES, heal.NEVER_HREF])   # WO54: + links
         try:
             image = await page.screenshot()
         except PlaywrightError:

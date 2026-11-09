@@ -10,10 +10,11 @@ before. A fallback that worked becomes a learned selector for its site and field
 and tried first; the private chat hears it ONCE ("Vinted's brand field moved — learned the new one").
 
 **The model never presses Publish, Save or Delete (invariant 3):** a control that publishes, saves, uploads, posts,
-lists, deletes, submits, discards, boosts or bumps — by its words, by being a submit button, or by matching a site's
-recorded publish / save / delete / never_click selectors (the page marks those `never`) — is taken out of the snapshot
-before the question (`allowed`), and an answer naming one is refused (`pick`). Those controls stay recorded-and-
-verified only, pressed by code alone."""
+lists, deletes, removes, submits, discards, boosts, bumps, deactivates, signs or logs out, or opens an address or a
+payment — by its words, by being a submit button, by a link's address (NEVER_HREF), or by matching a site's recorded
+publish / save / delete / never_click selectors (the page marks those `never`) — is taken out of the snapshot before
+the question (`allowed`), and an answer naming one is refused (`pick`). Those controls stay recorded-and-verified
+only, pressed by code alone."""
 from __future__ import annotations
 
 import base64
@@ -25,10 +26,16 @@ from typing import Literal
 
 from pydantic import BaseModel, create_model
 
+# WO54 (left from WO53: Depop's sell form shows the account's ship-from address with a "Remove" button that has no
+# aria-label — the model could in principle have picked it): remove, delete, discard, deactivate, sign / log out,
+# address and payment controls are never offered either (ext/content/common.js PRESS says the same words).
 FORBIDDEN = re.compile(
     r"\b(?:publish(?:ed|ing)?|post(?:ing)?|upload|list(?:\s+(?:this|an?|another))?\s*item|list\s+another|list\s+it|"
-    r"save(?:\s+(?:changes|draft))?|delete|remove\s+listing|submit|discard|buy(?:\s+now)?|boost|bump|promote|"
-    r"mark\s+as\s+sold|hide|confirm|pay|checkout)\b", re.I)
+    r"save(?:\s+(?:changes|draft))?|delet(?:e|es|ed|ing)|remov(?:e|es|ed|ing)|submit|discard|buy(?:\s+now)?|boost|"
+    r"bump|promote|mark\s+as\s+sold|hide|confirm|pay|payments?|checkout|deactivat(?:e|es|ed|ing)|"
+    r"sign(?:\s*-?\s*)out|log(?:\s*-?\s*)out|addresse?s?)\b", re.I)
+# … and a link whose address leads there (an icon with no words: the page marks it `never`, SNAPSHOT_JS / T.forbidden)
+NEVER_HREF = r"log-?out|sign-?_?out|/settings|/account|payment|address|/wallet|/balance"
 CLICKABLE = {"button", "a", "link", "menuitem"}
 MAX_CANDIDATES = 150           # the snapshot's cap (the page sends at most this many, labels cut to 80 characters)
 LABEL = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted"}
@@ -69,7 +76,8 @@ SYSTEM = ("You help a form-filling program find one field or option on a marketp
           "text) and sometimes a screenshot. Answer with the id of the ONE control that is the field asked for — or, "
           "when asked for an option, the option that means the SAME value (a new wording of it, never a different "
           "value). Answer \"none\" when no control clearly is it. Never choose a button that publishes, posts, uploads, "
-          "saves, lists, deletes, submits or discards: those are not in the list and must never be guessed.")
+          "saves, lists, deletes, removes, submits, discards, deactivates, signs or logs out, or opens an address or a "
+          "payment: those are not in the list and must never be guessed.")
 
 
 def question(kind: str, site: str, field: str, want: str, candidates: list[dict]) -> str:
@@ -178,11 +186,15 @@ def moved_line(site: str, field: str) -> str:
 # data-thrift-ai id; labels, roles and the visible text of buttons and options, never an input's value.
 SNAPSHOT_JS = r"""
 (args) => {
-  const [never, cap] = args;
+  const [never, cap, neverHref] = args;
   const vis = (el) => { for (let n = el; n && n.nodeType === 1; n = n.parentElement) { const cs = getComputedStyle(n);
     if (cs.display === 'none' || cs.visibility === 'hidden' || n.hidden) return false; } return true; };
   const neverEls = new Set();
   for (const s of never) { try { document.querySelectorAll(s).forEach((e) => neverEls.add(e)); } catch (e) {} }
+  // WO54: a link to sign out, the account's settings, an address or a payment — whatever its words (an icon)
+  const hrefRe = neverHref ? new RegExp(neverHref, 'i') : null;
+  if (hrefRe) document.querySelectorAll('a[href]').forEach((a) => { if (hrefRe.test(a.getAttribute('href') || ''))
+    neverEls.add(a); });
   const clean = (t) => String(t || '').replace(/\s+/g, ' ').trim().slice(0, 80);
   const labelOf = (el) => {
     const parts = [el.getAttribute('aria-label'), el.getAttribute('placeholder')];
