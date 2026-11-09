@@ -63,12 +63,16 @@ sed "s#__HOME__#$HOME#g" deploy/com.thriftagent.quiet.plist > "$QUIET_PLIST.new"
 if ! launchctl print "$QUIET_JOB" >/dev/null 2>&1 || ! cmp -s "$QUIET_PLIST.new" "$QUIET_PLIST"; then
   mv "$QUIET_PLIST.new" "$QUIET_PLIST"
   launchctl bootout "$QUIET_JOB" >/dev/null 2>&1 || true
-  launchctl bootstrap "gui/$(id -u)" "$QUIET_PLIST"
+  for _ in 1 2 3 4 5; do                 # a bootout may still be finishing: a few tries, 2 s apart
+    launchctl bootstrap "gui/$(id -u)" "$QUIET_PLIST" 2>/dev/null && break
+    sleep 2
+  done
   echo "quiet hours: the calendar job com.thriftagent.quiet loaded ($(.venv/bin/python -I -m thrift_agent.quietctl status))"
 else
   rm -f "$QUIET_PLIST.new"
 fi
-launchctl print "$QUIET_JOB" >/dev/null 2>&1 || { echo "the quiet hours' calendar job didn't load" >&2; exit 1; }
+launchctl print "$QUIET_JOB" >/dev/null 2>&1 || launchctl bootstrap "gui/$(id -u)" "$QUIET_PLIST" \
+  || { echo "the quiet hours' calendar job didn't load" >&2; exit 1; }
 
 [ -n "${THRIFT_DEPLOY:-}" ] && exit 0                 # deploy/mac_deploy.sh goes on from here
 cat <<MSG
