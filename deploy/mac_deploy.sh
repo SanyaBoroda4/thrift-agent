@@ -11,14 +11,25 @@ cd "$(dirname "$0")/.."
 before="${1:-}"
 
 echo "== code $(git log --oneline -1)"
+back() {   # a failure before the tests ran: the checkout goes back too, so nothing runs untested code (live 2026-11-09)
+  if [ -n "$before" ] && [ "$before" != "$(git rev-parse HEAD)" ]; then
+    echo "== $1: rolling back to $before"
+    git reset --hard "$before"
+    .venv/bin/pip install -q -e .
+  fi
+  exit 1
+}
 if [ -d private/.git ]; then
   if [ -f .private.bundle ]; then
     # deploy.ps1 ships the PC's private repo as a bundle (an SSH session can't use the keychain's GitHub credential).
     # Fast-forward only: private commits made on the Mac and not on the PC stop the deploy rather than vanish.
-    git -C private pull --ff-only ../.private.bundle main
+    git -C private pull --ff-only ../.private.bundle main || back "the private pull from the bundle failed"
     rm -f .private.bundle
   else
-    git -C private pull --ff-only
+    # No bundle: a pull over HTTPS needs the keychain, which a background (nohup / SSH) session can't open
+    # (live 2026-11-09: "fatal: failed to get: -25308") — said plainly, and the code goes back.
+    git -C private pull --ff-only \
+      || back "the private pull failed (no .private.bundle: deploy.ps1 ships one; a background session can't use the keychain)"
   fi
   echo "== private $(git -C private log --oneline -1)"
 fi

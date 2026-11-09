@@ -664,3 +664,14 @@ def test_no_message_asks_the_owner_to_check_a_site_or_reply_posted_or_retry():
                 if PROMPTS.search(text):
                     hits.append(f"{path.relative_to(ROOT)}:{line}: {text[:100]!r}")
     assert not hits, "\n".join(hits)
+
+
+def test_a_failed_private_pull_rolls_the_deploy_back():
+    """Live 2026-11-09 01:44: `git -C private pull` failed in the nohup deploy ("fatal: failed to get: -25308", the
+    keychain) after the code was pulled — mac_deploy.sh exited before its tests with the new code checked out, and the
+    poster started on it. Now every failure before the tests goes back to the commit before the pull."""
+    script = (ROOT / "deploy" / "mac_deploy.sh").read_text(encoding="utf-8")
+    assert 'git -C private pull --ff-only ../.private.bundle main || back "' in script
+    assert "git -C private pull --ff-only \\n      || back \"" in script
+    body = script[script.index("back() {"):script.index("if [ -d private/.git ]")]
+    assert 'git reset --hard "$before"' in body and "exit 1" in body
