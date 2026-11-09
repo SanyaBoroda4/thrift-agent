@@ -74,6 +74,8 @@ def menu_size(want: str, offered: list[str], item_type: str | None = None) -> tu
     keyed = {_key(o): o for o in offered if o}
     if want and _key(want) in keyed:
         return keyed[_key(want)], "exact"
+    if (bare := kids_bare(want)) is not None and _key(bare) in keyed:
+        return keyed[_key(bare)], f"{want} as {bare}"     # WO55 (live 2026-11-09, the Birkenstock Milano: skipped)
     if (big := bigger_of(want)) is not None:
         if _key(big) in keyed:
             return keyed[_key(big)], f"the bigger of {want}"
@@ -86,6 +88,24 @@ def menu_size(want: str, offered: list[str], item_type: str | None = None) -> tu
             if re.fullmatch(r"\s*(?:one\s*size|os|o/s)\s*", o or "", re.I):
                 return o, "one size"
     return None
+
+
+KIDS_SHOE = re.compile(r"\s*(\d{1,2}(?:\.5)?)\s*(?:(c)|(y)|\(?\s*(?:kids?|children'?s?|toddler)\s*\)?)\s*", re.I)
+
+
+def kids_bare(want: str | None) -> str | None:
+    """WO55 (live 2026-11-09 2:28 PM: the Birkenstock Milano's "11.5 (kids)" was skipped on Poshmark's Kids › Shoes
+    Girls tab although its menu offers "11.5" — the qualifier stopped the exact match): a kids' shoe size with its
+    system mark — "11.5 (kids)", "11.5C", "4Y" — as the bare number Poshmark's Girls / Boys tabs show, only where it
+    can't be another size: C (toddler / little kid) and a plain "kids" from 7.5 to 13.5 (those tabs' 1–7 are the
+    youth sizes), Y (youth) from 1 to 7. Else None."""
+    m = KIDS_SHOE.fullmatch(str(want or ""))
+    if m is None:
+        return None
+    n = float(m.group(1))
+    if m.group(3):                                     # Y: the youth / big kid run
+        return m.group(1) if 1 <= n <= 7 else None
+    return m.group(1) if 7.5 <= n <= 13.5 else None   # C or "kids": the toddler / little kid run
 
 
 def _key(text: str) -> str:

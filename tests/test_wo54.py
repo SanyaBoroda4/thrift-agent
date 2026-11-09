@@ -316,3 +316,17 @@ def test_a_category_with_no_closer_one_is_posted_with_one_check_line(db, said):
     crosslist.family_check(db, "i1", "vinted", "Some Item", "category 'X' isn't the item's family (a pet, not a top)")
     assert len([m for m in said if m.startswith("Check — Some Item: Vinted's category")]) == 1
     assert db.listing("i1", "vinted") is None                                        # nothing held, nothing skipped
+
+
+# ---------------------------------------------------------------- WO55: the Birkenstock Milano's kids size
+
+def test_the_milanos_kids_size_finds_its_tile():
+    """Live 2026-11-09 2:28 PM: "11.5 (kids)" skipped on Poshmark's Kids › Shoes Girls tab, which offers "11.5"."""
+    from thrift_agent.post.fallback import kids_bare, menu_size
+    girls = ["7.5", "8", "8.5", "9", "9.5", "10", "10.5", "11", "11.5", "12", "12.5", "13", "13.5", "1", "1.5", "2",
+             "2.5", "3", "3.5", "4", "4.5", "5", "5.5", "6", "6.5", "7"]
+    assert menu_size("11.5 (kids)", girls)[0] == "11.5"
+    assert menu_size("11.5C", girls)[0] == "11.5"
+    assert menu_size("4Y", girls)[0] == "4"
+    assert kids_bare("4C") is None and kids_bare("5 (kids)") is None     # a toddler 4C is never a youth 4
+    assert kids_bare("11.5") is None and kids_bare("13 (Toddler Girl)") is None
