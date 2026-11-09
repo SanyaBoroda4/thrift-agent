@@ -19,8 +19,17 @@ no DevTools connection, no automation flags.
   types in chunks with a person's pauses.
 - Why no extension is there (WO32b): it never knocked (no Chrome, or the extension off), it knocked with a token the
   bridge refused, or the port belongs to another process (BridgeError at the start).
-- The watch: no extension for 2 minutes inside the window (the lid open) → the Thrift Chrome is started
-  (`services.sh start chrome`); still nothing after 5 → one ops line per window.
+- WO54 §4, the Thrift Chrome on demand (live 2026-11-09: left open since 1 AM, 9.6 GB in 51 pages on her 8 GB laptop,
+  two of them burning a core each): it is not her browser and runs only while there is work for its extension. A job
+  submitted while no extension is connected asks for it (`want` → `waker`: `services.sh start chrome`, in a thread) and
+  waits for its pickup (PICKUP_TIMEOUT; the extension connects within seconds of the Chrome's start). With nothing
+  queued or in hand for IDLE_QUIT (10 minutes) the watch quits it (`quit_chrome`: SIGTERM to that launchd job's own
+  pid) — not while the owner looks at one of its windows, nor while a page waits there for her (a login, a CAPTCHA,
+  a check), and at once when the Mac is short of memory (`squeeze`). A Chrome quit on purpose is no "missing
+  extension": no start, no restart, no line until work comes again. `available()` — what the site workers ask — is
+  True while it is connected or can be woken.
+- The watch, for work that waits (WO49's lid-open clock): no extension WAKE_AGAIN (2 min) after the Chrome was asked
+  for → asked again; after 5 → restarted; after 10 → one ops line per window.
 
 Python's standard library only (asyncio streams, an RFC 6455 handshake and frames)."""
 from __future__ import annotations
@@ -49,19 +58,24 @@ SITE_ORIGINS = ("https://www.vinted.com", "https://www.depop.com")
 JOB_TIMEOUT = 180.0          # a job's whole life before its go-ahead (WO32b): 3 minutes
 PICKUP_TIMEOUT = 150.0       # no extension took the job (it reconnects within 5 s, polls every 30 s): nothing opened
 SEEN_FRESH = 90.0            # an HTTP poll this recent counts as connected
-START_CHROME_AFTER = 120.0   # the watch: no extension this long inside the window → start the Thrift Chrome
+WAKE_AGAIN = 120.0           # the watch: work waiting, no extension this long after the Chrome was asked for → again
 RESTART_CHROME_AFTER = 300.0  # WO49: ... still nothing → the Thrift Chrome restarted (running, its extension asleep)
 SAY_AFTER = 600.0            # ... still nothing → one ops line (WO49: 10 minutes, was 5)
+WAKE_GIVE_UP = 180.0         # WO54 §4: ... past this the sites take no job (available() False) until it connects
+IDLE_QUIT = 600.0            # WO54 §4: nothing queued, in hand or ended for this long → the Thrift Chrome quits
+OWNER_KEEP = 600.0           # ... never while one of its windows had her focus this recently (she may be logging in)
+LEFT_KEEP = 6 * 3600.0       # ... nor while a page waits there for her (login / CAPTCHA / check), this long at most
+OWNER_PAGES = ("login", "captcha", "verify")    # the pages only she can act on, in that Chrome (a block passes by itself)
 WATCH_EVERY = 15.0           # the watch's tick
 MAX_BODY = 40 * 1024 * 1024  # a screenshot with the page's HTML fits easily
 DRAIN = 90.0                 # a job called off: the next one waits this long at most for the extension to let it go
 RELOAD_HOLD = 2.0            # an extension told of new files reloads at once: no job for its socket meanwhile
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 FINAL = ("result", "error")
-MISSING_LINE = ("🧩 The Thrift Chrome extension hasn't checked in for 10 minutes (the Thrift Chrome was restarted), so "
-                "Depop and Vinted are waiting. On the "
-                "Mac: is the second Chrome (the Thrift one) open and not minimized, the extension loaded at "
-                "chrome://extensions, its token saved in its options? (bash ~/thrift-agent/deploy/services.sh status)")
+MISSING_LINE = ("🧩 The Thrift Chrome extension hasn't checked in for 10 minutes since the agent opened the Thrift Chrome "
+                "for work (it was restarted once), so Depop and Vinted are waiting. On the Mac: is the extension "
+                "loaded at chrome://extensions in the Thrift Chrome, its token saved in its options? "
+                "(bash ~/thrift-agent/deploy/services.sh status; ~/thrift/logs/chrome-cross.err)")
 
 
 class BridgeError(Exception):
@@ -87,7 +101,7 @@ def new_token() -> str:
     return secrets.token_urlsafe(32)
 
 
-HASH_SALT = b"wo53-reload-1\n"     # WO53: content/common.js changed (the visible-only page check): reload once
+HASH_SALT = b"wo54-reload-1\n"     # WO54 §4: background.js changed (the tidy, the pings): every loaded copy reloads
 
 
 def files_hash(ext_dir: Path = EXT_DIR) -> str:
@@ -157,6 +171,7 @@ class Bridge:
         self.photos: dict[str, list[Path]] = {}
         self.started = time.monotonic()
         self.last_seen: float | None = None     # the extension's last authenticated contact
+        self.last_polled: float | None = None   # ... over HTTP (its alarm's poll while its socket is down)
         self.chrome_started: float | None = None
         self.chrome_restarted: float | None = None
         self.said_missing = False
@@ -170,6 +185,22 @@ class Bridge:
         self.askers: dict[str, object] = {}
         self.learned_for = None                 # (site) -> {field: [selectors]}
         self.on_learned = None                  # (site, event) -> None
+        # WO54 §4: the Thrift Chrome on demand — asked for by work, quit when idle (see the module)
+        self.waker = None                       # (why) -> anything: start the Thrift Chrome (run in a thread); None: the
+        #                                         CLI on the dev machine, the tests — the old way, connected() only
+        self.on_change = None                   # (kind, detail) -> None: "thrift_chrome_started" / "_quit", in the loop
+        self.last_work = self.started           # the last job queued, handed, heard from or ended (the idle clock)
+        self.wanted_at: float | None = None     # work waiting since then with no extension connected
+        self.woke_at: float | None = None       # the Thrift Chrome last asked to start
+        self.quit_at: float | None = None       # ... last quit on purpose (idle, memory)
+        self.quitting = False                   # a quit in progress: no job is handed meanwhile
+        self.wake_after_quit = False            # work came while it quit: asked for again once it is gone
+        self.connected_at: float | None = None  # an extension last said hello
+        self.lost_mid_job: float | None = None  # its socket went away with a job in hand, not by our quit
+        self.owner_at: float | None = None      # its pings: one of its windows had the owner's focus
+        self.left_for_owner: dict[str, tuple[str, float]] = {}   # site → (page, since): a page only she can act on
+        self.ext_tabs: int | None = None        # its pings: how many tabs and windows it holds (thrift doctor)
+        self.ext_windows: int | None = None
 
     # ------------------------------------------------------------ lifecycle
 
@@ -210,12 +241,137 @@ class Bridge:
             return True
         return self.last_seen is not None and time.monotonic() - self.last_seen < SEEN_FRESH
 
+    # ------------------------------------------------------------ WO54 §4: the Thrift Chrome on demand
+
+    def available(self) -> bool:
+        """The extension can take a job now: connected — or the Thrift Chrome asleep (not started yet, or quit when
+        idle) and this bridge able to start it: the job asks for it and waits for its pickup. Not with a token the
+        bridge refused (only the owner can fix that), nor once work has waited WAKE_GIVE_UP for a Chrome that was asked
+        for and never connected (its rows wait; the watch restarts it, then says so)."""
+        if self.connected():
+            return True
+        if self.waker is None or self.refused:
+            return False
+        return self.wanted_at is None or time.monotonic() - self.wanted_at < WAKE_GIVE_UP
+
+    def link(self) -> str:
+        """The extension's state in one word (kv `ext_link`, thrift doctor): "connected" | "refused" (its token) |
+        "waking" (asked for, on its way) | "missing" (asked for, not come) | "asleep" (quit when idle, or not
+        started yet: it opens for the next job)."""
+        if self.connected():
+            return "connected"
+        if self.refused:
+            return "refused"
+        if self.wanted_at is not None:
+            return "waking" if self.available() else "missing"
+        return "asleep" if self.waker is not None else "missing"
+
+    def owner_using(self, now: float | None = None) -> bool:
+        """One of the Thrift Chrome's windows had the owner's focus within OWNER_KEEP (its pings say so)."""
+        now = time.monotonic() if now is None else now
+        return self.owner_at is not None and now - self.owner_at < OWNER_KEEP
+
+    def want(self, why: str = "a job") -> bool:
+        """Work for the extension: the idle clock starts again, and a Thrift Chrome that isn't there is asked for (once
+        per WAKE_AGAIN — the watch asks again for work still waiting). True when it was asked now."""
+        now = time.monotonic()
+        self.last_work = now
+        if any(s.ready for s in self.sockets) or (self.last_polled is not None and now - self.last_polled < SEEN_FRESH):
+            return False                          # there now (its socket, or its alarm's polls) — not a socket that
+        #                                           closed a moment ago, which connected() still counts for 90 s
+        if self.wanted_at is None:
+            self.wanted_at = now
+        if self.waker is None or (self.woke_at is not None and now - self.woke_at < WAKE_AGAIN):
+            return False
+        self._wake(why)
+        return True
+
+    def _wake(self, why: str) -> None:
+        self.woke_at = time.monotonic()
+        if self.quitting:                     # still shutting down: a start now would hand its arguments to the dying one
+            self.wake_after_quit = True
+            return
+        self._background(self.waker, why, lambda out: self._note("thrift_chrome_started",
+                                                                  {"why": why, "on_demand": True, "out": out}))
+
+    def quit_reason(self, now: float, squeeze=None) -> str | None:
+        """Why the Thrift Chrome should quit now, else None: nothing queued or in hand (nor called off and not yet let
+        go), the owner not at one of its windows, no page waiting there for her — then at once when memory is short
+        (`squeeze()` gives why), or after IDLE_QUIT without work."""
+        if self._busy() or any(not j.done for j in self.queue):
+            self.last_work = now
+            return None
+        if self.owner_using(now):
+            return None
+        if any(now - since < LEFT_KEEP for _page, since in self.left_for_owner.values()):
+            return None
+        tight = None
+        if squeeze is not None:
+            try:
+                tight = squeeze()
+            except Exception as e:  # noqa: BLE001 — a reading that fails is no reason to quit
+                self.log.append(f"squeeze: {type(e).__name__}: {e}")
+        if tight:
+            return f"short of memory: {tight}"
+        if now - self.last_work >= IDLE_QUIT:
+            return f"nothing to do for {IDLE_QUIT / 60:.0f} minutes"
+        return None
+
+    def _quit(self, why: str, quit_chrome) -> None:
+        """Quit it now (in a thread: SIGTERM, then up to 30 s for Chrome's own shutdown); no job is handed meanwhile;
+        work that came meanwhile asks for it again once it is gone."""
+        now = time.monotonic()
+        self.quitting, self.quit_at, self.last_work = True, now, now     # a refused quit is tried a whole idle later
+
+        def done(out) -> None:
+            self.quitting = False
+            if not any(s.ready for s in self.sockets):
+                self.last_seen = None            # gone: its last word no longer counts as "connected" (SEEN_FRESH)
+            self._note("thrift_chrome_quit", {"why": why, "out": out})
+            if self.wake_after_quit or any(not j.done for j in self.queue):
+                self.wake_after_quit, self.woke_at = False, None
+                self._wake("work came while it quit")
+            self._push()
+        self._background(quit_chrome, why, done)
+
+    def _background(self, fn, arg, then=None) -> None:
+        """`fn(arg)` in a thread — a launchctl call never holds the bridge's loop — and `then(its result)` back in the
+        loop. Without a running loop (a bare test): both at once."""
+        def safe(a):
+            try:
+                return fn(a)
+            except Exception as e:  # noqa: BLE001 — a start / quit that fails is said in its event
+                return f"{type(e).__name__}: {e}"
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is None:
+            out = safe(arg)
+            if then is not None:
+                then(out)
+            return
+        fut = loop.run_in_executor(None, safe, arg)
+        if then is not None:
+            fut.add_done_callback(lambda f: then(f.result() if not f.cancelled() else "cancelled"))
+
+    def _note(self, kind: str, detail: dict) -> None:
+        if self.on_change is None:
+            return
+        try:
+            self.on_change(kind, detail)
+        except Exception as e:  # noqa: BLE001 — the log never breaks the bridge
+            self.log.append(f"on_change: {type(e).__name__}: {e}")
+
     def why_missing(self, chrome_running: bool | None = None) -> str:
         """Why no extension is connected, in the owner's words: its token refused, the Thrift Chrome not running, or
         the extension not knocking at all (off, not loaded, or its token never saved)."""
         if self.refused:
             return ("the extension knocked with a token the bridge refused — open its options in the Thrift Chrome and "
                     "paste the token again (cat ~/thrift/var/ext_token)")
+        if chrome_running is False and self.waker is not None:      # WO54 §4: it was asked for and didn't come
+            return ("the Thrift Chrome was asked to start but isn't running — see bash ~/thrift-agent/deploy/services.sh "
+                    "status and ~/thrift/logs/chrome-cross.err")
         if chrome_running is False:
             return "the Thrift Chrome isn't running — start it: bash ~/thrift-agent/deploy/services.sh start chrome"
         if not self.knocks:
@@ -247,6 +403,7 @@ class Bridge:
         self.jobs[job.id] = job
         self.queue.append(job)
         self._push()
+        self.want(f"a {site} {mode} job")         # WO54 §4: no extension → the Thrift Chrome is asked for; the job waits
         return job
 
     def command(self, job: Job, kind: str) -> None:
@@ -273,6 +430,7 @@ class Bridge:
         if job.dropped is not None:
             return
         job.done, job.dropped = True, time.monotonic()
+        self.last_work = job.dropped
         try:
             self.queue.remove(job)
         except ValueError:
@@ -297,7 +455,10 @@ class Bridge:
                    and (site is None or j.site == site) for j in self.jobs.values())
 
     def _next(self) -> Job | None:
-        """The oldest waiting job whose site has none in hand (the extension runs one job per site, WO33)."""
+        """The oldest waiting job whose site has none in hand (the extension runs one job per site, WO33) — none while
+        the Thrift Chrome is being quit (WO54 §4: the job would die with it; it waits for the next start)."""
+        if self.quitting:
+            return None
         for job in list(self.queue):
             if job.done:
                 self.queue.remove(job)
@@ -338,6 +499,12 @@ class Bridge:
         if job is None:
             return []
         kind = ev.get("event")
+        self.last_work = time.monotonic()        # WO54 §4: the idle clock
+        if kind in FINAL and job.final is None:  # WO54 §4: a page left there for the owner keeps the Thrift Chrome open
+            if kind == "error" and ev.get("page") in OWNER_PAGES:
+                self.left_for_owner[job.site] = (str(ev.get("page")), self.last_work)
+            elif kind == "result":
+                self.left_for_owner.pop(job.site, None)
         if job.dropped is not None:              # given up on: only its end matters (the extension is free again)
             if kind in FINAL and job.final is None:
                 job.final = ev
@@ -415,21 +582,33 @@ class Bridge:
 
     # ------------------------------------------------------------ the watch
 
-    def watch_tick(self, now: float, in_window: bool, start_chrome, say, restart_chrome=None) -> str | None:
-        """No extension for 2 minutes inside the window: start the Thrift Chrome; after 5 (WO49): restart it — it can
-        run with its extension asleep; after 10: one ops line (`say`; the caller keeps it to once a window). WO49 (live
-        2026-10-24: the night's maintenance wakes added up to "5 minutes" and the line came the moment the lid opened):
-        only lid-open time counts — the clock starts again when the window opens. Returns what it did."""
+    def watch_tick(self, now: float, in_window: bool, start_chrome, say, restart_chrome=None, quit_chrome=None,
+                   squeeze=None) -> str | None:
+        """WO54 §4: connected with nothing to do (`quit_reason`) → the Thrift Chrome quit (`quit_chrome`, in a
+        thread). Work waiting and no extension: WAKE_AGAIN (2 min) after it was asked for → asked again
+        (`start_chrome`); after 5 (WO49): restarted — it can run with its extension asleep; after 10: one ops line
+        (`say`; the caller keeps it to once a window). No work waiting → nothing: a Chrome quit on purpose, or not
+        started yet, is no missing extension. WO49 (live 2026-10-24: the night's maintenance wakes added up to
+        "5 minutes" and the line came the moment the lid opened): only lid-open time counts — the clock starts again
+        when the window opens. Returns what it did."""
         if self.connected():
+            self.wanted_at = self.woke_at = None
             self.chrome_started, self.chrome_restarted, self.said_missing = None, None, False
+            if quit_chrome is not None and not self.quitting and (why := self.quit_reason(now, squeeze)):
+                self._quit(why, quit_chrome)
+                return "chrome quit"
             return None
         if not in_window:
             self.window_back = None
             return None
         if self.window_back is None:
             self.window_back = now
-        missing = now - max(self.last_seen or self.started, self.window_back)
-        if missing >= START_CHROME_AFTER and self.chrome_started is None:
+        if self.wanted_at is None and any(not j.done for j in self.queue):
+            self.wanted_at = now                   # a job waits (one submitted before the bridge had a waker)
+        if self.wanted_at is None or self.quitting:
+            return None                            # nothing waits for it: asleep on purpose, or never needed yet
+        missing = now - max(self.wanted_at, self.window_back)
+        if missing >= WAKE_AGAIN and self.chrome_started is None:
             self.chrome_started = now
             start_chrome()
             return "chrome started"
@@ -457,16 +636,17 @@ class Bridge:
         return True
 
     async def watch(self, in_window, start_chrome, say, state=None, every: float | None = None,
-                    restart_chrome=None) -> None:
-        """Every WATCH_EVERY seconds: watch_tick(), the extension's files (announce_files), and `state(connected)` for
-        thrift status and the daily window."""
+                    restart_chrome=None, quit_chrome=None, squeeze=None) -> None:
+        """Every WATCH_EVERY seconds: watch_tick(), the extension's files (announce_files), and `state(available)` for
+        thrift status and the daily window (WO54 §4: a Thrift Chrome asleep counts — it opens for the next job)."""
         while True:
             await asyncio.sleep(WATCH_EVERY if every is None else every)
             try:
                 if state is not None:
-                    state(self.connected())
+                    state(self.available())
                 self.announce_files()
-                self.watch_tick(time.monotonic(), bool(in_window()), start_chrome, say, restart_chrome)
+                self.watch_tick(time.monotonic(), bool(in_window()), start_chrome, say, restart_chrome, quit_chrome,
+                                squeeze)
             except Exception as e:  # noqa: BLE001 — the watch never stops the poster
                 self.log.append(f"watch: {type(e).__name__}: {e}")
 
@@ -529,7 +709,8 @@ class Bridge:
             if headers.get("x-thrift-token"):
                 self.refused += 1
             return 401, cors, b'{"error": "token"}'
-        self.last_seen, self.refused = time.monotonic(), 0
+        self.last_seen = self.last_polled = time.monotonic()
+        self.refused = 0
         if method == "GET" and path == "/jobs/next":
             job = self._next()
             return (204, cors, b"") if job is None else (200, cors, json.dumps(job.message()).encode())
@@ -576,7 +757,8 @@ class Bridge:
             sock.ready = True
             self.refused = 0                        # the right token now
             self.sockets.add(sock)
-            self.last_seen = time.monotonic()
+            self.last_seen = self.connected_at = time.monotonic()
+            self.wanted_at = self.woke_at = None    # WO54 §4: whatever was asked for has come
             sock.send({"type": "welcome", "ext_hash": self.ext_hash})
             if hello.get("loaded") != self.ext_hash:    # it loaded other files than ours: it reloads now (a deploy)
                 self._hold(sock)
@@ -595,15 +777,27 @@ class Bridge:
                     continue
                 if msg.get("type") == "ping":
                     sock.send({"type": "pong"})
+                    self._pinged(msg)
                 elif msg.get("type") == "event":
                     for cmd in self._event({k: v for k, v in msg.items() if k != "type"}):
                         sock.send(cmd)
         except (TimeoutError, asyncio.TimeoutError, asyncio.IncompleteReadError, ConnectionError, ValueError):
             return
         finally:
+            if sock.ready and not self.quitting and self._busy():
+                self.lost_mid_job = time.monotonic()     # WO54 §4: gone with a job in hand, not by our quit
             sock.ready = False
             self.sockets.discard(sock)
             sock.close()
+
+    def _pinged(self, msg: dict) -> None:
+        """WO54 §4: what the extension's ping says — a Thrift Chrome window has the owner's focus (`using`: it isn't
+        quit under her hands), and how many tabs and windows it holds."""
+        if msg.get("using"):
+            self.owner_at = time.monotonic()
+        for key, attr in (("tabs", "ext_tabs"), ("windows", "ext_windows")):
+            if isinstance(msg.get(key), int) and not isinstance(msg.get(key), bool):
+                setattr(self, attr, msg[key])
 
 
 # ---------------------------------------------------------------- HTTP and WebSocket plumbing

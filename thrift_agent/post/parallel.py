@@ -260,6 +260,7 @@ CLOSED = ("TargetClosedError", "Target page, context or browser has been closed"
           "Browser has been closed", "browser has disconnected", "Target closed", "Browser closed")
 RELAUNCH_WAITS = (0.0, 30.0, 120.0, 600.0)    # WO51: Poshmark's browser reopened at once, then after these pauses
 PROBE_EVERY = 300.0           # WO52 §4: the browser checked this often even when nothing is posted
+IDLE_CLOSE = 600.0            # WO54 §4: no page of ours open in it for this long → Poshmark's browser closes
 
 
 def browser_closed(error) -> bool:
@@ -268,38 +269,95 @@ def browser_closed(error) -> bool:
     return any(c.lower() in str(error or "").lower() for c in CLOSED)
 
 
+class _Asleep:
+    """WO54 §4: Poshmark's browser while it is closed on purpose — what a turn gets as its context. The first page the
+    turn opens reopens the browser (Browser.wake), so the turns never see the difference."""
+
+    def __init__(self, browser: Browser):
+        self._browser = browser
+
+    async def new_page(self):
+        return await (await self._browser.wake()).new_page()
+
+    async def cookies(self, *args, **kwargs):
+        return await (await self._browser.wake()).cookies(*args, **kwargs)
+
+    def __getattr__(self, name):
+        real = self._browser._ctx
+        if real is None:
+            raise AttributeError(f"Poshmark's browser is closed while idle (no {name} until a page is opened)")
+        return getattr(real, name)
+
+
 class Browser:
     """WO51: Poshmark's own browser — its persistent context, watched (its "close" event, a call answering that it is
     gone) and reopened when it closes, with back-off (RELAUNCH_WAITS), the login checked again. Only this profile's
     browser is ever closed or opened here — never the Thrift Chrome, never the Google Chrome app as a whole (live
-    2026-10-28: the poster held a closed browser for four days; every listing and order sweep failed in 0.0 s)."""
+    2026-10-28: the poster held a closed browser for four days; every listing and order sweep failed in 0.0 s).
+
+    WO54 §4 (her laptop comes first): with no page of ours open in it for IDLE_CLOSE (10 minutes), or at once with none
+    open when the Mac is short of memory (memory.squeeze), it is closed ON PURPOSE (`sleep`): no loss, no line, no
+    failure counted, no form check. `ctx` is then a stand-in whose first new page reopens it (`wake`): the next job —
+    a listing, a take-down, an edit, an order sweep — finds it as before, its login checked by that job's own page."""
 
     def __init__(self, s, db, poster, opener):
         self.s, self.db, self.poster, self.opener = s, db, poster, opener
-        self.pw = self.ctx = None
+        self.pw = self._ctx = None
         self.alive = False
         self.opened = False           # the first opening (the poster's start) checks no login: the first listing does
         self.tries, self.next_try = 0, 0.0
         self.why = ""                 # why it was lost: "the browser closed" (its own event) = closed by hand
         self.probed = time.monotonic()
+        self.asleep = False           # WO54 §4: closed on purpose (idle, short of memory) — the next page reopens it
+        self.slept_why = ""
+        self.pages = 0                # our pages open in it now (the persistent context's own first tab aside)
+        self.used = time.monotonic()  # the last page of ours opened or closed
+        self._asleep = _Asleep(self)
+
+    @property
+    def ctx(self):
+        """The context a turn uses: the browser's own — or, while it sleeps, the stand-in that reopens it."""
+        return self._asleep if self.asleep else self._ctx
+
+    @ctx.setter
+    def ctx(self, value) -> None:
+        self._ctx = value
 
     def _watch(self, ctx) -> None:
         self.alive = True
+        self.pages, self.used = 0, time.monotonic()
         on = getattr(ctx, "on", None)
         if on is not None:
             try:
-                on("close", lambda *_: self.lost("the browser closed"))
+                on("close", lambda *_: self._closed(ctx))
+                on("page", self._page)                    # WO54 §4: the idle clock counts our pages
             except Exception:  # noqa: BLE001 — a stand-in without events: the failures tell it
                 pass
 
+    def _closed(self, ctx) -> None:
+        if ctx is self._ctx and not self.asleep:          # an old context's close after our own sleep is no loss
+            self.lost("the browser closed")
+
+    def _page(self, page) -> None:
+        self.pages += 1
+        self.used = time.monotonic()
+
+        def gone(*_):
+            self.pages = max(0, self.pages - 1)
+            self.used = time.monotonic()
+        try:
+            page.on("close", gone)
+        except Exception:  # noqa: BLE001 — a page without events: counted open until the next opening
+            pass
+
     def lost(self, why: str = "") -> None:
-        if self.alive:
+        if self.alive and not self.asleep:
             self.alive = False
             self.why = str(why)
             self.db.log(None, "browser_lost", {"site": "poshmark", "why": str(why)[:200]})
 
     async def _close_quietly(self) -> None:
-        for close in (getattr(self.ctx, "close", None), getattr(self.pw, "stop", None)):
+        for close in (getattr(self._ctx, "close", None), getattr(self.pw, "stop", None)):
             if close is None:
                 continue
             try:
@@ -307,14 +365,57 @@ class Browser:
             except Exception:  # noqa: BLE001 — closing a browser that is gone already
                 pass
 
+    def _sleep_reason(self) -> str | None:
+        """WO54 §4: why to close it now, else None — never with one of our pages open in it."""
+        if self.pages > 0:
+            return None
+        from thrift_agent import memory
+        if tight := memory.squeeze("poshmark"):
+            return f"short of memory: {tight}"
+        if time.monotonic() - self.used >= IDLE_CLOSE:
+            return f"nothing to do for {IDLE_CLOSE / 60:.0f} minutes"
+        return None
+
+    async def sleep(self, why: str) -> None:
+        """Closed on purpose (WO54 §4): its context and Playwright stopped; `ctx` reopens it on the next page."""
+        self.asleep, self.slept_why = True, str(why)
+        await self._close_quietly()
+        self._ctx, self.pw = None, None
+        self.db.log(None, "browser_slept", {"site": "poshmark", "why": self.slept_why[:200]})
+
+    async def wake(self):
+        """The browser reopened for the page a turn wants (WO54 §4) — like the poster's first opening: no login check
+        here (that job's own page meets a login wall), no line, no form check. A reopening that fails is a lost browser:
+        the next turn's `ensure` reopens it with the back-off, and this job fails as before the form (nothing done)."""
+        if not self.asleep and self._ctx is not None:
+            return self._ctx
+        try:
+            self.pw, ctx = await self.opener(self.s.path("chrome_profile"), self.s["schedule"]["timezone"])
+        except Exception as e:
+            err = f"{type(e).__name__}: {e}"
+            self.asleep, self.alive, self.why = False, False, f"reopening after '{self.slept_why}': {err}"
+            self.db.log(None, "browser_relaunch_failed", {"site": "poshmark", "tries": self.tries, "error": err[:300]})
+            raise
+        self._ctx, self.asleep, self.opened = ctx, False, True
+        self._watch(ctx)
+        self.probed = time.monotonic()
+        self.db.log(None, "browser_woke", {"site": "poshmark", "after": self.slept_why[:200]})
+        return ctx
+
     async def ensure(self) -> bool:
-        """The browser is there (reopened if it closed, the back-off permitting). False: not now (paused after the
-        third failed reopening — one line — and tried again at the back-off's pace)."""
-        if self.alive and self.ctx is not None:
+        """The browser is there (reopened if it closed, the back-off permitting) — or asleep on purpose (WO54 §4: its
+        stand-in reopens it on the next page; closed here after IDLE_CLOSE with none of our pages open). False: not
+        now (paused after the third failed reopening — one line — and tried again at the back-off's pace)."""
+        if self.asleep:
+            return True
+        if self.alive and self._ctx is not None:
+            if why := self._sleep_reason():
+                await self.sleep(why)
+                return True
             if time.monotonic() - self.probed >= PROBE_EVERY:      # WO52 §4: alive even with nothing to post?
                 self.probed = time.monotonic()
                 try:
-                    await self.ctx.cookies()
+                    await self._ctx.cookies()
                 except Exception as e:  # noqa: BLE001 — gone without saying so: reopened below
                     self.lost(f"probe: {type(e).__name__}: {e}")
             if self.alive:

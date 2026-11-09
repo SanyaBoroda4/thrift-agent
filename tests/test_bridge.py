@@ -360,25 +360,26 @@ def test_the_token_file(tmp_path):
 # ---------------------------------------------------------------- the watch
 
 def test_the_watch_starts_the_thrift_chrome_then_says_once():
-    """WO32b's watch, as WO49 made it: 2 min → start the Thrift Chrome, 5 → restart it, 10 → one line; only lid-open
-    time counts (live 2026-10-24: the night's maintenance wakes added up and the line came the moment the lid opened)."""
+    """WO32b's watch, as WO49 and WO54 §4 made it: only for work that waits — 2 min after the Thrift Chrome was asked
+    for → asked again, 5 → restarted, 10 → one line; only lid-open time counts (live 2026-10-24: the night's maintenance
+    wakes added up and the line came the moment the lid opened). With nothing waiting, no extension is a Chrome asleep
+    on purpose (quit when idle, or not needed yet): no start, no restart, no line."""
     b = bm.Bridge(TOKEN)
     started, restarted, said = [], [], []
     t0 = b.started
     tick = lambda dt, window=True: b.watch_tick(t0 + dt, window, lambda: started.append(dt), said.append,  # noqa: E731
                                                 lambda: restarted.append(dt))
-    assert tick(60) is None and started == []
-    assert tick(130, window=False) is None and started == []             # the lid closed: nothing, the clock stops
-    assert tick(200) is None and started == []                            # the lid open again: counted from here
-    assert tick(330) == "chrome started" and started == [330]
-    assert tick(400) is None and started == [330]                         # once
-    assert tick(510) == "chrome restarted" and restarted == [510]
-    assert tick(700) is None and said == []
-    assert tick(810) == "said" and said == [bm.MISSING_LINE]
-    assert tick(2000) is None and len(said) == 1 and len(restarted) == 1
-    b.last_seen = t0 + 1000                                               # it checked in: all reset
-    assert b.connected() is False or True
-    b.chrome_started, b.said_missing = None, False
+    assert tick(900) is None and started == [] and restarted == [] and said == []    # nothing waits for it
+    b.wanted_at = t0 + 1000                                              # a job came at 1000 and no extension took it
+    assert tick(1060) is None and started == []
+    assert tick(1130, window=False) is None and started == []            # the lid closed: nothing, the clock stops
+    assert tick(1200) is None and started == []                          # the lid open again: counted from here
+    assert tick(1330) == "chrome started" and started == [1330]
+    assert tick(1400) is None and started == [1330]                      # once
+    assert tick(1510) == "chrome restarted" and restarted == [1510]
+    assert tick(1700) is None and said == []
+    assert tick(1810) == "said" and said == [bm.MISSING_LINE]
+    assert tick(3000) is None and len(said) == 1 and len(restarted) == 1
 
 
 def test_open_bridge_says_the_missing_line_once_a_window(tmp_path, monkeypatch):
@@ -391,7 +392,7 @@ def test_open_bridge_says_the_missing_line_once_a_window(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "start_thrift_chrome", lambda s_: started.append(1) or "ok")
     monkeypatch.setattr(runner.power, "lid_closed", lambda: False)
     monkeypatch.setattr(bm, "WATCH_EVERY", 0.02)
-    monkeypatch.setattr(bm, "START_CHROME_AFTER", 0.05)
+    monkeypatch.setattr(bm, "WAKE_AGAIN", 0.05)
     monkeypatch.setattr(bm, "SAY_AFTER", 0.1)
 
     async def go():
@@ -399,6 +400,7 @@ def test_open_bridge_says_the_missing_line_once_a_window(tmp_path, monkeypatch):
             ps = {"vinted": ExtensionPoster("vinted")}
             b, task = await runner.open_bridge(s, db, ps)
             assert ps["vinted"].bridge is b and task is not None
+            b.submit("vinted", "verify", {"listing_url": "https://www.vinted.com/items/1"})   # WO54 §4: work waits
             await asyncio.sleep(0.4)
             await runner.close_bridge(b, task)
     run(go())
@@ -1041,24 +1043,31 @@ def test_the_extension_is_plain_js_without_third_party_code():
 
 
 def test_the_thrift_chrome_launch_agent():
+    """WO54 §4 (live 2026-11-09: the Thrift Chrome open since 1 AM, old pages restored, 9.6 GB on her 8 GB laptop): its
+    LaunchAgent never starts it by itself — RunAtLoad false, no KeepAlive — and runs deploy/chrome_cross.sh, which
+    sets the last session aside and opens Chrome with no window and no page; the WO28 switches stay."""
     plist = plistlib.loads((ROOT / "deploy" / "com.thrift.chrome-cross.plist").read_bytes())
-    assert plist["Label"] == "com.thrift.chrome-cross" and plist["RunAtLoad"] is True
-    assert plist["KeepAlive"] == {"SuccessfulExit": False}
-    assert plist["ProgramArguments"] == [
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "--user-data-dir=__HOME__/thrift/chrome-cross",
-        "--no-first-run", "--no-default-browser-check",
-        "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding",
-        "--disk-cache-size=268435456", "https://www.vinted.com/"]                       # WO53 §5: the cache capped
-    joined = " ".join(plist["ProgramArguments"])
+    assert plist["Label"] == "com.thrift.chrome-cross" and plist["RunAtLoad"] is False
+    assert "KeepAlive" not in plist                                       # a quit (ours, a crash, hers) stays quit
+    assert plist["ProgramArguments"] == ["/bin/bash", "__HOME__/thrift-agent/deploy/chrome_cross.sh"]
+    script = (ROOT / "deploy" / "chrome_cross.sh").read_text(encoding="utf-8")
+    assert 'PROFILE="$HOME/thrift/chrome-cross"' in script
+    launch = script[script.index('\nexec "$CHROME"'):]
+    for flag in ('--user-data-dir="$PROFILE"', "--no-first-run", "--no-default-browser-check", "--no-startup-window",
+                 "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding",
+                 "--disk-cache-size=268435456"):                          # WO53 §5: the cache capped
+        assert flag in launch
     for forbidden in ("--remote-debugging", "--enable-automation", "--load-extension", "--headless",
-                      "--restore-last-session"):                          # WO54: never restores old pages
-        assert forbidden not in joined
+                      "--restore-last-session", "http"):                  # WO54: no old pages, no start page
+        assert forbidden not in launch
+    assert 'mv "$PROFILE/Default/Sessions" "$PROFILE/Default/Sessions.last"' in script    # never a restored session
     services = (ROOT / "deploy" / "services.sh").read_text(encoding="utf-8")
     assert 'echo "com.thrift.chrome-cross"' in services and "for svc in worker poster chrome" in services
     setup = (ROOT / "deploy" / "mac_setup.sh").read_text(encoding="utf-8")
     assert 'if [ ! -s "$TOKEN_FILE" ]' in setup and 'chmod 600 "$TOKEN_FILE"' in setup
     assert "com.thrift.chrome-cross.plist" in setup
-    assert "services.sh start chrome" in (ROOT / "deploy" / "mac_deploy.sh").read_text(encoding="utf-8")
+    deploy = (ROOT / "deploy" / "mac_deploy.sh").read_text(encoding="utf-8")
+    assert "services.sh load chrome" in deploy and "services.sh start chrome" not in deploy   # loaded, never started
 
 
 def test_verified_steps_carry_their_evidence_and_the_publish_gate_stays_closed():

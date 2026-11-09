@@ -209,7 +209,9 @@ def known_folder(s: Settings, sid: str) -> Path | None:
     `…_2`), else None."""
     from thrift_agent import pipeline
     local = pipeline.uploads_dir(s)                    # WO49: the uploads' own intake and archive, first
-    for base in (local, local / pipeline.UPLOADS_ARCHIVE, s.path("inbox"), s.path("archive")):
+    late = pipeline.late_archive(s)                    # WO54 §4: a share taken short, archived inside iCloud Drive
+    for base in (local, local / pipeline.UPLOADS_ARCHIVE, s.path("inbox"), s.path("archive"),
+                 *([late] if late != s.path("archive") else [])):
         try:
             folders = sorted(p for p in base.iterdir() if p.is_dir())
         except OSError:

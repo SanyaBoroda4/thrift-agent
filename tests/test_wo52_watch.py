@@ -121,14 +121,29 @@ def test_memory_is_grouped_by_whose_browser():
     assert "Google Chrome (the owner's own)" in groups
 
 
-def test_the_thrift_chrome_is_restarted_when_idle_under_pressure(db, said):
+def test_the_thrift_chrome_is_quit_when_idle_under_pressure(db, said):
+    """WO52 §7's restart, as WO54 §4 made it: the Thrift Chrome over 3 GB at "warning" with its sites idle is QUIT — it
+    opens again for the next job, nothing comes back with it."""
     s = Settings({"machine_role": "dev"})
     procs = memory.processes(TOP, PS)
     calls = []
-    assert memory.tick(s, db, idle=False, now=1000, procs=procs, level=2, restart=lambda: calls.append(1)) is None
-    assert memory.tick(s, db, idle=True, now=1000, procs=procs, level=2, restart=lambda: calls.append(1)) == "restarted"
-    assert calls == [1] and said[-1].startswith("🧠 The Mac was short of memory: the Thrift Chrome held 3.1 GB")
-    assert memory.tick(s, db, idle=True, now=2000, procs=procs, level=2, restart=lambda: calls.append(1)) is None
+    assert memory.tick(s, db, idle=False, now=1000, procs=procs, level=2, quit=calls.append) is None
+    assert memory.tick(s, db, idle=True, now=1000, procs=procs, level=2, quit=calls.append) == "quit"
+    assert calls == ["the Thrift Chrome held 3.1 GB"]
+    assert said[-1] == ("🧠 The Mac was short of memory: the Thrift Chrome held 3.1 GB — quit it while nothing was being "
+                        "listed (it opens again for the next job).")
+    assert memory.tick(s, db, idle=True, now=2000, procs=procs, level=2, quit=calls.append) is None
+
+
+def test_without_a_quit_the_tick_asks_the_bridges_watch(db, said):
+    """WO54 §4: the housekeeping tick never quits a Chrome itself (a 30-second wait in the poster's loop): it tells the
+    bridge's watch through `squeeze`, which quits it once nothing is in hand."""
+    s = Settings({"machine_role": "dev"})
+    procs = memory.processes(TOP, PS)
+    assert memory.squeeze("thrift") is None
+    assert memory.tick(s, db, idle=True, now=1000, procs=procs, level=2) == "quit"
+    assert memory.squeeze("thrift") == "the Thrift Chrome held 3.1 GB"
+    assert memory.squeeze("poshmark") is None                 # Poshmark's browser: only for "critical"
 
 
 def test_critical_for_30_minutes_says_one_line_naming_safari(db, said):

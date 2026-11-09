@@ -98,10 +98,17 @@ def _count_dirs(path) -> str:
         return f"unreadable now ({type(e).__name__})"
 
 
+EXT_STATES = {"connected": "connected", "asleep": "asleep (the Thrift Chrome is closed — it opens for the next job)",
+              "waking": "waking (the Thrift Chrome was asked to start)", "missing": "NOT connected",
+              "refused": "NOT connected (its token was refused)"}
+
+
 def report(s: Settings, db: DB, now: datetime | None = None, api=None,
-           memory: Callable[[], str] | None = None) -> list[str]:
+           memory: Callable[[], str] | None = None, laptop: Callable[[], list[str]] | None = None) -> list[str]:
     """The lines (see the module). `api`: thrift-api's client (tests pass a stand-in; None: sales.api()). `memory`:
-    the memory line's reader — on the Mac `memory_line` (sysctl), elsewhere none (tests never read the machine)."""
+    the memory line's reader — on the Mac `memory_line` (sysctl), elsewhere none (tests never read the machine).
+    `laptop`: WO54 §4's lines — the agent against its budget, its CPU, the pages its Chromes hold, who is in front —
+    on the Mac read from ps / top / lsappinfo (`laptop_now`), elsewhere none."""
     now = now or datetime.now(timezone.utc)
     out = ["🩺 Thrift doctor — " + now.astimezone().strftime("%a %b %d, %H:%M")]
     if memory is None and s.is_prod and sys.platform == "darwin":
@@ -135,8 +142,8 @@ def report(s: Settings, db: DB, now: datetime | None = None, api=None,
                + (f" · busy with {p.busy}" if p.running and p.busy else "") + (" · PAUSED" if p.running and p.paused else "")
                + f" · its beat {_ago(st.get('beat'), now)}")
     link = loads(db.kv_get(crosslist.EXT_LINK)) or {}
-    out.append(f"Extension: {'connected' if link.get('connected') else 'NOT connected'}"
-               f" (seen {_ago(link.get('at'), now)})" if link else "Extension: never seen")
+    state = EXT_STATES.get(link.get("link")) or ("connected" if link.get("connected") else "NOT connected")
+    out.append(f"Extension: {state} (seen {_ago(link.get('at'), now)})" if link else "Extension: never seen")
     # what waits
     azure = _azure_pending(api)
     out.append(f"Waiting: iCloud inbox {_count_dirs(s.path('inbox'))} folder(s) · local upload intake "
@@ -151,9 +158,17 @@ def report(s: Settings, db: DB, now: datetime | None = None, api=None,
                    + (f" · PAUSED: {why}" if why else ""))
     from thrift_agent import health
     out += [f"  {line}" for line in health.summary(db)]          # WO51: each pause and its next test
-    from thrift_agent import jobs, memory
-    if tops := memory.top_lines():                                 # WO52 §7: who holds the memory
+    from thrift_agent import jobs
+    from thrift_agent import memory as mem
+    if tops := mem.top_lines():                                    # WO52 §7: who holds the memory
         out.append("Memory by app: " + " · ".join(tops))
+    if laptop is None and s.is_prod and sys.platform == "darwin":
+        laptop = lambda: laptop_now(link)                           # noqa: E731
+    if laptop is not None:                                         # WO54 §4: the agent against its budget, the laptop
+        try:
+            out += laptop()
+        except Exception as e:  # noqa: BLE001 — a part it can't read says so
+            out.append(f"Agent: unreadable now ({type(e).__name__})")
     job_lines = jobs.lines(db)                                     # WO52 §4: each job's last success
     if job_lines:
         out.append("Jobs:")
@@ -175,6 +190,14 @@ def report(s: Settings, db: DB, now: datetime | None = None, api=None,
     out.append(f"Today's shares: {len(today)}" + ("" if today else " (none yet)"))
     out += [f"  {line}" for line in today[:8]]
     return out
+
+
+def laptop_now(link: dict | None = None) -> list[str]:
+    """WO54 §4's measurement, read once (ps + top): the agent's total against its 2 GB budget, then the CPU, the pages
+    open and who is in front (memory.agent_line / laptop_lines)."""
+    from thrift_agent import memory as mem
+    procs = mem.everything()
+    return [line for line in [mem.agent_line(procs), *mem.laptop_lines(procs, link=link)] if line]
 
 
 def _poll_time(db: DB) -> str | None:

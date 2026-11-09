@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -89,10 +90,14 @@ def ready_cross(ps: dict, cross: list[str]) -> list[str]:
 
 
 EXT_MISSING_SAID = "ext_missing_said"     # kv: the window the "extension hasn't checked in" line was said in
+THRIFT_CHROME = "com.thrift.chrome-cross"          # its LaunchAgent (deploy/com.thrift.chrome-cross.plist)
+THRIFT_CHROME_DIR = "~/thrift/chrome-cross"        # its own profile: the one --user-data-dir that is the Thrift Chrome
+QUIT_WAIT = 30.0                                   # WO54 §4: SIGTERM, then this long for Chrome's own shutdown
 
 
 def start_thrift_chrome(s: Settings) -> str:
-    """`services.sh start chrome` (the Thrift Chrome's LaunchAgent, WO32): on the Mac only."""
+    """`services.sh start chrome` (the Thrift Chrome's LaunchAgent, WO32; WO54 §4: its installed plist loaded first,
+    then `launchctl kickstart` — RunAtLoad false, it runs only when asked): on the Mac only."""
     if not s.is_prod or sys.platform != "darwin":
         return "not on the Mac: the Thrift Chrome isn't started here"
     try:
@@ -104,16 +109,92 @@ def start_thrift_chrome(s: Settings) -> str:
 
 
 def restart_thrift_chrome(s: Settings) -> str:
-    """WO49: the Thrift Chrome restarted (`launchctl kickstart -k` of its LaunchAgent; --restore-last-session brings its
-    windows back) — it can run with its extension's worker asleep. On the Mac only."""
+    """WO49: the Thrift Chrome restarted (`launchctl kickstart -k` of its LaunchAgent: WO54 §4, its launch script sets
+    the last session aside — nothing comes back) — it can run with its extension's worker asleep. On the Mac only."""
     if not s.is_prod or sys.platform != "darwin":
         return "not on the Mac: the Thrift Chrome isn't restarted here"
     try:
-        r = subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/com.thrift.chrome-cross"],
+        r = subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{THRIFT_CHROME}"],
                            capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.SubprocessError) as e:
         return f"{type(e).__name__}: {e}"
     return (r.stdout + r.stderr).strip()[-300:] or "restarted"
+
+
+def _args_of(pid: int) -> str:
+    try:
+        return subprocess.run(["ps", "-o", "args=", "-p", str(pid)], capture_output=True, text=True,
+                              timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def thrift_chrome_pid() -> int | None:
+    """WO54 §4: the Thrift Chrome's main process — its LaunchAgent's pid, else the one process started some other way
+    — only when that process's own arguments carry the Thrift profile (`--user-data-dir=~/thrift/chrome-cross`) and
+    it is no helper (`--type=`): never the owner's own Chrome, never another profile. None when it isn't running."""
+    mark = f"--user-data-dir={os.path.expanduser(THRIFT_CHROME_DIR)}"
+    ours = re.compile(re.escape(mark) + r"(\s|$)")
+    pids: list[int] = []
+    try:
+        r = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{THRIFT_CHROME}"], capture_output=True,
+                           text=True, timeout=10)
+        if m := re.search(r"^\s*pid = (\d+)\s*$", r.stdout or "", re.M):
+            pids.append(int(m[1]))
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if not pids:
+        try:
+            r = subprocess.run(["pgrep", "-f", "--", mark], capture_output=True, text=True, timeout=10)
+            pids = [int(x) for x in (r.stdout or "").split() if x.isdigit()]
+        except (OSError, subprocess.SubprocessError):
+            pids = []
+    for pid in pids:
+        args = _args_of(pid)
+        if ours.search(args) and "--type=" not in args:
+            return pid
+    return None
+
+
+def quit_thrift_chrome(s: Settings, wait: float = QUIT_WAIT) -> str:
+    """WO54 §4: the Thrift Chrome quit the way Chrome quits — SIGTERM to its own main process (thrift_chrome_pid: matched
+    by its --user-data-dir), then up to `wait` seconds for it to shut down normally. Its LaunchAgent has no KeepAlive:
+    nothing starts it again until the next job. Never a SIGKILL, never another Chrome (no app quit by name: the owner's
+    Chrome is the same app). On the Mac only. Runs in a thread (the bridge's watch)."""
+    if not s.is_prod or sys.platform != "darwin":
+        return "not on the Mac: the Thrift Chrome isn't quit here"
+    pid = thrift_chrome_pid()
+    if pid is None:
+        return "not running"
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return "not running"
+    except OSError as e:
+        return f"{type(e).__name__}: {e}"
+    end = time.monotonic() + wait
+    while time.monotonic() < end:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return f"quit (pid {pid})"
+        except OSError:
+            break
+        time.sleep(0.5)
+    return f"asked to quit (pid {pid}); still running after {wait:.0f} s — a page may have asked to stay"
+
+
+def chrome_waker(s: Settings):
+    """WO54 §4: what starts the Thrift Chrome when a job comes and no extension is there — on the Mac only (None
+    elsewhere, and in the test suite: tests/conftest.py). It says whether the Chrome was running when asked (the
+    bridge tells a Chrome that vanished in the middle of a job from one quit on purpose)."""
+    if not s.is_prod or sys.platform != "darwin":
+        return None
+
+    def wake(why: str) -> dict:
+        running = thrift_chrome_running()
+        return {"out": start_thrift_chrome(s), "was_running": running}
+    return wake
 
 
 async def open_bridge(s: Settings, db: DB | None, ps: dict, watch: bool = True, strict: bool = False):
@@ -138,40 +219,61 @@ async def open_bridge(s: Settings, db: DB | None, ps: dict, watch: bool = True, 
         return None, None
     for p in ext.values():
         p.bridge = b
+    b.waker = chrome_waker(s)                    # WO54 §4: the Thrift Chrome on demand (the Mac only)
+    if db is not None:
+        b.on_change = lambda kind, detail: chrome_changed(db, b, list(ext), kind, detail)
     if not watch or db is None:
         return b, None
-    shown = {"connected": None, "at": 0.0}
+    shown = {"seen": None, "at": 0.0}
 
-    def state(connected: bool) -> None:          # thrift status / the daily window: is the extension there?
-        if connected != shown["connected"] or time.monotonic() - shown["at"] > 300:
-            shown.update(connected=connected, at=time.monotonic())
-            db.kv_set(crosslist.EXT_LINK, json.dumps({"connected": connected, "at": datetime.now(timezone.utc)
-                                                      .isoformat(timespec="seconds")}))
+    def state(available: bool) -> None:          # thrift status / the daily window: is the extension there?
+        # WO54 §4: "connected" stays what the daily window counts on (crosslist.reachable) — a Thrift Chrome asleep
+        # counts, it opens for the next job; `link` says which ("connected", "asleep", "waking", "missing", "refused")
+        now_seen = (available, b.link(), b.ext_tabs, b.ext_windows, b.owner_using())
+        if now_seen != shown["seen"] or time.monotonic() - shown["at"] > 300:
+            shown.update(seen=now_seen, at=time.monotonic())
+            db.kv_set(crosslist.EXT_LINK, json.dumps({
+                "connected": available, "link": now_seen[1], "tabs": b.ext_tabs, "windows": b.ext_windows,
+                "using": now_seen[4], "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}))
 
     def say(text: str) -> None:                  # once a window
         if db.kv_get(EXT_MISSING_SAID) != crosslist.window(db):
             db.kv_set(EXT_MISSING_SAID, crosslist.window(db))
             notify.say(text)
 
-    def start_chrome() -> None:
-        quit_by_hand = thrift_chrome_running() is False
+    def start_chrome() -> None:                  # work waited 2 min for an extension that didn't come: asked again
         out = start_thrift_chrome(s)
-        db.log(None, "thrift_chrome_started", {"why": "no extension for 2 min", "out": out, "was_closed": quit_by_hand})
-        if quit_by_hand:                         # WO52 §4: one plain line (at most every 6 h)
-            closed_line(db, "thrift", "The Thrift Chrome was closed on the Mac — reopened. Please don't quit the "
-                                      "Chrome windows on the Mac.")
-        from thrift_agent import formcheck                     # WO52 §3: a form check once the browser is back
-        formcheck.request(db, [mp for mp in ext], "the Thrift Chrome was started again")
+        db.log(None, "thrift_chrome_started", {"why": "work waiting, no extension for 2 min", "out": out})
 
     def restart_chrome() -> None:
         out = restart_thrift_chrome(s)
-        db.log(None, "thrift_chrome_restarted", {"why": "no extension for 5 min", "out": out})
+        db.log(None, "thrift_chrome_restarted", {"why": "work waiting, no extension for 5 min", "out": out})
         from thrift_agent import formcheck                     # WO52 §3: a form check once the browser is back
         formcheck.request(db, [mp for mp in ext], "the Thrift Chrome was restarted")
 
+    def squeeze() -> str | None:                 # WO54 §4: the Mac short of memory → it quits at once when idle
+        from thrift_agent import memory
+        return memory.squeeze("thrift")
+
     task = asyncio.create_task(b.watch(in_window=lambda: power.lid_closed() is not True, start_chrome=start_chrome,
-                                       say=say, state=state, restart_chrome=restart_chrome))
+                                       say=say, state=state, restart_chrome=restart_chrome,
+                                       quit_chrome=lambda why: quit_thrift_chrome(s), squeeze=squeeze))
     return b, task
+
+
+def chrome_changed(db: DB, b, sites: list[str], kind: str, detail: dict) -> None:
+    """WO54 §4: the Thrift Chrome started for work or quit when idle — its event (`thrift_chrome_started` /
+    `thrift_chrome_quit`). One that went away in the middle of a job without our quit and was found not running when
+    work came: WO52 §4's line (at most every 6 h) and a form check — never for one the poster quit on purpose."""
+    out = detail.get("out")
+    flat = {**{k: v for k, v in detail.items() if k != "out"}, **out} if isinstance(out, dict) else detail
+    db.log(None, kind, {k: (str(v)[:300] if isinstance(v, str) else v) for k, v in flat.items()})
+    if kind == "thrift_chrome_started" and flat.get("was_running") is False and b.lost_mid_job is not None:
+        b.lost_mid_job = None
+        closed_line(db, "thrift", "The Thrift Chrome was closed on the Mac in the middle of a listing — reopened. It "
+                                  "opens and closes by itself when there is work; no need to quit it.")
+        from thrift_agent import formcheck                     # WO52 §3: a form check once the browser is back
+        formcheck.request(db, sites, "the Thrift Chrome was closed in the middle of a job")
 
 
 CLOSED_SAID = "browser_closed_said"     # kv: {which: epoch} — WO52 §4's line, at most every 6 h per browser
@@ -206,6 +308,7 @@ async def connect_extension(b, poster, say=print, first: float = 30.0, then: flo
     and past `first + then` it gives up with that reason (RuntimeError). Returns the seconds it took."""
     t0 = time.monotonic()
     say("Waiting for the Thrift Chrome extension…")
+    b.want("the CLI waits for the extension")          # WO54 §4: a Thrift Chrome that isn't running is started
     if not await poster.wait_connected(first):
         say(f"  not yet: {b.why_missing(thrift_chrome_running())}")
         if not await poster.wait_connected(then):

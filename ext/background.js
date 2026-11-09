@@ -1,14 +1,29 @@
-// Thrift crosslister (WO32, WO32b, WO33) — the background service worker. The link to the bridge inside the poster
+// Thrift crosslister (WO32, WO32b, WO33, WO54) — the background service worker. The link to the bridge inside the poster
 // process on this Mac: a WebSocket to ws://127.0.0.1:8765/ext (the token in the first message, a message every 20 s so
 // the worker stays up while it is open), tried again 1 s, 2 s, 5 s after it drops and then every 5 s — a bridge that
 // starts is seen within seconds — and, for when the worker was put to sleep (MV3 workers go idle), an alarm that asks
 // GET /jobs/next. One job at a time PER SITE (WO33: a Depop job and a Vinted job run together), each in its site's own
-// window of the Thrift Chrome — created once, kept with a small idle page, never focused or raised over what the owner
-// is using — in a tab of its own that is that window's active tab, so no job tab is ever hidden: the job's photos
-// fetched from the bridge, the content script started on the page, its events relayed, that window captured on
-// request (10 s at most). After the one publish click it watches the tab land on the listing page. A job whose bridge
-// goes away before the go-ahead can't be published any more: it is called off and its tab closed. It opens nothing a
-// job didn't ask for.
+// window of the Thrift Chrome — created once per start of it, kept with a small idle page, created unfocused and never
+// focused or raised over what the owner is using — in a tab of its own that is that window's active tab, so no job tab
+// is ever hidden: the job's photos fetched from the bridge, the content script started on the page, its events
+// relayed, that window captured on request (10 s at most). After the one publish click it watches the tab land on the
+// listing page. A job whose bridge goes away before the go-ahead can't be published any more: it is called off and its
+// tab closed. It opens nothing a job didn't ask for.
+//
+// WO54 §4 (live 2026-11-09: started at 1 AM with --restore-last-session and a Vinted start page, the Thrift Chrome held
+// 9.6 GB in 51 pages on her 8 GB laptop — her old eBay pages, Vinted pages with ad frames — two of them burning a core
+// each until 9:35 AM; the tidy kept every window's active tab and every page off the three sites):
+// - The Thrift Chrome is not her browser. launchd starts it with NO window (--no-startup-window) only when the poster
+//   has a job for it, and the poster quits it after 10 idle minutes. This worker starts with the profile — its
+//   runtime.onStartup listener and its alarm, both below — and connects at once (the connect() at the end).
+// - A job's tab stays its window's ACTIVE tab (the window itself is never focused): an inactive tab is a hidden page —
+//   its timers throttled to one a second, then one a minute, its animation frames stopped, nothing for
+//   captureVisibleTab — and a hidden page stalled a live run (WO32b). The window opens behind what she is using.
+// - The tidy (every minute, also while jobs run, and after each job) closes every page no running job holds, except
+//   each window's idle page, the one page per site left for her to log in or solve a CAPTCHA (6 h at most), and a page
+//   she looked at in the last 15 minutes (the active tab of a focused Thrift Chrome window).
+// - Each ping says whether a Thrift Chrome window has her focus (the poster never quits it under her hands) and how
+//   many tabs and windows it holds (thrift doctor).
 const BRIDGE = "http://127.0.0.1:8765";
 const WS_URL = "ws://127.0.0.1:8765/ext";
 const PING_MS = 20000;
@@ -81,7 +96,7 @@ const byId = (id) => Object.values(jobs).find((j) => j && j.job_id === id) || nu
 const byTab = (tabId) => Object.values(jobs).find((j) => j && j.tabId === tabId) || null;
 const anyJob = () => Object.values(jobs).some(Boolean);
 
-const HASH_SALT = "wo53-reload-1\n";      // WO53: changed with bridge.HASH_SALT — every loaded copy reloads once
+const HASH_SALT = "wo54-reload-1\n";      // WO54 §4: changed with bridge.HASH_SALT — every loaded copy reloads once
 async function filesHash() {
   const enc = new TextEncoder();
   const parts = [enc.encode(HASH_SALT)];      // WO52: the same salt as bridge.files_hash
@@ -166,16 +181,35 @@ function later() {
   attempt += 1;
 }
 
+// WO54 §4: what each ping tells the poster — whether one of this Chrome's windows has the owner's focus (she is using
+// it: it isn't quit under her hands) and how many tabs and windows it holds.
+async function linkInfo() {
+  const out = { using: false, tabs: null, windows: null };
+  try {
+    const all = await chrome.windows.getAll({});
+    out.windows = all.length;
+    out.using = all.some((w) => w.focused);
+  } catch (e) { /* no window at all */ }
+  try { out.tabs = (await chrome.tabs.query({})).length; } catch (e) { /* none */ }
+  if (out.using) await lookedAt();
+  return out;
+}
+
+async function ping() {
+  let info = {};
+  try { info = await linkInfo(); } catch (e) { /* the ping goes without it */ }
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping", ...info }));
+}
+
 async function onBridge(msg) {
   if (msg.type === "welcome") {
     wsReady = true;
     attempt = 0;
     refused = false;
     clearInterval(pingTimer);
-    pingTimer = setInterval(() => {
-      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" }));
-    }, PING_MS);
+    pingTimer = setInterval(() => { ping().catch(() => {}); }, PING_MS);
     await setState("connected");
+    ping().catch(() => {});                          // WO54 §4: its tabs and the owner's focus, at once
     await maybeReload(msg.ext_hash);
   } else if (msg.type === "refused") {
     wsReady = false;
@@ -263,9 +297,11 @@ async function waitCommands(jobId) {
 
 const idleUrl = (site) => chrome.runtime.getURL(`idle.html?site=${site}`);
 
-// The site's own window (WO33): found by its idle tab (after a browser restart too: the session restores it), else
-// created — never focused, so it opens behind what the owner is using. One at a time: two jobs starting together
-// would each write the windows map over the other's.
+// The site's own window (WO33): found by its idle tab, else created — unfocused (WO54 §4: `focused: false` and nothing
+// here ever focuses a window, so it opens behind what the owner is using and stays there), a normal window (never
+// minimized: its job tab would be a hidden page). The idle page keeps the window between this Chrome's jobs; the Chrome
+// itself quits 10 idle minutes after the last one, and nothing restores a session. One at a time: two jobs starting
+// together would each write the windows map over the other's.
 let windowLock = Promise.resolve();
 function siteWindow(site) {
   const run = windowLock.then(() => siteWindowNow(site));
@@ -285,7 +321,8 @@ async function siteWindowNow(site) {
   }
   const found = (await chrome.tabs.query({})).find((t) => t.url === idle);
   const entry = found ? { windowId: found.windowId, idleTabId: found.id }
-    : await chrome.windows.create({ url: idle, focused: false }).then((w) => ({ windowId: w.id, idleTabId: w.tabs[0].id }));
+    : await chrome.windows.create({ url: idle, focused: false, state: "normal" })
+      .then((w) => ({ windowId: w.id, idleTabId: w.tabs[0].id }));
   await chrome.storage.session.set({ windows: { ...saved, [site]: entry } });
   return entry;
 }
@@ -445,6 +482,8 @@ async function startJob(job) {
     const photos = ["dry_run", "publish", "photos"].includes(job.mode) ? await fetchPhotos(job.photos || []) : [];
     const url = urlFor(job, site);
     const where = await siteWindow(job.mode === "orders" ? "orders" : job.site);   // WO38: the "Orders" window
+    // WO54 §4: active in ITS OWN window (that window is never focused): an inactive tab is a hidden page — throttled
+    // timers, no animation frames, nothing to capture — which stalled a live run (WO32b)
     const tab = await chrome.tabs.create({ url, active: true, windowId: where.windowId });
     let j = await ours();
     if (!j) {                                      // ended meanwhile: the tab it opened goes too
@@ -590,22 +629,26 @@ async function finish(ev) {
     await leaveForOwner(j.site, j.tabId);
   }
   if (!wsReady) await poll();
+  tidyTabs(Date.now(), true).catch(() => {});      // WO54 §4: whatever the job's pages left behind goes now
 }
 
 // WO53 (live 2026-11-08): a paused site's test run met the login page every ~5 s and each left a new login tab open
 // for the owner — ~80 pages, the Thrift Chrome at 5.7 GB, the Mac swapping until its watchdog panicked at 11:16 PM.
-// A site keeps ONE page left for the owner: the newer replaces the older — never the tab she is on.
+// A site keeps ONE page left for the owner: the newer replaces the older — never the tab she is on. WO54 §4: kept with
+// the time it was left (the tidy closes it after LEFT_FOR), in session storage (tab ids don't outlive a Chrome).
+const leftTab = (e) => (e && typeof e === "object" ? e.tab : e);
+const leftAt = (e) => (e && typeof e === "object" ? e.at || 0 : 0);
 async function leaveForOwner(site, tabId) {
-  const { left_open: left = {} } = await chrome.storage.local.get("left_open");
-  const old = left[site];
+  const { left_open: left = {} } = await chrome.storage.session.get("left_open");
+  const old = leftTab(left[site]);
   if (old != null && old !== tabId) {
     try {
       const t = await chrome.tabs.get(old);
       if (t && !t.active) await chrome.tabs.remove(old);
     } catch (e) { /* gone already */ }
   }
-  left[site] = tabId;
-  await chrome.storage.local.set({ left_open: left });
+  left[site] = { tab: tabId, at: Date.now() };
+  await chrome.storage.session.set({ left_open: left });
 }
 
 // Chrome allows captureVisibleTab twice a second (MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND): captures are spaced, and
@@ -737,42 +780,87 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   await tidyTabs(now);
 });
 
-// WO52 §7 (live 2026-11-01: the Thrift Chrome held ~27 old pages — 8.4 GB — and --restore-last-session brought them
-// all back after every restart): every 30 minutes, with no job running, the pages on the three sites nobody has looked
-// at for 6 hours (Chrome's own lastAccessed) are closed, and a site's second idle page; never a job's tab, never the
-// active tab of a window, never another site's page. A login / CAPTCHA page left for the owner goes after 6 hours too.
-const TIDY_EVERY = 30 * 60 * 1000, TIDY_OLD = 6 * 3600 * 1000;
-const PER_SITE = 2;          // WO53: at most this many idle pages of one site are kept (the newest), beside its jobs
-const OURS = /^https:\/\/([a-z0-9-]+\.)?(vinted\.com|depop\.com|poshmark\.com)\//i;
-async function tidyTabs(now) {
+// The tidy. WO52 §7 (live 2026-11-01: ~27 old pages, 8.4 GB) and WO53 closed old pages of the three sites, every
+// 30 minutes, with no job running — never the active tab of a window, never another site's page; WO54 §4 (live
+// 2026-11-09: two such pages — a window's active tab and pages off the three sites — burned a core each for 8½ hours):
+// every TIDY_EVERY, while jobs run too and right after each job, EVERY page no running job holds is closed, whatever
+// its site, unless it is
+// - a running job's tab, or a page that tab opened (a site's popup), until the job ends;
+// - the idle page of a site window (one per site; a second one goes);
+// - the page left for the owner on a site (a login / CAPTCHA / check page, one per site), for LEFT_FOR at most;
+// - a page born in the last BORN_GRACE (a job's tab between its creation and its job);
+// - a page the owner looked at in the last UNSEEN — the active tab of a focused Thrift Chrome window (she may be
+//   logging in there, or fetching a code from her mail).
+const TIDY_EVERY = 60 * 1000, UNSEEN = 15 * 60 * 1000, LEFT_FOR = 6 * 3600 * 1000, BORN_GRACE = 60 * 1000;
+const seenAt = {};           // tab → when the owner last looked at it (kept in session storage too: the worker sleeps)
+const bornAt = {};           // tab → when it was created
+
+async function marks() {
+  const { seen = {}, born = {} } = await chrome.storage.session.get(["seen", "born"]);
+  return { seen: { ...seen, ...seenAt }, born: { ...born, ...bornAt } };
+}
+
+// The page the owner looks at now: the active tab of the focused window (none when this Chrome isn't in front).
+async function lookedAt(now = Date.now()) {
+  let tab = null;
+  try {
+    const w = await chrome.windows.getLastFocused({ populate: true });
+    if (w && w.focused) tab = (w.tabs || []).find((t) => t.active) || null;
+  } catch (e) { return null; }          // no window at all
+  if (!tab) return null;
+  seenAt[tab.id] = now;
+  const { seen = {} } = await chrome.storage.session.get("seen");
+  await chrome.storage.session.set({ seen: { ...seen, [tab.id]: now } });
+  return tab.id;
+}
+
+async function tidyTabs(now, force = false) {
   const { tidied_at: last = 0 } = await chrome.storage.local.get("tidied_at");
-  if (now - last < TIDY_EVERY || Object.values(jobs).some(Boolean)) return;
+  if (!force && now - last < TIDY_EVERY) return;
+  await restore();
+  const held = Object.values(jobs).filter(Boolean);
+  if (held.some((j) => j.tabId == null)) return;           // a job's tab is being opened: the next minute
   await chrome.storage.local.set({ tidied_at: now });
+  await lookedAt(now);
+  const { seen, born } = await marks();
+  const { left_open: left = {} } = await chrome.storage.session.get("left_open");
+  const jobTabs = new Set(held.map((j) => j.tabId));
+  const leftTabs = new Set(Object.values(left).filter((e) => now - leftAt(e) < LEFT_FOR).map(leftTab));
   const tabs = await chrome.tabs.query({});
-  const idleSeen = new Set(), close = [], bySite = {};
+  const idleSeen = new Set(), close = [];
   for (const tab of tabs) {
-    if (tab.active || byTab(tab.id)) continue;
+    if (jobTabs.has(tab.id) || (tab.openerTabId != null && jobTabs.has(tab.openerTabId))) continue;
     const idle = /idle\.html\?site=([a-z]+)/.exec(tab.url || "");
-    if (idle && tab.url.startsWith(chrome.runtime.getURL(""))) {
+    if (idle && (tab.url || "").startsWith(chrome.runtime.getURL(""))) {
       if (idleSeen.has(idle[1])) close.push(tab.id); else idleSeen.add(idle[1]);
-    } else if (OURS.test(tab.url || "") && tab.lastAccessed && now - tab.lastAccessed > TIDY_OLD) {
-      close.push(tab.id);
-    } else if (OURS.test(tab.url || "")) {
-      (bySite[OURS.exec(tab.url)[2].toLowerCase()] ||= []).push(tab);
+      continue;
     }
+    if (leftTabs.has(tab.id)) continue;
+    if (now - (born[tab.id] || 0) < BORN_GRACE) continue;
+    if (now - (seen[tab.id] || 0) < UNSEEN) continue;
+    close.push(tab.id);
   }
-  for (const list of Object.values(bySite)) {             // WO53: a site's extra idle pages, oldest first
-    list.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
-    close.push(...list.slice(PER_SITE).map((t) => t.id));
-  }
+  const open = new Set(tabs.map((t) => String(t.id)));     // forget the tabs that are gone
+  const keep = (m) => Object.fromEntries(Object.entries(m).filter(([id]) => open.has(id) && !close.includes(+id)));
+  await chrome.storage.session.set({ seen: keep(seen), born: keep(born) });
   if (close.length) {
     try { await chrome.tabs.remove(close); } catch (e) { /* gone already */ }
-    await send({ event: "tidied", closed: close.length });
+    await send({ event: "tidied", closed: close.length, tabs: tabs.length - close.length });
   }
 }
 
+chrome.tabs.onCreated.addListener((tab) => {
+  bornAt[tab.id] = Date.now();
+  chrome.storage.session.get("born").then(({ born = {} }) =>
+    chrome.storage.session.set({ born: { ...born, [tab.id]: bornAt[tab.id] } })).catch(() => {});
+});
+chrome.tabs.onActivated.addListener(() => { lookedAt().catch(() => {}); });
+chrome.windows.onFocusChanged.addListener(() => { lookedAt().catch(() => {}); });
+
 // The owner closed a job's tab (or its window): the job ends there (nothing more can happen in it).
 chrome.tabs.onRemoved.addListener(async (tabId) => {
+  delete seenAt[tabId];
+  delete bornAt[tabId];
   await restore();
   const j = byTab(tabId);
   if (j) {
@@ -782,7 +870,9 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 });
 
 chrome.runtime.onInstalled.addListener(() => noteLoaded());
-chrome.runtime.onStartup.addListener(() => noteLoaded());
+// WO54 §4: the Thrift Chrome starts with no window (--no-startup-window) when the poster has a job for it — this
+// listener is what wakes this worker with the profile (the "poll" alarm is the second way), and it connects at once.
+chrome.runtime.onStartup.addListener(() => { noteLoaded(); connect(); });
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes.poll_minutes) ensureAlarm();
 });

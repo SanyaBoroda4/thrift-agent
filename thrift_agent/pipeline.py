@@ -1259,30 +1259,111 @@ def regroup(s: Settings, db: DB, bid: str, cmd: str) -> dict[str, list[str]]:
     return out
 
 
+ICLOUD_DRIVE = "Mobile Documents"     # WO54 §4: a path inside iCloud Drive (~/Library/Mobile Documents/…)
+
+
+def late_archive(s: Settings) -> Path:
+    """WO54 §4: where a share taken SHORT is archived — inside iCloud Drive, next to its inbox (Posh/archive), because
+    the photos the iPhone sends after the share was taken land in that renamed folder and `late_photos` takes them
+    there (WO43 / WO45 §6). Everything else goes to `paths.archive`, the Mac's own disk (the owner, 2026-11-09:
+    nothing the agent keeps lives in iCloud Drive). Where the inbox isn't in iCloud Drive: `paths.archive` itself."""
+    inbox, archive = s.path("inbox"), s.path("archive")
+    if ICLOUD_DRIVE in str(inbox) and ICLOUD_DRIVE not in str(archive):
+        return inbox.parent / "archive"
+    return archive
+
+
+def whole_share(s: Settings, d: Path) -> bool:
+    """WO54 §4: the share was whole — the Shortcut's end mark carries its count, and the photos and their companions
+    (a Live Photo's video…) here cover it. The Shortcut writes that mark last: nothing more can come into this folder,
+    so it can leave iCloud Drive. A share taken short (the 30-minute deadline, a day with no photo) or a mark without
+    a count is not whole: its late photos land in its renamed iCloud folder (WO43 / WO45 §6)."""
+    try:
+        marker = marker_of(d, str(s.get("inbox.done_marker", "_done") or "_done"))
+        want = expected_photos(marker) if marker is not None else None
+        if want is None:
+            return False
+        files = [f for f in d.iterdir() if not f.name.startswith(".") and f.name != LOST_NOTE]
+    except OSError:
+        return False
+    photos = [f for f in files if prep.is_photo(f)]
+    media = [f for f in files if f.is_file() and f.suffix.lower() in MEDIA_EXT]
+    return bool(photos) and len(photos) + len(media) >= want
+
+
+def copy_verified(src: Path, dest: Path) -> tuple[int, int]:
+    """WO54 §4: a folder copied file by file (dates kept) and checked — the same names, each the same size — before
+    anything is deleted; a copy that doesn't match is removed again and OSError raised (the source untouched).
+    Returns (files, bytes). Used out of iCloud Drive, where a rename is a delete there."""
+    dest.mkdir(parents=True)
+    try:
+        for f in sorted(src.rglob("*")):
+            target = dest / f.relative_to(src)
+            if f.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(f, target)
+        files = {f.relative_to(src): f.stat().st_size for f in src.rglob("*") if f.is_file()}
+        copies = {f.relative_to(dest): f.stat().st_size for f in dest.rglob("*") if f.is_file()}
+        if files != copies:
+            raise OSError(f"the copy of {src.name} doesn't match it ({len(copies)} of {len(files)} files, "
+                          f"{sum(copies.values())} of {sum(files.values())} bytes)")
+    except OSError:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise
+    return len(files), sum(files.values())
+
+
+def _free_name(folder: Path, name: str) -> Path:
+    """`folder/name`, or `name_2`, `_3`… — never merged into an earlier archive folder (the folder made if missing)."""
+    folder.mkdir(parents=True, exist_ok=True)
+    dest, n = folder / name, 1
+    while dest.exists():
+        n += 1
+        dest = folder / f"{name}_{n}"
+    return dest
+
+
 def archive_share(s: Settings, db: DB, bid: str, src: Path) -> Path | None:
     """Move a finished share out of the inbox: this is what clears the phone's iCloud folder.
 
     Only folders inside paths.inbox are touched: `thrift process <any dir>` must never move the caller's folder.
     Never fatal: the items already exist in the DB, and a folder left behind is skipped by register() because
-    src_dir is UNIQUE. On the Mac this is a cross-volume move (iCloud Drive to local disk), i.e. copy + delete."""
+    src_dir is UNIQUE. WO54 §4 (the owner, 2026-11-09: nothing the agent keeps lives in iCloud Drive): a WHOLE share
+    whose files are all on this Mac leaves iCloud Drive for `paths.archive` (the Mac's own disk) — copied, checked,
+    then deleted there (`copy_verified`); a share taken short, or with files iCloud still keeps in the cloud, is
+    renamed inside iCloud Drive into `late_archive` instead — its late photos land there, nothing is downloaded."""
     inbox = s.path("inbox").resolve()
     uploads = uploads_dir(s).resolve()
     if not src.exists():
         return None
+    leaving = False
     if uploads in src.resolve().parents:                   # WO49: an upload's folder: the LOCAL archive, never iCloud
         archive = uploads / UPLOADS_ARCHIVE
     elif inbox in src.resolve().parents:
-        archive = s.path("archive")
+        late = late_archive(s)
+        whole = whole_share(s, src) and not prep.icloud_placeholders(src)
+        archive = s.path("archive") if whole else late
+        leaving = whole and late != archive
     else:
         return None
-    archive.mkdir(parents=True, exist_ok=True)
-    base = archive / f"{datetime.now():%Y%m%d}_{src.name}"
-    dest, n = base, 1
-    while dest.exists():                                         # never merge into an earlier archive folder
-        n += 1
-        dest = base.with_name(f"{base.name}_{n}")
+    dest = _free_name(archive, f"{datetime.now():%Y%m%d}_{src.name}")
     try:
-        shutil.move(str(src), str(dest))
+        if leaving:
+            try:
+                copy_verified(src, dest)
+            except OSError as e:                         # not out of iCloud now: renamed inside it, as before
+                db.log(bid, "archive_local_failed", {"src": str(src), "error": f"{type(e).__name__}: {e}"[:300]})
+                dest = _free_name(late_archive(s), dest.name)
+                shutil.move(str(src), str(dest))
+            else:
+                try:
+                    shutil.rmtree(src)
+                except OSError as e:     # iCloud holding part of it: the intake deletes the rest as the share's copy
+                    db.log(bid, "archive_delete_failed", {"src": str(src), "error": f"{type(e).__name__}: {e}"[:300]})
+        else:
+            shutil.move(str(src), str(dest))
     except OSError as e:
         db.log(bid, "archive_failed", {"src": str(src), "dest": str(dest), "error": str(e)})
         notify.say(f"\u26a0\ufe0f {bid}: could not archive {src.name} ({e}). The items are safe; move the folder by hand.")
