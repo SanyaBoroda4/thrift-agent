@@ -498,6 +498,11 @@
     .replace(/&/g, " and ").replace(/['\u2019`]/g, "").match(/[a-z0-9]+/g) || []).map((w) => SUFFIX[w] || w);
   const key = (s) => words(s).join("");
   T.brandKey = key;
+  // WO54 §1.3 (live 2026-11-09 8:46, the Glitter Toe Sneakers: a reply "тщ икфтв" — "no brand" on the Russian layout —
+  // became the brand; its key is "" (only a-z0-9 are kept), and "" === "" matched Vinted's 'Use "тщ икфтв" as brand' row,
+  // while the driver's plan (Python's BrandOf: an empty key never matches) wanted "List without brand" — three
+  // mismatches, Vinted paused): two names are the same brand only when the key is not empty.
+  T.sameBrand = (a, b) => { const k = key(a); return !!k && k === key(b); };
   T.brandNames = (f) => [...new Set([...(f.brand_candidates || []), f.brand].filter(Boolean))];
   T.strictPick = (ours, options) => {
     const same = options.find((o) => o && key(o) && key(o) === key(ours));

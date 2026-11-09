@@ -292,12 +292,55 @@ def next_job(s: Settings, db: DB, enabled: list[str], dry: bool,
                 item_type = item_type.get("value")
             if wrong := crosslist.family_problem(item_type, mp, tuple(getattr(render, k, None) for k in
                                                                       ("department", "category", "subcategory"))):
-                crosslist.hold_family(db, it["id"], mp, render.title, wrong)   # WO51 §5: never the wrong family
-                continue
+                # WO51 §5: never the wrong family — WO54 §1.4: never refused for it either; the closest category of
+                # its own family instead (every site follows: Depop and Vinted map from it), else as it is
+                fixed = refamily(db, it, render, renders, item_type)
+                if fixed is not None:
+                    render = fixed
+                else:
+                    crosslist.family_check(db, it["id"], mp, render.title, wrong)
             if (render := shop_window_render(db, it, render, renders)) is None:
                 continue        # WO50: a title that breaks the rules never reaches the site (said once)
             return it["id"], mp, render, mode
     return None
+
+
+def refamily(db: DB, it, render: Render, renders: dict, item_type) -> Render | None:
+    """WO54 §1.4 (live 2026-11-09: a category of another family than the item's held it everywhere — the owner: never
+    leave it unposted): Poshmark's category is in another family than the item's own type words → the closest
+    Poshmark category of its family in its department (the taxonomy's categories and subcategories,
+    families.closest); the item's facts and EVERY render follow (category, subcategory, the size menu's tab / value),
+    so Depop and Vinted map from it too; ONE private check line. None when Poshmark has no category of that family."""
+    from thrift_agent import families
+    from thrift_agent.brain import sizes, taxonomy
+    from thrift_agent.schema import Facts
+    fam = families.family_of_type(item_type)
+    dept = render.department
+    cats = ((taxonomy.load().get("departments") or {}).get(dept) or {}).get("categories") or {}
+    options = {}
+    for cat, subs in cats.items():
+        options[(cat, None)] = f"{dept} > {cat}"
+        for sub in subs or []:
+            options[(cat, sub)] = f"{dept} > {cat} > {sub}"
+    key = families.closest("poshmark", fam, options, f"{item_type or ''} {render.title}")
+    if key is None:
+        return None
+    cat, sub = key
+    try:
+        facts = Facts.model_validate(loads(it["facts"]))
+        facts = facts.model_copy(update={"category": cat, "subcategory": sub})
+        tab, value = sizes.poshmark_size(facts) or (None, None)
+    except Exception:  # noqa: BLE001 - a facts row this old: the category alone
+        facts, tab, value = None, render.size_tab, render.size_value
+    new = {mp: ({**r, "category": cat, "subcategory": sub, "size_tab": tab, "size_value": value}
+                if isinstance(r, dict) else r) for mp, r in renders.items()}
+    was = " › ".join(x for x in (render.department, render.category, render.subcategory) if x)
+    now_ = " › ".join(x for x in (dept, cat, sub) if x)
+    db.set_item(it["id"], renders=new, **({"facts": facts.model_dump()} if facts is not None else {}))
+    db.log(it["id"], "category_refamily", {"family": fam, "was": was, "now": now_})
+    notify.say(f"Check — {render.title}: its category {was} wasn't what the item is (a {fam}) — listed under {now_} "
+               f"instead.")
+    return Render.model_validate(new["poshmark"])
 
 
 async def _pause(stop: asyncio.Event, seconds: float) -> None:
@@ -991,13 +1034,14 @@ async def _run_cross(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, *, d
     facts = getattr(view, "facts", None)
     wrong = crosslist.family_problem(getattr(facts, "item_type", None), mp,
                                      getattr(fields, "category_path", None) or getattr(fields, "category", None))
-    if wrong:                                       # WO51 §5: never posted in another family's category
+    if wrong:                                       # WO51 §5: never posted in another family's category …
         if request:
             if not quiet:
                 notify.say(f"⏸ {crosslist.LABEL[mp]} dry run ({iid}): {title}\n{wrong}")
             return Outcome("skipped", error=wrong)
-        crosslist.hold_family(db, iid, mp, title, wrong)
-        return None
+        # … WO54 §1.4: the mapping already took the closest category of the item's family the site has
+        # (categories.in_family); what is left has no closer one there — posted, never refused, one check line
+        crosslist.family_check(db, iid, mp, title, wrong)
     render = cross_render_of(db, iid, mp, fields)
     poster = ps[mp]
     poster.fields, poster.confirm, poster.strict = fields, None, not dry
@@ -1094,8 +1138,9 @@ async def _run_cross(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, *, d
                 return out
     crosslist.record(s, db, iid, mp, title, out, fields.model_dump(), seconds=seconds, slept=slept,
                      lines=getattr(poster, "lines", None))
-    if not (out.status == "failed" and out.clicked and not out.url):   # WO53: an unconfirmed publish never counts
-        crosslist.failure(db, mp, out.status == "failed", int(s.get("poster.max_consecutive_failures", 3)))
+    if out.status == "failed" and not out.clicked and not dry:   # WO53: an unconfirmed publish never counts
+        # WO54 rule 4: only DIFFERENT items failing in a row pause the site (the same one is set aside)
+        health.brake(db, mp, iid, out.error, limit=int(s.get("poster.max_consecutive_failures", 3)))
     if out.status == "posted":
         health.worked(db, mp, iid)
         crosslist.set_unconf(db, iid, mp, stage=None)

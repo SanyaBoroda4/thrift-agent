@@ -307,10 +307,59 @@ SIZE_REPICKS = 4                 # WO37: a size menu that closed with no size is
 # WO45 follow-up (recorded live 2026-10-18, the Marc Jacobs bag): the form's size field abbreviates some sizes —
 # Women › Bags shows the preselected "One Size" as "OS". The read-back takes either spelling.
 SIZE_SHOWN = {"one size": ("OS",)}
+# WO54 §1.1 (live 2026-11-09 8:01–8:04, the Moncler snowsuit, three times, then Poshmark paused for every item): the
+# Baby tab's "12 Months" tile was picked, the menu closed and the field showed "12M" — Poshmark's own short form — and
+# the read-back, comparing text, wanted "12 Months". Sizes are compared by MEANING (`size_meaning`): "12 Months" =
+# "12M" = "12 mo", "0-3 Months" = "0-3M", "Newborn" = "NB", "One Size" = "OS", "2 T" = "2T"; a menu's own label words
+# ("Waist 32", "Neck 15.5", "7.5 (Toddler Girl)") may be left out by the field. The number must be the same one:
+# "12 Months" is never "9-12M" or "12-18M", "M" (medium) is never "12M", "7.5" never "17.5".
+SIZE_LABEL_GROUPS = {"size": "label", "us": "label", "waist": "label", "neck": "label",
+                     "toddler": "age", "little": "age", "big": "age", "baby": "age", "kid": "age", "kids": "age",
+                     "boy": "boy", "boys": "boy", "girl": "girl", "girls": "girl"}
+SIZE_LABEL_WORDS = frozenset(SIZE_LABEL_GROUPS)
+_SIZE_GROUP_OF = {"boy": "gender", "girl": "gender"}
+
+
+def size_meaning(text) -> list[str]:
+    """A size as Poshmark writes it anywhere (a menu tile, the size field, the public listing), reduced to tokens of
+    meaning: "12 Months" / "12M" / "12 mo" → ["12mo"]; "0 - 3 Months" → ["0-3mo"]; "Newborn" / "NB" → ["nb"];
+    "One Size" / "OS" → ["os"]; "4 years" → ["4y"]; "7.5 (Toddler Girl)" → ["7.5", "toddler", "girl"]."""
+    s = _key(str(text or ""))
+    s = re.sub(r"\s*[-–—]\s*", "-", s)
+    s = re.sub(r"\bnew\s*born\b|\bnb\b", " nb ", s)
+    s = re.sub(r"\bone\s*size\b|\bo/s\b|\bos\b", " os ", s)
+    s = re.sub(r"(\d+(?:\.\d+)?(?:-\d+(?:\.\d+)?)?)\s*(?:months?|mos?|m)\b", r" \1mo ", s)
+    s = re.sub(r"(\d+(?:\.\d+)?(?:-\d+(?:\.\d+)?)?)\s*(?:years?|yrs?|y)\b", r" \1y ", s)
+    s = re.sub(r"\b(\d+)\s+t\b", r" \1t ", s)
+    return [t for t in re.split(r"[\s,;/()|:]+", s) if t]
+
+
+def size_same(want, seen) -> bool:
+    """WO54 §1.1: does the field / page showing `seen` hold the size `want`, by meaning? Every token of `want` that
+    isn't one of a menu's label words must be one of `seen`'s tokens (the label words count only when the field shows
+    them too); blank never matches."""
+    have = set(size_meaning(seen))
+    words = size_meaning(want)
+    shown_groups = {}
+    for t in have:                                   # the label words the field does show, by group
+        if t in SIZE_LABEL_GROUPS:
+            g = SIZE_LABEL_GROUPS[t]
+            shown_groups.setdefault(_SIZE_GROUP_OF.get(g, g), set()).add(g)
+    core = []
+    for t in words:
+        if t not in SIZE_LABEL_GROUPS:
+            core.append(t)
+            continue
+        g = SIZE_LABEL_GROUPS[t]
+        shown = shown_groups.get(_SIZE_GROUP_OF.get(g, g))
+        if shown and g not in shown:
+            return False                             # "(Toddler Girl)" is never "(Toddler Boy)"
+    return bool(have) and bool(core) and all(t in have for t in core)
 
 
 class SizeShown(Contains):
-    """The size as the form may show it: the size itself, or the form's own abbreviation of it (SIZE_SHOWN)."""
+    """The size as the form may show it: the size itself, the form's own abbreviation of it (SIZE_SHOWN), or the
+    same size by meaning ("12 Months" = "12M": `size_same`, WO54 §1.1)."""
 
     def __init__(self, want: str):
         super().__init__(want)
@@ -318,7 +367,8 @@ class SizeShown(Contains):
         self.aliases = tuple(SIZE_SHOWN.get(_key(want), ()))
 
     def matches(self, seen) -> bool:
-        return super().matches(seen) or any(Contains(a).matches(seen) for a in self.aliases)
+        return (super().matches(seen) or any(Contains(a).matches(seen) for a in self.aliases)
+                or size_same(self.want, seen))
 
     # equality and hash are Contains': SizeShown("7.5") == Contains("7.5") (the evidence and the older tests)
 

@@ -778,6 +778,49 @@ def test_a_size_menu_that_does_neither_fails_with_the_evidence(chrome, posh, pho
                         f"(the size field shows '{shown}')")
 
 
+# WO54 §1.1 (live 2026-11-09 8:01–8:04): the Moncler snowsuit's "12 Months" was picked, the menu closed by itself and
+# the field read "12M" — the read-back wanted the text "12 Months", failed three times and paused Poshmark for all.
+SNOWSUIT = dict(department="Kids", category="One Pieces", subcategory="Footies", size="12 Months", size_tab="Baby",
+                size_value="12 Months", kids_gender="unisex", brand="Moncler", title="Moncler Down Hooded Snowsuit Camel",
+                colors=["Tan"], condition="good", original_price=None)
+
+
+@pytest.mark.parametrize("label", ["12M", "12 M", "12 mo", "12 Months"])
+def test_the_snowsuits_12m_reads_back_as_12_months(chrome, posh, photos, label):
+    r = render(photos, **SNOWSUIT)
+    seen, events = fill_and_read(chrome, posh, r, steps=["_category", "_size"], sizeAutoClose=True,
+                                 sizeFieldLabel=label)
+    assert seen["size"] == label and seen["size_menu"] == "closed by itself", seen
+    assert diff_on(seen, r, posh, "size") == {} and "size:12 Months" in events
+
+
+@pytest.mark.parametrize("label", ["9-12M", "12-18M", "18M", "2T"])
+def test_another_months_size_on_the_field_is_still_a_failure(chrome, posh, photos, monkeypatch, label):
+    err, _ = fill_expecting(chrome, posh, render(photos, **SNOWSUIT), PosterError, steps=["_category", "_size"],
+                            monkeypatch=monkeypatch, sizeAutoClose=True, sizeFieldLabel=label)
+    assert f"the size field shows '{label}'" in str(err)
+
+
+def test_sizes_compare_by_meaning():
+    same, meaning = poshmark.size_same, poshmark.size_meaning
+    assert meaning("12 Months") == meaning("12M") == meaning("12 mo") == ["12mo"]
+    assert meaning("0 - 3 Months") == meaning("0-3M") == ["0-3mo"] and meaning("Newborn") == meaning("NB") == ["nb"]
+    assert meaning("One Size") == meaning("OS") == ["os"] and meaning("4 years") == ["4y"]
+    for want, seen in [("12 Months", "12M"), ("0-3 Months", "0-3M"), ("3-6 Months", "3-6M"), ("6-9 Months", "6-9M"),
+                       ("18 Months", "18M"), ("24 Months", "24M"), ("Newborn", "NB"), ("2T", "2T"), ("5T", "5 T"),
+                       ("One Size", "OS"), ("M", "M"), ("XXL", "XXL"), ("8", "8"), ("7.5", "7.5"),
+                       ("Waist 32", "32"), ("Neck 15.5", "15.5"), ("7.5 (Toddler Girl)", "7.5"),
+                       ("7.5 (Toddler Girl)", "7.5 (Toddler Girl)"), ("34E (DD)", "34E (DD)"), ("8P", "8P")]:
+        assert same(want, seen), (want, seen)
+        assert poshmark.SizeShown(want).matches(seen), (want, seen)
+    for want, seen in [("12 Months", "9-12M"), ("12 Months", "12-18M"), ("12 Months", "12"), ("M", "12M"),
+                       ("8", "8.5"), ("7.5", "17.5"), ("2T", "3T"), ("12 Months", "Select Size"), ("One Size", ""),
+                       ("7.5 (Toddler Girl)", "7.5 (Toddler Boy)"), ("Waist 32", "Waist 33"), ("XL", "XXL"),
+                       ("0-3 Months", "3 Months"), ("6 Months", "6-9M")]:
+        assert not same(want, seen), (want, seen)
+        assert not poshmark.SizeShown(want).matches(seen), (want, seen)
+
+
 def test_the_mac_kids_dry_run_gets_past_a_self_closing_size_menu(chrome, posh, photos, tmp_path):
     out, site = post(chrome, posh, render(photos, **KIDS_TODDLER), tmp_path / "shots", sizeAutoClose=True)
     assert out.status == "dryrun" and out.draft_left is None, out

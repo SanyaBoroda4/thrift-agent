@@ -836,7 +836,7 @@ def test_a_form_that_read_back_otherwise_waits_and_the_group_hears_nothing(env, 
     db.upsert_listing(iid, "depop", status="failed", error="Mismatch: form doesn't match plan: {'brand-input': "
                                                           "('Tory Burch', 'Halogen')}")
     db.upsert_listing(iid, "vinted", status="failed", error="PosterError: the page went away")
-    db.conn.execute("UPDATE listings SET attempts=2 WHERE item_id=?", (iid,))
+    db.conn.execute("UPDATE listings SET attempts=1 WHERE item_id=?", (iid,))
     assert crosslist.new_window(s, db)
     assert db.listing(iid, "depop")["status"] == "queued"                 # waits: tried again next window
     assert db.listing(iid, "vinted")["status"] == "queued"
@@ -844,13 +844,15 @@ def test_a_form_that_read_back_otherwise_waits_and_the_group_hears_nothing(env, 
     db.upsert_listing(iid, "depop", status="failed", error="Mismatch: form doesn't match plan: {'brand-input': "
                                                           "('Tory Burch', 'Halogen')}")
     db.upsert_listing(iid, "vinted", status="failed", error="PosterError: the page went away")
-    db.conn.execute("UPDATE listings SET attempts=3 WHERE item_id=?", (iid,))
+    db.conn.execute("UPDATE listings SET attempts=2 WHERE item_id=?", (iid,))
     db.kv_set(crosslist.daily.SESSION_KEY, "the-window-after")
     assert crosslist.new_window(s, db)
-    assert db.listing(iid, "depop")["status"] == "skipped"                # the third window: the ⏭ line, the step named
-    assert db.listing(iid, "vinted")["status"] == "skipped"
+    from thrift_agent import health                                     # WO54 rule 4: set aside, never skipped
+    for mp in ("depop", "vinted"):
+        row = db.listing(iid, mp)
+        assert row["status"] == "failed" and row["error"].startswith(health.SET_ASIDE), row["error"]
     assert bot.sent()[sent:] == []                                        # the group: still nothing
-    told = [t for t in said if t.startswith("🚨")]
-    assert len(told) == 2, said
-    assert any("Depop" in t and "brand-input" in t and "'retry'" not in t for t in told), told
-    assert any("Vinted" in t and "the page went away" in t for t in told), told
+    assert not [t for t in said if t.startswith("🚨")], said              # no owner's hands needed yet
+    aside = [t for t in said if t.startswith("⏸ ")]
+    assert any(t.startswith("⏸ Depop: ") and "brand-input" in t for t in aside), aside
+    assert any(t.startswith("⏸ Vinted: ") and "the page went away" in t for t in aside), aside

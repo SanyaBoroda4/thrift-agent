@@ -455,7 +455,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
     const seen = [];                                     // every brand Depop offered for our names
     for (const name of names) {
       for (const spelling of T.brandSpellings(name, name === value ? typed : name)) {
-        const hit = await brandSearch(cid, box, spelling, (texts) => texts.findIndex((t) => T.brandKey(t) === T.brandKey(name)), seen);
+        const hit = await brandSearch(cid, box, spelling, (texts) => texts.findIndex((t) => T.sameBrand(t, name)), seen);
         if (hit) {
           await T.click(hit.option);
           T.picked(st, cid, value, hit.text);

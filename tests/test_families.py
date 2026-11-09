@@ -168,6 +168,6 @@ def test_same_family(a, b, same):
 
 def test_the_families_are_the_ones_named():
     assert set(F.FAMILIES) == {"dress", "skirt", "bottoms", "shorts", "top", "sweater", "outerwear", "set", "sleepwear",
-                               "swim", "intimates", "jumpsuit", "shoes", "bag", "accessory", "costume"}
+                               "swim", "intimates", "jumpsuit", "shoes", "bag", "accessory", "costume", "pet"}
     assert set(F.VOCAB.values()) <= set(F.FAMILIES)
     assert {fam for pair in F.COMPATIBLE for fam in pair} <= set(F.FAMILIES)

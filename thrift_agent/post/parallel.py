@@ -189,6 +189,8 @@ async def run_parallel(s: Settings, db: DB, ps: dict, *, dry: bool, stage: str, 
         notify.say("❗ cross-listing off: " + "; ".join(f"{mp}: {why}" for mp, why in bad.items()))
     state = State()
     formcheck.request(db, sites, "the poster started")          # WO52 §3: a form check after every start (a deploy)
+    if not dry:
+        health.release_asides(db)          # WO54 rule 4: a start is usually a fix — every set-aside item goes again
     thread = None
     if "poshmark" in ps:
         thread = threading.Thread(target=_poshmark_thread, name="poshmark-worker", daemon=True,
@@ -385,8 +387,15 @@ async def _poshmark_worker(s, poster, dry, stage, halt, state, opener, takedowns
 async def _poshmark_test(s, db, ps, ctx, test: str) -> bool:
     """WO51: a paused Poshmark's test run — its next item filled and left through Discard (a dry run, the row untouched).
     Passing resumes posting (one line); failing pauses it again, the wait doubled, no new line. The owner's request
-    (`thrift resume`) sends the run's screenshot to the private chat. True when a test ran."""
-    job = runner.next_job(s, db, ["poshmark"], True)
+    (`thrift resume`) sends the run's screenshot to the private chat. True when a test ran.
+    WO54 rule 4 (live 2026-11-09 8:38: Poshmark's self-test re-tried the very snowsuit that had failed — ✗, next test
+    11:31): the test runs on the CANARY (the form check's copy of an old item), never on the item that failed."""
+    canary = formcheck.ensure_canary(s, db)
+    job = (canary["id"], "poshmark", formcheck._render(canary), "publish") if canary is not None else None
+    if job is None:
+        job = runner.next_job(s, db, ["poshmark"], True)
+        if job is not None and job[0] in health.deferred(db, "poshmark"):
+            job = None                                 # never the item that just failed
     if job is None:
         if test == "resume":
             health.resume(db, "poshmark", "resumed by the owner (nothing to test)", force=True,
@@ -409,8 +418,10 @@ async def _poshmark_test(s, db, ps, ctx, test: str) -> bool:
         notify.photo(Path(out.screenshot or ""), f"🧪 test run Poshmark ({iid}): {render.title} — ${render.price} "
                                                  f"[{out.status}]" + (f"\n{out.error}" if out.error else "")
                                                  + (f"\n{out.note}" if out.note else ""))
-    if not ok:
+    if not ok and canary is None:
         health.defer(db, "poshmark", iid)
+    if canary is not None:
+        formcheck._unsync(db, iid)                     # thrift-api never hears of the canary
     health.tested(db, "poshmark", ok, out.error, hours_open=can_post(s, 0, 0)[0])
     return True
 
@@ -508,12 +519,10 @@ async def _poshmark_turn(s, db, ps, ctx, dry, stage, state, awake, failures, mar
         # WO53 rule 4: a publish being verified is no failure — it never counts toward a pause (live 2026-11-08: three
         # live listings paused Poshmark as "3 listings in a row failed … nothing was published")
         verifying = out.status == "failed" and out.clicked and not out.url
-        if not verifying:
-            failures["n"] = (failures["n"] + 1 if out.status == "failed" else 0 if out.status != "skipped"
-                             else failures["n"])
-        if failures["n"] >= int(s.get("poster.max_consecutive_failures", 3)):
-            crosslist.block(db, mp, f"failures: {failures['n']} listings in a row failed (last: {out.error})")
-            failures["n"] = 0
+        if out.status == "failed" and not verifying and not out.clicked:
+            # WO54 rule 4 (live 2026-11-09: one item's size quirk paused Poshmark for all 20): only DIFFERENT items
+            # failing in a row pause the site; the same item failing twice is set aside (crosslist.retry_failed)
+            health.brake(db, mp, iid, out.error, limit=int(s.get("poster.max_consecutive_failures", 3)))
         if out.status == "posted":
             health.worked(db, mp, iid)
             crosslist.set_unconf(db, iid, mp, stage=None)
@@ -562,8 +571,12 @@ async def _cross_test(s, db, ps, mp: str, test: str) -> bool:
     """WO51: a paused Depop / Vinted's test run — its next item filled, never published, the row untouched (a dry run
     as `thrift crosslist --dry-run` makes). Passing resumes posting (one line); failing pauses it again, the wait
     doubled, no new line; an item that can't be mapped is no verdict (the next one is tried next turn). The owner's
-    request (`thrift resume`) sends the run's screenshot and fields to the private chat. True when a test ran."""
-    job = crosslist.next_job(s, db, mps=[mp], paused_too=True)
+    request (`thrift resume`) sends the run's screenshot and fields to the private chat. True when a test ran.
+    WO54 rule 4: on the CANARY, never on the item that failed (the next waiting item only when there is no canary)."""
+    canary = formcheck.ensure_canary(s, db)
+    job = (canary["id"],) if canary is not None else crosslist.next_job(s, db, mps=[mp], paused_too=True)
+    if job is not None and canary is None and job[0] in health.deferred(db, mp):
+        job = None                                     # never the item that just failed
     if job is None:
         if test == "resume":
             health.resume(db, mp, "resumed by the owner (nothing to test)", force=True,
@@ -574,11 +587,16 @@ async def _cross_test(s, db, ps, mp: str, test: str) -> bool:
         return False
     iid = job[0]
     out = await runner.run_cross(s, db, ps, None, iid, mp, dry=True, request=True, quiet=test == "auto")
+    if canary is not None:
+        formcheck._unsync(db, iid)
     if out is None or out.status == "skipped":
-        health.defer(db, mp, iid)                  # no verdict on the site: another item next time
+        if canary is None:
+            health.defer(db, mp, iid)              # no verdict on the site: another item next time
+        else:
+            health.tested(db, mp, False, f"the canary couldn't be tested ({getattr(out, 'error', None)})")
         return True
     ok = out.status not in ("failed", "skipped")      # a filled form, never published
-    if not ok:
+    if not ok and canary is None:
         health.defer(db, mp, iid)
     health.tested(db, mp, ok, out.error, hours_open=can_post(s, 0, 0)[0])
     return True

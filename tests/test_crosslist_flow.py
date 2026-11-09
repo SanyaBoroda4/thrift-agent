@@ -312,7 +312,11 @@ def test_a_logged_out_marketplace_stops_for_the_window_with_one_plain_line(tmp_p
     assert not crosslist.blocked(db, "depop")
 
 
-def test_a_failure_before_publishing_is_retried_next_window_three_times(tmp_path, loop):
+def test_a_failure_before_publishing_is_tried_twice_then_set_aside_never_skipped(tmp_path, loop):
+    """WO54 rule 4 (live 2026-11-09: one item's failures paused a whole site; an item skipped for good was never posted):
+    twice, then SET ASIDE on Vinted — one private line, no 🚨, nothing in the group, the site goes on; it is tried
+    again by itself later (here: a poster start, i.e. a fix, lets it go at once)."""
+    from thrift_agent import health
     said, run = loop
     s = _settings(tmp_path)
     db = DB(s.path("db"))
@@ -321,17 +325,18 @@ def test_a_failure_before_publishing_is_retried_next_window_three_times(tmp_path
     for window in ("w1", "w2", "w3"):
         db.kv_set(daily.SESSION_KEY, window)
         run(s, db, ps)
-    assert len(ps["vinted"].calls) == 3 and db.listing(iid, "vinted")["status"] == "failed"
-    db.kv_set(daily.SESSION_KEY, "w4")
-    run(s, db, ps)
     row = db.listing(iid, "vinted")
-    assert len(ps["vinted"].calls) == 3 and row["status"] == "skipped" and "3 attempts" in row["error"]
-    assert any(m.startswith(f"⏭ Vinted skipped for {iid} after 3 attempts") for m in said.ops)
+    assert len(ps["vinted"].calls) == 2 and row["status"] == "failed" and row["error"].startswith(health.SET_ASIDE)
+    assert any(m.startswith("⏸ Vinted: ") and "set aside after 2 tries" in m for m in said.ops), said.ops
+    assert not health.paused(db, "vinted")
     told = [m for m in said.group if "Vinted" in m and not m.startswith("✅")]   # WO53: nothing in the group,
     assert told == []                                                               # never a 'retry' asked
-    alarms = [m for m in said.ops if m.startswith("🚨")]                            # ONE 🚨 with the fix request
-    assert len(alarms) == 1 and "couldn't be listed on Vinted" in alarms[0], said.ops
+    assert not [m for m in said.ops if m.startswith("🚨")]                          # no owner's hands needed
     assert not any("thrift " in m for m in said.group)
+    health.release_asides(db)                                                       # a poster start: a fix
+    db.kv_set(daily.SESSION_KEY, "w4")
+    run(s, db, ps)
+    assert len(ps["vinted"].calls) == 3
 
 
 class Seen(Stub):
@@ -560,24 +565,25 @@ def test_a_new_window_lifts_blocks_and_never_retries_an_unconfirmed_publish(tmp_
     assert not crosslist.blocked(db, "vinted") and crosslist.pending(s, db) == [(iid, "vinted")]
 
 
-def test_a_mismatch_row_gets_three_windows_then_the_groups_line_naming_the_step(tmp_path, monkeypatch):
-    """The Vinted incident of 2026-10-20 (the owner): a form that read back other than planned had waited for ever,
-    one try a window and only "⏳ Vinted — later" on the card. Now MAX_ATTEMPTS windows like any failure, then the
-    group's ⏭ line names the step."""
+def test_a_mismatch_row_gets_two_tries_then_is_set_aside_never_skipped(tmp_path, monkeypatch):
+    """The Vinted incident of 2026-10-20 (the owner): a form that read back other than planned had waited for ever.
+    WO54 rule 4: two tries like any failure, then SET ASIDE on that site (one private line naming the step) — never
+    skipped for good, no 🚨 (that comes only on the third set-aside)."""
+    from thrift_agent import health
     s = _settings(tmp_path)
     db = DB(s.path("db"))
     iid = _item(db)
     said = []
     monkeypatch.setattr(runner, "ask_skipped", lambda db_, i, mp, title, why: said.append((i, mp, why)))
-    db.upsert_listing(iid, "vinted", status="failed", error="Mismatch: photos 0 of 8 on the form", attempts=2)
+    db.upsert_listing(iid, "vinted", status="failed", error="Mismatch: photos 0 of 8 on the form", attempts=1)
     db.kv_set(daily.SESSION_KEY, "w1")
     assert crosslist.new_window(s, db) and db.listing(iid, "vinted")["status"] == "queued"
-    db.upsert_listing(iid, "vinted", status="failed", error="Mismatch: photos 0 of 8 on the form", attempts=3)
+    db.upsert_listing(iid, "vinted", status="failed", error="Mismatch: photos 0 of 8 on the form", attempts=2)
     db.kv_set(daily.SESSION_KEY, "w2")
     assert crosslist.new_window(s, db)
     row = db.listing(iid, "vinted")
-    assert row["status"] == "skipped" and row["error"].startswith("skipped: 3 attempts: Mismatch: photos 0 of 8")
-    assert said == [(iid, "vinted", "3 tries — photos 0 of 8 on the form")]
+    assert row["status"] == "failed" and row["error"].startswith(health.SET_ASIDE + "Mismatch: photos 0 of 8")
+    assert said == [] and not health.paused(db, "vinted")
 
 
 def test_the_failing_step_in_words_for_the_lines_and_the_card():

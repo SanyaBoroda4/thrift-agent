@@ -185,31 +185,41 @@ def new_window(s: Settings, db: DB) -> bool:
 
 
 def retry_failed(s: Settings, db: DB, at: datetime | None = None) -> list[tuple[str, str]]:
-    """WO51: an item failure (nothing published) is tried again RETRY_AFTER after it — MAX_ATTEMPTS in all, the last
-    one becomes 'skipped' with the group's ⏭ line naming the step. `at` None: every such row now (a new window).
+    """WO51: an item failure (nothing published) is tried again RETRY_AFTER after it; WO54 rule 4: after
+    health.ASIDE_AFTER tries it is SET ASIDE on that site (never skipped for good) and tried again after its hold.
+    `at` None: every such row now (a new window).
     Never an unconfirmed publish (the site's data settles it, WO35 §4) or a refused form (WO39: her 'retry')."""
+    from thrift_agent import health
     out = []
+    t = at or datetime.now(timezone.utc)
     cutoff = None if at is None else (at - timedelta(seconds=RETRY_AFTER)).isoformat(timespec="seconds")
+    sites = ("poshmark", *CROSS)                        # WO54 rule 4: Poshmark's item failures come back too
     for row in db.conn.execute(f"SELECT * FROM listings WHERE status='failed' AND url IS NULL AND marketplace IN "
-                               f"({','.join('?' * len(CROSS))})", CROSS).fetchall():
+                               f"({','.join('?' * len(sites))})", sites).fetchall():
         if (row["error"] or "").startswith(UNCONFIRMED):
             continue                                    # it may be live: settled by the site's data (WO35 §4)
         if refused(row["error"]):
             continue                                    # WO39: never the same form again by itself — her 'retry'
+        iid, mp = row["item_id"], row["marketplace"]
+        if (row["error"] or "").startswith(health.SET_ASIDE):
+            # WO54 rule 4: set aside after two tries on this site — back in line once its hold is over (or at once
+            # after a fix: the poster's start lets every set-aside go), with fresh attempts
+            if health.aside_due(db, iid, mp, t):
+                db.upsert_listing(iid, mp, status="queued", attempts=0,
+                                  error="tried again after being set aside: " + row["error"][len(health.SET_ASIDE):])
+                db.log(iid, "set_aside_retry", {"mp": mp})
+                out.append((iid, mp))
+            continue
         if cutoff is not None and (row["updated_at"] or "") > cutoff:
             continue
-        iid, mp = row["item_id"], row["marketplace"]
         # A form that read back other than planned (a "Mismatch": nothing was published) had waited for ever, one try
-        # a window (WO36 §4). Since the Vinted incident of 2026-10-20 (the owner): MAX_ATTEMPTS like any other
-        # failure, then the group's ⏭ line naming the step — "later" never repeats silently for good.
-        if row["attempts"] < MAX_ATTEMPTS:
+        # a window (WO36 §4). WO54 rule 4 (live 2026-11-09): an item that failed twice on a site is SET ASIDE there —
+        # the site goes on with the next item and this one is tried again by itself later, never skipped for good
+        if row["attempts"] < health.ASIDE_AFTER:
             db.upsert_listing(iid, mp, status="queued")
             db.log(iid, "crosslist_retry", {"mp": mp, "attempts": row["attempts"]})
         else:
-            db.upsert_listing(iid, mp, status="skipped", error=SKIPPED + f"{MAX_ATTEMPTS} attempts: {row['error']}")
-            notify.say(f"⏭ {LABEL[mp]} skipped for {iid} after {MAX_ATTEMPTS} attempts: {row['error']}")
-            from thrift_agent.post import runner
-            runner.ask_skipped(db, iid, mp, _title_of(db, iid), f"{MAX_ATTEMPTS} tries — {step_text(row['error'])}")
+            health.aside(db, mp, iid, row["error"], health.ITEM, at=t)
         out.append((iid, mp))
     return out
 
@@ -406,12 +416,12 @@ def record(s: Settings, db: DB, iid: str, mp: str, title: str, out, fields: dict
         row = db.listing(iid, mp)
         attempts = (row["attempts"] if row else 0) or 0
         what = "nothing was published; " if (error or "").startswith(MISMATCH) else ""
-        if attempts < MAX_ATTEMPTS:
-            again = (f"{what}attempt {attempts} of {MAX_ATTEMPTS} — tried again in {RETRY_AFTER // 60} min, inside "
-                     f"its posting hours")
+        from thrift_agent import health
+        if attempts < health.ASIDE_AFTER:
+            again = f"{what}attempt {attempts} of {health.ASIDE_AFTER} — tried again in {RETRY_AFTER // 60} min"
         else:
-            again = (f"{what}attempt {attempts} of {MAX_ATTEMPTS} — no more by itself: the 🚨 line carries the fix "
-                     f"request")
+            again = (f"{what}attempt {attempts} of {health.ASIDE_AFTER} — set aside on {LABEL[mp]} (the other items go "
+                     f"on); tried again by itself later")
         notify.ops_photo(shot, f"❌ {LABEL[mp]} failed ({iid}): {title}\n{step_text(error)}{note}\n({again})")
     elif out.status == "skipped" and NO_SIZE in (out.error or ""):
         say_no_size(title)
@@ -659,6 +669,19 @@ def hold_family(db: DB, iid: str, mp: str, title: str, why: str) -> None:
     db.kv_set(FAMILY_SAID, json.dumps(sorted(said)))
     notify.say(f"⏸ {LABEL[mp]} holds {title}: its {why} — it waits until the category is fixed "
                f"(reply 'category …' to its card, or `thrift recategorize`).")
+
+
+def family_check(db: DB, iid: str, mp: str, title: str, why: str) -> None:
+    """WO54 §1.4 (the owner: never leave an item unposted): a category still of another family than the item's, with
+    no closer one on the site — posted there anyway; ONE private check line per item and site."""
+    db.log(iid, "post_family_kept", {"mp": mp, "why": why})
+    said = set(loads(db.kv_get(FAMILY_SAID)) or [])
+    if f"{iid}|{mp}" in said:
+        return
+    said.add(f"{iid}|{mp}")
+    db.kv_set(FAMILY_SAID, json.dumps(sorted(said)))
+    notify.say(f"Check — {title}: {LABEL[mp]}'s {why} and {LABEL[mp]} has no closer one — listed there anyway "
+               f"(reply 'category …' to its card to move it).")
 
 
 def skip_unmappable(db: DB, iid: str, mp: str, title: str, why: str) -> None:

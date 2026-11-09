@@ -247,7 +247,7 @@
     const already = valueOf("brand");
     // WO52 §1 (live 2026-11-01, the Forever 21 jacket): Vinted had filled "Forever 21" itself — ours — and the step
     // searched anyway, saw no rows and clicked "List without brand" over it. Vinted's own fill is kept when it is ours.
-    const mine = already && names0.find((n) => T.brandKey(n) === T.brandKey(already));
+    const mine = already && names0.find((n) => T.sameBrand(n, already));
     if (mine) {
       T.picked(st, "brand", f.brand, already);
       st.brandChoice = already;
@@ -291,7 +291,7 @@
     };
     for (const name of names) {
       for (const query of T.spellings(name)) {
-        const hit = await find(query, (texts) => texts.findIndex((t) => !noBrandRow(t) && T.brandKey(t) === T.brandKey(name)));
+        const hit = await find(query, (texts) => texts.findIndex((t) => !noBrandRow(t) && T.sameBrand(t, name)));
         if (hit) return take(hit, T.brandNote(f.brand, hit.text));
       }
     }
@@ -307,7 +307,7 @@
     if (f.brand && !f.brand_big) {
       const custom = await find(f.brand, (texts) => texts.findIndex((t) => {
         const m = /^use\s+["“']?(.+?)["”']?\s+as\s+(?:a\s+)?brand$/i.exec(T.norm(t));
-        return !!m && T.brandKey(m[1]) === T.brandKey(f.brand);
+        return !!m && T.sameBrand(m[1], f.brand);
       }));
       if (custom) {
         await T.click(custom.row);
@@ -389,7 +389,7 @@
     const shown = valueOf("brand");
     // WO51: Vinted pre-fills a brand of its own ("Disney" on a Relibeauty costume): the field must show OURS, or
     // Vinted's "List without brand" when we list none — an empty field or any other brand is set again
-    const same = st.brandChoice ? T.brandKey(shown) === T.brandKey(st.brandChoice) : noBrandRow(shown);
+    const same = st.brandChoice ? T.sameBrand(shown, st.brandChoice) : noBrandRow(shown);
     if (st.brandChoice !== undefined && !same) {          // "List without brand" is what its field shows then (live)
       st.notes.push(`the brand read '${shown}': set again`);
       await brand(st, f);

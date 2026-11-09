@@ -97,17 +97,31 @@ def test_a_closed_browser_says_so_in_plain_words(db, said):
     assert said[0].split(": ", 1)[1].startswith("its browser was closed. Live today: 0. Waiting: 0. Next try ")
 
 
-def test_one_item_alone_meeting_the_same_failure_is_the_items_after_all(db, said):
+def test_one_item_alone_meeting_the_same_failure_is_set_aside_and_never_pauses_its_site(db, said):
+    """WO54 rule 4 (live 2026-11-09: the snowsuit alone, three times, paused Poshmark for 20 items): the same item
+    meeting the same failure again is set aside on that site; the site is never paused by it."""
     _row(db, "i1", "vinted")
     out = [health.non_item(db, "vinted", "i1", DEPOP, health.SITE, at=T0) for _ in range(health.ITEM_AFTER)]
-    # the second already pauses (same as the site's last); the third on the same item alone is the item's
-    assert out[-1] == "item"
+    assert out == ["requeued", "aside"] and not health.paused(db, "vinted")
+    row = db.listing("i1", "vinted")
+    assert row["status"] == "failed" and row["error"].startswith(health.SET_ASIDE)
+    assert len(said) == 1 and said[0].startswith("⏸ Vinted: ") and "goes on with the other items" in said[0]
 
 
-def test_item_failures_still_trip_the_brake(db, said):
-    for _ in range(3):
-        crosslist.failure(db, "vinted", True)
-    assert health.paused(db, "vinted").startswith("failures: 3 listings in a row failed")
+def test_item_failures_of_different_items_still_trip_the_brake(db, said):
+    for iid in ("i1", "i2", "i3"):
+        _row(db, iid, "vinted")
+    assert not health.brake(db, "vinted", "i1", "Vinted refused the form: Fill in brand")
+    assert not health.brake(db, "vinted", "i2", "Vinted photos: 1 of 3")
+    assert health.brake(db, "vinted", "i3", "Vinted size: not offered (S, M)")
+    assert health.paused(db, "vinted").startswith("failures: 3 different listings in a row failed")
+
+
+def test_the_same_item_failing_again_never_trips_the_brake(db, said):
+    _row(db, "i1", "vinted")
+    for _ in range(5):
+        assert not health.brake(db, "vinted", "i1", "Mismatch: brand shown X (plan Y)")
+    assert not health.paused(db, "vinted")
 
 
 # ---------------------------------------------------------------- the test run after the cool-down

@@ -2415,6 +2415,12 @@ def set_brand(s: Settings, db: DB, iid: str, brand: str) -> str:
     brand = re.sub(r"\s+", " ", brand or "").strip().strip("'\"")
     if not brand or NO_BRAND_WORDS.fullmatch(brand.strip(" .!")):
         return set_no_brand(s, db, iid)
+    from thrift_agent import layout
+    if not layout.plausible_brand(brand):
+        # WO54 §1.3 (live 2026-11-09: "тщ икфтв" became the brand and Depop's title): a name that is no brand we know
+        # and no plausible shop name is never typed into a form — the item has no brand
+        db.log(iid, "brand_reply_implausible", {"reply": brand[:80], "via": "set_brand"})
+        return set_no_brand(s, db, iid)
     it = _answerable(db, iid, "brand")
     facts = Facts.model_validate(loads(it["facts"]))
     old = facts.brand.value

@@ -24,7 +24,7 @@ from __future__ import annotations
 import re
 
 FAMILIES = ("dress", "skirt", "bottoms", "shorts", "top", "sweater", "outerwear", "set", "sleepwear", "swim",
-            "intimates", "jumpsuit", "shoes", "bag", "accessory", "costume")
+            "intimates", "jumpsuit", "shoes", "bag", "accessory", "costume", "pet")
 
 # Neighbours that are no error side by side (both orders): a set goes under its bottom (WO27) or a matching-set
 # category; a bralette, bodysuit or cami is a top as much as an intimate; a hoodie is a sweater on Vinted and a top on
@@ -38,6 +38,10 @@ COMPATIBLE = frozenset(frozenset(p) for p in (
     ("sweater", "top"), ("sweater", "outerwear"),
     ("bottoms", "shorts"), ("bottoms", "jumpsuit"), ("skirt", "shorts"),
     ("costume", "dress"), ("bag", "accessory"),
+    # WO54 §1.4 (live 2026-11-09, i_261109_de26f1 "quilted dog coat": its "coat" made it outerwear, Women › Accessories
+    # refused on Depop and Vinted, live nowhere): a pet's coat, collar or bed is a pet item — none of the three sites
+    # has a pet category in our catalogs, and Accessories / Other is the closest place for one
+    ("pet", "accessory"),
     # WO51 audit (live): lounge / pajama pants, sleep shorts, sleep tees and nightdresses sit in Sleepwear rightly
     ("sleepwear", "bottoms"), ("sleepwear", "shorts"), ("sleepwear", "top"), ("sleepwear", "dress"),
 ))
@@ -100,6 +104,34 @@ GARMENTS = {"dress", "top", "bottoms", "shorts", "set", "jumpsuit", "skirt"}   #
 #                                                                               turns into its own ("Swim › Board Shorts")
 NOT_CLOTHING = {"home", "pets", "electronics", "entertainment", "books", "hobbies", "makeup", "skincare", "hair",
                 "bath & body", "grooming", "toys", "bath, skin & hair", "beauty", "everything else"}
+# WO54 §1.4: a pet item — a pet word naming who wears or uses the thing ("dog coat", "cat bed", "coat for dogs"), never
+# a print or a slogan on a garment ("dog print dress", "cat lover tee", "dog mom sweatshirt")
+PETS = {"dog", "dogs", "puppy", "puppies", "doggie", "doggy", "cat", "cats", "kitten", "kittens", "kitty", "pet",
+        "pets"}
+PET_GOODS = {"collar", "leash", "harness", "bed", "bowl", "carrier", "crate", "kennel", "toy", "toys", "muzzle",
+             "jacket", "coat", "sweater", "hoodie", "vest", "raincoat", "bandana", "costume", "boots", "shoes", "dress",
+             "shirt", "tee", "pajamas", "life", "cooling", "clothes", "clothing", "apparel", "outfit", "tag"}
+NOT_PET = {"print", "printed", "prints", "pattern", "patterned", "graphic", "motif", "lover", "lovers", "mom", "mama",
+           "dad", "love", "face", "faces", "head", "embroidered", "applique", "appliqué", "theme", "themed", "lady",
+           "eye", "ear", "ears", "paw", "paws", "tooth", "lady", "walker", "sitter"}
+
+
+def is_pet_item(item_type: str | None) -> bool:
+    """WO54 §1.4: "quilted dog coat", "cat bed", "harness for dogs" — a pet's own thing; "dog print dress" isn't."""
+    toks = _tokens(_main_phrase(item_type or ""))
+    for i, t in enumerate(toks):
+        if t not in PETS:
+            continue
+        nxt = toks[i + 1] if i + 1 < len(toks) else None
+        if nxt in NOT_PET:
+            continue
+        if nxt is None:                                  # "… for dogs" / "a coat for a dog"
+            if i > 0 and toks[i - 1] in ("for", "a", "small", "large", "medium") and any(w in PET_GOODS for w in toks):
+                return True
+            continue
+        if nxt in PET_GOODS or (_word(nxt) is not None and nxt not in NOT_PET):
+            return True
+    return False
 
 
 def _tokens(text: str) -> list[str]:
@@ -157,6 +189,8 @@ def family_of_type(item_type: str | None) -> str | None:
     of it names a garment, shoes, a bag or an accessory."""
     if not item_type:
         return None
+    if is_pet_item(item_type):
+        return "pet"                                     # WO54 §1.4: a dog's coat is no woman's coat
     return _decide(_hits(_tokens(_main_phrase(item_type)))) or _decide(_hits(_tokens(item_type)))
 
 
@@ -209,3 +243,24 @@ def same_family(a: str | None, b: str | None) -> bool:
     if not a or not b or a == b:
         return True
     return frozenset((a, b)) in COMPATIBLE
+
+
+def closest(site: str, family: str | None, options: dict, words: str = "") -> str | None:
+    """WO54 §1.4 (the owner: never leave an item unposted): the option whose category is in `family` and fits the
+    item best — {key: category path} the site offers (the department's own) → the key with the most of the item's words
+    in its path, then the broadest (a group's own "Other"), else None when the site has none of that family."""
+    if not family:
+        return None
+    want = {w for w in _tokens(words) if len(w) > 2}
+    best, best_score = None, None
+    for key, path in options.items():
+        if family_of_category(site, path) != family:
+            continue
+        levels = _levels(path)
+        toks = set(_tokens(" ".join(levels)))
+        words_in = sum(1 for w in want if w in toks or (w.endswith("s") and w[:-1] in toks) or f"{w}s" in toks)
+        other = 1 if levels and levels[-1].lower().startswith("other") else 0
+        score = (words_in, other, -len(levels), str(path))
+        if best_score is None or score[:3] > best_score[:3] or (score[:3] == best_score[:3] and score[3] < best_score[3]):
+            best, best_score = key, score
+    return best

@@ -20,7 +20,17 @@ again by themselves. Now:
   no new line; a pause by the owner (`thrift pause`) waits for `thrift resume` (a test first, `--dry`: the test only).
 
 kv `site_health` holds the pauses, `site_nonitem` the last non-item failure per site, `nonitem_tries` an item's own run,
-`site_defer` the items put behind the others."""
+`site_defer` the items put behind the others.
+
+WO54 rule 4 (live 2026-11-09: the Moncler snowsuit's size read back as "12M" three times and paused Poshmark for all 20
+items; the Glitter Toe Sneakers' brand mismatch three times paused Vinted): ONE ITEM'S PROBLEM NEVER STOPS A SITE.
+- an error about one item's value (a size picked, a brand shown, a category, a read-back mismatch) is an item failure;
+- an item that fails twice on a site (ASIDE_AFTER, any kind but infra) is SET ASIDE there (`aside`: the row 'failed'
+  "set aside: …", one private line) and tried again by itself later (ASIDE_HOLD, longer each time; a poster start — a
+  deploy, a fix — lets them all go at once: `release_asides`) — the site goes straight on with its next item;
+- a site pauses only when DIFFERENT items fail: the same failure on two different items in a row (`non_item`), or
+  BRAKE_ITEMS different items failing in a row with nothing through in between (`brake`) — or the canary fails;
+- a paused site's self-test runs on the canary (post/parallel.py), never on the item that failed."""
 from __future__ import annotations
 
 import json
@@ -39,7 +49,14 @@ DEFER = "site_defer"          # kv: {mp: {item: until}} — put behind the other
 COOL = 30 * 60                # the first test run this long after a pause …
 COOL_MAX = 4 * 3600           # … doubling up to this
 DEFER_FOR = 10 * 60           # an item that met a site/infra failure waits this long behind the others
-ITEM_AFTER = 3                # the same non-item failure on one item alone this many times: it is the item's
+ITEM_AFTER = 2                # WO54: the same item failing this many times on one site is set aside there
+ASIDE = "set_aside"           # kv: {"<item>|<mp>": {"n", "since", "until", "sig", "error"}} — WO54 rule 4
+ASIDE_AFTER = 2               # an item's failures (any kind but infra) on one site before it is set aside there
+ASIDE_HOLD = (3 * 3600, 12 * 3600, 24 * 3600)   # … then tried again this long after (each time longer, at most a day)
+ASIDE_ALARM = 3               # set aside this many times: ONE 🚨 (code must change for it); still tried again later
+SET_ASIDE = "set aside: "     # the row's error while it waits (status 'failed', nothing was published)
+BRAKE = "site_brake"          # kv: {mp: [{"item", "sig", "at"}]} — the site's failures since a listing last went through
+BRAKE_ITEMS = 3               # this many DIFFERENT items failing in a row pause the site
 LABEL = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted"}
 ACCOUNT_PAGES = ("login", "captcha", "block", "verify")
 
@@ -60,6 +77,12 @@ SITE_RE = re.compile(
     r"photos? \d+ of \d+|the page reloaded|a big brand is never", re.I)
 ITEM_RE = re.compile(r"refused the form: (?!no error shown)|\bFill in |\(offered: [^)\s][^)]*\)|"
                      r"not offered \([^)\s][^)]*\)|\bskipped: ", re.I)
+# WO54 §1.2: an error about ONE ITEM'S VALUE — the size it picked, the brand the form shows, its category, a read-back
+# that differs for this listing — is the item's (live 2026-11-09: "after picking '12 Months' … the size field shows
+# '12M'" and "Mismatch: brand shown тщ икфтв" were tagged "site" and paused Poshmark and Vinted for every item). A real
+# site change shows on DIFFERENT items, and that still pauses the site (`non_item`, `brake`).
+VALUE_RE = re.compile(r"after picking '|the size field shows|^Mismatch: |\bbrand shown\b|a big brand is never|"
+                      r"isn't the item's family", re.I)
 
 
 def now() -> datetime:
@@ -91,6 +114,8 @@ def kind_of(error: str | None, hint: str | None = None, clicked: bool = False) -
         return ITEM
     if INFRA_RE.search(e):
         return INFRA
+    if VALUE_RE.search(e):
+        return ITEM                                   # WO54 §1.2: about this item's own value
     if hint == "site" or SITE_RE.search(e):
         return SITE
     return ITEM
@@ -389,8 +414,10 @@ def non_item(db: DB, mp: str, iid: str, error: str | None, kind: str, *, shot: s
              counted: bool = True, at: datetime | None = None) -> str:
     """A site or infra failure (nothing was clicked): the item back in line untouched — its attempt given back
     (`counted`: the attempt was counted when the job began) — and behind the others for DEFER_FOR (an infra failure
-    is retried at once, after the heal). The same failure as the site's last one pauses the site; the same one on this
-    item alone ITEM_AFTER times makes it the item's after all. Returns "requeued" | "paused" | "item"."""
+    is retried at once, after the heal). WO54 rule 4: the site pauses only when the same failure meets a DIFFERENT
+    item than the site's last one; the same item meeting it again (ITEM_AFTER) is set aside on this site (`aside`) and
+    the site goes on — an infra failure (ours: the browser, the bridge, the network) is never the item's and never
+    sets it aside. Returns "requeued" | "paused" | "aside"."""
     t = at or now()
     sig = signature(error)
     tries = loads(db.kv_get(TRIES)) or {}
@@ -401,25 +428,128 @@ def non_item(db: DB, mp: str, iid: str, error: str | None, kind: str, *, shot: s
     db.kv_set(TRIES, json.dumps(tries))
     streak = loads(db.kv_get(STREAK)) or {}
     last = streak.get(mp) or {}
-    again = last.get("sig") == sig
+    again = last.get("sig") == sig and last.get("item") not in (None, iid)       # WO54: a DIFFERENT item, same failure
     db.log(iid, "post_nonitem", {"mp": mp, "kind": kind, "error": (error or "")[:300], "problem": sig,
-                                 "same_as_last": again, "item_tries": mine["n"]})
-    if mine["n"] >= ITEM_AFTER and not (again and last.get("item") != iid):
-        tries.pop(key, None)
-        db.kv_set(TRIES, json.dumps(tries))
-        return "item"
+                                 "same_as_last": last.get("sig") == sig, "other_item": again, "item_tries": mine["n"]})
     row = db.listing(iid, mp)
     attempts = (row["attempts"] if row else 0) or 0
+    if again:
+        db.upsert_listing(iid, mp, status="queued", error=f"waiting ({kind}): {(error or '')[:300]}",
+                          attempts=max(0, attempts - 1) if counted else attempts)
+        if kind != INFRA:
+            defer(db, mp, iid, t)
+        streak[mp] = {"sig": sig, "item": iid, "n": int(last.get("n") or 1) + 1, "at": _iso(t)}
+        db.kv_set(STREAK, json.dumps(streak))
+        pause(db, mp, f"{kind}: {error}", kind, error=error, shot=shot, at=t)
+        return "paused"
+    streak[mp] = {"sig": sig, "item": iid, "n": 1, "at": _iso(t)}
+    db.kv_set(STREAK, json.dumps(streak))
+    if kind != INFRA and mine["n"] >= ITEM_AFTER:
+        tries.pop(key, None)
+        db.kv_set(TRIES, json.dumps(tries))
+        if counted:
+            db.upsert_listing(iid, mp, attempts=max(0, attempts - 1))
+        aside(db, mp, iid, error, kind, at=t)
+        return "aside"
     db.upsert_listing(iid, mp, status="queued", error=f"waiting ({kind}): {(error or '')[:300]}",
                       attempts=max(0, attempts - 1) if counted else attempts)
     if kind != INFRA:
         defer(db, mp, iid, t)
-    streak[mp] = {"sig": sig, "item": iid, "n": (last.get("n", 0) + 1) if again else 1, "at": _iso(t)}
-    db.kv_set(STREAK, json.dumps(streak))
-    if again:
-        pause(db, mp, f"{kind}: {error}", kind, error=error, shot=shot, at=t)
-        return "paused"
+        if brake(db, mp, iid, error, at=t):
+            return "paused"
     return "requeued"
+
+
+# ---------------------------------------------------------------- WO54 rule 4: one item never stops its site
+
+def _title(db: DB, iid: str) -> str:
+    try:
+        from thrift_agent.crosslist import _title_of
+        return _title_of(db, iid)
+    except Exception:  # noqa: BLE001
+        return iid
+
+
+def aside(db: DB, mp: str, iid: str, error: str | None, kind: str = ITEM, at: datetime | None = None) -> datetime:
+    """WO54 rule 4: the item failed twice on `mp` — set aside THERE (row 'failed' "set aside: …", nothing published),
+    tried again by itself after ASIDE_HOLD (longer each time, or at the next poster start — a fix); the site goes
+    straight on with its next item. ONE private line each time; the third time also ONE 🚨 (code must change), and
+    it is still tried again later — never left for good. Returns when it is tried again."""
+    t = at or now()
+    data = loads(db.kv_get(ASIDE)) or {}
+    key = f"{iid}|{mp}"
+    was = data.get(key) or {}
+    n = int(was.get("n") or 0) + 1
+    hold = ASIDE_HOLD[min(n, len(ASIDE_HOLD)) - 1]
+    until = t + timedelta(seconds=hold)
+    data[key] = {"n": n, "since": _iso(t), "until": _iso(until), "sig": signature(error), "error": (error or "")[:300],
+                 "kind": kind}
+    db.kv_set(ASIDE, json.dumps(data))
+    db.upsert_listing(iid, mp, status="failed", error=SET_ASIDE + (error or "")[:400])
+    db.log(iid, "set_aside", {"mp": mp, "n": n, "until": _iso(until), "kind": kind, "error": (error or "")[:300]})
+    site, title = LABEL.get(mp, mp), _title(db, iid)
+    notify.say(f"⏸ {site}: {title} set aside after {ASIDE_AFTER} tries — {plain(mp, error, kind)}. {site} goes on "
+               f"with the other items; this one is tried again by itself at {_clock(until)}.")
+    if n >= ASIDE_ALARM:
+        from thrift_agent import alarm
+        alarm.raise_for(db, f"{mp}:aside:{iid}", f"{title} keeps failing on {site} ({n} times set aside): "
+                        f"{plain(mp, error, kind)}", step="the listing", evidence=alarm._evidence(db, mp),
+                        why="blocked", label=site)
+    return until
+
+
+def asides(db: DB) -> dict:
+    return loads(db.kv_get(ASIDE)) or {}
+
+
+def aside_due(db: DB, iid: str, mp: str, at: datetime | None = None) -> bool:
+    """A set-aside row may go back in line: its hold is over (or it has no record — then at once)."""
+    rec = asides(db).get(f"{iid}|{mp}")
+    until = _when((rec or {}).get("until"))
+    return until is None or (at or now()) >= until
+
+
+def release_asides(db: DB, why: str = "the poster started") -> int:
+    """WO54 rule 4: every set-aside item may go again now ("after a fix": a poster start, i.e. a deploy). Their
+    counts stay (the next set-aside holds longer). Returns how many."""
+    data = asides(db)
+    n = 0
+    t = _iso(now())
+    for rec in data.values():
+        if (_when(rec.get("until")) or now()) > now():
+            rec["until"] = t
+            n += 1
+    if n:
+        db.kv_set(ASIDE, json.dumps(data))
+        db.log(None, "set_aside_released", {"n": n, "why": why})
+    return n
+
+
+def brake(db: DB, mp: str, iid: str, error: str | None, at: datetime | None = None, limit: int = BRAKE_ITEMS) -> bool:
+    """WO54 rule 4: a failure (nothing published) on `mp`, for the site's brake — the site pauses only when DIFFERENT
+    items fail: `limit` different items in a row with nothing through in between, or two different items in a row with
+    the same failure. The same item failing again never moves it (it is set aside instead). True when it paused."""
+    t = at or now()
+    data = loads(db.kv_get(BRAKE)) or {}
+    run = [r for r in (data.get(mp) or []) if isinstance(r, dict)]
+    sig = signature(error)
+    if run and run[-1].get("item") == iid:
+        run[-1] = {"item": iid, "sig": sig, "at": _iso(t)}
+    else:
+        run.append({"item": iid, "sig": sig, "at": _iso(t)})
+    run = run[-10:]
+    data[mp] = run
+    db.kv_set(BRAKE, json.dumps(data))
+    items = {r.get("item") for r in run}
+    same = len(run) >= 2 and run[-1]["sig"] == run[-2]["sig"] and run[-1]["item"] != run[-2]["item"]
+    if len(items) >= limit or same:
+        what = (f"failures: the same failure on {len(items) if not same else 2} different listings in a row"
+                if same else f"failures: {len(items)} different listings in a row failed")
+        pause(db, mp, f"{what} (last: {error})", SITE, error=error, at=t)
+        data[mp] = []
+        db.kv_set(BRAKE, json.dumps(data))
+        return True
+    return False
 
 
 def worked(db: DB, mp: str, iid: str | None = None) -> None:
@@ -427,10 +557,16 @@ def worked(db: DB, mp: str, iid: str | None = None) -> None:
     streak = loads(db.kv_get(STREAK)) or {}
     if streak.pop(mp, None) is not None:
         db.kv_set(STREAK, json.dumps(streak))
+    run = loads(db.kv_get(BRAKE)) or {}
+    if run.pop(mp, None) is not None:                 # WO54: the brake counts only failures with nothing through
+        db.kv_set(BRAKE, json.dumps(run))
     if iid:
         tries = loads(db.kv_get(TRIES)) or {}
         if tries.pop(f"{iid}|{mp}", None) is not None:
             db.kv_set(TRIES, json.dumps(tries))
+        held = asides(db)
+        if held.pop(f"{iid}|{mp}", None) is not None:
+            db.kv_set(ASIDE, json.dumps(held))
 
 
 def defer(db: DB, mp: str, iid: str, at: datetime | None = None, seconds: int = DEFER_FOR) -> None:

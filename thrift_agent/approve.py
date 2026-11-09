@@ -704,6 +704,8 @@ def _reply_brand(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int | 
     m = _BRAND_CMD.match(words)
     brand = m.group(1).strip() if m else words
     none = bool(pipeline.NO_BRAND_WORDS.fullmatch(brand.strip(" .!")))
+    if not none and not _plausible(db, iid, brand):
+        none = True                                   # WO54 §1.3: never typed into a form
     it = db.item(iid)
     if it is not None and pipeline.reached_site(db, it):
         pipeline.brand_for_waiting(s, db, iid, None if none else brand)
@@ -1181,7 +1183,7 @@ def _route_ops(s: Settings, db: DB, update: dict) -> str:
     from thrift_agent import sales
     msg = update["message"]
     bot, mid = ops_bot_for(s), msg.get("message_id")
-    text = (msg.get("text") or "").strip()
+    text = _relaid(db, (msg.get("text") or "").strip())
     quoted = ((msg.get("reply_to_message") or {}).get("text") or "")
     if bot is None:
         return "ignored: no ops chat"
@@ -1286,8 +1288,19 @@ def _fallback_answer(s: Settings, db: DB, bot: Bot, msg: dict) -> None:
     bot.send_message(f"✓ Got it — {nxt}", reply_to=msg["message_id"])
 
 
+def _relaid(db: DB, text: str) -> str:
+    """WO54 §1.3 (live 2026-11-09 8:43: "тщ икфтв" — "no brand" typed on the Russian layout — became the brand): a
+    reply typed with the other keyboard layout that reads as one of our commands or a brand we know is understood as
+    that (layout.normalize). Logged when re-read."""
+    from thrift_agent import layout
+    out, relaid = layout.normalize(text)
+    if relaid:
+        db.log(None, "reply_relaid", {"typed": text[:80], "read": out[:80]})
+    return out
+
+
 def _route_message(s: Settings, db: DB, bot: Bot, msg: dict) -> str:
-    text = (msg.get("text") or msg.get("caption") or "").strip()
+    text = _relaid(db, (msg.get("text") or msg.get("caption") or "").strip())
     mid = msg.get("message_id")
     reply = msg.get("reply_to_message")
     if not isinstance(reply, dict):
@@ -1772,7 +1785,23 @@ def brand_reply(text: str, gate: dict) -> str | None:
     return None
 
 
+def _plausible(db: DB, iid: str, brand: str) -> bool:
+    """WO54 §1.3: a brand reply that matches no brand we know and isn't a plausible shop name ("тщ икфтв", "???") is
+    taken as 'no brand' — with ONE private check line, so the owner sees what was understood."""
+    from thrift_agent import layout
+    if layout.plausible_brand(brand):
+        return True
+    it = db.item(iid)
+    title = (((loads(it["renders"]) or {}).get("poshmark") or {}).get("title") if it else None) or iid
+    notify.say(f"Check — {title}: the brand reply '{brand[:40]}' isn't a brand name — listed with no brand "
+               f"(reply 'brand …' to its card to change it).")
+    db.log(iid, "brand_reply_implausible", {"reply": brand[:80]})
+    return False
+
+
 def _set_brand(s: Settings, db: DB, bot: Bot, iid: str, brand: str, reply_to: int | None, kind: str = "item") -> str:
+    if not _plausible(db, iid, brand):                # WO54 §1.3: no brand, never typed into a form
+        return _set_no_brand(s, db, bot, iid, reply_to)
     try:
         status = pipeline.set_brand(s, db, iid, brand)
     except ValueError as e:

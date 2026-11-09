@@ -441,7 +441,8 @@ class Pick(BaseModel):
     """Where an item goes on one marketplace."""
     value: str                         # Depop: the path; Vinted: the leaf id (as text)
     path: str                          # the full path, both sites
-    source: Literal["table", "refined", "learned", "model"]
+    source: Literal["table", "refined", "learned", "model", "family"]      # family: WO54 §1.4 (in_family)
+    was: str | None = None                                                # in_family: the pick it replaced
 
 
 def gender(kids_gender: str | None) -> str:
@@ -559,7 +560,30 @@ def ask_model(mp: str, dept: str, category: str, sub: str | None, item_type: str
 
 def resolve(mp: str, dept: str, category: str, sub: str | None, item_type: str, title: str = "",
             kids_gender: str | None = None, ask=None) -> Pick:
-    """The table, else a learned answer, else the model (then remembered). `ask` replaces the model (tests)."""
+    """The table, else a learned answer, else the model (then remembered) — WO54 §1.4: in the item's own family
+    (`in_family`). `ask` replaces the model (tests)."""
+    pick = _resolve(mp, dept, category, sub, item_type, title, kids_gender, ask)
+    return in_family(mp, dept, pick, item_type, title, kids_gender)
+
+
+def in_family(mp: str, dept: str, pick: Pick, item_type: str, title: str = "", kids_gender: str | None = None) -> Pick:
+    """WO54 §1.4 (live 2026-11-09: a category of another family than the item's was refused on Depop and Vinted — the
+    item went up nowhere; the owner: never leave it unposted): a pick whose category is in another family than the
+    item's own type words becomes the closest category of the item's family the site offers in that department
+    (families.closest: the most of its words, else the group's "Other"); none there → the pick as it was."""
+    from thrift_agent import families
+    mine = families.family_of_type(item_type)
+    if families.same_family(mine, families.family_of_category(mp, pick.path)):
+        return pick
+    options = candidates(mp, dept, kids_gender)
+    key = families.closest(mp, mine, options, f"{item_type} {title}")
+    if key is None or key == pick.value:
+        return pick
+    return Pick(value=key, path=options[key], source="family", was=pick.path)
+
+
+def _resolve(mp: str, dept: str, category: str, sub: str | None, item_type: str, title: str = "",
+             kids_gender: str | None = None, ask=None) -> Pick:
     words = f"{item_type} {title}"
     if (pick := from_table(mp, dept, category, sub, words, kids_gender)) is not None:
         return pick
