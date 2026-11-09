@@ -942,7 +942,7 @@ def canary(make: bool = typer.Option(False, "--make", help="make the canary (aga
            item: str = typer.Argument(None, help="the item to copy (default: an old sold item with its photos)"),
            check: str = typer.Option(None, "--check", help="ask the running poster for a form check: a site or 'all'"),
            ) -> None:
-    """WO52 §3: the canary — a copy of an old sold item the twice-daily form check fills on every site and never
+    """WO52 §3: the canary — a copy of an old sold item the form check (once at night, WO54) fills on every site and never
     publishes. `--make [<item>]` makes it; `--check poshmark|depop|vinted|all` asks the running poster for a check now;
     no option: shows it and each site's last check."""
     from thrift_agent import formcheck
@@ -1717,6 +1717,28 @@ def twins(apply: bool = typer.Option(False, "--apply", help="retire / skip as th
     if apply:
         crosslist._carry_done(s, db, None)
         print(escape(f"💤 line now: {daily.done_text(s, db)}"))
+
+
+@app.command()
+def cards(backfill: bool = typer.Option(False, "--backfill", help="send the ✅ card of every item live on a site that "
+                                        "has none yet, oldest first"),
+          dry_run: bool = typer.Option(False, "--dry-run", help="with --backfill: only print the cards")) -> None:
+    """WO54 (live 2026-11-09: 19 items live on Depop and Vinted got no ✅ card — the card waited for a paused
+    Poshmark): `--backfill` sends the missing cards now, oldest first, at Telegram's pace, each as the poster sends it
+    (its links, a "⏳" line for each site still to come); a card already out is never sent again — the running
+    poster's sweep sends due cards too, and the two never both send one. `--dry-run` prints them."""
+    from thrift_agent import crosslist, quiet
+    if not backfill:
+        raise typer.BadParameter("say --backfill (with --dry-run to only print the cards)")
+    s, db = settings(), _db()
+    if not dry_run and quiet.closing(None, db):        # WO54 §3: the Mac sends nothing in the owner's quiet hours
+        raise typer.BadParameter(f"the quiet hours ({quiet.cfg().label()}): nothing is sent until they end — run it "
+                                 "then (--dry-run works now)")
+    done = crosslist.backfill_cards(s, db, dry=dry_run)
+    for iid, text in done:
+        print(escape(f"— {iid}:\n{text}"))
+    verb = "would send" if dry_run else "went through"
+    print(f"{len(done)} card{'s' if len(done) != 1 else ''} {verb}" if done else "no item live on a site lacks its card")
 
 
 @app.command("sync")

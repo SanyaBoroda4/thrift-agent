@@ -687,7 +687,7 @@ async def _housekeeping(s, db, ps, cross, dry, stop, state, sites, until_idle) -
                     if asked := runner.refresh.take_requests(db):
                         await runner._refresh(s, db, None, asked)
                 await runner.serve_requests(s, db, {mp: ps[mp] for mp in cross}, None)
-            for iid in crosslist.waiting_lines(db):          # a line held by a site that was away: due now?
+            for iid in crosslist.waiting_lines(db, s):       # WO54: cards due, and open cards whose state changed
                 maybe_announce(s, db, iid)
             if not dry and s.get("price_drop.enabled", True):  # WO41: the stages that fell due; the day's one line
                 if planned is None or time.monotonic() - planned >= PLAN_EVERY:

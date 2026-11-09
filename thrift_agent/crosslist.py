@@ -10,13 +10,16 @@ goes up on Depop, then Vinted — no extra questions, every dropdown value from 
 - A logged-out / CAPTCHA / verification wall stops that marketplace for the window (one plain line in the group); a
   failure before the publish button is retried next window (3 attempts, then skipped with an ops note); a publish the
   Mac was interrupted in is looked for in that site's shop (WO28), never published again blind.
-- The group hears ONE line per item when its marketplaces are done: "Posted ✓ <title> — $X · Poshmark <url> · Depop
-  <url> · Vinted <url>" (+ " — check: …"); a marketplace that failed or was skipped is left out (the details: ops)."""
+- The group hears ONE card per item (WO34), sent the first time the item is live on ANY site (WO54 — live 2026-11-09:
+  it had waited for every site to settle, and with Poshmark paused 19 items live on Depop and Vinted got no card and
+  no link), a "⏳ <Site> — …" line for each site still to come, edited in place as each other site lands, fails for
+  good (left out) or changes state; the details go to the ops chat."""
 from __future__ import annotations
 
 import json
 import random
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -47,6 +50,7 @@ ALL_DONE_LINE = "💤 All done — nothing is waiting."             # WO34: the 
 DOT = {"poshmark": "🟣", "depop": "🔴", "vinted": "🟢"}
 CARRIER = "posted_done_carrier"         # kv: the item whose group card carries the 💤 line now (WO34)
 LATER = ("queued", "posting", "dryrun", "failed")   # a site still to come: "⏳ Vinted — later"
+WAS_LIVE = ("posted", "sold", "delisted")           # a site the card links to (WO54: edits keep a sold one's link)
 UNCONF = "unconfirmed_state"   # kv (WO35 §4): "<item>:<mp>" → {"stage": wait|retry|reposted|given_up, "due", "round",
                                # "tries"}: an unconfirmed publish on Depop / Vinted, settled by the site's own data
 RECHECK_AFTER = 600            # ... looked for again, quietly, this long after it counted as unconfirmed
@@ -221,6 +225,8 @@ def next_try(row) -> str:
     except (TypeError, ValueError, KeyError, IndexError):
         return "in about 30 min"
     t = (t if t.tzinfo else t.replace(tzinfo=timezone.utc)) + timedelta(seconds=RETRY_AFTER)
+    if t <= datetime.now(timezone.utc):
+        return "now"                    # WO54: never a time already gone (a card drawn after the quiet hours)
     return t.astimezone().strftime("%I:%M %p").lstrip("0")
 
 
@@ -742,10 +748,23 @@ def item_name(db: DB, iid: str, limit: int = 40) -> str:
     return out or title[:limit]
 
 
+def _to_come(s: Settings | None, it, mp: str) -> bool:
+    """WO54: an enabled site with no row yet that will still take the item by itself — Poshmark's queue (a ready, priced
+    item: Poshmark keeps no 'queued' row; live 2026-11-09 the 19 items live on Depop and Vinted had none) or a cross
+    site's row about to be queued (feed) — on a site that publishes for real."""
+    if s is None or it is None or it["status"] != "ready" or not it["owner_price"]:
+        return False
+    if "test" in it.keys() and it["test"]:
+        return False
+    return live(s, mp)
+
+
 def card_text(s: Settings, db: DB, iid: str, last: str | None = None) -> str:
     """The group's card for an item (WO34, the owner: separate lines, little text, some emoji): "✅ <short name> ·
-    $<price>", then each site on its own line — its name the link (HTML), "⏳ Vinted — later" while it hasn't posted —
-    with an empty line between, and the 💤 line when it is the window's last. Nothing technical."""
+    $<price>", then each site on its own line — its name the link (HTML), "⏳ Vinted — later" (or what it waits for,
+    `wait_line`) while it hasn't posted; WO54: also a site with no row yet that will take the item (Poshmark's queue) —
+    with an empty line between, and the 💤 line when it is the newest card. A site that failed for good or was skipped
+    is left out. Nothing technical."""
     import html
 
     from thrift_agent.brain import copy as copywriter
@@ -766,11 +785,15 @@ def card_text(s: Settings, db: DB, iid: str, last: str | None = None) -> str:
     for mp in sites:
         row = rows.get(mp)
         if row is None:
+            if _to_come(s, it, mp):                    # WO54: Poshmark's queue has no row — said all the same
+                lines.append(html.escape(wait_line(db, iid, mp, None, s), quote=False))
             continue
-        if row["status"] == "posted" and row["url"]:
+        if row["status"] in WAS_LIVE and row["url"]:          # WO54: a card edited later keeps a sold site's link
             lines.append(f'{DOT.get(mp, "•")} <a href="{html.escape(row["url"], quote=True)}">{LABEL.get(mp, mp)}</a>')
         elif row["status"] in LATER and not (row["status"] == "dryrun" and not (s is not None and live(s, mp))):
-            lines.append(html.escape(wait_line(db, iid, mp, row)))  # a dry run on a site that won't publish: left out
+            lines.append(html.escape(wait_line(db, iid, mp, row, s), quote=False))   # a dry run that won't publish: out
+        elif row["status"] == "skipped" and NO_SIZE in (row["error"] or ""):
+            lines.append(html.escape(wait_line(db, iid, mp, row, s), quote=False))   # WO54: waits for her size
     if last:
         lines.append(last)
     return "\n\n".join(lines)
@@ -784,73 +807,130 @@ def _clock(t) -> str:
     return t.astimezone().strftime("%I:%M %p").lstrip("0")
 
 
-def wait_line(db: DB, iid: str, mp: str, row) -> str:
-    """WO53 §6: a site not live yet on the item's card, in plain words — "⏳ Poshmark — submitted 10:50 PM, verifying",
-    "⏳ Vinted — photos failed, next try 4:45 PM", "⏳ Depop — next try 11:28 PM, it needs a login on the Mac"."""
-    from thrift_agent import health, postcheck
-    site, err = LABEL.get(mp, mp), row["error"] or ""
-    if row["status"] == "failed" and err.startswith(UNCONFIRMED):
+def _capped(s: Settings, db: DB, mp: str) -> bool:
+    """`capped`, never raising for settings without a schedule (a card drawn from the CLI, a test's)."""
+    try:
+        return capped(s, db, mp)
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def wait_line(db: DB, iid: str, mp: str, row, s: Settings | None = None) -> str:
+    """WO53 §6 / WO54: a site not live yet on the item's card, in plain words — "⏳ Poshmark — submitted 10:50 PM,
+    verifying", "⏳ Vinted — photos failed, next try 4:45 PM", "⏳ Depop — next try 11:28 PM, it needs a login on the
+    Mac", "⏳ Poshmark — waiting for a size", "⏳ Poshmark — after the quiet hours, from 2:00 PM", "⏳ Vinted — today's
+    25 are up; it goes up after midnight" (the daily cap), else "⏳ Depop — later". `row` None: the site keeps no row
+    for it yet (Poshmark's queue)."""
+    from thrift_agent import approve, health, postcheck, quiet
+    site = LABEL.get(mp, mp)
+    status, err = (row["status"], row["error"] or "") if row is not None else (None, "")
+    if status == "failed" and err.startswith(UNCONFIRMED):
         st = unconf_state(db, iid, mp) or {}
         when = _clock(postcheck.clicked_of(st, row))
         return f"⏳ {site} — submitted {when}, " + ("still being checked" if st.get("stage") == "given_up"
                                                     else "verifying")
-    if row["status"] == "failed":
+    if status == "failed" and err.startswith(getattr(health, "SET_ASIDE", "set aside: ")):
+        # WO54 rule 4: set aside after two tries on this site — tried again by itself after its hold (hours, not the
+        # 30 minutes of a plain failure), never failed for good
+        rec = (getattr(health, "asides", lambda _db: {})(db) or {}).get(f"{iid}|{mp}") or {}
+        until = postcheck.utc(rec.get("until"))
+        when = ("now" if until <= datetime.now(timezone.utc) else f"at {_clock(until)}") if until else "later"
+        return f"⏳ {site} — set aside for now; it tries again by itself {when}"
+    if status == "failed":
         # the Vinted incident of 2026-10-20 (the owner): a failed site names its step and the next try
         return f"⏳ {site} — {step_name(err)} failed, next try {next_try(row)}"
+    if status == "skipped" and NO_SIZE in err:
+        return f"⏳ {site} — waiting for a size"
+    if approve.needs_brand(db.item(iid)):
+        return f"⏳ {site} — waiting for the brand"
     p = health.state(db, mp)
     if p:
         due = postcheck.utc(p.get("due"))
         why = (ACCOUNT_WHY.get(p.get("page") or alert_kind(p.get("reason") or "", p.get("page")), "it is paused")
                if p.get("kind") == "account" else "paused by you" if p.get("owner") else "paused after a problem")
-        return f"⏳ {site} — next try {_clock(due) if due else 'when it is back'}, {why}"
+        # WO54: a test time already gone (the poster stopped for the quiet hours) is "now" — never 11:31 AM at 2 PM
+        when = ("now" if due <= datetime.now(timezone.utc) else _clock(due)) if due else "when it is back"
+        return f"⏳ {site} — next try {when}, {why}"
+    if quiet.closing(None, db) and (back := quiet.resume_at()) is not None:
+        return f"⏳ {site} — after the quiet hours, from {quiet.clock(back)}"      # WO54 §3: nothing goes up till then
+    if s is not None and _capped(s, db, mp):
+        return f"⏳ {site} — today's {daily_cap(s, mp)} are up; it goes up after midnight"   # WO54 §3: the daily cap
     return f"⏳ {site} — later"
+
+
+def card_row(db: DB, iid: str):
+    """The item's ✅ card in the outbox (its newest 'posted' row), or None."""
+    return db.conn.execute("SELECT * FROM outbox WHERE kind='posted' AND ref=? ORDER BY rowid DESC LIMIT 1",
+                           (iid,)).fetchone()
+
+
+def _body(text: str | None) -> str:
+    """A card's text without its 💤 line."""
+    return (text or "").split("\n\n💤", 1)[0]
 
 
 def refresh_card(s: Settings, db: DB, iid: str) -> None:
     """The item's ✅ card re-rendered from its listings as they are now and edited in place (its 💤 line kept) — a
     site's address changed after the card went out (WO52: a Vinted listing posted again)."""
-    row = db.conn.execute("SELECT text FROM outbox WHERE kind='posted' AND ref=? ORDER BY rowid DESC LIMIT 1",
-                          (iid,)).fetchone()
+    row = card_row(db, iid)
     if row is None:
         return
-    text = card_text(s, db, iid, None)
     old = row["text"] or ""
-    if "\n\n💤" in old:
-        text += old[old.index("\n\n💤"):]
-    if text != old:
-        _card(s, db, iid, text, edit=True)
+    text = card_text(s, db, iid, None) + (old[old.index("\n\n💤"):] if "\n\n💤" in old else "")
+    _card(s, db, iid, text, edit=True)
 
 
-def _card(s: Settings, db: DB, iid: str, text: str, edit: bool) -> None:
-    """The card out (`edit`: the same message changed — never a new one), HTML, previews off; on the dev machine
-    (no bot) printed."""
+def _card(s: Settings | None, db: DB, iid: str, text: str, edit: bool) -> bool:
+    """The card out, HTML, previews off — never twice (WO37, WO54). A new card is recorded in the outbox BEFORE it
+    goes, under a placeholder id, in ONE statement that takes it only when the item has no card yet (the running
+    poster's sweep and `thrift cards --backfill` may try at the same moment: one sends); a send that never left is
+    taken back (the next sweep tries again), one that may have arrived counts as sent. `edit`: the same message
+    changed, and only when its text differs — never a new message, also when the card's message id isn't known.
+    On the dev machine (no bot) printed. True when a message was sent or edited."""
     from thrift_agent import approve
     bot = approve.bot_for(s) if s is not None else None
-    row = db.conn.execute("SELECT * FROM outbox WHERE kind='posted' AND ref=? ORDER BY rowid DESC LIMIT 1",
-                          (iid,)).fetchone()
+    row = card_row(db, iid)
+    if edit:
+        if row is None or (row["text"] or "") == text:
+            return False
+        if bot is not None:
+            if str(row["chat_id"]) != str(bot.chat_id) or int(row["message_id"]) <= 0:
+                db.log(iid, "card_edit", {"error": "its message id isn't known (sent without an answer): left as is"})
+                return False
+            try:
+                bot.edit_message(int(row["message_id"]), text, parse_mode="HTML")
+            except Exception as e:  # noqa: BLE001 — "message is not modified" and the like: the card stays as it is
+                db.log(iid, "card_edit", {"error": str(e)[:200]})
+                if "not modified" not in str(e):
+                    return False
+        else:
+            notify.group(text)
+        db.conn.execute("UPDATE outbox SET text=? WHERE chat_id=? AND message_id=?",
+                        (text, row["chat_id"], row["message_id"]))
+        return True
+    chat = str(bot.chat_id) if bot is not None else "dev"
+    placeholder = -int(time.time() * 1000) - random.randint(0, 999)
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    taken = db.conn.execute(
+        "INSERT INTO outbox (chat_id, message_id, kind, ref, text, sent_at, resolved_at) SELECT ?, ?, 'posted', ?, ?, ?, "
+        "? WHERE NOT EXISTS (SELECT 1 FROM outbox WHERE kind='posted' AND ref=?)",
+        (chat, placeholder, iid, text, stamp, stamp, iid)).rowcount
+    if taken != 1:
+        return False                                   # its card is out already (another process, a moment ago)
     if bot is None:
         notify.group(text)
-        if row is None:
-            db.add_outbox("dev", 0, "posted", iid, text=text)
-            db.outbox_resolve("posted", iid)
-        return
-    if edit and row is not None and str(row["chat_id"]) == str(bot.chat_id) and int(row["message_id"]):
-        try:
-            bot.edit_message(int(row["message_id"]), text, parse_mode="HTML")
-            db.conn.execute("UPDATE outbox SET text=? WHERE rowid=(SELECT rowid FROM outbox WHERE kind='posted' "
-                            "AND ref=? ORDER BY rowid DESC LIMIT 1)", (text, iid))
-        except Exception as e:  # noqa: BLE001 — "message is not modified" and the like: the card stays as it is
-            db.log(iid, "card_edit", {"error": str(e)[:200]})
-        return
+        return True
     from thrift_agent import telegram
     try:
         mid = bot.send_message(text, parse_mode="HTML")
     except RuntimeError as e:
         if not telegram.maybe_delivered(e):
+            db.conn.execute("DELETE FROM outbox WHERE chat_id=? AND message_id=?", (chat, placeholder))
             raise                                      # never left the Mac: the caller leaves it for the next sweep
-        mid = 0                                        # it went out, no answer: counted as sent, never twice (WO37)
-    db.add_outbox(bot.chat_id, mid, "posted", iid, text=text)
-    db.outbox_resolve("posted", iid)
+        db.log(iid, "telegram_maybe_sent", {"kind": "posted", "error": str(e)[:200]})
+        return True                                    # it went out, no answer: counted as sent, never twice (WO37)
+    db.conn.execute("UPDATE outbox SET message_id=? WHERE chat_id=? AND message_id=?", (int(mid), chat, placeholder))
+    return True
 
 
 LISTED_NO_BRAND = "listed with no brand (no brand label, tag or logo in the photos)"
@@ -888,16 +968,28 @@ def _say_checks(db: DB, iid: str, mps: list[str]) -> None:
 
 def _carry_done(s: Settings, db: DB, iid: str | None) -> None:
     """The 💤 line rides on the newest card (WO34): `iid` takes it (None: it stays where it is) and the card that had
-    it is edited without it; the carrier's line follows the state (Done for now -> All done once Vinted caught up)."""
+    it is edited without it; the carrier's line follows the state (Done for now -> All done once Vinted caught up; gone
+    while there is work). Each card is edited only when its text changes."""
     from thrift_agent import daily
     before = db.kv_get(CARRIER)
-    if iid is not None and before and before != iid:
-        _card(s, db, before, card_text(s, db, before), edit=True)
     carrier = iid or before
-    if carrier:
-        db.kv_set(CARRIER, carrier)
-        if iid is None:                                  # only the line may have changed: the carrier's card again
-            _card(s, db, carrier, card_text(s, db, carrier, daily.done_text(s, db)), edit=True)
+    if not carrier:
+        return
+    if before and before != carrier:
+        _card(s, db, before, card_text(s, db, before), edit=True)
+    db.kv_set(CARRIER, carrier)
+    _card(s, db, carrier, card_text(s, db, carrier, daily.done_text(s, db)), edit=True)
+
+
+def _sleep_line(s: Settings | None, db: DB) -> None:
+    """WO54: every card can change now (each site edits its card as it lands), so after any change the 💤 line is
+    settled on the newest card — taken there, its words as things are now (gone while there is work). Nothing while a
+    first card is still due: that one will be the newest."""
+    if s is None or cards_due(db):
+        return
+    newest = db.conn.execute("SELECT ref FROM outbox WHERE kind='posted' ORDER BY rowid DESC LIMIT 1").fetchone()
+    if newest is not None:
+        _carry_done(s, db, newest[0])
 
 
 def unconfirmed(db: DB, iid: str) -> list[str]:
@@ -923,7 +1015,8 @@ def settled(s: Settings, db: DB, iid: str, now: datetime | None = None) -> bool:
     """Has every enabled site of the item had its say (WO33 A3)? Posted, failed (an unconfirmed publish too: its ⚠️
     question waits for the owner), skipped, drafted or dry-run — or queued on a site stopped for the window or at its
     daily cap, or on one whose extension has been away for 10 minutes since the item's first live listing (a moment's
-    disconnect doesn't send the line without it). A site with no row yet, or one in progress, is not settled."""
+    disconnect doesn't send the line without it). A site with no row yet, or one in progress, is not settled.
+    WO54: it no longer holds the card back (live 2026-11-09: a paused Poshmark never settled — 19 items got no card)."""
     rows = {r["marketplace"]: r for r in db.listings_for(iid)}
     mps = [*(["poshmark"] if s.get("marketplaces.poshmark.enabled", False) else []), *enabled(s)]
     first = min((r["posted_at"] for r in rows.values() if r["status"] == "posted" and r["posted_at"]), default=None)
@@ -942,59 +1035,134 @@ def settled(s: Settings, db: DB, iid: str, now: datetime | None = None) -> bool:
     return True
 
 
-def waiting_lines(db: DB) -> list[str]:
-    """Items with a live listing whose group line hasn't gone out yet (the poster sweeps them: a site that was away)."""
-    return [r[0] for r in db.conn.execute(
-        "SELECT DISTINCT l.item_id FROM listings l WHERE l.status='posted' AND NOT EXISTS "
-        "(SELECT 1 FROM events e WHERE e.ref=l.item_id AND e.kind='posted_announced')").fetchall()]
+OPEN_DAYS = 30         # WO54: an open card ("⏳" on it) older than this is no longer swept (its own landing still edits it)
+SWEEP_MAX = 5          # WO54: cards sent or edited per housekeeping turn — Telegram takes about 20 messages a minute in a
+#                        group (the 2:00 PM deploy finds the morning's 19 cards due at once)
+_RENDER_SAID: set[str] = set()      # the items whose card couldn't be drawn, logged once a process
+
+
+def cards_due(db: DB) -> list[str]:
+    """WO54: the items live on a site whose ✅ card never went out — no card in the outbox and nothing announced (an
+    item announced before WO34 by the one-line message, or with an ops "Added:" line, has its event) — the oldest live
+    listing first. Three plain reads (the events table has no index on ref)."""
+    said = {r[0] for r in db.conn.execute("SELECT DISTINCT ref FROM events WHERE kind='posted_announced'")}
+    carded = {r[0] for r in db.conn.execute("SELECT DISTINCT ref FROM outbox WHERE kind='posted'")}
+    rows = db.conn.execute("SELECT item_id, MIN(COALESCE(posted_at, updated_at)) AS first FROM listings WHERE "
+                           "status='posted' GROUP BY item_id ORDER BY first, item_id").fetchall()
+    return [r["item_id"] for r in rows if r["item_id"] not in said and r["item_id"] not in carded]
+
+
+def open_cards(s: Settings, db: DB) -> list[str]:
+    """WO54: the items whose ✅ card is out with a site still to come ("⏳" on it) and whose text, drawn now, differs
+    (the 💤 line aside): a site live or failed for good, paused or back, at its daily cap … — edited by the sweep,
+    oldest card first."""
+    since = (datetime.now(timezone.utc) - timedelta(days=OPEN_DAYS)).isoformat(timespec="seconds")
+    out = []
+    for r in db.conn.execute("SELECT o.ref, o.text FROM outbox o WHERE o.kind='posted' AND o.sent_at >= ? AND "
+                             "o.text LIKE '%⏳%' AND o.rowid=(SELECT MAX(x.rowid) FROM outbox x WHERE x.kind='posted' "
+                             "AND x.ref=o.ref) ORDER BY o.rowid", (since,)).fetchall():
+        try:
+            if _body(card_text(s, db, r["ref"])) != _body(r["text"]):
+                out.append(r["ref"])
+        except Exception as e:  # noqa: BLE001 — one card that can't be drawn never stops the sweep
+            if r["ref"] not in _RENDER_SAID:
+                _RENDER_SAID.add(r["ref"])
+                db.log(r["ref"], "card_render_failed", {"error": f"{type(e).__name__}: {e}"[:200]})
+    return out
+
+
+def waiting_lines(db: DB, s: Settings | None = None, limit: int | None = SWEEP_MAX) -> list[str]:
+    """The cards the poster's sweep sees to on each housekeeping turn: first cards still due (Telegram away when the
+    item went live; WO54: the morning's 19 items that waited for a paused Poshmark), then — with `s` — the open cards
+    whose text would change. At most `limit` a turn (Telegram's group pace); the rest on the next turns."""
+    due = cards_due(db)
+    if limit and len(due) >= limit:
+        return due[:limit]
+    out = due + ([iid for iid in open_cards(s, db) if iid not in due] if s is not None else [])
+    return out[:limit] if limit else out
 
 
 def _line_due(s: Settings, db: DB, iid: str) -> bool:
-    """Another item's first line is due now (settled, not yet sent): "✓ All done" goes on the window's last line, so
-    not on this one (WO33, a loaded CI runner: two items finished every site before either line went out, and both
-    lines said "All done")."""
-    return any(other != iid and settled(s, db, other) for other in waiting_lines(db))
+    """Another item's first card is due now (not sent yet): "All done" goes on the newest card, so not on this one
+    (WO33, a loaded CI runner: two items finished every site before either line went out, and both said "All done")."""
+    return any(other != iid for other in cards_due(db))
+
+
+def _update_card(s: Settings, db: DB, iid: str, new: list[str]) -> str | None:
+    """WO54: the item's card is out — drawn again as its listings are now (a site's link in, a site that failed for good
+    left out, a waiting site's state) and edited in place when it changed, never a second message; the new sites
+    recorded as announced (their notes to the ops chat, once each); the 💤 line settled. The text when something
+    changed, else None."""
+    carrier = db.kv_get(CARRIER) == iid
+    text = card_text(s, db, iid, daily.done_text(s, db) if carrier else None)
+    changed = _card(s, db, iid, text, edit=True)
+    if new:
+        db.log(iid, "posted_announced", {"mps": new, "to": "edit"})
+        _say_checks(db, iid, new)
+    if changed or new:
+        _sleep_line(s, db)
+        return text
+    return None
 
 
 def announce(s: Settings | None, db: DB, iid: str) -> str | None:
-    """The group hears about an item ONCE (WO32b): the first time its listings go out — once all its sites are settled
-    (WO33 A3: posted, failed, skipped, or waiting on the owner's answer to the ⚠️ question) — one "Posted ✓" line with
-    every site that confirmed, Poshmark · Depop · Vinted. Sites added to an item already announced (a supervised
-    publish, the backfill, a retry, a 'posted <url>' reply) go to the ops chat only: "Added: <title> · Depop <url>".
-    Returns the text sent (None: nothing new)."""
+    """The item's ONE card in the group (WO32b, WO34). WO54 (live 2026-11-09: Poshmark paused by one item's size, and
+    the card waited for every site to settle — 19 items live on Depop and Vinted got no card and no link; the owner saw
+    "nothing posted"): it goes out the FIRST time any of the item's sites is live, with a "⏳ <Site> — …" line for each
+    site still to come, and is EDITED in place as each other site lands, fails for good (its line left out) or changes
+    state (`_update_card`; the sweep sees to the states). Never twice: the outbox row is taken before the send (`_card`).
+    Sites added to an item announced before WO34 (no card) go to the ops chat only: "Added: <title> · Depop <url>".
+    Returns the text sent or edited (None: nothing new)."""
     seen = announced(db, iid)
-    mps = [r["marketplace"] for r in db.listings_for(iid) if r["status"] == "posted" and r["marketplace"] not in seen]
-    if not mps:
+    new = [r["marketplace"] for r in db.listings_for(iid) if r["status"] == "posted" and r["marketplace"] not in seen]
+    if card_row(db, iid) is not None:                  # WO34: its card is out — changed in place, no new message
+        return _update_card(s, db, iid, new) if s is not None else None   # (no settings: never a plain-text copy)
+    if not new:
         return None
-    has_card = db.conn.execute("SELECT 1 FROM outbox WHERE kind='posted' AND ref=? LIMIT 1", (iid,)).fetchone()
-    if seen and has_card and s is not None:            # WO34: its card is out — the new link in place, no new message
-        carrier = db.kv_get(CARRIER) == iid
-        text = card_text(s, db, iid, daily.done_text(s, db) if carrier else None)
-        _card(s, db, iid, text, edit=True)
-        db.log(iid, "posted_announced", {"mps": mps, "to": "edit"})
-        _say_checks(db, iid, mps)
-        if not carrier:
-            _carry_done(s, db, None)
-        return text
     if seen:                                           # announced before WO34 (the one-line message): the ops chat
-        text = added_line(db, iid, mps)
-        db.log(iid, "posted_announced", {"mps": mps, "to": "ops"})
+        text = added_line(db, iid, new)
+        db.log(iid, "posted_announced", {"mps": new, "to": "ops"})
         notify.say(text)
         return text
-    if s is not None and not settled(s, db, iid):
-        return None
-    state = daily.done_state(s, db) if s is not None and not _line_due(s, db, iid) else None
-    text = card_text(s, db, iid, done_line(state, daily.owner_waits(s, db)) if state is not None else None)
+    last = daily.done_text(s, db) if s is not None and not _line_due(s, db, iid) else None
+    text = card_text(s, db, iid, last)
     try:
-        _card(s, db, iid, text, edit=False)
+        sent = _card(s, db, iid, text, edit=False)
     except RuntimeError as e:      # it never left the Mac (2026-10-27): not announced — the poster's sweep sends it
         db.log(iid, "card_not_sent", {"error": str(e)[:200]})
         return None
-    db.log(iid, "posted_announced", {"mps": mps})  # only once the card is out (it had been logged before the send)
-    _say_checks(db, iid, mps)
-    if state is not None:
-        _carry_done(s, db, iid)
+    if not sent:                                       # another process sent it a moment ago: never twice
+        return None
+    db.log(iid, "posted_announced", {"mps": new})     # only once the card is out (it had been logged before the send)
+    _say_checks(db, iid, new)
+    _sleep_line(s, db)                                 # on the newest card — nothing while another first card is due
     return text
+
+
+BACKFILL_PACE = 3.2    # WO54: seconds between the backfill's cards (Telegram: about 20 messages a minute in a group)
+
+
+def backfill_cards(s: Settings, db: DB, dry: bool = False, pace: float = BACKFILL_PACE,
+                   sleep=None) -> list[tuple[str, str]]:
+    """WO54 §0.5 (live 2026-11-09: 19 items live on Depop and Vinted had no ✅ card — the card waited for a paused
+    Poshmark): `thrift cards --backfill` — every item live on a site whose card never went out (`cards_due`), oldest
+    first, its card sent as `announce` sends it (its links, a "⏳" line for each site still to come), at Telegram's
+    pace, never twice (the running poster's sweep may send the same cards: the outbox row decides). `dry`: only drawn.
+    Returns (item, the card's text — or why it wasn't sent)."""
+    wait = sleep or time.sleep
+    out = []
+    for n, iid in enumerate(cards_due(db)):
+        if dry:
+            out.append((iid, card_text(s, db, iid)))
+            continue
+        if n and pace > 0:
+            wait(pace)
+        text = announce(s, db, iid)
+        if text is None:
+            text = ("not sent: its card was out already (the poster's sweep)" if card_row(db, iid) is not None else
+                    "not sent now: Telegram didn't take it (the poster's sweep sends it)")
+        out.append((iid, text))
+    return out
 
 
 # ---------------------------------------------------------------- backfill: the existing closet
