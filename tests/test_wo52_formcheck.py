@@ -65,6 +65,7 @@ def _sold_item(s, db, iid="i_261012_0abc12", status="sold"):
 # ---------------------------------------------------------------- when
 
 def test_the_slots_are_8_30_and_2_30_local_on_both_sides_of_the_dst_change(s):
+    s.data["formcheck"]["slots"] = ["08:30", "14:30"]     # WO52's two slots (WO54's default: once at night, 02:00)
     assert formcheck.last_slot(s, at(2026, 10, 31, 12, 31)).strftime("%H:%M %Z") == "08:30 EDT"
     assert formcheck.last_slot(s, at(2026, 11, 1, 13, 31)).strftime("%H:%M %Z") == "08:30 EST"   # 08:31 EST
     assert formcheck.last_slot(s, at(2026, 11, 1, 13, 29)).strftime("%d %H:%M") == "31 14:30"     # 08:29 EST
@@ -72,6 +73,7 @@ def test_the_slots_are_8_30_and_2_30_local_on_both_sides_of_the_dst_change(s):
 
 
 def test_due_once_per_slot_and_on_request(s, db):
+    s.data["formcheck"]["slots"] = ["08:30", "14:30"]     # WO52's two slots (WO54's default: once at night, 02:00)
     t = at(2026, 11, 2, 13, 40)                                         # 08:40 EST
     assert formcheck.due(s, db, "vinted", t) == "the 08:30 check"
     formcheck._taken(db, "vinted", "the 08:30 check", t)
@@ -233,16 +235,17 @@ def test_no_canary_is_said_once(s, db, said):
 
 
 def test_the_heartbeat_carries_the_checks(s, db, said):
-    formcheck.record(s, db, "poshmark", Outcome("dryrun"), "x", at=at(2026, 11, 2, 13, 35))
+    formcheck.record(s, db, "poshmark", Outcome("dryrun"), "the 02:00 check", at=at(2026, 11, 2, 7, 5))   # 02:05 EST
     from thrift_agent import cli
     beat = cli.beat_info(db)["formcheck"]
-    assert beat["poshmark"]["ok"] is True and beat["poshmark"]["slot"] == "08:30"
+    assert beat["poshmark"]["ok"] is True and beat["poshmark"]["slot"] == "02:00"
 
 
 def test_the_days_slots_are_kept_for_the_evening_line(s, db, said):
-    formcheck.record(s, db, "vinted", Outcome("dryrun"), "x", at=at(2026, 11, 2, 13, 35))   # 08:35 EST
-    formcheck.record(s, db, "vinted", Outcome("dryrun"), "x", at=at(2026, 11, 2, 19, 35))   # 14:35 EST
-    assert formcheck.beat(db)["vinted"]["today"] == {"day": "2026-11-02", "passed": ["08:30", "14:30"], "failed": []}
+    """WO54: the night's check by its slot, one asked for (the 2:00 PM start) by its own time."""
+    formcheck.record(s, db, "vinted", Outcome("dryrun"), "the 02:00 check", at=at(2026, 11, 2, 7, 5))     # 02:05 EST
+    formcheck.record(s, db, "vinted", Outcome("dryrun"), "the poster started", at=at(2026, 11, 2, 19, 5))  # 14:05
+    assert formcheck.beat(db)["vinted"]["today"] == {"day": "2026-11-02", "passed": ["02:00", "14:05"], "failed": []}
 
 
 def test_a_due_check_runs_on_poshmarks_turn_before_any_listing(s, db, said, monkeypatch):

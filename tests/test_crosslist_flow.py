@@ -752,26 +752,29 @@ def test_a_posted_reply_marks_the_depop_row_posted_with_its_address(tmp_path, mo
     assert quiet.group == [] and f"Added: {TITLE} · Depop {DEPOP_URL}" in quiet.ops
 
 
-def test_a_new_item_s_line_waits_for_every_site_to_settle_then_goes_once(tmp_path, quiet):
-    """WO33 A3: the item's one card goes out once every enabled site has had its say — posted, failed, skipped, or an
-    unconfirmed publish (WO35: "⏳ Depop — later" while the site's own data settles it, and "Done for now", not "All
-    done"); a site still in progress holds it. A site confirmed later edits the same card (WO34)."""
+def test_the_card_goes_out_at_the_first_live_site_and_is_edited_as_the_others_land(tmp_path, quiet):
+    """WO54 (live 2026-11-09: the card waited for every site to settle — a paused Poshmark never did, and 19 items live
+    on Depop and Vinted got no card and no link): the item's one card goes out the first time a site is live, with a
+    "⏳" line for each site still to come (WO53: "verifying" while the site's own data settles an unconfirmed publish);
+    each later landing edits the same card (WO34) — one message; "Done for now", not "All done", while Depop settles."""
     s = _settings(tmp_path)
     db = DB(s.path("db"))
     iid = _item(db)
     db.upsert_listing(iid, "poshmark", status="posted", url="https://poshmark.com/listing/x-" + "b" * 24)
     db.upsert_listing(iid, "vinted", status="posting")
     db.upsert_listing(iid, "depop", status="failed", error="unconfirmed publish: no listing page")
-    assert crosslist.announce(s, db, iid) is None and quiet.group == []           # Vinted still in progress
-    db.upsert_listing(iid, "vinted", status="posted", url="https://www.vinted.com/items/77")
-    text = crosslist.announce(s, db, iid)
+    text = crosslist.announce(s, db, iid)                                         # at once: Vinted still in progress
     assert quiet.group == [text] and text.startswith(f"✅ {NAME} · $85\n\n🟣 <a href=\"https://poshmark.com/")
-    assert '🟢 <a href="https://www.vinted.com/items/77">Vinted</a>' in text and "⏳ Depop — submitted " in text
-    assert "verifying" in text                                             # WO53: the site's own data settles it
-    assert text.endswith(done_for_now("depop"))
-    db.upsert_listing(iid, "depop", status="posted", url=DEPOP_URL, error=None)       # the owner's link, checked
+    assert "⏳ Depop — submitted " in text and "verifying" in text                # WO53: the site's own data settles it
+    assert text.endswith("⏳ Vinted — later") and "💤" not in text               # work left: no 💤 line
+    db.upsert_listing(iid, "vinted", status="posted", url="https://www.vinted.com/items/77")
     edited = crosslist.announce(s, db, iid)                                        # WO34: the same card, edited
-    assert f'🔴 <a href="{DEPOP_URL}">Depop</a>' in edited and quiet.group[-1] == edited
+    assert '🟢 <a href="https://www.vinted.com/items/77">Vinted</a>' in edited and quiet.group[-1] == edited
+    assert "⏳ Depop — submitted " in edited and edited.endswith(done_for_now("depop"))
+    db.upsert_listing(iid, "depop", status="posted", url=DEPOP_URL, error=None)       # the owner's link, checked
+    edited = crosslist.announce(s, db, iid)
+    assert f'🔴 <a href="{DEPOP_URL}">Depop</a>' in edited and quiet.group[-1] == edited and edited.endswith(ALL_DONE)
+    assert crosslist.announce(s, db, iid) is None and len(quiet.group) == 3       # nothing new: no edit
     assert db.conn.execute("SELECT COUNT(*) FROM outbox WHERE kind='posted' AND ref=?", (iid,)).fetchone()[0] == 1
 
 
