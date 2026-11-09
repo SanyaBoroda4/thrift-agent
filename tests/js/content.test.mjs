@@ -1985,6 +1985,15 @@ test("Vinted (WO52): a brand its list lacks goes in as Vinted's own entry ('Use 
   assert.notEqual(p.w.__noBrand, true);
 });
 
+test("Vinted (WO54 §1.3): a brand whose key is empty ('тщ икфтв') never matches the 'Use … as brand' row", async () => {
+  // live 2026-11-09 8:46, the Glitter Toe Sneakers: "" === "" took Vinted's 'Use "тщ икфтв" as brand' while the
+  // driver's plan wanted "List without brand" — three mismatches, Vinted paused for every item
+  const p = page("vinted", undefined, undefined, { buttonBrand: true, customBrand: true });
+  await run(p, { ...VINTED_JOB, fields: { ...VINTED_JOB.fields, brand: "тщ икфтв", brand_candidates: ["тщ икфтв"] } });
+  assert.notEqual(p.w.__customBrand, "тщ икфтв");
+  assert.equal(p.w.__noBrand, true);
+});
+
 test("Vinted (WO52): a big brand is never put in as Vinted's own entry", async () => {
   const p = page("vinted", undefined, undefined, { buttonBrand: true, customBrand: true });
   await run(p, { ...VINTED_JOB, fields: { ...VINTED_JOB.fields, brand: "Madewell", brand_candidates: ["Madewell"], brand_big: true } });
