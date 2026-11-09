@@ -14,7 +14,9 @@ on all three sites at once, and takes an item down everywhere when it sells.
   (`thrift run`, `com.thriftagent.worker`, KeepAlive), the poster (`thrift poster`: Poshmark's Playwright Chrome profile,
   created and logged in on the Mac only — cookies are keychain-bound) and **the Thrift Chrome** (`com.thrift.chrome-cross`,
   profile `~/thrift/chrome-cross`, its own Dock icon): an ordinary Chrome with the crosslister extension (`ext/`) that
-  lists on Depop and Vinted; the owner logs in there by hand. Since WO51 the Mac stays on.
+  lists on Depop and Vinted; the owner logs in there by hand — WO54 §4: not her browser; launchd never starts it, the
+  poster opens it for work and quits it after 10 idle minutes. Since WO51 the Mac stays on. **The quiet hours**
+  (WO54 §3): 8:30 AM – 2:00 PM the calendar job `com.thriftagent.quiet` unloads all of it (The quiet hours, below).
 - **iPhone (dedicated)** — same Apple ID; the Shortcut saves each share to iCloud Drive `Posh/inbox/<share id>/` and
   uploads it to thrift-api (`docs/SHORTCUT_UPLOAD.md`).
 - **thrift-api** — an Azure Function (`api/`) + Postgres: sale emails, take-down tasks, watchdogs, the dashboard.
@@ -42,9 +44,9 @@ on all three sites at once, and takes an item down everywhere when it sells.
    (unreadable is never absent) — once, after one last look; never a question, never a failure (no pause).
 5. **Stop, don't guess.** Logged out / CAPTCHA / block / verification page → that site stops, one plain line, never a
    workaround. Unknown modal → fail the item with a screenshot. Never solve CAPTCHAs, never type credentials.
-6. **Pacing and hours.** `schedule` limits (hours, daily caps); no sharing / following / offers / relisting from this
-   code. Gaps between listings are 0 (WO37); caps, hours, PAUSE and stops stay — except WO53 rule 6: an item live on
-   one site is finished on the others the same night, whatever the hour (`scheduler.outside_hours`, `live_elsewhere`).
+6. **Pacing and hours.** No posting hours (WO54 §3): every hour outside the owner's quiet hours (8:30 AM – 2:00 PM
+   New York, `quiet:`), posting included. Caps (25 a site), PAUSE and stops stay; no sharing / following / offers /
+   relisting from this code; gaps 0 (WO37). WO53 rule 6 (`scheduler.outside_hours`) is moot.
 7. **All selectors live in `post/<marketplace>.py:SEL` and `ext/selectors.json`.** Role/label/placeholder/text locators
    or the form's own hooks (data-vv-name, data-et-name, data-test, data-testid, ids); a CSS class only where verified
    live. Real clicks only. Unverified entries in `UNVERIFIED` / `"verified": false`; `submit()` refuses while a step it
@@ -53,13 +55,21 @@ on all three sites at once, and takes an item down everywhere when it sells.
 8. **Shipping guard.** `HOLD_UNSHIPPED` blocks publishing (not drafts or dry runs).
 
 **The owner's standing rules:**
-- **Only the price waits.** Her one routine input is the price (a button, a typed number, `thrift price`). Everything
-  else is decided and shown on the card, corrected by a reply (`size … · brand … · condition … · category … · men /
-  women · boys / girls · cover N`). The only other things that wait for her: a size when none is on the photos (size
-  buttons), a brand that is there but unreadable (the 🏷️ question). **Nobody is asked to check a site, ever** (WO53):
-  no "reply 'posted <url>'", no "reply 'retry'", no "Check Poshmark" — the site's own data settles it (a grep test).
-  Never a grouping question (only a non-partition sends the contact sheet), never a poster question, never a set's
-  category, never optional facts.
+- **Only four things wait for a person (WO54 §2,** the owner 2026-11-09: "take your own decisions in order to post it
+  other than just hold off till human will intrude"): her price (a button, a typed number, `thrift price`); a size
+  no photo shows (the card's size buttons); a password or sign-in code; a real CAPTCHA — for the last two the
+  group's plain line and ONE 🚨 at once, any hour, again every 12 h while it lasts. The agent never types a password
+  and never solves a CAPTCHA. **Everything else is decided**: the most reasonable choice, the post, and ONE line in
+  the item's private "Check —" message (`crosslist.item_checks`) — a brand not read surely is the reading when it
+  is a big brand, else no brand (`pipeline.settle_brand`); NWT without a tag photo is Like New; a category Poshmark
+  lacks becomes the closest real one (`taxonomy.closest`); a title nothing fixes is built from the facts
+  (`titles.fallback`); a possible re-share is settled by the photo rules at her price; a grouping that isn't a
+  partition is put right by code (`repair_grouping`); a category of another family becomes the closest of the
+  item's own (WO54 §1.4). The card states decisions (⚠️), never asks (❓), and is corrected by a reply (`size … ·
+  brand … · no brand · condition … · category … · men / women · boys / girls · cover N`). Every failure is tried
+  again by itself another way (rule 4 below; a refused form: once 30 min later, then once per code update with ONE
+  ⛔ and ONE 🚨). **Nobody is asked to check a site, ever** (WO53). `tests/test_wo54_decide.py` lists every string
+  that asks a question or prompts a reply (ALLOWED); only the price and the size may wait.
 - **Never leave an item unposted (WO52).** No field ever stops a listing: brands, sizes, categories fall back to the
   closest real value (never a made-up one; a big brand never "no brand"); site changes are healed or found by the form
   check; dead browsers are reopened; what still needs code is ONE 🚨 alarm within 20 minutes.
@@ -90,9 +100,16 @@ on all three sites at once, and takes an item down everywhere when it sells.
 - `bash deploy/services.sh start|stop|restart worker|poster`, `start|stop chrome`, `stop all`, `status`, `logs
   [worker|poster] [lines]`. One worker ever (`worker.lock` beside the DB; a second exits; `start worker` refuses while a
   Terminal `thrift run` runs). One-off GUI jobs: `bash deploy/gui_once.sh <thrift args>`.
-- **Allowed over SSH without asking:** the deploy, status, logs, `thrift requeue`, `thrift redo`, the tests, read-only
+- **Never on the Mac 8:30 AM – 2:00 PM** (the owner's quiet hours) beyond light read-only SSH. `mac_deploy.sh` refuses
+  from 8:20 to 2:00 PM (the pulled code rolled back, exit 1; `THRIFT_DEPLOY_ANYWAY=1` — an emergency with her
+  go-ahead — sets up and tests and starts nothing). The quiet hours' job starting the poster at 2:00 PM is the
+  owner's design; a deploy still never starts it. The deploy wrapper on the Mac (`~/thrift/deploy_wrapper.sh
+  <rollback commit>`, run detached; the private bundle shipped first): `START_ON_FAIL=0` leaves the poster stopped
+  when the deploy fails (WO54, live 14:09: a rollback had started the morning's poster code). No test may read the
+  Mac's own state (`tests/conftest.py` patches `runner.thrift_chrome_running` too).
+- **Allowed over SSH without asking:** `bash deploy/quiet.sh check|status`, `thrift quiet --status`, the deploy, status, logs, `thrift requeue`, `thrift redo`, the tests, read-only
   commands (`doctor`, `shares`, `sales`, `show`), `thrift telegram test`, restarting the poster as above.
-- **Never over SSH (the owner's):** `thrift poster --publish-first`, `thrift login`, starting the poster outside a
+- **Never over SSH (the owner's):** `thrift poster --publish-first`, `thrift login`, `thrift quiet --post-now|--quiet-now` (hers), starting the poster outside a
   deploy restart or anything else that publishes or touches the live accounts by hand, `thrift mark-posted`, deleting
   data (a Vinted listing only through `thrift vinted-repost`, per item, with the owner's go-ahead), changing `config/settings.local.yaml` or `.env`, switching autopublish or dry-run keys. Never click a site's
   publish / save / delete control from a probe; `--verify` / `--practice` / `--dry-run` paths only. Before any edit of a
@@ -128,6 +145,11 @@ drafted; unique per (item, marketplace). (The old `posts` table was copied in on
   pets|electronics]` ("All Categories" / `all` on top); categories `li.dropdown__menu__item`; subcategories
   `a.dropdown__link[data-et-name=sub_category]` incl. "None". Every department's list in `data/poshmark_taxonomy.yaml`
   (all verified), the raw catalog with each category's size menu per tab in `data/poshmark_catalog.json`.
+- WO54 §1.1: the size field's own short forms are read by MEANING (`poshmark.size_meaning` / `size_same` in
+  `SizeShown`): "12 Months" = "12M", "0-3 Months" = "0-3M", "Newborn" = "NB", "One Size" = "OS"; label words may be
+  left out ("Waist 32" = "32") but never contradicted (Toddler Girl ≠ Toddler Boy); never "9-12M" for "12 Months".
+  WO55: a kids' shoe size with its mark finds the tab's bare number (`fallback.kids_bare`: "11.5 (kids)" / "11.5C" →
+  "11.5", "4Y" → "4", only where it can't be another size).
 - Size `[data-test=size]`, tabs `a.navigation--horizontal__link`, tiles `button[id="size-<label>"]`, Done
   `button[data-et-name=apply]`; kids shoe labels "7.5 (Toddler Girl)" (`KIDS_SIZE_OPTIONS`). A menu may close itself on
   a pick (no Done) — either path accepted, recorded as `size_menu`. Bags preselect "One Size" (field "OS"): a click on a
@@ -423,19 +445,23 @@ edit_save; UNVERIFIED: block, captcha, verify, skirt_length, promo_close, listin
 - **A set goes under its bottom** (`pipeline.settle_set`, confidence 1.0): pants → Pants & Jumpsuits (flared → Boot Cut &
   Flare, wide → Wide Leg…), skirt → Skirts › Skirt Sets, shorts → Shorts; Kids → Matching Sets; never Dresses; pajama,
   swim, lingerie sets left to the model; her category wins. Catsuit / jumpsuit / romper → Jumpsuits & Rompers.
+- **WO54 §1.4 — never refused for its family:** a pet item (`families.is_pet_item`: "dog coat", "cat bed",
+  "harness for dogs"; never "dog print dress") is family `pet`, at home under Accessories / Other (no site has a pet
+  category in our catalogs); a Depop / Vinted pick of another family becomes the closest category of the item's own
+  family in that department (`categories.in_family` → `families.closest`, Pick source "family"); Poshmark's
+  (`runner.refamily`) the closest Poshmark category of its family — the facts and EVERY render follow, one check
+  line; none of that family → posted where it is, ONE check line (`crosslist.family_check`; `hold_family` unused).
 - **Families** (`thrift_agent/families.py`): a site category of another family than the item's type words (a dress under
   Sweaters) → that site `skipped` "… isn't the item's family" (both safety nets keep it), ONE private line
   (`crosslist.family_problem` / `hold_family`).
 
 ### Brands
-- **The rule** (`facts.brand_seen`: read | unreadable | logo | none; `gate.brand_seen` for older facts): no brand to be
-  seen → listed with NO brand, never asked (`NO_BRAND_NOTE`; the "Check —" line says "listed with no brand …" once,
-  `crosslist.LISTED_NO_BRAND`); a brand there but unreadable, or a low-confidence reading → ONE group question "🏷️ What
-  brand is <title>? I couldn't read it, and Depop and Vinted need one — reply to this message with the brand, or 'no
-  brand'." (`approve.ask_brands`, outbox kind `brand`); such an item goes up NOWHERE once priced until she answers
-  (`approve.needs_brand`; the price button says "✓ $95 — needs the brand: reply with it (or 'no brand')"); her reply
-  (`_reply_brand`) lists it on all three (an item already live elsewhere: `pipeline.brand_for_waiting`,
-  `release_brand_wait`; rows "waiting for the brand (was: …)"); read ≥ 0.70 → used.
+- **The rule** (WO54 §2; `facts.brand_seen`: read | unreadable | logo | none): no brand to be seen → no brand
+  (`NO_BRAND_NOTE`); read ≥ 0.70 → used; there but not read surely → decided, never asked: the reading when it is a
+  big brand, else no brand (Poshmark empty, Depop "Other", Vinted "List without brand"; `pipeline.settle_brand`).
+  The card states it (⚠️ "Brand: none — …" / "Brand: Nike — read with doubt …"); `gate.brand_unsure` gives
+  [No brand] when a reading is kept and makes a plain reply her brand. `approve.needs_brand` never holds;
+  `ask_brands` asks nothing and returns parked rows to the line; a reply to an old 🏷️ message still sets her brand.
 - **The shop's name** (`pipeline.shop_brand`): the copy step returns `brand` (the name shops list, "Alo Yoga" for "alo")
   and `brand_label`; taken only when it is the same brand, else the alias file's, else the label's. Title,
   descriptions, short name use the shop's name (`named_as` / `shop_named`); `Render.brand` / `Render.brand_label`.
@@ -504,6 +530,13 @@ edit_save; UNVERIFIED: block, captcha, verify, skirt_length, promo_close, listin
   arrived (`telegram.maybe_delivered`: ReadTimeout, WriteTimeout, RemoteProtocolError…) counts as sent; only a connection
   that never opened is retried. A changed card is EDITED in place (`approve.refresh_card`, `Bot.edit_card`:
   editMessageMedia / Caption / Text); `resend_pending` sends nothing new. Uploads get 90 s (`UPLOAD_TIMEOUT`).
+- **The other keyboard layout** (WO54 §1.3, `thrift_agent/layout.py`, `approve._relaid` on every reply and ops-chat
+  text): a reply in Cyrillic that reads, key for key on QWERTY, as one of our commands or a brand we know is
+  understood as that ("тщ икфтв" = "no brand", "ышяу Ь" = "size M", "зщые тщц" = "post now"; event
+  `reply_relaid`), the reverse too. A brand reply that is no brand we know and no plausible shop name
+  (`layout.plausible_brand`) is 'no brand' with ONE check line — never typed into a form (`approve._plausible`,
+  `pipeline.set_brand`); the extension: two brands are the same only with a non-empty key (`T.sameBrand`).
+  `Bot.answer_callback` never raises: a tap answered late ("query is too old") loses only its toast.
 - **Answers**: after an answer the card's buttons become ONE inert button with it (`approve._ack`, callback `noop`: "✓ $35
   — queued", "✓ Girls", "✓ cover: photo 2"); every typed reply gets an answer at once (`approve._confirm`, `next_step`,
   `when_posting`: "✓ Size S · $100 — it goes up on Poshmark, Depop and Vinted"); a handler that said nothing →
@@ -579,8 +612,41 @@ edit_save; UNVERIFIED: block, captcha, verify, skirt_length, promo_close, listin
   the Telegram thread restarts the worker (`alerts.restart_watcher`, `os._exit(3)`, ≤ one private line an hour, event
   `watcher_restarted`) after 15 min without progress with the lid open (never in its first 15 min); the poster's
   housekeeping (`alerts.WorkerCheck`) kickstarts it through launchd after 20 min.
-- **The Mac offline** (thrift-api `timers.mac_watch`): no heartbeat for 2 h between 08:00 and 23:00 → ONE private line
-  per outage "The Mac has been offline since … — shares and posting wait until it's open." (settings `mac_down_since`).
+- **The Mac offline** (thrift-api `timers.mac_watch`): no heartbeat for 30 minutes of the Mac's working time (the
+  quiet hours don't count) between 08:00 and 23:00 → ONE private line per outage, "The Mac stopped answering at
+  5:19 PM. Is it plugged in, with the lid open? …" — after the quiet hours "The Mac didn't come back after its quiet
+  hours …"; nothing in the quiet hours or the 30 minutes after; ONE "Mac back at …" only for an outage whose line
+  was said (settings `mac_down_since`).
+
+## The quiet hours (WO54 §3)
+- **The rule** (the owner, 2026-11-09: the Mac is her working laptop): 8:30 AM – 2:00 PM America/New_York every day
+  (`quiet:` in settings, `thrift_agent/quiet.py`, DST-safe) the agent does NOTHING on the Mac — no processing, model
+  calls, posting, checks, cleanup, Telegram sends or browsers. Azure keeps taking her shares and the sales emails.
+  Every other hour everything runs, posting included.
+- **From 8:20** (`quiet.closing`) nothing new starts: the worker (`cli._quiet_turn`) only syncs (its Telegram thread
+  applies her replies until 8:30); the poster (`parallel.quiet_hold`) starts no listing, form check, test, verifying
+  look, edit, price drop, order sweep, photo check, reconciler or request; take-downs only with
+  `quiet.allow_takedowns`. Work in hand finishes.
+- **8:30 — the calendar job** `com.thriftagent.quiet` (`deploy/quiet.sh tick`, every 10 minutes and at load; a run
+  missed in sleep comes once at wake; decided by `quietctl decide` in New York time): the poster stopped (the
+  listing in hand finishes, ≤ 300 s), one last heartbeat, the worker, the Thrift Chrome and the one-off job
+  stopped, nothing of ours left (our venv's processes and both Chromes by their exact `--user-data-dir`; never her
+  Chrome or Safari), marker `~/thrift/var/quiet.stopped`; inside the window each tick peeks for her "post now" of
+  today (the bot's offset never moved, nothing sent). **2:00 PM:** the first tick with the marker starts the worker
+  and the poster. Log `~/thrift/logs/quiet.log`; the 8:31 proof: `bash deploy/quiet.sh check`.
+- **A process inside the window** (the job missed) starts nothing and asks for its own stop (`quietctl.ask_stop`).
+- **Active time** (`quiet.active_seconds` / `advance`): the verifying schedule, rule 3's proof and its 2-hour 🚨, the
+  20-minute pause alarm, job health. **Telegram:** nothing sent or re-sent in the window (held, sent at 2 PM
+  "(held back since …: the quiet hours)"); 10 PM – 7 AM silent (`disable_notification`, `telegram.silent_hours`);
+  a tap's "query is too old" is no error. **Her words** in the private chat (also on the Russian layout): "post
+  now" lifts them for that day, "quiet now" brings them back — one heartbeat each.
+- **thrift-api** (`api/thrift_api/quiet.py`, from the heartbeat's `quiet`; defaults when none): every net that judges
+  the Mac rests while it is quiet or starting back (30 min, `GRACE`) and counts its working time — `mac_watch`,
+  `watch.not_live` (priced at 8:00 → 2 h old at 3:30 PM), `shares_watch`, `uploads_watch`, `unposted` (any hour but
+  the quiet hours), `core.late_takedowns`; the 9 PM line never calls a quiet Mac offline; night sends silent
+  22:00–07:00 (`deadlines.night`); shares, sales emails and 💰 lines go on. `/health` shows `quiet`.
+- Seen in `thrift status` / `doctor` ("Quiet hours 8:30 AM – 2:00 PM: next stop …"), `services.sh status`. Tests:
+  the quiet hours and the silent nights are off unless `@pytest.mark.quiet_on`; `no_real_quiet_tick`.
 
 ## Posting
 ### The poster loop
@@ -595,9 +661,13 @@ edit_save; UNVERIFIED: block, captcha, verify, skirt_length, promo_close, listin
   listing edits (any hour), the form check when due, the next approved item with a `queued` row (in the hours, under the
   cap), price drops, the order sweep. The cross rows are queued at the price's approval (`parallel.feed`). `--once` is
   sequential. A site stopped / paused stops only that site.
-- **Settled and announced** (`crosslist.settled`, `crosslist.announce`, event `posted_announced`): the ✅ card once every
-  enabled site is posted, failed, skipped, drafted, dry-run, or queued on a paused / capped site / an extension away 10
-  min since the first live listing.
+- **The ✅ card at the first live site** (WO54 §1.5; `crosslist.announce`, event `posted_announced`; live 2026-11-09
+  it waited for every site to settle — a paused Poshmark never did — and 19 items live on Depop and Vinted got no
+  card): sent the first time any site of the item is posted, a "⏳ <Site> — …" line for each site still to come,
+  the same message EDITED as each other site lands, fails for good (left out) or changes state (`_update_card`).
+  Never twice (`_card`: the outbox row taken in ONE statement before the send; a send that never left goes with the
+  next sweep, one that may have arrived is never re-sent). The housekeeping's sweep (`waiting_lines(db, s)`, ≤ 5 a
+  turn) sends cards still due and edits open cards whose text changed. `thrift cards --backfill [--dry-run]`.
 - **The housekeeping** (every few minutes in the poster): announcements, `crosslist.retry_failed` (an item failure tried
   again 30 min later), the photo check, the sale net, the price-drop plan, `pricedrop.announce`, the reconciler, the
   worker check, the memory watch, `jobs` health, alarms, `sales.repair_gone` at start.
@@ -612,6 +682,15 @@ edit_save; UNVERIFIED: block, captcha, verify, skirt_length, promo_close, listin
   re-check's.
 
 ### Failures, pauses, self-healing (WO51, WO52)
+- **Rule 4 — one item never stops its site** (WO54; live 2026-11-09 the snowsuit's "12M" and the sneakers' brand
+  paused Poshmark and Vinted for every item): an error about one item's VALUE ("after picking '…'", "the size field
+  shows", "Mismatch: …", "brand shown", "isn't the item's family" — `health.VALUE_RE`) is the item's; an item that
+  fails twice on a site (any kind but infra) is SET ASIDE there (`health.aside`: row 'failed' "set aside: …", ONE
+  private ⏸ line), tried again after 3 h / 12 h / 24 h (`ASIDE_HOLD`, `crosslist.retry_failed` — Poshmark's rows
+  too) or at once after a poster start (`release_asides`: a fix), the third time also ONE 🚨, never skipped for good;
+  a site pauses only when DIFFERENT items fail — the same failure on two items in a row (`non_item`), or 3 different
+  items in a row with nothing through (`health.brake`) — or the canary fails. A paused site's self-test runs on the
+  CANARY (`parallel._poshmark_test` / `_cross_test`), never on the item that failed.
 - **Every failure has a kind** (`thrift_agent/health.py`, `kind_of`): item (the site refused this listing, a field it
   can't satisfy) | site (an element missing, the form changed, an unknown page; the extension's `SiteChanged`) | infra
   (browser / context / page closed, extension away, network, our code throwing — `T.errInfo` names it). Only item
@@ -648,7 +727,10 @@ edit_save; UNVERIFIED: block, captcha, verify, skirt_length, promo_close, listin
   read-back decides as before. Learned (`{"event": "learned", field, selector, how}` → `heal.Learned`,
   `learned_selectors.json`) → ONE private "🩹 Vinted's brand field moved — learned the new one.".
 - **The form check** (`thrift_agent/formcheck.py`, `formcheck.enabled`, prod only; `formcheck.anywhere` for tests): at
-  08:30 and 14:30 local (`formcheck.slots`, DST included; a missed slot once when back), after every poster start and
+  02:00 local (WO54: `formcheck.slots: ["02:00"]`; a slot slept through let go after 4 h) and never beside real work —
+  a site with real items queued or posting is proven by them (`form_check_skipped`), a real listing since the check
+  fell due is its pass, and a check without a verdict beside real work is no failure (live 8:40: two false 🚨);
+  never in the quiet hours, after every poster start and
   after a browser reopen (kv `formcheck_request`); never with PAUSE, the lid closed or a login / CAPTCHA page. **The
   canary**: a copy of an old sold item (else the oldest live one) — status `canary`, `test` 1, batch `b_canary`, photos
   under `<var>/canary/<id>/`, no listing row, never carded, never synced. The check = the poster's own dry run of it,
@@ -802,12 +884,9 @@ edit_save; UNVERIFIED: block, captcha, verify, skirt_length, promo_close, listin
 Both sites turn away any browser driven over DevTools; the extension runs in the seller's own normally opened Chrome.
 `marketplaces.<m>.driver: extension` (default; `playwright` = WO30's posters `post/depop.py` / `post/vinted.py` on
 `post/cross.py`, kept; Depop's `api` = a stub, `post/depop_api.py`). Poshmark stays on Playwright.
-- **The Thrift Chrome** (`deploy/com.thrift.chrome-cross.plist`): `--user-data-dir=… --no-first-run
-  --no-default-browser-check --restore-last-session --disable-backgrounding-occluded-windows
-  --disable-renderer-backgrounding --disk-cache-size=268435456 https://www.vinted.com/`. Never `--remote-debugging-*`,
-  `--enable-automation`,
-  `--load-extension` (a test checks). KeepAlive only after a crash (`SuccessfulExit: false`). The window may sit behind
-  others, never minimized. Owner steps once: load `~/thrift-agent/ext` unpacked (Developer mode), paste `cat
+- **The Thrift Chrome**: see "Her laptop comes first (WO54 §4)" — `deploy/chrome_cross.sh`, `--no-startup-window`,
+  opened on demand, quit after 10 idle minutes, never a restored session or a start URL; the two backgrounding
+  switches keep a window behind others at full speed (WO28). Owner steps once: load `~/thrift-agent/ext` unpacked (Developer mode), paste `cat
   ~/thrift/var/ext_token` in its options, log in to vinted.com and depop.com there, `enabled: true` per site.
 - **The extension** (`ext/`, MV3, plain JS, no build, no third-party code): permissions storage, alarms, tabs, scripting;
   hosts the two sites, the bridge, `<all_urls>` (for `captureVisibleTab`; content scripts on the two sites only).
@@ -1005,6 +1084,28 @@ Both sites turn away any browser driven over DevTools; the extension runs in the
 - **The 9 PM line** (`watch.evening_line`): "📊 Today: 7 shares → 8 items, 7 live on all 3 sites with all photos, 1
   waiting for a size." + the sites line + "🧹 Cleanup freed 270 MB." (from the heartbeat).
 
+## Her laptop comes first (WO54 §4)
+- **The Thrift Chrome** (`deploy/com.thrift.chrome-cross.plist` → `deploy/chrome_cross.sh`; live 2026-11-09: 9.6 GB,
+  51 pages on her 8 GB laptop, two pages burning a core each since 1 AM): RunAtLoad false, no KeepAlive, Nice 10,
+  LowPriorityIO; the script sets the last session aside (`Default/Sessions.last`) and execs Chrome with
+  `--no-startup-window` (no window, no page, never a restored session, no start URL; never `--remote-debugging-*`,
+  `--enable-automation`, `--load-extension`, `--restore-last-session`). **On demand:** a job with no extension starts
+  it (`Bridge.want`, event `thrift_chrome_started` {on_demand}); **idle quit:** nothing for 10 min (`IDLE_QUIT`) →
+  SIGTERM to its own main pid (`runner.quit_thrift_chrome`, verified by `--user-data-dir`; never her Chrome, never
+  SIGKILL; event `thrift_chrome_quit`) — not while one of its windows had her focus in 10 min or a login / CAPTCHA
+  page waits for her (≤ 6 h); at once at pressure critical. A Chrome quit on purpose is no missing extension. Site
+  windows `focused: false`, never focused; a job's tab is active inside its own window only. The tidy (every
+  minute, during and after jobs) closes every page no running job holds; event `ext_tidied` each run.
+- **Poshmark's Chrome** sleeps after 10 idle minutes (`browser_slept`, no loss, no line) and wakes on the next page.
+- **Priority:** worker `ProcessType Background`; poster and Thrift Chrome `Nice 10` + `LowPriorityIO`; HEIC on one core.
+- **Memory budget** (`memory.py`, 2 GB): `memory.may_start(db, site)` → no NEW listing at pressure warning/critical
+  (edits and take-downs go on); critical → the idle browsers quit. `thrift doctor`: Agent / CPU now / Pages open /
+  In front.
+- **Nothing in iCloud Drive or Spotlight:** `paths.archive` = `~/thrift/var/local.noindex/archive` (the owner's OK,
+  2026-11-09; moved at 3:17 PM by `deploy/move_archive.py`: copied, checked, then deleted from iCloud); a share
+  taken short or with cloud-only files waits in iCloud's `Posh/archive` for its late photos. The owner's step for
+  the rest: System Settings → Spotlight → Search Privacy → + `~/thrift`.
+
 ## Storage and cleanup (`thrift_agent/cleanup.py`, `thrift cleanup [--dry-run | --sizes]`)
 - No duplicate share copy ever (deleted at once, see Shares). Azure blobs deleted once fetched (30-day lifecycle rule as
   backstop). Items keep ONE copy, the work copy (`work/<batch>/item_NN/photos` + cover): the archive copy of a split
@@ -1054,6 +1155,8 @@ Both sites turn away any browser driven over DevTools; the extension runs in the
   `cover-fix <item> …` · `price-drop --list | --skip | --dry-run | --now <item>` · `login --site poshmark|vinted|depop`.
 - Sales: `sales [--open|--unmatched|--all] | sales match <sale> <item> | delist --run | --verify … | --practice … | --item
   <item> --marketplace poshmark | relist <item> | orders --sweep | --probe | sync --push [--all] | api ping | cleanup`.
+- WO54: `cards --backfill [--dry-run]` (the ✅ cards never sent, oldest first; refused in the quiet hours) · `quiet
+  [--status | --tick | --post-now | --quiet-now]` · `text <item> --title … | --add-line …` (WO53).
 - Telegram: `telegram setup | test [--ops]`. `--marketplace poshmark|depop|vinted` on `poster --publish-first`, `retry`,
   `mark-posted`, `requeue`.
 
