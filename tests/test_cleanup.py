@@ -236,12 +236,18 @@ def test_the_low_disk_line_once_per_episode(env, monkeypatch):
     gb = 1024 ** 3
     free = {"n": 13.4 * gb}
     monkeypatch.setattr(cleanup, "disk_free", lambda _s: (free["n"], 228 * gb))
+    monkeypatch.setattr(cleanup, "biggest", lambda: [("iPhone backups (Finder → the iPhone → Manage Backups)", 35 * gb),
+                                                     ("Photos (Photos → Settings → iCloud → Optimize Mac Storage)", 25 * gb),
+                                                     ("Downloads", 15 * gb)])
     t = time.time()
     assert cleanup.disk_watch(s, db, now=t) is None and said == []                    # 13.4 GB: the Mac as it lives
     free["n"] = 1.3 * gb
     assert cleanup.disk_watch(s, db, now=t + 1) is None                               # looked at every 10 min
-    assert cleanup.disk_watch(s, db, now=t + 601).startswith("⚠️ The Mac has 1.3 GB free (under 5 GB).")
-    assert "Thrift's own folders:" in said[0]
+    assert cleanup.disk_watch(s, db, now=t + 601).startswith("⚠️ The Mac has 1.3 GB free (under 5 GB)")
+    # WO53 §5: the three biggest users, what the agent freed, its own share — never iCloud or failing shares
+    assert "The biggest: iPhone backups (Finder → the iPhone → Manage Backups) 35.0 GB, Photos" in said[0]
+    assert "The agent already freed" in said[0] and "its own folders take" in said[0]
+    assert "iCloud may" not in said[0] and "share can fail" not in said[0]
     assert cleanup.disk_watch(s, db, now=t + 1202) is None and len(said) == 1         # still low: silent
     free["n"] = 5.5 * gb
     assert cleanup.disk_watch(s, db, now=t + 1803) is None                            # above 5, under 6: silent
@@ -322,21 +328,22 @@ def test_evidence_older_than_14_days_goes_except_an_items_with_a_problem_still_o
         return p
     gone = [shot(f"{settled}-vinted-20261001-120000.png", ancient), shot(f"{settled}-vinted-20261001-120000.json", ancient),
             shot("6ad6d53a105c58b9598c5eff-poshmark-20261001-120000-price-dry.png", ancient),   # its Poshmark listing id
-            shot("orders-probe-20261001.html", ancient)]                                            # no item in its name
+            shot("orders-probe-20261001.html", ancient),                                            # no item in its name
+            shot(f"{settled}-depop-20261015-120000.png", young)]          # WO53 §5: live on all three — goes young
     kept_ = [shot(f"{stuck}-vinted-20261001-120000.png", ancient),                                 # a problem still open
              shot("6ad6d53a105c58b9598c5e00-poshmark-20261001-120000.png", ancient),               # the same item, by id
-             shot(f"{settled}-depop-20261015-120000.png", young)]                                  # within 14 days
+             shot(f"{idle}-depop-20261015-120000.png", young)]                    # within 14 days, not live everywhere
     assert cleanup.open_problems(db) == {stuck: "its vinted listing is failed"}
     removals, notes = cleanup.plan(s, db, NOW)
     ev = [r for r in removals if r.kind == "evidence"]
-    assert sorted(r.ref or "" for r in ev) == ["", settled]
+    assert sorted({r.ref or "" for r in ev}) == ["", settled]
     assert sorted(Path(f).name for r in ev for f in r.files) == sorted(p.name for p in gone)
     assert all(r.bytes == 100 * len(r.files) for r in ev)
     assert any(n.startswith(f"{stuck}: 2 evidence files older than 14 days kept") and "vinted listing is failed" in n
                for n in notes), notes
     cleanup.run(s, db, now=NOW)
     assert all(not p.exists() for p in gone) and all(p.exists() for p in kept_)
-    assert "4 evidence files older than 14 days (1 item)" in said[-1], said
+    assert "5 evidence files (1 item)" in said[-1], said
     assert shots.is_dir()
     # settled skips keep nothing open; a listing edit, a price change, a take-down or an unconfirmed publish do
     db.upsert_listing(stuck, "vinted", status="skipped", error="skipped: shared again as i_x")
@@ -348,3 +355,53 @@ def test_evidence_older_than_14_days_goes_except_an_items_with_a_problem_still_o
                     "VALUES ('t1', ?, 'depop', 'https://x', 'waiting', 1, '2026-10-19')", (idle,))
     db.kv_set("unconfirmed_state", json.dumps({f"{settled}:vinted": {"stage": "wait"}}))
     assert cleanup.open_problems(db) == {idle: "a take-down is waiting", settled: "a publish is unconfirmed"}
+
+
+def test_the_evidence_folder_is_capped_oldest_first_and_its_pages_gzipped(env):
+    """WO53 §5 (2.2 GB on 2026-11-08): over the cap the oldest files go first — never an open problem's; pages older
+    than an hour are kept gzipped."""
+    import gzip
+    import os
+    s, db, said = env
+    shots = s.path("failed") / "shots"
+    shots.mkdir(parents=True, exist_ok=True)
+    _, _, [stuck, idle] = batch(s, db, "2026-10-01_100000_1112", "split", OLD, items=2)
+    db.upsert_listing(stuck, "vinted", status="failed", error="Mismatch: photos 0 of 8 on the form")
+    old_cap = cleanup.EVIDENCE_CAP
+    cleanup.EVIDENCE_CAP = 250
+    try:
+        def shot(name: str, hours: float, size: int = 100) -> Path:
+            p = shots / name
+            p.write_bytes(b"x" * size)
+            when = NOW - timedelta(hours=hours)
+            os.utime(p, (when.timestamp(), when.timestamp()))
+            return p
+        oldest = shot(f"{idle}-depop-20261101-120000.png", 48)
+        middle = shot(f"{idle}-depop-20261102-120000.png", 24)
+        newest = shot(f"{idle}-depop-20261103-120000.png", 2)
+        problem = shot(f"{stuck}-vinted-20261101-120000.png", 72, 400)          # over the cap alone: still kept
+        page = shot(f"{idle}-vinted-20261103-120000.html", 3, 50)
+        out = cleanup.trim_evidence(s, db, NOW)
+        assert not oldest.exists() and problem.exists() and newest.exists()
+        assert out["files"] >= 1 and out["freed"] >= 100
+        assert not page.exists() and gzip.decompress(page.with_name(page.name + ".gz").read_bytes()) == b"x" * 50
+        assert middle.exists()                       # 350 bytes over a 250 cap: only the oldest (100) had to go
+    finally:
+        cleanup.EVIDENCE_CAP = old_cap
+
+
+def test_a_chrome_profiles_cache_is_emptied_before_it_opens_never_its_logins(tmp_path):
+    """WO53 §5: the poster's Chrome profile — its caches (over the cap) emptied before Chrome opens it; cookies and
+    storage untouched."""
+    from thrift_agent.post import base
+    prof = tmp_path / "chrome-posh"
+    (prof / "Default" / "Cache" / "Cache_Data").mkdir(parents=True)
+    (prof / "Default" / "Code Cache" / "js").mkdir(parents=True)
+    (prof / "Default" / "Cache" / "Cache_Data" / "f_000001").write_bytes(b"x" * 300)
+    (prof / "Default" / "Code Cache" / "js" / "a").write_bytes(b"x" * 100)
+    (prof / "Default" / "Cookies").write_bytes(b"session")
+    (prof / "Default" / "Local Storage").mkdir()
+    assert base.clear_cache(prof, over=1000) == 0 and (prof / "Default" / "Cache").is_dir()   # under the cap: kept
+    assert base.clear_cache(prof, over=200) == 400
+    assert not (prof / "Default" / "Cache").exists() and not (prof / "Default" / "Code Cache").exists()
+    assert (prof / "Default" / "Cookies").read_bytes() == b"session" and (prof / "Default" / "Local Storage").is_dir()

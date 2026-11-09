@@ -262,7 +262,7 @@ class Finder:
 
 def _unconfirmed(db, iid, r, created=DRESS[1]):
     out = Outcome("failed", clicked=True, error="PosterError: submitted — verifying: …", created_id=created,
-                  clicked_at=_t(created).timestamp() - 4, landing="closet")
+                  clicked_at=_t(DRESS[1]).timestamp() - 4, landing="closet")
     runner.record_outcome(db, iid, "poshmark", r, out, ["poshmark", "depop", "vinted"])
 
 
@@ -504,6 +504,23 @@ def test_a_test_run_that_meets_the_login_page_waits_its_cool_down(tmp_path, monk
     assert health.state(db, "depop")["tests"] == 1
 
 
+def test_an_owners_resume_that_meets_a_failing_test_names_the_real_problem(tmp_path, said):
+    """Live 2026-11-09 01:04: `thrift resume depop` → the test met the sell form without its shipping section — the
+    pause still read "PAUSED (owner): paused by the owner". Now it is the test's problem, said once."""
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    health.owner_pause(db, "depop")
+    health.owner_resume(db, "depop")
+    detail = "Mismatch: package nothing (plan package (any of Depops; the plan Small))"
+    health.tested(db, "depop", False, detail)
+    p = health.state(db, "depop")
+    assert p["kind"] == "site" and not p["owner"] and "package nothing" in p["reason"]
+    assert [m for m in said.ops if m.startswith("⛔ Depop paused at ")]                    # said once
+    health.tested(db, "depop", False, detail)
+    assert len([m for m in said.ops if m.startswith("⛔ Depop paused at ")]) == 1
+    assert "paused by the owner" not in health.summary(db)[0]
+
+
 def test_a_new_landing_is_said_once(tmp_path, said):
     s = _settings(tmp_path)
     db = DB(s.path("db"))
@@ -572,6 +589,49 @@ def test_thrift_text_sets_a_title_only_where_it_differs_and_adds_a_line(tmp_path
     assert rows["poshmark"]["title"] == new and rows["poshmark"]["description"].endswith("\nLabel size 9.")
     assert "title" not in rows["vinted"] and rows["vinted"]["description"] == "Dress.\nNew with tags.\nLabel size 9."
     assert edits.add_line("a\n#x #y", "b") == "a\nb\n#x #y"
+
+
+def test_the_reconciler_records_tonights_unrecorded_listing_once(tmp_path, clock, said, monkeypatch):
+    """§7: tonight's three, had nobody looked — live on Poshmark, our records "verifying": Poshmark's closet shows
+    them; created after our click, our title, our price, our cover → recorded, ONE private line; never a listing made
+    before our click, nor one for an item we never clicked for."""
+    from thrift_agent import reconcile
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid, r = _posh_item(db, tmp_path)
+    _unconfirmed(db, iid, r, created=None)                                  # no id named: verifying
+    queued, _ = _posh_item(db, tmp_path, title=SHORTS[0], n=2)
+    db.upsert_listing(queued, "poshmark", status="queued")                 # never clicked: never adopted
+    site = Poshmark(closet=[(DRESS[0], DRESS[1], 20), (SHORTS[0], SHORTS[1], 20),
+                            (DRESS[0], "6ae7aa61d73373a5d34b8611", 20)])     # an older listing with our title
+    clock.now = _t(DRESS[1]) + timedelta(minutes=30)
+    monkeypatch.setattr(runner.crosslist, "queue", lambda *a, **k: [])
+    out = asyncio.run(reconcile.run(s, db, {"poshmark": Finder("unknown")}, now=clock.now, get=site,
+                                    cover_check=lambda ours, theirs: DRESS[1] in theirs))
+    assert out["record"] == [(iid, f"{POSH}/listing/{DRESS[2]}-{DRESS[1]}")]
+    assert db.listing(iid, "poshmark")["status"] == "posted"
+    assert db.listing(queued, "poshmark")["status"] == "queued"
+    assert [m for m in said.ops if m.startswith("🔗")] == [
+        f"🔗 Poshmark: {DRESS[0]} was live but not recorded — recorded now: {POSH}/listing/{DRESS[2]}-{DRESS[1]}"]
+    again = asyncio.run(reconcile.run(s, db, {"poshmark": Finder("unknown")}, now=clock.now, get=site,
+                                      cover_check=lambda ours, theirs: True))
+    assert again["record"] == [] and len([m for m in said.ops if m.startswith("🔗")]) == 1
+
+
+def test_two_live_listings_for_one_item_are_said_once_and_nothing_deleted(tmp_path, clock, said):
+    from thrift_agent import reconcile
+    s = _settings(tmp_path)
+    db = DB(s.path("db"))
+    iid, _ = _posh_item(db, tmp_path)
+    db.upsert_listing(iid, "poshmark", status="posted", url=f"{POSH}/listing/{DRESS[2]}-{DRESS[1]}",
+                      listing_id=DRESS[1])
+    twin = "6af1430e0ef143d93e2167c4"
+    site = Poshmark(closet=[(DRESS[0], DRESS[1], 20), (DRESS[0], twin, 20)])
+    for _ in range(2):
+        asyncio.run(reconcile.run(s, db, {"poshmark": Finder("unknown")}, now=_t(DRESS[1]) + timedelta(hours=1),
+                                  get=site, cover_check=lambda ours, theirs: True))
+    lines = [m for m in said.ops if m.startswith("⚠️ Two live Poshmark listings")]
+    assert len(lines) == 1 and twin in lines[0] and DRESS[1] in lines[0] and "nothing deleted" in lines[0]
 
 
 # ---------------------------------------------------------------- grep: nobody is asked to check a site

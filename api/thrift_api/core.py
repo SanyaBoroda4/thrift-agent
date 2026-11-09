@@ -152,8 +152,8 @@ def process_email(db: Database, payload: dict, now: datetime | None = None, mode
     return _process(db, event, now, mode, fresh=True)
 
 
-MAYBE_SALE_LINE = ("❓ A {site} email may be a sale I didn't recognise: \"{subject}\" ({when}). If it's one of ours, "
-                   "it isn't taken down on the other sites yet — check it.")
+MAYBE_SALE_LINE = ("❓ A {site} email may be a sale I didn't recognise: \"{subject}\" ({when}) — it is read again "
+                   "every 15 minutes by the newest rules; nothing was taken down for it yet.")
 RECLASSIFY_DAYS = 7                    # WO49: ignored emails this recent are read again by today's rules
 
 
@@ -354,8 +354,18 @@ def _handling(db: Database, mode: str, received: datetime, now: datetime) -> str
 
 # --- a sale --------------------------------------------------------------------------------------------------------
 
-# WO33, the owner: no message may need a terminal command — the Mac's bot takes a reply to this line in the ops chat
-UNMATCHED_HOW = "If it's one of ours, reply to this message with words from its title; if not, nothing to do."
+# WO53 §6 (the owner): a sale the agent can't tie to one of its items is said once, quietly — never a question; the
+# agent checked its records itself (the address, the SKU, the title, then its words and the price)
+NOT_OURS = "Sold on {site}: {title} — not one of the agent's listings, nothing to take down."
+
+def _short(title: str | None, limit: int = 70) -> str:
+    """A sale's title as the quiet line says it: whole words, never cut mid-word."""
+    t = " ".join(str(title or "").split())
+    if len(t) <= limit:
+        return t
+    cut = t[:limit - 1].rsplit(" ", 1)[0]
+    return cut.rstrip(" ,;:-") + "…"
+
 
 def _sale(db: Database, mp: str, parsed: dict, message_id: str, subject: str | None, handling: str, now: datetime,
           out: Outbox) -> dict:
@@ -405,7 +415,7 @@ def _sale(db: Database, mp: str, parsed: dict, message_id: str, subject: str | N
         else:
             out.group(_sold_line(site, title, parsed.get("price"), ship_day))
         if status == "unmatched":
-            out.ops(f"Unmatched sale on {site} ({sale_id}): {subject or title}\n{UNMATCHED_HOW}")
+            out.ops(NOT_OURS.format(site=site, title=_short(parsed.get("title") or subject or title)))
     return {"status": "unmatched" if status == "unmatched" else "matched", "sale_id": sale_id, "sale_status": status,
             "item_id": item_id, "matched_by": how, "ship_by": ship_day.isoformat(), "tasks": [t["id"] for t in tasks]}
 

@@ -599,8 +599,17 @@ edit_save; UNVERIFIED: block, captcha, verify, skirt_length, promo_close, listin
   enabled site is posted, failed, skipped, drafted, dry-run, or queued on a paused / capped site / an extension away 10
   min since the first live listing.
 - **The housekeeping** (every few minutes in the poster): announcements, `crosslist.retry_failed` (an item failure tried
-  again 30 min later), the photo check, the sale net, the price-drop plan, `pricedrop.announce`, the worker check, the
-  memory watch, `jobs` health, alarms, `sales.repair_gone` at start.
+  again 30 min later), the photo check, the sale net, the price-drop plan, `pricedrop.announce`, the reconciler, the
+  worker check, the memory watch, `jobs` health, alarms, `sales.repair_gone` at start.
+- **The reconciler** (WO53 §7, `thrift_agent/reconcile.py`, every 30 min — `EVERY_S` — so also before the 9 PM line;
+  only with the real Poshmark poster): Poshmark's closet newest first (`postcheck.posh_closet`, plain HTTP) against our
+  records. A live listing of ours that isn't recorded — made after OUR click (a row posting / verifying / unconfirmed;
+  a merely queued row never adopts one), our title key, our price, our cover (phash) — is recorded
+  (`runner.confirm_found`: posted, the ✅ card, the other sites queued) with ONE private "🔗 Poshmark: <title> was live
+  but not recorded — recorded now: <url>"; two live listings for one item (or two new ones) → ONE private "⚠️ Two live
+  Poshmark listings for <title>: <url> and <url> — nothing deleted." (kv `reconcile_said`, event `reconcile`). A
+  recorded listing that is gone is the photo check's sale net; Depop's / Vinted's unrecorded publishes the verifying
+  re-check's.
 
 ### Failures, pauses, self-healing (WO51, WO52)
 - **Every failure has a kind** (`thrift_agent/health.py`, `kind_of`): item (the site refused this listing, a field it
@@ -616,7 +625,9 @@ edit_save; UNVERIFIED: block, captcha, verify, skirt_length, promo_close, listin
   was published"); after 30 min (doubling to 4 h) the next item is filled as a quiet dry run (`parallel._poshmark_test`
   / `_cross_test`; a test that meets the account page again is a failed test — its wait doubles, live 11-08 it ran every
   ~5 s): passing → "✅ Depop back to normal — posting resumed, 3 items going up." (`health.going_text`: true about the
-  hours). `thrift pause <site>` / `thrift resume <site> [--dry]`. A login / CAPTCHA / block / check page
+  hours). `thrift pause <site>` / `thrift resume <site> [--dry]` — a resume whose test fails becomes THAT problem's
+  pause, said once (live 11-09: Depop read "PAUSED (owner)" while its form lacked the shipping section), so the 🚨
+  sees it. A login / CAPTCHA / block / check page
   (`crosslist.account_blocked`) stops the site with the group's plain line; take-downs run on a site paused for
   failures, not on one with such a page.
 - **Browsers**: Poshmark's context (`parallel.Browser`, `Browser.ensure`, probed every 5 min `PROBE_EVERY`; its "close"
@@ -792,7 +803,8 @@ Both sites turn away any browser driven over DevTools; the extension runs in the
 `post/cross.py`, kept; Depop's `api` = a stub, `post/depop_api.py`). Poshmark stays on Playwright.
 - **The Thrift Chrome** (`deploy/com.thrift.chrome-cross.plist`): `--user-data-dir=… --no-first-run
   --no-default-browser-check --restore-last-session --disable-backgrounding-occluded-windows
-  --disable-renderer-backgrounding https://www.vinted.com/`. Never `--remote-debugging-*`, `--enable-automation`,
+  --disable-renderer-backgrounding --disk-cache-size=268435456 https://www.vinted.com/`. Never `--remote-debugging-*`,
+  `--enable-automation`,
   `--load-extension` (a test checks). KeepAlive only after a crash (`SuccessfulExit: false`). The window may sit behind
   others, never minimized. Owner steps once: load `~/thrift-agent/ext` unpacked (Developer mode), paste `cat
   ~/thrift/var/ext_token` in its options, log in to vinted.com and depop.com there, `enabled: true` per site.
@@ -930,7 +942,10 @@ Both sites turn away any browser driven over DevTools; the extension runs in the
   reminder to ship it: …"; an email still saying "sold" that no rule took (`emails.maybe_sale`) → ONE private "❓ … may
   be a sale I didn't recognise"; ignored emails re-read every 15 min for 7 days (`core.reclassify`) → "💰 Found late …".
 - **A sale**: "💰 Sold on <Site>: <title> — $X. Ship by Thu Oct 9." Matched by listing URL / id / Depop SKU, else the site's
-  posted listings by title (≥ 0.9), else unmatched (private; `thrift sales match`; a reply with title words). Take-down
+  posted listings by title (≥ 0.9), else by the title's words (≥ 60%, `match.WORDS_SHARE`) AND its price, exactly one
+  item (`match.item_for_words_and_price`); else unmatched — never a question (WO53 §6): ONE quiet private "Sold on
+  Poshmark: Ralph Lauren Home Leopard-Print 4 Dinner Plates… — not one of the agent's listings, nothing to take down."
+  (`core.NOT_OURS`, whole words; `thrift sales match` and a reply with title words still work). Take-down
   tasks for every other posted site (`core.ensure_takedowns` on every path: a listing synced after the sale, the order
   sweep, a task left to her reopened once); sold twice → "⚠️ Sold twice …". SHIPPED stops reminders, DELIVERED closes,
   CANCELLED is said (no automatic relist). GET /tasks also answers `sold` (items whose queued rows become `skipped:
@@ -994,11 +1009,23 @@ Both sites turn away any browser driven over DevTools; the extension runs in the
   backstop). Items keep ONE copy, the work copy (`work/<batch>/item_NN/photos` + cover): the archive copy of a split
   share goes 7 days (`KEEP_DAYS`) after the share once every item has its work copy; `work/<batch>/all` once split;
   sold items' work photos once the sale is shipped or done (never with a listing queued / posting); repeat / empty /
-  failed / test shares after 7 days; evidence (`failed/shots`) after 14 days (`EVIDENCE_DAYS`) except an item's with an
-  open problem (`cleanup.open_problems`). The photo memory and the DB are never touched, nor a share in flight or a
-  work copy still needed. Once a day from the worker (`cleanup.tick`), event `cleanup`, kv `cleanup_last`; no line of its
-  own (the 9 PM summary). **Disk** (`cleanup.disk_watch`, 10 min): under 5 GB free → ONE private line naming thrift's
-  folders; back above 6 GB silently (event `disk_ok`); `thrift status` "disk: X free of Y".
+  failed / test shares after 7 days. WO53 §5: a share whose items are ALL live on all three sites (or sold and shipped,
+  or never listed — `cleanup.live_everywhere`) lets its archive copy go a day after it came (`SETTLED_AFTER`, kind
+  `settled`) and its contact / regroup sheet at once (kind `sheet`). **Evidence** (`failed/shots`, 2.2 GB on 11-08):
+  after 14 days (`EVIDENCE_DAYS`); an item's an hour after it is live on all three; the folder kept under 300 MB
+  (`EVIDENCE_CAP`, the oldest first); pages (HTML) older than an hour gzipped (`<name>.html.gz`, `gzip -dc`) — hourly
+  (`trim_evidence`, kv `evidence_trim_at`, event `evidence_trimmed`) and at once before a low-disk line; an item with an
+  open problem (`cleanup.open_problems`) keeps every file, even over the cap. **Chrome caches**: both of our Chromes
+  `--disk-cache-size=268435456` (the Thrift Chrome's plist from its next launchd bootstrap — `kickstart -k` keeps the
+  loaded arguments; Poshmark's at launch), Poshmark's profile caches (Cache, Code Cache, GPUCache; never cookies or
+  storage) emptied before the poster opens it when over 256 MB (`base.clear_cache`). The photo memory and the DB are
+  never touched, nor a share in flight or a work copy still needed. Once a day from the worker (`cleanup.tick`), event
+  `cleanup`, kv `cleanup_last`; no line of its own (the 9 PM summary). **Disk** (`cleanup.disk_watch`, 10 min): under
+  5 GB free → the evidence trimmed first, then ONE private "⚠️ The Mac has 3.6 GB free (under 5 GB) — please free space
+  on the Mac. The biggest: iPhone backups (Finder → the iPhone → Manage Backups) 35.0 GB, … The agent already freed
+  1.6 GB today; its own folders take 900 MB." (`cleanup.biggest`: `du -sk` of `BIG_USERS` + the swap, time-limited;
+  never iCloud or failing-share wording); back above 6 GB silently (event `disk_ok`); `thrift status` "disk: X free
+  of Y".
 
 ## Commands
 - Intake / items: `thrift init | run | process <dir> | status | show <item> | doctor` (`doctor.py`; also a reply "doctor"

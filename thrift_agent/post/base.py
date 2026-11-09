@@ -70,12 +70,44 @@ class Outcome:
     clicked_at: float | None = None  # WO53: when the final click was (epoch seconds, UTC)
 
 
+CACHE_CAP = 256 * 1024 ** 2       # WO53 §5: each of our Chromes' disk cache at most this
+CACHE_DIRS = ("Cache", "Code Cache", "GPUCache")
+
+
+def clear_cache(profile_dir: Path, over: int = CACHE_CAP) -> int:
+    """WO53 §5: a profile's caches emptied while its Chrome is closed (the poster opens it: nothing runs in it then),
+    when they hold more than `over` together. Cookies, logins and storage are never touched. Returns the bytes freed."""
+    import shutil
+    dirs = [d for d in (Path(profile_dir) / "Default" / n for n in CACHE_DIRS) if d.is_dir()]
+    sizes = {}
+    for d in dirs:
+        try:
+            sizes[d] = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+        except OSError:
+            sizes[d] = 0
+    if sum(sizes.values()) <= over:
+        return 0
+    freed = 0
+    for d, n in sizes.items():
+        try:
+            shutil.rmtree(d)
+            freed += n
+        except OSError:
+            continue
+    return freed
+
+
 async def open_browser(profile_dir: Path, timezone_id: str) -> tuple[object, BrowserContext]:
     """Real Chrome, headed, persistent profile — the same browser you log into by hand."""
+    try:
+        clear_cache(profile_dir)                        # WO53 §5: before Chrome opens it, never while it runs
+    except Exception:  # noqa: BLE001 — a cache that can't be cleared is no reason not to open
+        pass
     pw = await async_playwright().start()
     ctx = await pw.chromium.launch_persistent_context(
         str(profile_dir), channel="chrome", headless=False,
         viewport={"width": 1440, "height": 900}, locale="en-US", timezone_id=timezone_id,
+        args=[f"--disk-cache-size={CACHE_CAP}"],        # WO53 §5: Chrome's cache at most 256 MB on the Mac's disk
     )
     return pw, ctx
 

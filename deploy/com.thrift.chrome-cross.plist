@@ -19,6 +19,7 @@
     <string>--restore-last-session</string>
     <string>--disable-backgrounding-occluded-windows</string>
     <string>--disable-renderer-backgrounding</string>
+    <string>--disk-cache-size=268435456</string>
     <string>https://www.vinted.com/</string>
   </array>
   <key>RunAtLoad</key><true/>

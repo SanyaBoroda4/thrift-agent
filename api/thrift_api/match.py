@@ -83,8 +83,37 @@ def item_for_title(db: Database, marketplace: str, title: str | None) -> str | N
     return None
 
 
+WORDS_SHARE = 0.6           # WO53 §6: the share of the sale's title words an item's title must hold (with its price)
+
+
+def _words(text: object) -> set[str]:
+    return {w for w in norm_title(text).split() if len(w) > 2 or w.isdigit()}
+
+
+def item_for_words_and_price(db: Database, marketplace: str, title: str | None, price) -> str | None:
+    """WO53 §6: our records checked by the agent itself, never the owner — the one item listed (or once listed) on
+    `marketplace` whose title holds most of the sale's title words AND whose price is the sale's (whole dollars); two
+    such → none (never a guess)."""
+    want = _words(title)
+    try:
+        sold = round(float(price)) if price not in (None, "") else None
+    except (TypeError, ValueError):
+        sold = None
+    if not want or sold is None:
+        return None
+    found = set()
+    for row in db.query("SELECT l.item_id, l.price AS lprice, i.title, i.price AS iprice FROM listings l JOIN items i "
+                        "ON i.id = l.item_id WHERE l.marketplace = ? AND l.status IN ('posted', 'delisting', 'delisted', "
+                        "'sold')", (marketplace,)):
+        theirs = _words(row["title"])
+        prices = {round(float(p)) for p in (row["lprice"], row["iprice"]) if p not in (None, "")}
+        if theirs and len(want & theirs) / len(want) >= WORDS_SHARE and sold in prices:
+            found.add(row["item_id"])
+    return found.pop() if len(found) == 1 else None
+
+
 def match_sale(db: Database, marketplace: str, parsed: dict) -> tuple[str | None, str | None]:
-    """(item id, how: "sku" | "listing" | "title") or (None, None) — see the module."""
+    """(item id, how: "sku" | "listing" | "title" | "words and price") or (None, None) — see the module."""
     item = item_for_sku(db, parsed.get("sku"))
     if item:
         return item, "sku"
@@ -92,4 +121,7 @@ def match_sale(db: Database, marketplace: str, parsed: dict) -> tuple[str | None
     if item:
         return item, "listing"
     item = item_for_title(db, marketplace, parsed.get("title"))
-    return (item, "title") if item else (None, None)
+    if item:
+        return item, "title"
+    item = item_for_words_and_price(db, marketplace, parsed.get("title"), parsed.get("price"))
+    return (item, "words and price") if item else (None, None)

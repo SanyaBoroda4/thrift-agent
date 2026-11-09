@@ -336,6 +336,15 @@ def tested(db: DB, mp: str, ok: bool, detail: str | None = None, at: datetime | 
         p["last_test"] = (detail or "")[:200]
         if not p.get("owner"):
             p["due"] = _iso(t + timedelta(seconds=p["wait"]))
+        if p.get("kind") == "owner" and not p.get("owner") and detail:
+            # WO53: the owner's resume met a failing test — the pause is now the problem the test met (live 11-09:
+            # Depop "PAUSED (owner)" for a missing shipping address), said once, and the alarm can see it
+            kind = kind_of(detail)
+            kind = SITE if kind == ITEM else kind
+            p.update(kind=kind, reason=f"{kind}: {detail}"[:400], problem=signature(detail), since=_iso(t))
+            if p["problem"] not in (p.get("said") or []):
+                notify.say(pause_text(db, mp, plain(mp, detail, kind), t, p.get("due")))
+                p["said"] = [*(p.get("said") or []), p["problem"]]
     data[mp] = p
     _save(db, data)
     return "dry" if request == "dry" else "still"

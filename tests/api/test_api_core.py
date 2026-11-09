@@ -163,9 +163,23 @@ def test_an_unmatched_sale(db, live, sent):
     out = core.process_email(db, posh_sale("posh-x", title="Nike Air Max 90 size 9", url=None, order=None), NOW)
     assert (out["status"], out["sale_status"], out["item_id"]) == ("unmatched", "unmatched", None)
     assert texts(sent, "group") == ["💰 Sold on Poshmark: Nike Air Max 90 size 9 — $35. Ship by Thu Oct 15."]
-    assert texts(sent, "ops") == [f"Unmatched sale on Poshmark ({out['sale_id']}): Congratulations! Your item has sold"
-                                  f"\n{core.UNMATCHED_HOW}"]       # WO33: a reply settles it, never a command
+    # WO53 §6: the agent checked its own records — one quiet line, never a question
+    assert texts(sent, "ops") == ["Sold on Poshmark: Nike Air Max 90 size 9 — not one of the agent's listings, nothing "
+                                  "to take down."]
     assert tasks(db) == []
+
+
+def test_a_sale_whose_title_differs_is_matched_by_its_words_and_price(db, live, sent):
+    """WO53 §6: the title the email gives differs from ours (her own edit, a cut) — most of its words and the same
+    price tie it to our item, never a question to the owner."""
+    seed(db)
+    row = db.one("SELECT title, price FROM items WHERE id = ?", (ITEM,))
+    words = row["title"].split()
+    seen = " ".join(words[:-1] + ["Vintage"])                              # one word changed, one added
+    out = core.process_email(db, posh_sale("posh-y", title=seen, url=None, order=None,
+                                           price=f"${float(row['price']):.2f}"), NOW)
+    assert (out["sale_status"], out["item_id"], out["matched_by"]) == ("delisting", ITEM, "words and price"), out
+    assert not any("not one of the agent's listings" in t for t in texts(sent, "ops"))
 
 
 def test_a_second_email_about_the_same_sale_only_fills_in(db, live, sent):

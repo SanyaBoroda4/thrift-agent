@@ -698,6 +698,13 @@ async def _housekeeping(s, db, ps, cross, dry, stop, state, sites, until_idle) -
                 pricedrop.announce(s, db)
             if not dry and photocheck.due(db) and not runner._paused(db):   # WO45 §6: every listing read back
                 await photocheck.run(s, db, ps)
+            if not dry and isinstance(ps.get("poshmark"), runner.PoshmarkPoster):   # WO53 §7: the closet vs our records
+                from thrift_agent import reconcile
+                if reconcile.due(db, time.time()):
+                    try:
+                        await reconcile.run(s, db, ps)
+                    except Exception as e:  # noqa: BLE001 — logged; the next half hour tries again
+                        db.log(None, "reconcile_failed", f"{type(e).__name__}: {e}")
             if not dry:                                       # WO52 §4/§5: jobs alive, one alarm per blocked site
                 from thrift_agent import alarm, jobs, memory
                 jobs.check(db)

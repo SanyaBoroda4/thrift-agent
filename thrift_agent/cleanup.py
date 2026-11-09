@@ -46,6 +46,16 @@ from thrift_agent.db import DB, loads
 
 KEEP_DAYS = 7                      # the archive copy of a share, a failed / repeat / empty / test share's folders
 EVIDENCE_DAYS = 14                 # the evidence in failed/shots (Alex, 2026-10-20) — an open problem's stays
+EVIDENCE_CAP = 300 * 1024 ** 2     # WO53 §5: the evidence folder kept under this, the oldest going first (2.2 GB on
+#                                    2026-11-08 — the photo check's page reads, ~1 MB each, a few dozen a day)
+EVIDENCE_LIVE_AFTER = 3600         # … an item live on all three sites: its evidence goes this long after it was made
+GZIP_AFTER = 3600                  # … and an evidence page (HTML) older than this is kept gzipped
+TRIM_EVERY = 3600                  # the trim (the cap, the live items, the gzip) runs this often, not once a day
+TRIM_AT = "evidence_trim_at"       # kv
+SETTLED_AFTER = timedelta(days=1)  # WO53 §5: a share whose items are all live on all three sites (or retired) lets
+#                                    its spare copies go this long after it came — not KEEP_DAYS (late photos come within
+#                                    hours; `redo` has nothing left to rebuild)
+SHEETS = ("contact_sheet.png", "regroup_sheet.png")
 SETTLED_SKIPS = ("shared again", "already live", "sold", "not published automatically")   # skips that wait for no one
 _ITEM_FILE = re.compile(r"^(i_\d{6}_[0-9a-f]{6})[-.]")      # "i_261019_09053e-vinted-20261020-080011.png"
 _LISTING_FILE = re.compile(r"^([0-9a-f]{24})-")              # Poshmark's listing id: "6ad6d53a…-poshmark-…-price-dry.png"
@@ -62,8 +72,18 @@ ASIDE = "-icloud"                  # WO46's set-aside iCloud copies (a day's wor
 _ARCHIVED = re.compile(r"^\d{8}_")
 _SECOND = re.compile(r"^(?P<base>.+?) (?P<n>\d{1,2})$")       # iCloud's second folder of one name: "<id> 2"
 IN_FLIGHT = ("new", "needs_confirm", "regroup")
-LOW_LINE = ("⚠️ The Mac has {free:.1f} GB free (under {low:.0f} GB). iCloud may stop downloading her photos and a "
-            "share can fail — please free space on the Mac. Thrift's own folders: {ours}.")
+LOW_LINE = ("⚠️ The Mac has {free:.1f} GB free (under {low:.0f} GB) — please free space on the Mac. The biggest: "
+            "{big}. The agent already freed {freed} today; its own folders take {ours}.")
+# WO53 §5: where the Mac's space goes, in the owner's words (measured only for the low-disk line: `du`, time-limited)
+BIG_USERS = (("Library/Application Support/MobileSync", "iPhone backups (Finder → the iPhone → Manage Backups)"),
+             ("Pictures", "Photos (Photos → Settings → iCloud → Optimize Mac Storage)"),
+             ("Downloads", "Downloads"),
+             ("Library/Caches", "app caches"),
+             ("Library/Messages", "Messages attachments"),
+             ("Library/Mail", "Mail"),
+             ("Movies", "Movies"),
+             ("Library/Application Support/Google", "Chrome's own data"),
+             ("Library/Containers", "app containers"))
 
 
 @dataclass
@@ -140,6 +160,12 @@ def plan(s: Settings, db: DB, now: datetime | None = None, api=None) -> tuple[li
     archive, inbox, work = s.path("archive"), s.path("inbox"), s.path("work")
     dest_of = _archived_dests(db)
     shipped = shipped_items(db, api)
+    live = live_everywhere(db)
+
+    def settled(items) -> bool:
+        """WO53 §5: every item of the share live on all three sites, sold and shipped, or never listed."""
+        return bool(items) and all(i["id"] in live or i["id"] in shipped or i["status"] in ("dropped", "failed")
+                                   for i in items)
 
     # 4. sold and shipped: the work photos
     for iid, sale in shipped.items():
@@ -178,20 +204,29 @@ def plan(s: Settings, db: DB, now: datetime | None = None, api=None) -> tuple[li
             continue
         main = batches[0]
         made = _when(main["created_at"]) or _mtime(d)
-        if made >= cutoff:
+        if made >= now - SETTLED_AFTER:
             continue
         if any(b["status"] in IN_FLIGHT for b in batches):
-            kept.append(f"{d.name}: a batch on it is still {', '.join(b['status'] for b in batches)}")
+            if made < cutoff:
+                kept.append(f"{d.name}: a batch on it is still {', '.join(b['status'] for b in batches)}")
             continue
         items = [i for b in batches for i in db.conn.execute("SELECT * FROM items WHERE batch_id=?",
                                                               (b["id"],)).fetchall()]
+        early = made >= cutoff
+        if early and not settled(items):
+            continue                                  # under KEEP_DAYS: only a share whose items are all settled
         missing = [i["id"] for i in items if i["status"] not in ("dropped", "failed") and i["id"] not in shipped
                    and not _work_copy(i)]
         if missing:
             kept.append(f"{d.name}: {', '.join(missing)} ha{'s' if len(missing) == 1 else 've'} no work copy — the "
                         "share folder is its only one")
             continue
-        removals.append(Removal(str(d), "archive", _why_archive(main, items, shipped), folder_bytes(d), main["id"]))
+        if early:
+            removals.append(Removal(str(d), "settled", "every item from it is live on all three sites (WO53)",
+                                    folder_bytes(d), main["id"]))
+        else:
+            removals.append(Removal(str(d), "archive", _why_archive(main, items, shipped), folder_bytes(d),
+                                    main["id"]))
 
     # 1. the inbox: iCloud's second folder of a share already taken, a folder that came back after it was taken
     try:
@@ -249,6 +284,13 @@ def plan(s: Settings, db: DB, now: datetime | None = None, api=None) -> tuple[li
                 and (pipeline.registered_names(db, b["id"]) is not None or made < cutoff):
             removals.append(Removal(str(allp), "work_all", "the preparation's copy of the share's photos (the items "
                                     "keep theirs)", folder_bytes(allp), b["id"]))
+        sheets = [d / n for n in SHEETS if (d / n).is_file()]
+        if sheets and b["status"] in ("split", "joined", "failed"):          # WO53 §5: [Wrong photos] can't use it
+            items = db.conn.execute("SELECT id, status FROM items WHERE batch_id=?", (b["id"],)).fetchall()
+            if settled(items):
+                for p in sheets:
+                    removals.append(Removal(str(p), "sheet", "every item of the share is live on all three sites",
+                                            folder_bytes(p), b["id"]))
 
     # 8. the evidence: files older than EVIDENCE_DAYS, except an item's while a problem of it is still open
     removals += evidence_plan(s, db, now, kept)
@@ -284,42 +326,116 @@ def open_problems(db: DB) -> dict[str, str]:
     return out
 
 
+def live_everywhere(db: DB) -> set[str]:
+    """WO53 §5: the items live on every site they have a listing on — their evidence has served its purpose."""
+    rows: dict[str, list[bool]] = {}
+    for r in db.conn.execute("SELECT item_id, status, url FROM listings"):
+        rows.setdefault(r["item_id"], []).append(r["status"] in ("posted", "sold", "delisted") and bool(r["url"]))
+    return {iid for iid, live in rows.items() if len(live) >= 3 and all(live)}
+
+
 def evidence_plan(s: Settings, db: DB, now: datetime, kept: list[str]) -> list[Removal]:
-    """Rule 8: the files in failed/shots older than EVIDENCE_DAYS, one Removal per item (its files), the files no item
-    of ours is named in together under ref None; an item with an open problem keeps every file, said once in `kept`."""
+    """Rule 8 + WO53 §5: the files in failed/shots — older than EVIDENCE_DAYS; an item's once it is live on all three
+    sites (an hour on); then, while the folder is still over EVIDENCE_CAP, the oldest first. One Removal per item and
+    reason; the files no item of ours is named in under ref None. An item with an open problem keeps every file, said
+    once in `kept` (even over the cap: it is the problem's evidence)."""
     shots = s.path("failed") / "shots"
     cutoff = now - timedelta(days=EVIDENCE_DAYS)
     try:
-        old = [p for p in shots.iterdir() if p.is_file() and _mtime(p) < cutoff]
+        files = [p for p in shots.iterdir() if p.is_file()]
     except OSError as e:
         kept.append(f"the evidence folder can't be read now ({type(e).__name__})")
         return []
-    if not old:
+    if not files:
         return []
     opened = open_problems(db)
+    live = live_everywhere(db)
     by_listing: dict[str, str] = {}
     for r in db.conn.execute("SELECT listing_id, item_id FROM listings WHERE listing_id IS NOT NULL"):
         by_listing[str(r["listing_id"])] = r["item_id"]
-    groups: dict[str | None, list[Path]] = {}
+    groups: dict[tuple[str | None, str], list[Path]] = {}
     held: dict[str, int] = {}
-    for p in sorted(old):
+    rest: list[tuple[datetime, Path, str | None]] = []
+    for p in sorted(files):
         ref = None
         if m := _ITEM_FILE.match(p.name):
             ref = m[1]
         elif m := _LISTING_FILE.match(p.name):
             ref = by_listing.get(m[1])
+        when = _mtime(p)
         if ref in opened:
-            held[ref] = held.get(ref, 0) + 1
+            if when < cutoff:
+                held[ref] = held.get(ref, 0) + 1
             continue
-        groups.setdefault(ref, []).append(p)
+        if when < cutoff:
+            groups.setdefault((ref, f"evidence older than {EVIDENCE_DAYS} days"), []).append(p)
+        elif ref in live and (now - when).total_seconds() > EVIDENCE_LIVE_AFTER:
+            groups.setdefault((ref, "evidence of an item live on all three sites"), []).append(p)
+        else:
+            rest.append((when, p, ref))
+    total = sum(folder_bytes(p) for _, p, _ in rest)          # what stays after the rules above
+    if total > EVIDENCE_CAP:                          # the cap: the oldest first, until it fits
+        for when, p, ref in sorted(rest, key=lambda x: x[0]):
+            if total <= EVIDENCE_CAP:
+                break
+            size = folder_bytes(p)
+            groups.setdefault((ref, f"evidence over the folder's {human(EVIDENCE_CAP)} cap (the oldest first)"),
+                              []).append(p)
+            total -= size
     for ref, n in sorted(held.items()):
         kept.append(f"{ref}: {n} evidence file{'s' if n != 1 else ''} older than {EVIDENCE_DAYS} days kept — "
                     f"{opened[ref]}")
     out = []
-    for ref, files in sorted(groups.items(), key=lambda kv: kv[0] or ""):
-        why = f"evidence older than {EVIDENCE_DAYS} days" + ("" if ref else " (no item of ours in its name)")
-        out.append(Removal(str(shots), "evidence", why, sum(folder_bytes(p) for p in files), ref,
-                           [str(p) for p in files]))
+    for (ref, why), group in sorted(groups.items(), key=lambda kv: (kv[0][0] or "", kv[0][1])):
+        out.append(Removal(str(shots), "evidence", why + ("" if ref else " (no item of ours in its name)"),
+                           sum(folder_bytes(p) for p in group), ref, [str(p) for p in group]))
+    return out
+
+
+def gzip_pages(s: Settings, now: datetime | None = None) -> int:
+    """WO53 §5: the evidence pages (HTML, ~0.3–2 MB each) older than GZIP_AFTER kept gzipped (`<name>.html.gz`, a
+    tenth of the size; `gzip -dc` reads one). Returns the bytes saved."""
+    import gzip
+    now = now or datetime.now(timezone.utc)
+    shots = s.path("failed") / "shots"
+    saved = 0
+    try:
+        pages = [p for p in shots.iterdir() if p.is_file() and p.suffix == ".html"]
+    except OSError:
+        return 0
+    for p in pages:
+        if (now - _mtime(p)).total_seconds() < GZIP_AFTER:
+            continue
+        try:
+            raw = p.read_bytes()
+            target = p.with_name(p.name + ".gz")
+            target.write_bytes(gzip.compress(raw, compresslevel=6))
+            saved += len(raw) - target.stat().st_size
+            p.unlink()
+        except OSError:
+            continue
+    return saved
+
+
+def trim_evidence(s: Settings, db: DB, now: datetime | None = None) -> dict:
+    """WO53 §5, hourly from the worker's tick: the evidence plan carried out (its cap, the live items, the old) and the
+    pages gzipped — the daily run does the rest. Returns {"freed", "files", "gzipped"}."""
+    now = now or datetime.now(timezone.utc)
+    kept: list[str] = []
+    freed = n = 0
+    for r in evidence_plan(s, db, now, kept):
+        for f in r.files:
+            try:
+                size = Path(f).stat().st_size
+                Path(f).unlink(missing_ok=True)
+                freed += size
+                n += 1
+            except OSError:
+                continue
+    zipped = gzip_pages(s, now)
+    out = {"freed": freed, "files": n, "gzipped": zipped}
+    if n or zipped:
+        db.log(None, "evidence_trimmed", out)
     return out
 
 
@@ -457,16 +573,20 @@ def line(removed: list[Removal], freed: int) -> str:
              "duplicate": ("duplicate", "duplicates"), "sold": ("sold item's photos", "sold items' photos"),
              "work_all": ("prep copy", "prep copies"), "work_batch": ("old work folder", "old work folders"),
              "staging": ("old upload staging", "old upload stagings"),
+             "sheet": ("contact sheet", "contact sheets"),
+             "settled": ("share folder whose items are all live (archive)",
+                         "share folders whose items are all live (archive)"),
              "unknown": ("unknown archive folder", "unknown archive folders")}
     parts = []
-    for kind in ("archive", "duplicate", "sold", "work_all", "work_batch", "staging", "unknown"):
+    for kind in ("archive", "settled", "duplicate", "sold", "work_all", "sheet", "work_batch", "staging",
+                 "unknown"):
         n = counts.get(kind)
         if n:
             parts.append(f"{n} {words[kind][0 if n == 1 else 1].format(d=KEEP_DAYS)}")
     if counts.get("evidence"):
         files = sum(len(r.files) for r in removed if r.kind == "evidence")
-        items = sum(1 for r in removed if r.kind == "evidence" and r.ref)
-        parts.append(f"{files} evidence file{'s' if files != 1 else ''} older than {EVIDENCE_DAYS} days"
+        items = len({r.ref for r in removed if r.kind == "evidence" and r.ref})
+        parts.append(f"{files} evidence file{'s' if files != 1 else ''}"
                      + (f" ({items} item{'s' if items != 1 else ''})" if items else ""))
     return f"🧹 Cleanup: freed {human(freed)} — " + ", ".join(parts) + "."
 
@@ -526,6 +646,56 @@ def tick(s: Settings, db: DB) -> None:
             run(s, db, say=False)          # WO49: the 9 PM summary says it (the heartbeat carries cleanup_last)
         except Exception as e:  # noqa: BLE001
             db.log(None, "cleanup_failed", f"{type(e).__name__}: {e}")
+    if time.time() - float(db.kv_get(TRIM_AT) or 0) >= TRIM_EVERY:     # WO53 §5: the evidence every hour
+        db.kv_set(TRIM_AT, str(time.time()))
+        try:
+            trim_evidence(s, db)
+        except Exception as e:  # noqa: BLE001
+            db.log(None, "evidence_trim_failed", f"{type(e).__name__}: {e}")
+
+
+def biggest(home: Path | None = None, top: int = 3, timeout: float = 60.0) -> list[tuple[str, int]]:
+    """WO53 §5: the Mac's biggest space users among BIG_USERS (and its swap), largest first — `du -sk`, each folder
+    given a share of `timeout`; what can't be measured is left out."""
+    import subprocess
+    home = home or Path.home()
+    out: list[tuple[str, int]] = []
+    for rel, label in BIG_USERS:
+        p = home / rel
+        if not p.exists():
+            continue
+        try:
+            res = subprocess.run(["du", "-sk", str(p)], capture_output=True, text=True,
+                                 timeout=max(5.0, timeout / len(BIG_USERS)))
+            kb = int((res.stdout.split() or ["0"])[0])
+        except (OSError, ValueError, subprocess.SubprocessError):
+            continue
+        out.append((label, kb * 1024))
+    try:
+        res = subprocess.run(["sysctl", "-n", "vm.swapusage"], capture_output=True, text=True, timeout=5)
+        used = re.search(r"used = ([\d.]+)M", res.stdout)
+        if used:
+            out.append(("memory swap (a restart clears it)", int(float(used[1]) * 1024 ** 2)))
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return sorted(out, key=lambda x: -x[1])[:top]
+
+
+def freed_today(db: DB, now: datetime | None = None) -> int:
+    """The bytes the agent's cleanup and evidence trims freed today (local day)."""
+    now = now or datetime.now(timezone.utc)
+    day = now.astimezone().date().isoformat()
+    total = 0
+    for r in db.conn.execute("SELECT ts, kind, detail FROM events WHERE kind IN ('cleanup', 'evidence_trimmed') AND "
+                             "ts >= ?", ((now - timedelta(days=1)).isoformat(timespec="seconds"),)):
+        t = _when(r["ts"])
+        if t is None or t.astimezone().date().isoformat() != day:
+            continue
+        d = loads(r["detail"]) or {}
+        if d.get("dry"):
+            continue
+        total += int(d.get("freed") or 0) + int(d.get("gzipped") or 0)
+    return total
 
 
 def disk_watch(s: Settings, db: DB, now: float | None = None) -> str | None:
@@ -540,10 +710,14 @@ def disk_watch(s: Settings, db: DB, now: float | None = None) -> str | None:
     free_gb = free / 1024 ** 3
     said = db.kv_get(DISK_SAID)
     if free_gb < LOW_GB and not said:
+        try:                                   # WO53 §5: first what the agent can free itself — its evidence now
+            trim_evidence(s, db)
+        except Exception as e:  # noqa: BLE001
+            db.log(None, "evidence_trim_failed", f"{type(e).__name__}: {e}")
         z = sizes(s)
-        ours = (f"archive {human(z['archive'])}, work {human(z['work_items'] + z['work_all'])}, evidence "
-                f"{human(z['shots'])}")
-        text = LOW_LINE.format(free=free_gb, low=LOW_GB, ours=ours)
+        ours = human(sum(z.values()))
+        big = ", ".join(f"{label} {human(n)}" for label, n in biggest()) or "not measurable now"
+        text = LOW_LINE.format(free=free_gb, low=LOW_GB, big=big, freed=human(freed_today(db)), ours=ours)
         db.kv_set(DISK_SAID, datetime.now(timezone.utc).isoformat(timespec="seconds"))
         db.log(None, "disk_low", {"free": free, "total": total, "sizes": z})
         notify.say(text)

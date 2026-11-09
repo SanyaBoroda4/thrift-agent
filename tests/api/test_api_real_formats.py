@@ -162,7 +162,7 @@ def test_vinteds_sale_email_and_its_label_are_one_sale_for_an_item_not_ours(db, 
     s = sale(db, first["sale_id"])
     assert (s["order_id"], s["ship_by"], s["ship_by_source"]) == ("22703814298", "2026-10-06", "email")
     assert len(db.query("SELECT id FROM sales")) == 1
-    assert len([t for t in texts(sent, "ops") if t.startswith("Unmatched sale")]) == 1
+    assert len([t for t in texts(sent, "ops") if "not one of the agent's listings" in t]) == 1   # WO53 §6: said once
     core.process_email(db, mail("vinted", VINTED_COMPLETED, "v3", "2026-09-30T18:37:20Z"), NOW)
     assert sale(db, first["sale_id"])["status"] == "done"
 
