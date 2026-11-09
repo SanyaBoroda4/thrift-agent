@@ -27,8 +27,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from thrift_agent import (alerts, catalogs, crosslist, daily, formcheck, health, notify, orders, photocheck, power,
-                          pricedrop, sales)
+from thrift_agent import (alerts, catalogs, crosslist, daily, formcheck, health, memory, notify, orders, photocheck,
+                          power, pricedrop, sales)
 from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
 from thrift_agent.post import runner
@@ -517,6 +517,7 @@ async def _poshmark_worker(s, poster, dry, stage, halt, state, opener, takedowns
     finally:
         awake.hold(False)
         state.idle("poshmark")
+        browser.alive = False         # WO54 §1.8: the poster's own stop is no lost browser (no browser_lost event)
         await browser._close_quietly()
 
 
@@ -602,6 +603,8 @@ async def _poshmark_turn(s, db, ps, ctx, dry, stage, state, awake, failures, mar
            if ok or tonight else None)
     if job is not None and (runner._paused(db) or quiet_hold(s, db)):   # WO54 §3: no listing starts from 8:20
         job = None
+    if job is not None and not memory.may_start(db, "poshmark")[0]:
+        job = None                    # WO54 §4: at memory pressure no NEW listing (edits, take-downs go on)
     if job is None:
         if (await listing_edit(s, db, "poshmark", ps["poshmark"], ctx, marketplaces, dry)     # edits: any hour
                 or await price_drop(s, db, "poshmark", ps["poshmark"], ctx, marketplaces, dry)):  # drops: its own hours
@@ -777,6 +780,8 @@ async def _cross_turn(s, db, ps, mp, dry, state, awake, takedowns) -> bool:
         state.idle(mp)
         return False
     job = crosslist.next_job(s, db, mps=[mp], live_elsewhere=not hours_ok)
+    if job is not None and not memory.may_start(db, mp)[0]:
+        job = None                    # WO54 §4: at memory pressure no NEW listing (edits, take-downs go on)
     if job is None:
         if (await listing_edit(s, db, mp, poster, None, list(ps), dry)            # edits: any hour
                 or await price_drop(s, db, mp, poster, None, list(ps), dry)):      # drops: their own hours check

@@ -2071,6 +2071,37 @@ test("WO52 Vinted: an answer naming the Upload button is refused on the page too
   assert.match(JSON.stringify(r), /title: not on the page/);
 });
 
+test("WO54: remove, delete, discard, deactivate, sign / log out, address and payment controls are never offered", () => {
+  // Left from WO53: Depop's sell form shows the account's ship-from address with a "Remove" button and no aria-label
+  // — the model could in principle have picked it. Neither words nor a link's address ever reach the question now.
+  const html = `<html><head></head><body><form>
+    <input id="title" aria-label="Title" type="text">
+    <div><label for="brand">Brand</label><input id="brand" role="combobox" type="text"></div>
+    <section><h3>Shipping from</h3><p>12 Main St, Springfield</p>
+      <button type="button" id="rm">Remove</button><button type="button" id="addr">Change address</button></section>
+    <button type="button" id="chip" aria-label="Remove Black">x</button>
+    <button type="button" id="del">Delete listing</button>
+    <button type="button" id="disc">Discard changes</button>
+    <button type="button" id="deact">Deactivate account</button>
+    <button type="button" id="signout">Sign out</button>
+    <div role="menuitem" id="logout">Log Out</div>
+    <a href="/settings/payments/" role="button" id="pay"><svg></svg></a>
+    <a href="https://www.vinted.com/member/general/logout" role="button" id="icon"><span></span></a>
+    <button type="button" id="colour">Colour</button>
+  </form></body></html>`;
+  const p = page("depop", html);
+  const T = p.w.Thrift;
+  for (const id of ["rm", "addr", "chip", "del", "disc", "deact", "signout", "logout", "pay", "icon"]) {
+    assert.equal(T.forbidden(p.d.getElementById(id)), true, id);
+  }
+  for (const id of ["title", "brand", "colour"]) assert.equal(T.forbidden(p.d.getElementById(id)), false, id);
+  const cands = plain(T.snapshot());
+  const offered = cands.map((c) => `${c.label} ${c.text}`).join(" | ");
+  assert.doesNotMatch(offered, /remove|address|delete|discard|deactivate|sign out|log out/i);
+  assert.equal(cands.length, 3, offered);                          // the title, the brand box, the colour button
+  assert.ok(!p.d.getElementById("rm").hasAttribute("data-thrift-ai"));
+});
+
 test("WO52 Vinted: a dropdown that turned into a button is found by its label and read back", async () => {
   const p = page("vinted", undefined, undefined, { conditionButton: true });
   fakeModel(p, () => "none");

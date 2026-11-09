@@ -248,6 +248,49 @@ def test_jobs_are_pushed_over_the_socket_and_their_evidence_kept(tmp_path):
     run(go())
 
 
+def test_the_extension_s_tab_tidy_is_an_events_row(tmp_path):
+    """WO54 (left from WO53: the tidy couldn't be proven from the logs — the Thrift Chrome's renderers went 82 → 40
+    and no line said why): background.js's "tidied" event, about no job, over the socket or POST /events, becomes ONE
+    `ext_tidied` row {closed, kept, tabs, why} — never a job's event, never breaking the link."""
+    db = DB(tmp_path / "state.db")
+
+    async def go():
+        b = await _bridge()
+        b.on_ext_event = bm.ext_event_logger(db)
+        r, w, _ = await ws_open(b.port)
+        ws_send(w, {"type": "hello", "token": TOKEN, "loaded": bm.files_hash()})
+        await ws_recv(r)
+        ws_send(w, {"type": "event", "event": "tidied", "closed": 3, "kept": 4, "tabs": 31,
+                    "why": {"idle": 1, "old": 2, "extra": 0}})
+        ws_send(w, {"type": "ping"})
+        assert (await ws_recv(r)) == {"type": "pong"}                                 # the link goes on
+        async with _client(b) as c:                                                   # the alarm's path: POST /events
+            out = await c.post("/events", headers={"X-Thrift-Token": TOKEN},
+                               json={"event": "tidied", "closed": 0, "kept": 2, "tabs": 9, "why": {"idle": 0}})
+            assert out.status_code == 200 and out.json() == {"commands": []}
+            await c.post("/events", headers={"X-Thrift-Token": TOKEN}, json={"event": "tidied", "job_id": "x-1"})
+            await c.post("/events", headers={"X-Thrift-Token": TOKEN}, json={"event": "step", "name": "photos"})
+        b.on_ext_event = lambda ev: 1 / 0                                             # a broken hook: no harm
+        async with _client(b) as c:
+            assert (await c.post("/events", headers={"X-Thrift-Token": TOKEN},
+                                 json={"event": "tidied", "closed": 1})).status_code == 200
+        w.close()
+        await b.close()
+        return b
+    b = run(go())
+    rows = [json.loads(r["detail"]) for r in db.conn.execute("SELECT detail FROM events WHERE kind='ext_tidied' "
+                                                              "ORDER BY rowid")]
+    assert rows == [{"closed": 3, "kept": 4, "tabs": 31, "why": {"idle": 1, "old": 2, "extra": 0}},
+                    {"closed": 0, "kept": 2, "tabs": 9, "why": {"idle": 0}}]          # a job's id, a step: not these
+    assert len(b.ext_events) == 3 and any("ext event: ZeroDivisionError" in x for x in b.log)
+    assert bm.ext_event_row({"event": "tidied", "closed": "2", "why": "x" * 300}) == \
+        ("ext_tidied", {"closed": 2, "kept": None, "tabs": None, "why": "x" * 200})
+    assert bm.ext_event_row({"event": "learned"}) is None
+    background = (bm.EXT_DIR / "background.js").read_text(encoding="utf-8")         # every run is told, even empty
+    assert re.search(r'await send\(\{ event: "tidied", closed: close\.length, kept: .*, tabs: tabs\.length, why \}\)',
+                     background)
+
+
 def test_a_deploy_that_changes_the_extension_is_announced(tmp_path):
     """The extension reloads itself on a new files hash; the bridge tells it when ext/ changes on disk."""
     import shutil

@@ -170,7 +170,7 @@ async function connect() {
     wsReady = false;
     clearInterval(pingTimer);
     later();
-    if (was) abandon("the bridge went away before the go-ahead (the poster or the CLI stopped)");
+    if (was) abandon("the bridge went away before the go-ahead (the poster stopped, or the Mac slept)");
   };
   sock.onerror = () => {};
 }
@@ -268,7 +268,7 @@ async function send(event) {
     } catch (e) { /* tried again below */ }
   }
   // nothing listens on the port: the bridge that gave the job is gone
-  if (event.job_id) abandon("the bridge went away before the go-ahead (the poster or the CLI stopped)", event.job_id);
+  if (event.job_id) abandon("the bridge went away before the go-ahead (the poster stopped, or the Mac slept)", event.job_id);
 }
 
 // The bridge that gave a job went away (a Ctrl+C at the terminal, the poster stopped) before its go-ahead: nothing can
@@ -845,8 +845,11 @@ async function tidyTabs(now, force = false) {
   await chrome.storage.session.set({ seen: keep(seen), born: keep(born) });
   if (close.length) {
     try { await chrome.tabs.remove(close); } catch (e) { /* gone already */ }
-    await send({ event: "tidied", closed: close.length, tabs: tabs.length - close.length });
   }
+  // WO54 (left from WO53: the tidy couldn't be proven from the logs): every run is told, even one that closed nothing
+  // (event ext_tidied) — the pages closed, kept and all of this Chrome's tabs; why: every page no running job holds
+  const why = { unheld: close.length };
+  await send({ event: "tidied", closed: close.length, kept: tabs.length - close.length, tabs: tabs.length, why });
 }
 
 chrome.tabs.onCreated.addListener((tab) => {

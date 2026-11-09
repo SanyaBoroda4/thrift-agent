@@ -222,6 +222,7 @@ async def open_bridge(s: Settings, db: DB | None, ps: dict, watch: bool = True, 
     b.waker = chrome_waker(s)                    # WO54 §4: the Thrift Chrome on demand (the Mac only)
     if db is not None:
         b.on_change = lambda kind, detail: chrome_changed(db, b, list(ext), kind, detail)
+        b.on_ext_event = bridge_mod.ext_event_logger(db)      # WO54: the extension's own events (the tidy) recorded
     if not watch or db is None:
         return b, None
     shown = {"seen": None, "at": 0.0}

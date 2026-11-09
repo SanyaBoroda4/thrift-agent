@@ -686,8 +686,7 @@ def family_check(db: DB, iid: str, mp: str, title: str, why: str) -> None:
         return
     said.add(f"{iid}|{mp}")
     db.kv_set(FAMILY_SAID, json.dumps(sorted(said)))
-    notify.say(f"Check — {title}: {LABEL[mp]}'s {why} and {LABEL[mp]} has no closer one — listed there anyway "
-               f"(reply 'category …' to its card to move it).")
+    notify.say(f"Check — {title}: {LABEL[mp]}'s {why} and {LABEL[mp]} has no closer one — listed there anyway.")
 
 
 def skip_unmappable(db: DB, iid: str, mp: str, title: str, why: str) -> None:

@@ -5,14 +5,16 @@ listings back. Now each live listing is read (Poshmark's public JSON; Depop's an
 extension's verify job) — once soon after it posts, then with the order sweep's rhythm (every CHECK_EVERY) — and what
 the site shows is kept on its row (`listings.photos_live`, `price_live`). A listing with fewer photos than its item
 sent gets ONE "photos" edit (edits.queue_photos: the missing ones through the edit page, nothing else changed); a
-listing whose price differs from the one we know is noted (the owner's hand change: recorded, never undone, WO41's
-price drops read it the same way). A site that can't be read is left for the next look; an edit that fails three
-times is one private line (edits._failed)."""
+listing whose price differs from the one we last set there (`our_price`: our newest drop, else the posted price) is
+noted ONCE per change (the owner's hand change: recorded, never undone, WO41's price drops read it the same way). A
+site that can't be read is left for the next look; an edit that fails three times is one private line
+(edits._failed)."""
 from __future__ import annotations
 
 import asyncio
 import json
 import re
+import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -186,6 +188,7 @@ def apply(s: Settings, db: DB, row, live: dict) -> str:
     that differs → noted (never changed). Returns what happened (for the log)."""
     iid, mp = row["item_id"], row["marketplace"]
     photos, price = live.get("photos"), live.get("price")
+    before = _price_read(row)                         # WO54: the reading before this one (a change is said once)
     record(db, iid, mp, photos, price)
     sent = sent_photos(db, row)
     note = f"{mp}: {photos} photos on the site, {len(sent)} sent"
@@ -208,10 +211,36 @@ def apply(s: Settings, db: DB, row, live: dict) -> str:
             asked[key] = len(sent)
             db.kv_set(ASKED, json.dumps(asked))
     amount = money(price)
-    if amount is not None and row["price"] is not None and abs(amount - float(row["price"])) >= 1:
-        db.log(iid, "price_differs", {"site": mp, "site_price": amount, "ours": row["price"]})
-        note += f"; price {amount:g} on the site vs {row['price']} ours"
+    ours = our_price(db, row)
+    if amount is not None and ours is not None and abs(amount - ours) >= 1:
+        note += f"; price {amount:g} on the site vs {ours:g} ours"
+        if before is None or abs(before - amount) >= 1:   # a new change — the same reading again is no news
+            db.log(iid, "price_differs", {"site": mp, "site_price": amount, "ours": ours})
     return note
+
+
+def _price_read(row) -> float | None:
+    try:
+        value = row["price_live"]
+    except (IndexError, KeyError):
+        return None
+    return float(value) if value is not None else None
+
+
+def our_price(db: DB, row) -> float | None:
+    """WO54: the price WE last set on this listing — the newest price change done there (an automatic drop, or her
+    own price through us), else the price it was posted at. Live 2026-11-09: 79 `price_differs` in a day for 21
+    listings — 26 of them our own drops (30 → 27 …) compared with the posted price, the other 53 fourteen hand changes
+    read again every 2 h (Poshmark) or 6 h (Vinted)."""
+    try:
+        done = db.conn.execute("SELECT new_price FROM price_changes WHERE item_id=? AND marketplace=? AND dry=0 AND "
+                               "status='done' AND new_price IS NOT NULL ORDER BY COALESCE(done_at, created_at) DESC "
+                               "LIMIT 1", (row["item_id"], row["marketplace"])).fetchone()
+    except sqlite3.OperationalError:                  # a database from before the price drops
+        done = None
+    if done is not None:
+        return float(done["new_price"])
+    return float(row["price"]) if row["price"] is not None else None
 
 
 async def run(s: Settings, db: DB, ps: dict, limit: int = PER_RUN) -> list[str]:

@@ -129,7 +129,10 @@ def is_test_share(d: Path) -> bool:
 
 
 def _share_seen(db: DB, d: Path, marker: str) -> None:
-    """The ledger's row for a folder in the inbox, brought up to date (never raises: the ledger is a record)."""
+    """The ledger's row for a folder in the inbox, brought up to date (never raises: the ledger is a record). WO54
+    (live 2026-11-09 00:00–00:00:50, ×4, and every big share before it): iCloud busy with the folder ("Resource
+    deadlock avoided", EAGAIN, ETIMEDOUT) is no failure — the same look's read of the folder says it once, quietly
+    (`_folder_unreadable` → alerts.busy), and the next look records it."""
     try:
         from thrift_agent import shares
         mark = marker_of(d, marker)
@@ -137,6 +140,9 @@ def _share_seen(db: DB, d: Path, marker: str) -> None:
         shares.seen(db, shares.share_id_of(d), share_source(d), expected_photos(mark) if mark else None, len(photos),
                     test=is_test_share(d))
     except (OSError, sqlite3.Error) as e:
+        from thrift_agent import alerts
+        if alerts.icloud_busy(e):
+            return
         db.log(None, "share_ledger_failed", f"{type(e).__name__}: {e}")
 
 
@@ -274,6 +280,8 @@ def take_share(s: Settings, db: DB, folder: Path) -> tuple[str, float] | None:
     marker = marker_of(folder, s["inbox"]["done_marker"])
     state = share_state(s, folder, marker, s["inbox"]["settle_seconds"])
     when = appeared(folder)
+    if state in ("empty", "stale") and not_on_the_phone(s, db, folder):
+        return None
     if state == "empty":
         return state, when
     if state == "stale":
@@ -281,6 +289,10 @@ def take_share(s: Settings, db: DB, folder: Path) -> tuple[str, float] | None:
     if state == "wait":
         return None
     photos = [p for p in folder.iterdir() if prep.is_photo(p)]
+    if state == "partial" and share_source(folder) != "azure":
+        from thrift_agent import shares, uploads
+        if uploads.holds(db, shares.share_id_of(folder), more_than=len(photos)):
+            return None               # WO54: Azure holds more of this share than this copy: its upload is the share
     bid = register(s, db, folder)
     if bid is None:
         return None
@@ -294,6 +306,27 @@ def take_share(s: Settings, db: DB, folder: Path) -> tuple[str, float] | None:
                                       "marker": marker is not None})
         notify.say(text)
     return state, when
+
+
+def not_on_the_phone(s: Settings, db: DB, folder: Path) -> bool:
+    """WO54 (live 2026-11-08, 11:08 PM: "📭 Photos from your 10:38 PM share are still on the iPhone" went to the group
+    while Azure had all 127): an iCloud folder with no photo yet is not a share whose photos are on the iPhone when
+    - the share was taken from its other copy already (the upload, by its share id): this folder is that share's
+      second copy — deleted (WO47), never a 📭 and never "lost" (iCloud holding it: the next look);
+    - Azure holds photos of the share, not fetched yet (uploads.holds: the last answer of /shares/pending) — the
+      upload is taken by its own rules (whole at once, short once quiet).
+    True when the folder is left alone for that reason (`take_share` does nothing with it)."""
+    from thrift_agent import shares, uploads
+    sid = shares.share_id_of(folder)
+    if (other := _taken_as(db, sid, folder)) is not None:
+        db.log(other, "batch_same_share", {"folder": folder.name, "photos": 0, "copy": True, "by": "share id",
+                                           "empty": True})
+        shares.outcome(db, sid, "same_share", "the share's other copy came after it was taken", batch_id=other)
+        if s.path("inbox").resolve() in folder.resolve().parents:
+            from thrift_agent import cleanup
+            cleanup.delete_copy(s, db, sid, folder, "the share was taken from its other copy (WO47: no duplicates)")
+        return True
+    return uploads.holds(db, sid)
 
 
 def lose_share(s: Settings, db: DB, folder: Path) -> str | None:

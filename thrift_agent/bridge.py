@@ -7,7 +7,9 @@ no DevTools connection, no automation flags.
   as its host.
 - `ws://127.0.0.1:8765/ext`: hello {token} → welcome {ext_hash}; jobs pushed {"type": "job", "job": {…}}; the
   extension's events {"type": "event", "event": "step|screenshot|ready|result|error", "job_id", …}; the go-ahead of a
-  filled form {"type": "submit"|"cancel", "job_id"}.
+  filled form {"type": "submit"|"cancel", "job_id"}. The extension's own events, about no job (WO54: "tidied"
+  {closed, kept, why} — its tab tidy), are kept in `ext_events` and handed to `on_ext_event` (`ext_event_logger`:
+  an `ext_tidied` events row).
 - `GET /jobs/next` the same job object (the extension's alarm, while its socket is down); `POST /events` an event, its
   answer the job's commands; `GET /photos/<item>/<n>.jpg` the item's photos (already rotated and resized, the cover
   first), with Access-Control-Allow-Origin only for https://www.vinted.com and https://www.depop.com; `GET /health`.
@@ -72,6 +74,7 @@ DRAIN = 90.0                 # a job called off: the next one waits this long at
 RELOAD_HOLD = 2.0            # an extension told of new files reloads at once: no job for its socket meanwhile
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 FINAL = ("result", "error")
+EXT_EVENTS = ("tidied",)     # WO54: the extension's own events (no job) the poster records — background.js tidyTabs
 MISSING_LINE = ("🧩 The Thrift Chrome extension hasn't checked in for 10 minutes since the agent opened the Thrift Chrome "
                 "for work (it was restarted once), so Depop and Vinted are waiting. On the Mac: is the extension "
                 "loaded at chrome://extensions in the Thrift Chrome, its token saved in its options? "
@@ -116,6 +119,36 @@ def files_hash(ext_dir: Path = EXT_DIR) -> str:
             pass
         h.update(b"\n")
     return h.hexdigest()
+
+
+def ext_event_row(ev: dict) -> tuple[str, dict] | None:
+    """The events row for one of the extension's own events: "tidied" → ("ext_tidied", {"closed", "kept", "tabs",
+    "why"}) — the tab tidy's proof (WO54; background.js tidyTabs, every 30 min with no job: the pages it closed, the
+    agent's pages it kept, all the tabs of the Thrift Chrome, what each closed page was). None for anything else."""
+    if ev.get("event") != "tidied":
+        return None
+
+    def count(v):
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return None
+    why = ev.get("why")
+    if isinstance(why, dict):
+        why = {str(k)[:40]: count(v) for k, v in list(why.items())[:10]}
+    elif why is not None:
+        why = str(why)[:200]
+    return "ext_tidied", {"closed": count(ev.get("closed")) or 0, "kept": count(ev.get("kept")),
+                          "tabs": count(ev.get("tabs")), "why": why}
+
+
+def ext_event_logger(db):
+    """`Bridge.on_ext_event` for a poster with a database: each of the extension's own events as an events row."""
+    def log(ev: dict) -> None:
+        row = ext_event_row(ev)
+        if row is not None:
+            db.log(None, *row)
+    return log
 
 
 # ---------------------------------------------------------------- one job
@@ -201,6 +234,11 @@ class Bridge:
         self.left_for_owner: dict[str, tuple[str, float]] = {}   # site → (page, since): a page only she can act on
         self.ext_tabs: int | None = None        # its pings: how many tabs and windows it holds (thrift doctor)
         self.ext_windows: int | None = None
+        # WO54 (left from WO53: the tab tidy couldn't be proven from the logs — renderers went 82 → 40 and no line said
+        # why): the extension's own events, about no job ("tidied" {closed, kept, why}), kept here and handed to
+        # `on_ext_event` (the poster: an events row, `ext_event_logger`)
+        self.ext_events: deque[dict] = deque(maxlen=50)
+        self.on_ext_event = None                # (event) -> None
 
     # ------------------------------------------------------------ lifecycle
 
@@ -497,6 +535,8 @@ class Bridge:
         not yet delivered (the HTTP path's answer). An event for a job given up on, or a second last word, is ignored."""
         job = self.jobs.get(str(ev.get("job_id") or ""))
         if job is None:
+            if not ev.get("job_id") and ev.get("event") in EXT_EVENTS:
+                self._ext_event(ev)
             return []
         kind = ev.get("event")
         self.last_work = time.monotonic()        # WO54 §4: the idle clock
@@ -537,6 +577,16 @@ class Bridge:
         if kind in FINAL:
             self._push()
         return out
+
+    def _ext_event(self, ev: dict) -> None:
+        """One of the extension's own events (no job): kept, and handed to `on_ext_event` — never breaking the link."""
+        record = {k: v for k, v in ev.items() if k != "type"}
+        self.ext_events.append(record)
+        if self.on_ext_event is not None:
+            try:
+                self.on_ext_event(record)
+            except Exception as e:  # noqa: BLE001 — a record; the socket goes on
+                self.log.append(f"ext event: {type(e).__name__}: {e}")
 
     def _ask(self, job: Job, ev: dict) -> None:
         """WO52 §2: the page asks which control is a field (or which option means our value). The site's asker (the

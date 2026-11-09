@@ -295,15 +295,19 @@ class Bot:
         res = self.call("getUpdates", offset=offset, timeout=int(timeout), allowed_updates=ALLOWED_UPDATES)
         return list(res or [])
 
-    def answer_callback(self, callback_id: str, text: str = "") -> None:
-        """The tap's spinner stopped. WO54 §3: a tap made while the Mac was quiet (or asleep) is applied when the
-        worker reads it; its spinner can't be answered any more ("query is too old") — that is no error: the tap was
-        taken, and "Sorry, that didn't go through" would be untrue."""
+    def answer_callback(self, callback_id: str, text: str = "") -> bool:
+        """The tap's own answer — its little toast; the button's spinner stops. Only that: WO54 (live 2026-11-09,
+        08:02 and 08:36, ×3: taps made while the Mac slept, or answered after a 90-s card edit, came back "query is
+        too old and response timeout expired" — the error ended the update, so the ops chat got "❌ telegram update"
+        and the GROUP "Sorry, that didn't go through — please try again." although her price and size WERE set;
+        WO54 §3: a tap made in the quiet hours is applied at 2 PM, its spinner long gone). A late or lost answer is
+        never an error and never undoes or repeats what the tap did. False when it didn't go (said on the log only)."""
         try:
             self.call("answerCallbackQuery", callback_query_id=callback_id, text=text or None)
-        except RuntimeError as e:
-            if not any(w in str(e) for w in ("query is too old", "query ID is invalid", "QuietHours")):
-                raise
+            return True
+        except Exception as e:  # noqa: BLE001 — never an error: late, lost, or the quiet hours
+            print(f"[telegram] answerCallbackQuery didn't go (what it did stands): {type(e).__name__}: {e}"[:240])
+            return False
 
     def authorized(self, update: dict) -> bool:
         """True only for updates from self.chat_id sent by a user in self.allowed_users."""

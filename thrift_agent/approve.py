@@ -1820,8 +1820,7 @@ def _plausible(db: DB, iid: str, brand: str) -> bool:
         return True
     it = db.item(iid)
     title = (((loads(it["renders"]) or {}).get("poshmark") or {}).get("title") if it else None) or iid
-    notify.say(f"Check — {title}: the brand reply '{brand[:40]}' isn't a brand name — listed with no brand "
-               f"(reply 'brand …' to its card to change it).")
+    notify.say(f"Check — {title}: '{brand[:40]}' isn't a brand name — listed with no brand.")
     db.log(iid, "brand_reply_implausible", {"reply": brand[:80]})
     return False
 

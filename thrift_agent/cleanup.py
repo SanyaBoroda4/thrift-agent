@@ -24,9 +24,12 @@ The rules, and where each is done:
    ONE private line; and ONE private line when the Mac's free space drops under LOW_GB (`disk_watch`).
 8. The evidence (`failed/shots`: the posters' screenshots, page HTML and job traces) older than EVIDENCE_DAYS goes
    (Alex, 2026-10-20) — except an item's while a problem of it is still open (`open_problems`: a listing queued,
-   posting, failed, or skipped for a reason that still waits; an item failed or parked; a price change, a listing
-   edit or a take-down not done; an unconfirmed publish): that item's evidence stays whatever its age, said in the
-   plan's notes. A file is tied to an item by its name (`<item id>-…`, or a Poshmark listing id of ours).
+   posting, failed, or skipped for a reason that still waits; an item failed or parked; a price change or a listing
+   edit still on its way, a take-down not done; an unconfirmed publish): that item's evidence stays whatever its
+   age, said in the plan's notes — WO54: never beyond EVIDENCE_CAP (its files go last, the oldest first); a failed
+   edit or drop is done (never a problem), and one that can't finish any more is closed (`close_stale`: its listing
+   gone, or STALE_DAYS old — one private line). A file is tied to an item by its name (`<item id>-…`, or a Poshmark
+   listing id of ours).
 Never touched: the inbox folder of a share in flight, a work copy an item still needs, the database.
 """
 from __future__ import annotations
@@ -306,7 +309,15 @@ def plan(s: Settings, db: DB, now: datetime | None = None, api=None) -> tuple[li
 def open_problems(db: DB) -> dict[str, str]:
     """{item id: why} for every item with a problem still open (Alex, 2026-10-20: its evidence stays whatever its
     age): a listing queued / posting / failed, or skipped for a reason that still waits (her 'retry', a size); an
-    item failed or parked; a price change, a listing edit or a take-down not done; an unconfirmed publish."""
+    item failed or parked; a price change or a listing edit still on its way (pending, saving, unconfirmed); a
+    take-down not done; an unconfirmed publish.
+
+    WO54 (left from WO53: "price changes pending since Oct 4, listing edits failed since Oct 12 and Oct 17" held 256
+    evidence files past 14 days and the folder over its cap): a listing edit or a price change that FAILED is done —
+    its module's end state after three tries, told once then ("Please change it by hand"), never worked on again — and
+    a dry run is a probe, never a problem; neither keeps anything. (Those dates were the items' ids: the five drops
+    were made on Nov 7–8 and went through on Nov 9; the ten edits were made and failed on Oct 18–19.) An edit or a
+    drop that can't apply any more is closed by `close_stale`."""
     out: dict[str, str] = {}
 
     def note(iid, why: str) -> None:
@@ -319,17 +330,110 @@ def open_problems(db: DB) -> dict[str, str]:
         note(r["item_id"], f"its {r['marketplace']} listing is {r['status']}")
     for r in db.conn.execute("SELECT id, status FROM items WHERE status IN ('failed', 'needs_owner')"):
         note(r["id"], f"the item is {r['status']}")
-    for table, label, states in (("price_changes", "a price change", "'pending', 'saving', 'unconfirmed', 'failed'"),
-                                 ("listing_edits", "a listing edit", "'pending', 'saving', 'unconfirmed', 'failed'"),
-                                 ("takedowns", "a take-down", "'pending', 'waiting', 'running', 'failed', 'manual'")):
+    for table, label, states, real in (
+            ("price_changes", "a price change", "'pending', 'saving', 'unconfirmed'", " AND dry=0"),
+            ("listing_edits", "a listing edit", "'pending', 'saving', 'unconfirmed'", " AND dry=0"),
+            ("takedowns", "a take-down", "'pending', 'waiting', 'running', 'failed', 'manual'", "")):
         try:
-            for r in db.conn.execute(f"SELECT item_id, status FROM {table} WHERE status IN ({states})"):
+            for r in db.conn.execute(f"SELECT item_id, status FROM {table} WHERE status IN ({states}){real}"):
                 note(r["item_id"], f"{label} is {r['status']}")
         except sqlite3.OperationalError:               # a table from before its work order
             continue
     for key in (loads(db.kv_get("unconfirmed_state")) or {}):
         note(str(key).partition(":")[0], "a publish is unconfirmed")
     return out
+
+
+STALE_DAYS = 7          # WO54: a listing edit or a price change still on its way after this long is closed (one line)
+DRY_STALE = timedelta(days=1)    # … a dry run never done after this long, quietly
+IN_FLIGHT_ROWS = ("pending", "saving", "unconfirmed")
+GONE = ("sold", "delisted", "skipped", "failed")     # a listing in one of these: nothing on it to change any more
+
+
+def close_stale(db: DB, now: datetime | None = None, say: bool = True) -> list[str]:
+    """WO54: the listing edits and price changes that can never finish, closed with their reason — so no "open
+    problem" lasts forever (and none keeps evidence for it):
+    - its listing on that site is gone (sold, taken down, skipped, failed) or the item is sold: `skipped` "nothing to
+      change: …" — quietly (the sale or the take-down was told);
+    - still on its way STALE_DAYS after it was made (its site paused all week, a read that never confirmed): `failed`
+      for an edit, `skipped` for a price change, with why — and ONE private line each;
+    - a dry run never done in a day: `skipped`, quietly.
+    A row the poster touched meanwhile is left alone (its `updated_at` must still be the one read). Returns the lines
+    said (or that would be, `say` False)."""
+    now = now or datetime.now(timezone.utc)
+    lines: list[str] = []
+    for table in ("listing_edits", "price_changes"):
+        try:
+            rows = db.conn.execute(f"SELECT * FROM {table} WHERE status IN ({','.join('?' * len(IN_FLIGHT_ROWS))})",
+                                   IN_FLIGHT_ROWS).fetchall()
+        except sqlite3.OperationalError:               # a table from before its work order
+            continue
+        for row in rows:
+            made = _when(row["created_at"]) or now
+            listing = db.listing(row["item_id"], row["marketplace"])
+            item = db.item(row["item_id"])
+            gone = (listing is None or listing["status"] in GONE
+                    or (item is not None and item["status"] in ("sold", "dropped")))
+            if int(row["dry"] or 0):
+                if now - made >= DRY_STALE or gone:
+                    _close(db, table, row, "skipped", "a dry run never done — closed")
+                continue
+            if gone:
+                state = listing["status"] if listing is not None else "not listed there"
+                _close(db, table, row, "skipped", f"nothing to change: its listing is {state}")
+                continue
+            if now - made < timedelta(days=STALE_DAYS):
+                continue
+            last = str(row["error"] or "").strip() or "its site never got to it"
+            what = _stale_what(db, table, row)
+            done = "confirmed" if row["status"] in ("saving", "unconfirmed") else "done"   # saved, maybe: never "not done"
+            if not _close(db, table, row, "failed" if table == "listing_edits" else "skipped",
+                          f"not {done} in {STALE_DAYS} days ({last[:160]}) — closed"):
+                continue
+            text = (f"⚠️ {what} wasn't {done} in {STALE_DAYS} days — closed ({last[:160]}). The listing stays as "
+                    "it is.")
+            lines.append(text)
+            if say:
+                notify.say(text)
+    return lines
+
+
+def _close_stale_quietly(db: DB, now: datetime) -> None:
+    """`close_stale` from the daily run and the hourly trim: never the reason they stop (the database busy with the
+    poster: the next run)."""
+    try:
+        close_stale(db, now)
+    except sqlite3.Error as e:
+        db.log(None, "close_stale_failed", f"{type(e).__name__}: {e}"[:200])
+
+
+def _close(db: DB, table: str, row, status: str, why: str) -> bool:
+    """One row closed — only if nobody touched it since it was read. True when it was."""
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    cur = db.conn.execute(f"UPDATE {table} SET status=?, error=?, updated_at=?, done_at=COALESCE(done_at, ?) "
+                          "WHERE id=? AND status=? AND updated_at=?",
+                          (status, why[:500], stamp, stamp, row["id"], row["status"], row["updated_at"]))
+    db.conn.commit()
+    if not cur.rowcount:
+        return False
+    db.log(row["item_id"], "listing_edit_closed" if table == "listing_edits" else "price_drop_closed",
+           {"site": row["marketplace"], "kind": row["kind"] if table == "listing_edits" else row["stage"],
+            "was": row["status"], "now": status, "why": why[:300]})
+    return True
+
+
+def _stale_what(db: DB, table: str, row) -> str:
+    """"The photos change of <title> on Depop" / "The price drop of <title> on Vinted ($25 → $22)"."""
+    it = db.item(row["item_id"])
+    posh = ((loads(it["renders"]) or {}).get("poshmark") or {}) if it is not None else {}
+    title = posh.get("title") or row["item_id"]
+    site = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted"}.get(row["marketplace"], row["marketplace"])
+    if table == "listing_edits":
+        return f"The {row['kind']} change of {title} on {site}"
+    old, new = row["old_price"], row["new_price"]
+    prices = f" (${old:g} → ${new:g})" if old and new else ""
+    who = "Her price" if row["stage"] == "owner" else "The price drop"
+    return f"{who} of {title} on {site}{prices}"
 
 
 def live_everywhere(db: DB) -> set[str]:
@@ -343,8 +447,10 @@ def live_everywhere(db: DB) -> set[str]:
 def evidence_plan(s: Settings, db: DB, now: datetime, kept: list[str]) -> list[Removal]:
     """Rule 8 + WO53 §5: the files in failed/shots — older than EVIDENCE_DAYS; an item's once it is live on all three
     sites (an hour on); then, while the folder is still over EVIDENCE_CAP, the oldest first. One Removal per item and
-    reason; the files no item of ours is named in under ref None. An item with an open problem keeps every file, said
-    once in `kept` (even over the cap: it is the problem's evidence)."""
+    reason; the files no item of ours is named in under ref None. An item with an open problem keeps its files
+    whatever their age, said once in `kept` — WO54: but never beyond the cap (2026-11-09: the folder stayed at 516 MB,
+    its 300 MB cap held by stale problems' 256 files): over the cap, an open problem's files go last, the oldest of
+    them first, so the newest evidence of each problem is what stays."""
     shots = s.path("failed") / "shots"
     cutoff = now - timedelta(days=EVIDENCE_DAYS)
     try:
@@ -361,7 +467,9 @@ def evidence_plan(s: Settings, db: DB, now: datetime, kept: list[str]) -> list[R
         by_listing[str(r["listing_id"])] = r["item_id"]
     groups: dict[tuple[str | None, str], list[Path]] = {}
     held: dict[str, int] = {}
+    capped: dict[str, int] = {}
     rest: list[tuple[datetime, Path, str | None]] = []
+    problems: list[tuple[datetime, Path, str]] = []       # an open problem's files: kept whatever their age …
     for p in sorted(files):
         ref = None
         if m := _ITEM_FILE.match(p.name):
@@ -370,8 +478,7 @@ def evidence_plan(s: Settings, db: DB, now: datetime, kept: list[str]) -> list[R
             ref = by_listing.get(m[1])
         when = _mtime(p)
         if ref in opened:
-            if when < cutoff:
-                held[ref] = held.get(ref, 0) + 1
+            problems.append((when, p, ref))
             continue
         if when < cutoff:
             groups.setdefault((ref, f"evidence older than {EVIDENCE_DAYS} days"), []).append(p)
@@ -379,18 +486,31 @@ def evidence_plan(s: Settings, db: DB, now: datetime, kept: list[str]) -> list[R
             groups.setdefault((ref, "evidence of an item live on all three sites"), []).append(p)
         else:
             rest.append((when, p, ref))
-    total = sum(folder_bytes(p) for _, p, _ in rest)          # what stays after the rules above
-    if total > EVIDENCE_CAP:                          # the cap: the oldest first, until it fits
-        for when, p, ref in sorted(rest, key=lambda x: x[0]):
+    # … but never beyond the cap (WO54): what stays after the rules above, the open problems' files included
+    total = sum(folder_bytes(p) for _, p, _ in rest) + sum(folder_bytes(p) for _, p, _ in problems)
+    if total > EVIDENCE_CAP:                          # the cap: the oldest first, an open problem's files last
+        order = [(w, p, r, False) for w, p, r in sorted(rest, key=lambda x: x[0])] + \
+                [(w, p, r, True) for w, p, r in sorted(problems, key=lambda x: x[0])]
+        for when, p, ref, problem in order:
             if total <= EVIDENCE_CAP:
                 break
             size = folder_bytes(p)
-            groups.setdefault((ref, f"evidence over the folder's {human(EVIDENCE_CAP)} cap (the oldest first)"),
-                              []).append(p)
+            why = f"evidence over the folder's {human(EVIDENCE_CAP)} cap (the oldest first)"
+            if problem:
+                why = f"evidence over the folder's {human(EVIDENCE_CAP)} cap (the oldest first, an open problem's last)"
+                capped[ref] = capped.get(ref, 0) + 1
+            groups.setdefault((ref, why), []).append(p)
             total -= size
+    gone = {str(p) for group in groups.values() for p in group}
+    for when, p, ref in problems:
+        if when < cutoff and str(p) not in gone:
+            held[ref] = held.get(ref, 0) + 1
     for ref, n in sorted(held.items()):
         kept.append(f"{ref}: {n} evidence file{'s' if n != 1 else ''} older than {EVIDENCE_DAYS} days kept — "
                     f"{opened[ref]}")
+    for ref, n in sorted(capped.items()):
+        kept.append(f"{ref}: {n} evidence file{'s' if n != 1 else ''} removed though {opened[ref]} — the folder's "
+                    f"{human(EVIDENCE_CAP)} cap holds (WO54); its newest stay")
     out = []
     for (ref, why), group in sorted(groups.items(), key=lambda kv: (kv[0][0] or "", kv[0][1])):
         out.append(Removal(str(shots), "evidence", why + ("" if ref else " (no item of ours in its name)"),
@@ -429,6 +549,7 @@ def trim_evidence(s: Settings, db: DB, now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     kept: list[str] = []
     freed = n = 0
+    _close_stale_quietly(db, now)                     # WO54: a problem that can't finish keeps nothing
     for r in evidence_plan(s, db, now, kept):
         for f in r.files:
             try:
@@ -537,6 +658,8 @@ def run(s: Settings, db: DB, dry: bool = False, now: datetime | None = None, api
     """The plan carried out (or, `dry`, only reported): every removal in the event `cleanup`, ONE private line when
     something went, the summary in kv `cleanup_last`. Never raises."""
     now = now or datetime.now(timezone.utc)
+    if not dry:
+        _close_stale_quietly(db, now)                 # WO54: before the plan — a closed problem keeps no evidence
     removals, kept = plan(s, db, now, api)
     inbox = s.path("inbox").resolve()
     removed, failed, freed = [], [], 0

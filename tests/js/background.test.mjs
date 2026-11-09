@@ -214,7 +214,8 @@ test("the tidy closes every page no running job holds — also while a job runs 
     const closed = x.calls.filter(([what]) => what === "tabs.remove").flatMap(([, ids]) => ids).sort((a, b) => a - b);
     assert.deepEqual(closed, [4, 5, 6, 7], "the second idle page, the old active Vinted page, her eBay page, Google");
     for (const kept of [1, 2, 3, 8, 9, 10]) assert.ok(x.st.tabs.has(kept), `tab ${kept} kept`);
-    assert.deepEqual(x.posted.filter((e) => e.event === "tidied"), [{ event: "tidied", closed: 4, tabs: 6 }]);
+    assert.deepEqual(x.posted.filter((e) => e.event === "tidied"),
+                     [{ event: "tidied", closed: 4, kept: 6, tabs: 10, why: { unheld: 4 } }]);   // every run told
   } finally { x.stop(); }
 });
 
