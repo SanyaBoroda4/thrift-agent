@@ -4,7 +4,9 @@ Each marketplace gives the seller a number of days to ship (`DEFAULT_RULES`, ove
 Poshmark 7 calendar days, Vinted 5 business days, Depop 5 calendar days after the sale's LOCAL date (America/New_York:
 a sale at 23:30 local is that day's, whatever the UTC date). A date the sale email states wins over the rule. Business
 days are Monday to Friday except the observed US federal holidays. Reminders are due from 09:00 local: the day before
-the ship-by date, on it, and once after it; `quiet` tells the night hours (23:00-08:00 local)."""
+the ship-by date, on it, and once after it; `night` tells the night hours, in which a message goes out silently
+(WO54 §3: 22:00–07:00 local; 23:00–08:00 before). The owner's daytime quiet hours (8:30 AM – 2:00 PM, the Mac runs
+nothing) are quiet.py's — another thing."""
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -157,8 +159,11 @@ def reminders_due(now_utc: datetime, sales: Iterable[dict], sent: set[tuple[str,
     return due
 
 
-def quiet(now_utc: datetime, tz: str = TZ, start: str = "23:00", end: str = "08:00") -> bool:
-    """True inside the quiet hours, from `start` (included) to `end` (not) local time; the window may cross midnight."""
+NIGHT = ("22:00", "07:00")              # WO54 §3: "Messages between 10 PM and 7 AM go out silently"
+
+
+def night(now_utc: datetime, tz: str = TZ, start: str = NIGHT[0], end: str = NIGHT[1]) -> bool:
+    """True in the night hours, from `start` (included) to `end` (not) local time; the window may cross midnight."""
     t, s, e = local(now_utc, tz).time(), _hm(start), _hm(end)
     return s <= t < e if s <= e else (t >= s or t < e)
 

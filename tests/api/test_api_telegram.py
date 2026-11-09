@@ -41,11 +41,16 @@ def test_live_sends_where_it_is_asked(monkeypatch, sent):
     assert sent == [("group", "💰 Sold", False), ("ops", "details", False)]
 
 
-def test_the_quiet_hours_are_silent_never_late(sent):
-    telegram.send("night", "group", now=utc(2026, 10, 9, 3, 30), mode="live")        # 23:30 in New York
-    telegram.send("early", "group", now=utc(2026, 10, 9, 11, 59), mode="live")       # 07:59
-    telegram.send("morning", "group", now=utc(2026, 10, 9, 12, 0), mode="live")      # 08:00
-    assert sent == [("group", "night", True), ("group", "early", True), ("group", "morning", False)]
+def test_the_night_hours_are_silent_never_late(sent):
+    """WO54 §3: messages between 10 PM and 7 AM go out silently (23:00–08:00 before); the owner's daytime quiet hours
+    (8:30 AM – 2:00 PM: the Mac runs nothing) are not night — a sale's line then rings as always."""
+    telegram.send("evening", "group", now=utc(2026, 10, 10, 1, 59), mode="live")     # 21:59 in New York
+    telegram.send("night", "group", now=utc(2026, 10, 10, 2, 0), mode="live")        # 22:00
+    telegram.send("early", "group", now=utc(2026, 10, 10, 10, 59), mode="live")      # 06:59
+    telegram.send("morning", "group", now=utc(2026, 10, 10, 11, 0), mode="live")     # 07:00
+    telegram.send("💰 Sold", "group", now=utc(2026, 10, 10, 14, 0), mode="live")     # 10:00: the quiet hours
+    assert sent == [("group", "evening", False), ("group", "night", True), ("group", "early", True),
+                    ("group", "morning", False), ("group", "💰 Sold", False)]
 
 
 def test_replay_goes_to_ops_and_off_sends_nothing(sent):

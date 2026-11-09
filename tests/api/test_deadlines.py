@@ -1,10 +1,11 @@
 """thrift_api.deadlines (WO33): ship-by dates by the marketplace's rule from the sale's local date, the observed US
-federal holidays, reminders at 09:00 local on both sides of the DST changes, quiet hours, the day's short form."""
+federal holidays, reminders at 09:00 local on both sides of the DST changes, the night hours (silent sends; WO54 §3:
+22:00–07:00), the day's short form."""
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
-from thrift_api.deadlines import (DEFAULT_RULES, add_business_days, fmt_day, is_business_day, local, quiet,
+from thrift_api.deadlines import (DEFAULT_RULES, add_business_days, fmt_day, is_business_day, local, night,
                                   reminders_due, rules, ship_by, us_federal_holidays)
 
 UTC = timezone.utc
@@ -199,26 +200,26 @@ def test_reminder_time_and_zone_are_settings():
         reminders_due(utc(2026, 10, 9, 16, 0), sales, set(), at="9am")
 
 
-# --- quiet hours, the day's short form
+# --- the night hours (WO54 §3: 22:00–07:00, silent sends), the day's short form
 
 @pytest.mark.parametrize("now, expected", [
-    (utc(2026, 10, 8, 2, 59), False),       # 22:59 EDT on Oct 7
-    (utc(2026, 10, 8, 3, 0), True),         # 23:00
-    (utc(2026, 10, 8, 11, 59), True),       # 07:59 on Oct 8
-    (utc(2026, 10, 8, 12, 0), False),       # 08:00
-    (utc(2026, 12, 2, 3, 59), False),       # 22:59 EST on Dec 1
-    (utc(2026, 12, 2, 4, 0), True),         # 23:00 EST
-    (utc(2026, 12, 2, 12, 59), True),       # 07:59 EST on Dec 2
-    (utc(2026, 12, 2, 13, 0), False),       # 08:00 EST
+    (utc(2026, 10, 8, 1, 59), False),       # 21:59 EDT on Oct 7
+    (utc(2026, 10, 8, 2, 0), True),         # 22:00
+    (utc(2026, 10, 8, 10, 59), True),       # 06:59 on Oct 8
+    (utc(2026, 10, 8, 11, 0), False),       # 07:00
+    (utc(2026, 12, 2, 2, 59), False),       # 21:59 EST on Dec 1
+    (utc(2026, 12, 2, 3, 0), True),         # 22:00 EST
+    (utc(2026, 12, 2, 11, 59), True),       # 06:59 EST on Dec 2
+    (utc(2026, 12, 2, 12, 0), False),       # 07:00 EST
 ])
-def test_quiet_hours(now, expected):
-    assert quiet(now) is expected
+def test_the_night_hours(now, expected):
+    assert night(now) is expected
 
 
-def test_quiet_window_within_one_day():
-    assert not quiet(utc(2026, 10, 8, 16, 59), start="13:00", end="14:00")     # 12:59 local
-    assert quiet(utc(2026, 10, 8, 17, 30), start="13:00", end="14:00")
-    assert not quiet(utc(2026, 10, 8, 18, 0), start="13:00", end="14:00")
+def test_a_night_window_within_one_day():
+    assert not night(utc(2026, 10, 8, 16, 59), start="13:00", end="14:00")     # 12:59 local
+    assert night(utc(2026, 10, 8, 17, 30), start="13:00", end="14:00")
+    assert not night(utc(2026, 10, 8, 18, 0), start="13:00", end="14:00")
 
 
 def test_fmt_day():

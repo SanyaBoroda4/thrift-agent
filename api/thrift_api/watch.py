@@ -4,12 +4,16 @@ share ledger, the items, the listings with their reasons), judged here on the AP
 
 Live (Oct 12–18): 4 of 23 shares never became a card and nothing said so; the Ralph Lauren shirt never reached
 Poshmark (one failed attempt, the next window never came that day) and nobody heard. The Mac tells what it knows; the
-API tells what the Mac didn't."""
+API tells what the Mac didn't.
+
+WO54 §3: the owner's quiet hours (8:30 AM – 2:00 PM; quiet.py, from the Mac's heartbeat) — the Mac runs nothing then,
+on purpose. No net here judges it while it is quiet or starting back (quiet.settling), and every "this long" is the
+Mac's working time (quiet.aged: the quiet hours don't count): an item priced at 8:00 AM is not 2 h old until 3:30 PM."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from . import core, deadlines, util
+from . import core, deadlines, quiet, util
 from .db import Database
 from .util import iso, parse_time, site_name
 
@@ -21,7 +25,9 @@ STUCK_SAID = "share_stuck:"               # settings: + share id — the ⏳ lin
 UNPOSTED_AFTER = timedelta(hours=1)       # an item priced this long ago and not live on a site
 REPOST = "repost:"                        # settings: + item|site — the retry asked, when
 UNPOSTED_SAID = "unposted_said:"          # settings: + item|site — the ⚠️ line said (once)
-POSTING_HOURS = (8, 22)                   # local hours in which a missing listing is chased
+# local hours in which her own wait is told (she is asleep at night). WO54 §3: the Mac posts at every hour outside the
+# quiet hours now, so the unposted net chases at every hour outside them too (it rested 22:00–08:00 before)
+HER_HOURS = (8, 22)
 EVENING_HOUR = 21
 MAC_OFFLINE = timedelta(minutes=30)       # WO53 §4: the 9 PM line says the Mac is offline (its figures as of then)
 EVENING_DONE = "evening_line_day"         # settings: the local day the 📊 line went
@@ -59,7 +65,8 @@ WAIT_ON_HER = timedelta(hours=2)          # WO51 §6: a share waiting this long 
 WAITING_SAID = "share_waiting:"           # settings: + share id — that line said (once)
 
 
-def shares_watch(db: Database, now: datetime | None = None, mode: str | None = None) -> list[str]:
+def shares_watch(db: Database, now: datetime | None = None, mode: str | None = None,
+                 q: quiet.Quiet | None = None) -> list[str]:
     """§3, every 5 minutes, while the Mac is online (offline: WO42's line), for each share complete with no outcome —
     WO51 §6 (live 2026-11-01, 1:15 PM: "⏳ Share 12:39 PM (70 photos) stuck at carded since 12:44" while its cards were
     simply going out one at a time behind her open one): the Mac says what the share waits for (`state`, `waiting`,
@@ -72,9 +79,14 @@ def shares_watch(db: Database, now: datetime | None = None, mode: str | None = N
       saying so — "⏳ Waiting for her price on "Edikted Crochet Mini Dress" — 8 more cards behind it.";
     - "done": nothing (the outcome comes with the next sync).
     A share from a Mac that doesn't say (no `state`): the rule before WO51 ("stuck at grouped since 12:33" after
-    STUCK_AFTER). Each line once per share. Returns the share ids said now."""
+    STUCK_AFTER). Each line once per share. Returns the share ids said now.
+    WO54 §3: nothing in the quiet hours or the 30 minutes after (the Mac runs nothing, then starts back), and every
+    "this long" is the Mac's working time — her 2-hour wait too: the card she would answer isn't even sent then."""
     now, mode = (util.aware(now) if now else util.utcnow()), mode or util.mode()
     if mode == "off" or not _mac_online(db, now):
+        return []
+    q = q or quiet.read(db)
+    if quiet.settling(now, q):
         return []
     out = core.Outbox(now, mode)
     said = []
@@ -88,11 +100,12 @@ def shares_watch(db: Database, now: datetime | None = None, mode: str | None = N
             limit = STUCK_AFTER_BIG if photos > BIG_SHARE else STUCK_AFTER
             state = (row.get("state") or "").strip().lower()
             if state:
-                if line := _share_line(db, row, state, max(parse_time(row.get("moved_at")) or done, done), limit, now):
+                moved = max(parse_time(row.get("moved_at")) or done, done)
+                if line := _share_line(db, row, state, moved, limit, now, q):
                     out.ops(line)
                     said.append(row["id"])
                 continue
-            if now - done < limit or core.setting(db, STUCK_SAID + row["id"]):
+            if not quiet.aged(done, now, limit, q) or core.setting(db, STUCK_SAID + row["id"]):
                 continue
             step, at = _step_of(row)
             since = parse_time(at)
@@ -105,18 +118,19 @@ def shares_watch(db: Database, now: datetime | None = None, mode: str | None = N
     return said
 
 
-def _share_line(db: Database, row: dict, state: str, moved: datetime, limit: timedelta, now: datetime) -> str | None:
+def _share_line(db: Database, row: dict, state: str, moved: datetime, limit: timedelta, now: datetime,
+                q: quiet.Quiet) -> str | None:
     """WO51 §6: the one line for a share whose Mac says what it waits for, or None (moving, said already, done)."""
     waiting = (row.get("waiting") or "").strip().rstrip(".") or "its next step"
     if state == "done":
         return None
     if state == "her":
-        if (now - moved < WAIT_ON_HER or core.setting(db, WAITING_SAID + row["id"])
-                or not POSTING_HOURS[0] <= deadlines.local(now).hour < POSTING_HOURS[1]):
+        if (not quiet.aged(moved, now, WAIT_ON_HER, q) or core.setting(db, WAITING_SAID + row["id"])
+                or not HER_HOURS[0] <= deadlines.local(now).hour < HER_HOURS[1]):
             return None
         core.put_setting(db, WAITING_SAID + row["id"], iso(now))
         return f"⏳ Waiting for {waiting}."
-    if now - moved < limit or core.setting(db, STUCK_SAID + row["id"]):
+    if not quiet.aged(moved, now, limit, q) or core.setting(db, STUCK_SAID + row["id"]):
         return None
     core.put_setting(db, STUCK_SAID + row["id"], iso(now))
     photos = int(row["received"] or 0)
@@ -133,13 +147,20 @@ def _clock(moment: datetime) -> str:
     return f"{moment.hour % 12 or 12}:{moment.minute:02d} {'AM' if moment.hour < 12 else 'PM'}"
 
 
-def uploads_watch(db: Database, now: datetime | None = None, mode: str | None = None) -> list[str]:
+def uploads_watch(db: Database, now: datetime | None = None, mode: str | None = None,
+                  q: quiet.Quiet | None = None) -> list[str]:
     """WO49, every 5 minutes: a share the iPhone uploaded (ended, or quiet) that the Mac hasn't fetched
     UNFETCHED_AFTER after its last photo, while the Mac's heartbeat says it is online → ONE private line per share,
     "⏳ Share 9:39 AM (20 photos) is in Azure but the Mac hasn't taken it (since 9:40)". The Mac offline: WO42's line
-    covers it. Test shares never. Returns the share ids said now."""
+    covers it. Test shares never. Returns the share ids said now.
+    WO54 §3: her shares are still taken in the quiet hours (they wait in Azure, as when the Mac is off); the Mac takes
+    them when it starts back — nothing is said in the quiet hours or the 30 minutes after, and the 10 minutes are the
+    Mac's working time."""
     now, mode = (util.aware(now) if now else util.utcnow()), mode or util.mode()
     if mode == "off" or not _mac_online(db, now):
+        return []
+    q = q or quiet.read(db)
+    if quiet.settling(now, q):
         return []
     out = core.Outbox(now, mode)
     said = []
@@ -147,7 +168,8 @@ def uploads_watch(db: Database, now: datetime | None = None, mode: str | None = 
         for row in db.query("SELECT share_id, received, started_at, ended_at, last_received_at FROM shares_in "
                             "WHERE fetched_at IS NULL AND COALESCE(test, 0) = 0 AND received > 0 ORDER BY started_at"):
             last = parse_time(row["last_received_at"] or row["ended_at"] or row["started_at"])
-            if last is None or now - last < UNFETCHED_AFTER or core.setting(db, UNFETCHED_SAID + row["share_id"]):
+            if (last is None or not quiet.aged(last, now, UNFETCHED_AFTER, q)
+                    or core.setting(db, UNFETCHED_SAID + row["share_id"])):
                 continue
             photos = int(row["received"] or 0)
             out.ops(f"⏳ Share {_share_when(row['share_id'])} ({photos} photo{'s' if photos != 1 else ''}) is in Azure "
@@ -193,13 +215,19 @@ NOT_LIVE_SAID = "not_live_said:"          # settings: + item — the 🚨 line s
 SITES = ("poshmark", "depop", "vinted")
 
 
-def not_live(db: Database, now: datetime | None = None, mode: str | None = None) -> list[str]:
+def not_live(db: Database, now: datetime | None = None, mode: str | None = None,
+             q: quiet.Quiet | None = None) -> list[str]:
     """WO52 §5 (the owner, 2026-11-01): the net that needs no reason — any priced item (never a test item) priced 2
     hours ago and not live on all three sites gets ONE private 🚨 line, WHATEVER the recorded reason (the 1-hour net
     above skips the reasons the Mac settles itself; this one names them): "🚨 Zara Moto Jacket isn't live everywhere 2 h
-    after its price — Depop: refused the form …; Vinted: not tried yet". Returns the items said."""
+    after its price — Depop: refused the form …; Vinted: not tried yet". Returns the items said.
+    WO54 §3: never in the quiet hours or the 30 minutes after them, and the 2 hours are the Mac's working time: an
+    item priced at 8:00 AM is 2 h old at 3:30 PM (8:00–8:30, then 2:00–3:30)."""
     now, mode = (util.aware(now) if now else util.utcnow()), mode or util.mode()
     if mode != "live":
+        return []
+    q = q or quiet.read(db)
+    if quiet.settling(now, q):
         return []
     out = core.Outbox(now, mode)
     said = []
@@ -209,6 +237,9 @@ def not_live(db: Database, now: datetime | None = None, mode: str | None = None)
                         "AND COALESCE(status, '') NOT IN ('dropped', 'sold') AND priced_at IS NOT NULL AND priced_at <= ? "
                         "AND priced_at >= ?", (iso(now - NOT_LIVE_AFTER), iso(now - NOT_LIVE_WINDOW)))
         for it in rows:
+            priced = parse_time(it["priced_at"])
+            if priced is None or not quiet.aged(priced, now, NOT_LIVE_AFTER, q):
+                continue                                      # less than 2 h of the Mac's working time (WO54 §3)
             if core.setting(db, NOT_LIVE_SAID + it["id"]):
                 continue
             listings = {r["marketplace"]: r for r in db.query(
@@ -239,23 +270,29 @@ def not_live(db: Database, now: datetime | None = None, mode: str | None = None)
     return said
 
 
-def unposted(db: Database, now: datetime | None = None, mode: str | None = None) -> dict:
-    """§7, every 15 minutes in posting hours: an item priced more than an hour ago that isn't live on a site, with no
-    reason the Mac settles itself (a missing size, a twin, sold, autopublish off, an unconfirmed publish, a mismatch)
-    → first ONE "repost" task the Mac takes with its take-downs (the row goes back in line once); still not live an
-    hour after the Mac answered → ONE private line per item and site: "⚠️ <title> isn't on Poshmark: <reason>".
-    {"asked": [...], "said": [...]}."""
+def unposted(db: Database, now: datetime | None = None, mode: str | None = None,
+             q: quiet.Quiet | None = None) -> dict:
+    """§7, every 15 minutes while the Mac posts: an item priced more than an hour ago that isn't live on a site, with
+    no reason the Mac settles itself (a missing size, a twin, sold, autopublish off, an unconfirmed publish, a
+    mismatch) → first ONE "repost" task the Mac takes with its take-downs (the row goes back in line once); still not
+    live an hour after the Mac answered → ONE private line per item and site: "⚠️ <title> isn't on Poshmark: <reason>".
+    {"asked": [...], "said": [...]}.
+    WO54 §3: the Mac posts at every hour but the quiet hours, so the net rests only in them (and the 30 minutes after:
+    the Mac starting back), no longer 22:00–08:00; its hours are the Mac's working time."""
     now, mode = (util.aware(now) if now else util.utcnow()), mode or util.mode()
     result: dict = {"asked": [], "said": []}
     if mode != "live":
         return result
-    hour = deadlines.local(now).hour
-    if not POSTING_HOURS[0] <= hour < POSTING_HOURS[1]:
+    q = q or quiet.read(db)
+    if quiet.settling(now, q):
         return result
     out = core.Outbox(now, mode)
     with db.tx():
         for row in _unposted_rows(db, now):
             key = f"{row['item_id']}|{row['marketplace']}"
+            failed = parse_time(row["updated_at"])
+            if failed is None or not quiet.aged(failed, now, UNPOSTED_AFTER, q):
+                continue                                      # less than an hour of the Mac's working time (WO54 §3)
             if core.setting(db, UNPOSTED_SAID + key):
                 continue
             task = db.one("SELECT id, status, done_at, created_at FROM delist_tasks WHERE item_id = ? AND marketplace = ? "
@@ -271,7 +308,7 @@ def unposted(db: Database, now: datetime | None = None, mode: str | None = None)
             if task["status"] in ("pending", "running"):
                 continue                                      # the Mac hasn't answered yet
             answered = parse_time(task["done_at"]) or parse_time(task["created_at"])
-            if answered is None or now - answered < UNPOSTED_AFTER:
+            if answered is None or not quiet.aged(answered, now, UNPOSTED_AFTER, q):
                 continue                                      # the retry may still be on its way
             fresh = parse_time(row["updated_at"])
             if fresh is not None and fresh < answered and task["status"] == "done":
@@ -428,9 +465,15 @@ def evening_line(db: Database, now: datetime | None = None, mode: str | None = N
     n_wait = int(waiting["n"]) if waiting else 0
     beat = db.one("SELECT last_seen FROM heartbeats WHERE source = 'mac'")
     seen = parse_time(beat["last_seen"]) if beat else None
-    from .timers import clock
-    head = (f"📊 Today (the Mac is offline since {clock(seen, now)} — its figures as of then)"
-            if seen is not None and now - seen > MAC_OFFLINE else "📊 Today")
+    from .timers import clock, mac_silent
+    q = quiet.read(db)
+    head = "📊 Today"
+    if seen is not None and quiet.settling(now, q) and now - seen > MAC_OFFLINE:
+        # WO54 §3: quiet on purpose (an owner's window over 9 PM), or starting back after it — never "offline"
+        state = "in its quiet hours" if quiet.is_quiet(now, q) else "starting back after its quiet hours"
+        head = f"📊 Today (the Mac is {state} — its figures as of {clock(seen, now)})"
+    elif seen is not None and mac_silent(seen, now, q, MAC_OFFLINE):
+        head = f"📊 Today (the Mac is offline since {clock(seen, now)} — its figures as of then)"
     text = (f"{head}: {len(shares)} share{'s' if len(shares) != 1 else ''} → {len(item_ids)} item"
             f"{'s' if len(item_ids) != 1 else ''}, {live_all} live on all {len(util.SITES)} sites with all photos"
             + (f", {n_wait} waiting for a size" if n_wait else "") + "." + _cleanup_today(db, day)

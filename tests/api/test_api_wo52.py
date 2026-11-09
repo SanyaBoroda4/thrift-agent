@@ -11,7 +11,7 @@ from thrift_api import core, watch
 
 
 @pytest.fixture
-def live(db, monkeypatch):
+def live(db, monkeypatch, no_quiet_hours):      # 11:00 AM: WO54 quiet hours off (test_api_wo54_quiet.py)
     monkeypatch.setenv("SALES_MODE", "live")
     core.put_setting(db, "go_live_at", "2026-10-01T00:00:00+00:00")
 

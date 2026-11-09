@@ -9,12 +9,17 @@ failed emails tried again (3 attempts in all).
 In off mode it does nothing.
 
 `daily` (the timer runs hourly; the work is done once a local day, at 3 AM New York): the emails' text cleared after
-30 days, OTHER emails deleted after 90 days, the uploaded shares' rows after 30 days (WO45, uploads.cleanup)."""
+30 days, OTHER emails deleted after 90 days, the uploaded shares' rows after 30 days (WO45, uploads.cleanup).
+
+WO54 §3: every net here that judges the Mac (its silence, the late take-downs, the unposted and 2-hour nets, the share
+and upload watchdogs) knows the owner's quiet hours (quiet.py, from the Mac's heartbeat): it says nothing while the Mac
+is quiet on purpose or starting back, and its clock counts only the Mac's working time. The reminders, the Gmail
+reader's watch and the sales lines are not the Mac's: they go on as before."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from . import core, deadlines, orders, uploads, util, watch
+from . import core, deadlines, orders, quiet, uploads, util, watch
 from .db import Database
 from .util import iso, parse_time, site_name
 
@@ -32,24 +37,27 @@ def every_15_min(db: Database, now: datetime | None = None, mode: str | None = N
         return {"mode": mode}
     if mode == "live":
         core.go_live(db, now)                         # a live call like any request: starts the live clock if needed
+    q = quiet.read(db)                                # WO54 §3: the quiet hours, as the Mac's last heartbeat said them
     return {"mode": mode,
             "reclassified": len(core.reclassify(db, now, mode)),   # WO49: an email a fixed rule now reads (before the
             "reminders": reminders(db, now, mode), "gmail": gmail_watch(db, now, mode),   # take-downs' safety net)
-            "mac": mac_watch(db, now, mode),
-            "retried": retry_failed(db, now, mode), "late_takedowns": core.say_late_takedowns(db, now, mode),
-            "unposted": watch.unposted(db, now, mode),          # WO45 §7: an item priced but not live on a site
-            "not_live": watch.not_live(db, now, mode)}          # WO52 §5: … 2 h after its price, whatever the reason
+            "mac": mac_watch(db, now, mode, q),
+            "retried": retry_failed(db, now, mode), "late_takedowns": core.say_late_takedowns(db, now, mode, q),
+            "unposted": watch.unposted(db, now, mode, q),       # WO45 §7: an item priced but not live on a site
+            "not_live": watch.not_live(db, now, mode, q),       # WO52 §5: … 2 h after its price, whatever the reason
+            "quiet": quiet.describe(now, q)["now"]}
 
 
 def every_5_min(db: Database, now: datetime | None = None, mode: str | None = None) -> dict:
     """WO45 §3: the share watchdog — a complete share with no outcome after 15 minutes (30 past 20 photos) while the
     Mac is online → one private line per share. WO49: and an upload the Mac hasn't fetched 10 minutes after it ended
     (live 2026-10-24: a 20-photo share sat in Azure 71 minutes, never watched — the watchdog saw only shares the Mac
-    had taken)."""
+    had taken). WO54 §3: both rest in the quiet hours and count the Mac's working time only."""
     now, mode = (util.aware(now) if now else util.utcnow()), mode or util.mode()
     if mode == "off":
         return {"mode": mode}
-    return {"mode": mode, "shares": watch.shares_watch(db, now, mode), "uploads": watch.uploads_watch(db, now, mode)}
+    q = quiet.read(db)
+    return {"mode": mode, "shares": watch.shares_watch(db, now, mode, q), "uploads": watch.uploads_watch(db, now, mode, q)}
 
 
 def evening(db: Database, now: datetime | None = None, mode: str | None = None) -> dict:
@@ -72,18 +80,29 @@ def clock(moment: datetime | None, now: datetime | None = None) -> str:
     return f"{when.hour % 12 or 12}:{when.minute:02d} {'AM' if when.hour < 12 else 'PM'}"
 
 
-def mac_watch(db: Database, now: datetime, mode: str) -> str:
+def mac_silent(seen: datetime | None, now: datetime, q: quiet.Quiet, after: timedelta = MAC_SILENCE) -> bool:
+    """WO54 §3: the Mac silent `after` of its working time — the quiet hours (8:30 AM – 2:00 PM) don't count: it runs
+    nothing then on purpose, so no heartbeat is missing."""
+    return seen is None or quiet.active_seconds(seen, now, q) > after.total_seconds()
+
+
+def mac_watch(db: Database, now: datetime, mode: str, q: quiet.Quiet | None = None) -> str:
     """WO42 → WO53 §4: the Mac's heartbeat (every 15 minutes while it is open, and on every wake) missing for 30
     minutes between 08:00 and 23:00 local → ONE private line per outage, in plain words that say what to check: "The
     Mac stopped answering at 5:19 PM. Is it plugged in, with the lid open? Her photos are safe in the cloud and will go
     up when it's back."; nothing at night (said in the morning if it is still silent); when it is back, ONE line: "Mac
-    back at 9:12 PM — 2 shares waiting, working on them." "ok" | "offline" (said, or already said) | "night" (silent,
+    back at 9:12 PM — 2 shares waiting, working on them." — only for an outage whose line was said.
+    WO54 §3: the 30 minutes are the Mac's working time (quiet.active_seconds: 8:30 AM – 2:00 PM don't count), and
+    nothing is said in the quiet hours or the 30 minutes after they end (the Mac starting back); a Mac that doesn't
+    come back after them is said as that ("didn't come back after its quiet hours").
+    "ok" | "offline" (said, or already said) | "night" (silent, not said) | "quiet" (in or just after the quiet hours:
     not said) | "back" | "never"."""
     beat = db.one("SELECT last_seen FROM heartbeats WHERE source = 'mac'")
     if beat is None:
         return "never"
+    q = q or quiet.read(db)
     seen = parse_time(beat["last_seen"])
-    silent = seen is None or now - seen > MAC_SILENCE
+    silent = mac_silent(seen, now, q)
     down = core.setting(db, MAC_DOWN)
     if not silent:
         if down:
@@ -99,13 +118,21 @@ def mac_watch(db: Database, now: datetime, mode: str) -> str:
         return "ok"
     if down:
         return "offline"
+    if quiet.settling(now, q):
+        return "quiet"                                # WO54 §3: quiet on purpose, or starting back: never an outage
     if not (MAC_HOURS[0] <= deadlines.local(now).hour < MAC_HOURS[1]):
         return "night"
+    ended = quiet.ended_between(seen, now, q) if seen else None
+    if ended is not None:                             # silent through the quiet hours, and not back since they ended
+        what = (f"The Mac didn't come back after its quiet hours (they ended at {clock(ended, now)}; last heard from at "
+                f"{clock(seen, now)}).")
+    else:
+        what = f"The Mac stopped answering at {clock(seen, now)}."
     out = core.Outbox(now, mode)
     with db.tx():
         core.put_setting(db, MAC_DOWN, beat["last_seen"])
-        out.ops(f"The Mac stopped answering at {clock(seen, now)}. Is it plugged in, with the lid open? Her photos are "
-                f"safe in the cloud and will go up when it's back.")
+        out.ops(f"{what} Is it plugged in, with the lid open? Her photos are safe in the cloud and will go up when "
+                "it's back.")
     out.flush()
     return "offline"
 

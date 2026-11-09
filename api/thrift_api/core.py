@@ -20,7 +20,7 @@ import logging
 import re
 from datetime import date, datetime, timedelta
 
-from . import deadlines, emails, match, telegram, util
+from . import deadlines, emails, match, quiet, telegram, util
 from .db import Database
 from .util import BadRequest, Conflict, NotFound, iso, parse_time, site_name
 
@@ -604,23 +604,33 @@ def ensure_takedowns(db: Database, item_id: str, now: datetime, mode: str, reope
     return tasks
 
 
-def late_takedowns(db: Database, now: datetime) -> list[dict]:
+def _takedown_age(since: datetime, now: datetime, q: quiet.Quiet, need: timedelta = LATE_AFTER) -> bool:
+    """`need` of the Mac's time to take it down since `since`: WO54 §3 — its take-downs wait in the quiet hours (unless
+    the owner set `allow_takedowns`), so those hours don't count."""
+    return now - since >= need if q.allow_takedowns else quiet.aged(since, now, need, q)
+
+
+def late_takedowns(db: Database, now: datetime, q: quiet.Quiet | None = None) -> list[dict]:
     """The live sales 2 hours old or more whose item is still up somewhere: a take-down not done (pending, running,
     failed), or a site our mirror shows posted with none. [{sale_id, item_id, title, sold_on, sites}] — the dashboard's
-    flag, and the 15-minute timer's one group line."""
+    flag, and the 15-minute timer's one group line. WO54 §3: the 2 hours are the Mac's working time (its take-downs
+    wait in the quiet hours unless `allow_takedowns`): a sale at 10 AM is late at 4 PM, not at noon."""
     marks = ", ".join("?" * len(STANDING))
     done_marks = ", ".join("?" * len(TAKEN_DOWN))
     late = []
     since = _live_since(db)
     if since is None:
         return late
+    q = q or quiet.read(db)
     for sale in db.query(f"SELECT * FROM sales WHERE item_id IS NOT NULL AND status IN ({marks}) AND sold_at >= ? "
                          "AND sold_at <= ? ORDER BY sold_at, id", (*STANDING, since, iso(now - LATE_AFTER))):
         # WO49: the 2 hours run from when the sale was KNOWN — a sale found late (its email read again by a fixed
         # rule, the ship reminder, the Mac seeing it sold) gets its take-downs' chance before the group is asked
         known, sold = parse_time(sale["created_at"]), parse_time(sale["sold_at"])
-        if known is not None and sold is not None and known - sold >= FOUND_LATE and now - known < LATE_AFTER:
+        if known is not None and sold is not None and known - sold >= FOUND_LATE and not _takedown_age(known, now, q):
             continue
+        if sold is not None and not _takedown_age(sold, now, q):
+            continue                                    # WO54 §3: not 2 h of the Mac's time yet
         first = _standing_sale(db, sale["item_id"], now)
         if first is None or first["id"] != sale["id"]:
             continue                                    # a later sale of the same item: the first one speaks
@@ -648,15 +658,21 @@ def late_line(entry: dict) -> str:
             "sold there.")
 
 
-def say_late_takedowns(db: Database, now: datetime | None = None, mode: str | None = None) -> list[str]:
-    """The 15-minute safety net (WO40): each late sale's line to the group, once (settings `takedown_late:<sale>`)."""
+def say_late_takedowns(db: Database, now: datetime | None = None, mode: str | None = None,
+                       q: quiet.Quiet | None = None) -> list[str]:
+    """The 15-minute safety net (WO40): each late sale's line to the group, once (settings `takedown_late:<sale>`).
+    WO54 §3: never in the quiet hours or the 30 minutes after them — the take-downs wait for the Mac and are its first
+    work at 2:00 PM — unless the owner set `allow_takedowns` (then they run in the quiet hours, and so does this)."""
     now, mode = _clock(now), mode or util.mode()
     if mode != "live":
+        return []
+    q = q or quiet.read(db)
+    if not q.allow_takedowns and quiet.settling(now, q):
         return []
     out = Outbox(now, mode)
     said = []
     with db.tx():
-        for entry in late_takedowns(db, now):
+        for entry in late_takedowns(db, now, q):
             if setting(db, LATE_SAID + entry["sale_id"]):
                 continue
             put_setting(db, LATE_SAID + entry["sale_id"], iso(now))
@@ -1089,6 +1105,11 @@ def _mac_sold_found(db: Database, body: dict, now: datetime, mode: str) -> dict:
     return _process(db, event, now, mode, fresh=True)
 
 
+# WO54 §3: the Mac's heartbeat carries its quiet hours (with the sites, form checks and alarms); a beat cut at 4000
+# characters was JSON no reader could parse, and the quiet hours (with all the rest) fell back to the defaults
+INFO_MAX = 16_000
+
+
 def heartbeat(db: Database, source: object, info: object = None, now: datetime | None = None,
               mode: str | None = None) -> dict:
     """A reader's or the Mac's sign of life, answered with the mode and go_live_at (the Mac reconciles once per
@@ -1099,7 +1120,7 @@ def heartbeat(db: Database, source: object, info: object = None, now: datetime |
         raise BadRequest("source is required")
     db.execute("INSERT INTO heartbeats (source, last_seen, info) VALUES (?, ?, ?) "
                "ON CONFLICT (source) DO UPDATE SET last_seen = excluded.last_seen, info = excluded.info",
-               (source, iso(now), None if info is None else _dumps(info)[:4000]))
+               (source, iso(now), None if info is None else _dumps(info)[:INFO_MAX]))
     if mode == "live":
         go_live(db, now)
     return {"ok": True, "status": "ok", "source": source, "last_seen": iso(now), "mode": mode,
@@ -1217,7 +1238,8 @@ def health(db: Database, now: datetime | None = None, mode: str | None = None) -
             "unmatched_sales": count("SELECT COUNT(*) AS n FROM sales WHERE status = 'unmatched'"),
             "open_tasks": count("SELECT COUNT(*) AS n FROM delist_tasks WHERE status IN ('pending', 'running')"),
             "failed_emails": count("SELECT COUNT(*) AS n FROM email_events WHERE status = 'failed'"),
-            "go_live_at": setting(db, "go_live_at"), "now": iso(now)}
+            "go_live_at": setting(db, "go_live_at"), "now": iso(now),
+            "quiet": quiet.describe(now, quiet.read(db))}       # WO54 §3: the quiet hours as thrift-api knows them
 
 
 def dashboard_data(db: Database, now: datetime | None = None) -> dict:
