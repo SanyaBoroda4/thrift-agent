@@ -667,7 +667,8 @@ edit_save; UNVERIFIED: block, captcha, verify, skirt_length, promo_close, listin
   unconfirmed 2 h after its click, a skipped listing, a refused form: one 🚨 each (keys "<mp>:verify|skipped|refused:
   <item>"). `alarm.raise_for`, `alarm.form_check_failed`. thrift-api's net
   (`watch.not_live`): an item priced ≥ 2 h ago (within 3 days; `items.priced_at`) not live on all three → ONE 🚨 line
-  naming each missing site's reason.
+  naming each missing site's reason — a queued row on a site the Mac's heartbeat shows paused names the pause ("Depop:
+  waiting — Depop paused: … since 1:04 AM", `watch.pause_words`; live 11-09 it said "waiting in line").
 - **Jobs** (`thrift_agent/jobs.py`, kv `job_health`; `jobs.ok` / errors): order sweeps, photo checks, take-downs, price
   drops, sync, heartbeat, cleanup, form check — no success for 12 h (24 for daily ones) → ONE private line with the last
   error, "✅ … works again" after.

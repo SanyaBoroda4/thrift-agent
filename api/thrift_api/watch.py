@@ -203,6 +203,7 @@ def not_live(db: Database, now: datetime | None = None, mode: str | None = None)
         return []
     out = core.Outbox(now, mode)
     said = []
+    paused = _paused_sites(db)
     with db.tx():
         rows = db.query("SELECT id, title, priced_at FROM items WHERE COALESCE(priced, 0) = 1 AND COALESCE(test, 0) = 0 "
                         "AND COALESCE(status, '') NOT IN ('dropped', 'sold') AND priced_at IS NOT NULL AND priced_at <= ? "
@@ -220,9 +221,17 @@ def not_live(db: Database, now: datetime | None = None, mode: str | None = None)
             parts = []
             for mp in missing:
                 r = listings.get(mp) or {}
-                why = (r.get("error") or ({"queued": "waiting in line", "posting": "being posted now"}
-                                          .get(r.get("status") or "", r.get("status") or "not tried yet"))).strip()
-                parts.append(f"{site_name(mp)}: {why[:140]}")
+                why = (r.get("error") or "").strip()
+                p = paused.get(mp) if isinstance(paused.get(mp), dict) else None
+                if not why and p and (r.get("status") or "queued") == "queued":
+                    # WO53 §7 (live 2026-11-09 01:15: "Depop: waiting in line" while Depop was paused): the site's
+                    # own state, from the Mac's heartbeat
+                    from .timers import clock
+                    why = f"waiting — {site_name(mp)} {pause_words(p)} since {clock(parse_time(p.get('since')), now)}"
+                elif not why:
+                    why = {"queued": "waiting in line", "posting": "being posted now"}.get(
+                        r.get("status") or "", r.get("status") or "not tried yet")
+                parts.append(f"{site_name(mp)}: {why[:160]}")
             out.ops(f"🚨 {it['title'] or 'An item'} isn't live everywhere 2 h after its price — " + "; ".join(parts))
             core.put_setting(db, NOT_LIVE_SAID + it["id"], iso(now))
             said.append(it["id"])
@@ -303,6 +312,32 @@ ACCOUNT_WORDS = {"login": "logged out", "captcha": "shows a CAPTCHA", "verify": 
                  "block": "turned the Mac away"}
 
 
+def _beat_info(db: Database) -> dict:
+    import json
+    beat = db.one("SELECT info FROM heartbeats WHERE source = 'mac'")
+    try:
+        info = json.loads(beat["info"]) if beat and beat["info"] else {}
+    except (TypeError, ValueError):
+        info = {}
+    return info if isinstance(info, dict) else {}
+
+
+def _paused_sites(db: Database) -> dict:
+    """The Mac's paused sites as its last heartbeat named them (health.beat): {site: {kind, page, owner, since,
+    reason}}."""
+    p = _beat_info(db).get("sites")
+    return p if isinstance(p, dict) else {}
+
+
+def pause_words(p: dict) -> str:
+    """A paused site's state in the owner's words: "logged out", "paused by you", "paused: its sell form changed …"."""
+    if p.get("kind") == "account":
+        return ACCOUNT_WORDS.get(p.get("page") or "", "stopped by a page it showed")
+    if p.get("owner"):
+        return "paused by you"
+    return f"paused: {p.get('reason') or 'a problem'}"
+
+
 def _slot(slot) -> str:
     try:
         hh, mm = str(slot).split(":")
@@ -347,13 +382,7 @@ def sites_line(db: Database, day: str, now: datetime | None = None) -> str:
         alarmed = any(str(k).split(":", 1)[0] == site for k in alarms)
         if p:
             since = clock(parse_time(p.get("since")), now)
-            if p.get("kind") == "account":
-                why = ACCOUNT_WORDS.get(p.get("page") or "", "stopped by a page it showed")
-            elif p.get("owner"):
-                why = "paused by you"
-            else:
-                why = f"paused: {p.get('reason') or 'a problem'}"
-            marks.append(f"{label} ✗ {why} since {since}" + (" (see the 🚨 line)" if alarmed else ""))
+            marks.append(f"{label} ✗ {pause_words(p)} since {since}" + (" (see the 🚨 line)" if alarmed else ""))
         elif failed:
             err = str(c.get("error") or "").split("\n", 1)[0][:90]
             marks.append(f"{label} ✗ form check {', '.join(_slot(x) for x in failed)} failed"

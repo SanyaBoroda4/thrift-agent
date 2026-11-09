@@ -46,3 +46,17 @@ def test_history_is_never_replayed_and_a_live_item_is_quiet(db, live, sent):
          "updated_at": (NOW + timedelta(minutes=1)).isoformat()} for mp in
         ("depop", "vinted")]}, NOW)
     assert watch.not_live(db, NOW, "live") == []
+
+
+def test_a_queued_site_that_is_paused_is_named_for_what_it_is(db, live, sent):
+    """WO53 §7 (live 2026-11-09 01:15): the net said "Depop: waiting in line" while Depop was paused (its sell form had
+    no shipping section) — now the site's own state from the Mac's heartbeat."""
+    _item(db, NOW - timedelta(hours=3))
+    since = (NOW - timedelta(hours=1)).isoformat()
+    core.heartbeat(db, "mac", {"sites": {"vinted": {"kind": "site", "page": None, "owner": False, "since": since,
+                                                     "reason": "its sell form changed (shipping section not found)"}}},
+                   NOW)
+    assert watch.not_live(db, NOW, "live") == ["i_1"]
+    line = texts(sent)[-1]
+    assert "Vinted: waiting — Vinted paused: its sell form changed (shipping section not found) since " in line, line
+    assert "Depop: skipped: no size on the item" in line                     # a reason of its own stays
