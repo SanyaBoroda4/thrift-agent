@@ -672,6 +672,6 @@ def test_a_failed_private_pull_rolls_the_deploy_back():
     poster started on it. Now every failure before the tests goes back to the commit before the pull."""
     script = (ROOT / "deploy" / "mac_deploy.sh").read_text(encoding="utf-8")
     assert 'git -C private pull --ff-only ../.private.bundle main || back "' in script
-    assert "git -C private pull --ff-only \\n      || back \"" in script
+    assert "git -C private pull --ff-only \\\n      || back \"" in script
     body = script[script.index("back() {"):script.index("if [ -d private/.git ]")]
     assert 'git reset --hard "$before"' in body and "exit 1" in body
