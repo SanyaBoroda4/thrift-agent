@@ -32,7 +32,7 @@ from thrift_agent.post.ext_driver import ExtensionPoster
 from thrift_agent.post.poshmark import PoshmarkPoster
 from thrift_agent.post.vinted import VintedPoster
 from thrift_agent.scheduler import can_post, next_gap, windows
-from thrift_agent.schema import Render
+from thrift_agent.schema import Facts, Render
 
 
 DEV_BROWSER_MSG = ("machine_role is 'dev': the dev machine never touches the shop (CLAUDE.md). A dry-run still opens "
@@ -519,8 +519,10 @@ def _guard_render(db: DB, it, render: Render, renders: dict) -> Render:
 
 def shop_window_render(db: DB, it, render: Render, renders: dict) -> Render | None:
     """WO50: the Poshmark title passes the shop-window rules before the form opens — an item processed before them is
-    fixed here (deterministically; its render kept), the owner's own title (WO27) stays hers. A title that still breaks
-    them: None (the item waits) and ONE private line."""
+    fixed here (deterministically; its render kept), the owner's own title (WO27) stays hers. WO54 §2 (never hold): a
+    title the fix can't make pass is replaced by one built from the facts (titles.fallback: brand, item, colour, US
+    size), kept on the render, and the item's "Check —" line says so — the item goes up. (Never None any more; the
+    callers' `None` branch is kept for safety.)"""
     from thrift_agent import titles
     render = _guard_render(db, it, render, renders)          # WO51 §3: no mark that isn't the item's own
     if it["owner_title"] or not titles.check(render.title):
@@ -528,24 +530,26 @@ def shop_window_render(db: DB, it, render: Render, renders: dict) -> Render | No
     facts = loads(it["facts"]) or {}
     brand = (facts.get("brand") or {}).get("value") if isinstance(facts.get("brand"), dict) else None
     fixed = titles.fix(render.title, brand, facts.get("condition"))
+    how = "title_fixed"
     if problems := titles.check(fixed):
-        said = loads(db.kv_get(TITLE_HELD)) or []
-        if it["id"] not in said:
-            db.kv_set(TITLE_HELD, json.dumps([*said, it["id"]][-200:]))
-            notify.say(f"✏️ {render.title}: its title breaks the shop-window rules ({'; '.join(problems)}) and couldn't "
-                       "be fixed — it waits; reply to its card with the title to use (or `thrift edit --title`).")
-        return None
+        try:
+            built = titles.fallback(Facts.model_validate(facts))
+        except Exception as e:  # noqa: BLE001 — facts this code can't read: the fixed title, said in the record
+            db.log(it["id"], "error", f"title fallback: {type(e).__name__}: {e}")
+            built = fixed
+        pipeline.add_check(db, it["id"], f"title: “{render.title}” broke the shop-window rules ({'; '.join(problems)})"
+                                         f" — built from the facts: {built}")
+        fixed, how = built, "title_fallback"
     renders["poshmark"] = {**renders["poshmark"], "title": fixed}
     db.set_item(it["id"], renders=renders)
-    db.log(it["id"], "title_fixed", {"from": render.title, "to": fixed})
+    db.log(it["id"], how, {"from": render.title, "to": fixed})
     return render.model_copy(update={"title": fixed})
 
 
 def approved(it, render: dict) -> bool:
-    """The listing carries the owner's approved price (WO27: nothing publishes without it) — and, when its brand
-    couldn't be read, her answer to the brand (Alex, 2026-10-27: Depop and Vinted need one; approve.needs_brand)."""
-    return bool(it["owner_price"]) and int(render.get("price") or 0) == int(it["owner_price"]) \
-        and not approve.needs_brand(it)
+    """The listing carries the owner's approved price (WO27: nothing publishes without it). WO54 §2: nothing else —
+    a brand that couldn't be read was decided when the item was processed (pipeline.settle_brand), never awaited."""
+    return bool(it["owner_price"]) and int(render.get("price") or 0) == int(it["owner_price"])
 
 
 def can_draft(mp: str) -> bool:

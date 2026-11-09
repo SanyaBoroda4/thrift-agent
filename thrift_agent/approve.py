@@ -192,9 +192,7 @@ def next_step(s: Settings, db: DB, iid: str) -> str:
     status = it["status"]
     if status == "ready" and it["owner_price"] and needs_size(it):     # WO39: nothing goes up without a size
         return "it goes up once a size is tapped on its card"
-    if status == "ready" and it["owner_price"] and needs_brand(it):    # 2026-10-27: nor without a brand
-        return "it goes up once you reply with its brand (or 'no brand')"
-    if status == "ready" and it["owner_price"]:
+    if status == "ready" and it["owner_price"]:                        # WO54 §2: never a brand to wait for
         return f"it goes up {when_posting(s, db=db)} on {_sites(s)}"
     if status == "new":
         return "updating the listing now — its card comes back in about a minute"
@@ -649,48 +647,33 @@ def needs_size(it) -> bool:
 
 
 NEEDS_SIZE = "tap a size to list it"
-NEEDS_BRAND = "needs the brand: reply with it (or 'no brand')"
+# WO54 §2: the 🏷️ question of 2026-10-27 is gone (the brand is decided: pipeline.settle_brand). Its words stay for the
+# replies to the messages sent before — an answer to one is still her brand (_reply_brand) — and the rows it parked.
 BRAND_ASK = ("🏷️ What brand is {title}? I couldn't read it, and Depop and Vinted need one — reply to this message "
              "with the brand, or 'no brand'.")
-BRAND_WAITING = "waiting for the brand"              # a listing row's reason while she is asked (both safety nets keep it)
+BRAND_WAITING = "waiting for the brand"              # a listing row's reason while she was asked (before WO54)
 
 
 def needs_brand(it) -> bool:
-    """Alex, 2026-10-27: the gate asked the brand — it couldn't be read, or the reading is under 0.70 ("Brand? Couldn't
-    read it", "Brand: … — my best reading") — and she hasn't answered (a brand, or 'no brand': items.owner_brand):
-    Depop and Vinted require one, so the item goes up nowhere until her reply (live: the pink biker shorts went up as
-    Depop's "Other" and Vinted failed). A brand read well, or no label the model is sure of, never asks."""
-    if it is None or it["owner_brand"]:
-        return False
-    if ((loads(it["facts"]) or {}).get("brand") or {}).get("source") == "owner":
-        return False
-    return asks_brand(loads(it["gate"]) or {})
+    """WO54 §2 (the owner, 2026-11-09: only the price, a size no photo shows, a sign-in and a CAPTCHA wait for her):
+    never — a brand not read surely was decided when the item was processed (pipeline.settle_brand: a big brand's
+    reading, else no brand — Depop "Other", Vinted "List without brand"), and her reply 'brand …' / 'no brand' corrects
+    it. (Before: an item whose brand couldn't be read went up nowhere until she answered "🏷️ What brand is …?" —
+    live 2026-11-09 her "тщ икфтв" — "no brand" on the Russian keyboard — paused Vinted.) Kept for its callers."""
+    return False
 
 
 def ask_brands(s: Settings, db: DB) -> int:
-    """ONE message per item priced and waiting for its brand — "🏷️ What brand is <title>? … reply to this message
-    with the brand, or 'no brand'." — at the bottom of the group, so she never scrolls back to its card (as the size's,
-    WO39). A row of it already failed or skipped (a site that refused it before the rule) is marked waiting, so neither
-    safety net re-posts it meanwhile. Once per item (outbox kind `brand`). Returns the messages sent."""
-    bot = bot_for(s)
-    if bot is None:
-        return 0
-    sent = 0
-    for it in db.items("ready"):
-        if not it["owner_price"] or not needs_brand(it) or ("test" in it.keys() and it["test"]):
-            continue
-        iid = it["id"]
-        for row in db.listings_for(iid):
-            if row["status"] in ("failed", "skipped", "queued") and not str(row["error"] or "").startswith(BRAND_WAITING):
-                db.upsert_listing(iid, row["marketplace"], status="skipped",
-                                  error=f"{BRAND_WAITING} (was: {row['error'] or row['status']})"[:500])
-        if sent_before(db, bot.chat_id, "brand", iid) is not None:
-            continue
-        title = (((loads(it["renders"]) or {}).get("poshmark") or {}).get("title")) or iid
-        text = BRAND_ASK.format(title=title)
-        if once(db, bot, "brand", iid, text, lambda t=text: bot.send_message(t)) is not None:
-            sent += 1
-    return sent
+    """WO54 §2: asks nothing any more (it sent "🏷️ What brand is …?" once per item priced with an unread brand). What
+    that question parked is let go: a row marked "waiting for the brand" goes back in line (pipeline.release_brand_wait);
+    a late reply to an old 🏷️ message still lands as her brand (_reply_brand). Returns the messages sent: 0."""
+    for (iid,) in db.conn.execute("SELECT DISTINCT item_id FROM listings WHERE COALESCE(error, '') LIKE ?",
+                                  (f"{BRAND_WAITING}%",)).fetchall():
+        try:
+            pipeline.release_brand_wait(db, iid)
+        except Exception as e:  # noqa: BLE001 — one row never stops the others; tried again next tick
+            db.log(iid, "error", f"brand wait release: {type(e).__name__}: {e}")
+    return 0
 
 
 def _reply_brand(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int | None) -> str:
@@ -839,7 +822,7 @@ def card(iid: str, it) -> tuple[str, str] | None:
     kind = _item_kind(it["status"], gate)
     if kind == "item":
         caption, price = item_caption(iid, it)
-        return kind, f"{caption}\n${price}" + (f"\n[{NO_BRAND_BUTTON}]" if asks_brand(gate) else "")
+        return kind, f"{caption}\n${price}" + (f"\n[{NO_BRAND_BUTTON}]" if offers_no_brand(it, gate) else "")
     if kind == "category":
         dept = (loads(it["facts"]) or {}).get("department")
         return kind, "\n".join([_title(it, iid), CATEGORY_QUESTION,
@@ -901,8 +884,16 @@ def forget_price_page(db: DB, iid: str) -> None:
 
 
 def asks_brand(gate: dict) -> bool:
-    """Is the brand one of the card's questions (unreadable, or read but unsure)?"""
-    return any(q.startswith(("Brand?", "Brand:")) for q in gate.get("questions") or [])
+    """Does the card's brand invite her word — WO54 §2: decided under doubt (`brand_unsure`: a reading kept, or none),
+    or (before WO54) one of the card's questions? A plain reply to such a card is taken as the brand (brand_reply).
+    Nothing waits for it (needs_brand)."""
+    return bool(gate.get("brand_unsure")) or any(q.startswith(("Brand?", "Brand:")) for q in gate.get("questions") or [])
+
+
+def offers_no_brand(it, gate: dict) -> bool:
+    """WO54 §2: the card's [No brand] button — only while a brand decided under doubt is on the listing (a big brand's
+    unsure reading kept); a brand already listed as none needs no button."""
+    return asks_brand(gate) and bool(((loads(it["facts"]) or {}).get("brand") or {}).get("value"))
 
 
 def item_buttons(iid: str, price: int | None, no_brand: bool = False, sizes: list[list[dict]] | None = None,
@@ -961,7 +952,7 @@ def card_buttons(db: DB, iid: str, it, price: int | None) -> list[list[dict]]:
     if it["status"] in SIZE_OFFERED and (wants or size_tapped(it)):
         if (o := sizebuttons.offer(db, it)) is not None:
             rows = sizebuttons.buttons(iid, o, it["owner_size"] if it["owner_size"] else None)
-    return item_buttons(iid, price, asks_brand(gate), sizes=rows, priced=it["owner_price"] or None,
+    return item_buttons(iid, price, offers_no_brand(it, gate), sizes=rows, priced=it["owner_price"] or None,
                         needs_size_tap=wants, shift=price_shift(db, iid))
 
 
@@ -1562,16 +1553,7 @@ def _set_price(s: Settings, db: DB, bot: Bot, iid: str, amount: int, reply_to: i
         db.outbox_resolve("item", iid)
         if not refresh_card(s, db, iid):
             _ack(db, bot, "item", iid, f"✓ ${amount} — {NEEDS_SIZE}")
-    elif needs_brand(db.item(iid)):
-        # Alex, 2026-10-27: the brand couldn't be read — nothing goes up until her reply (Depop and Vinted need one);
-        # the card says so and ONE message asks (ask_brands, right away)
-        db.outbox_resolve("item", iid)
-        _ack(db, bot, "item", iid, f"✓ ${amount} — {NEEDS_BRAND}")
-        try:
-            ask_brands(s, db)
-        except Exception as e:  # noqa: BLE001 — the window's tick asks again
-            db.log(iid, "error", f"brand message: {type(e).__name__}: {e}")
-    else:
+    else:                                              # WO54 §2: never held for a brand (pipeline.settle_brand decided)
         db.outbox_resolve("item", iid)
         # WO29: no "✓ $X — N left" message: said on the button (the size rows stay when the size was tapped, WO43)
         if not (size_tapped(db.item(iid)) and refresh_card(s, db, iid)):

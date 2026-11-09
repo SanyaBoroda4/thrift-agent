@@ -17,7 +17,7 @@ import imagehash
 from thrift_agent import approve, brands, notify, photomem, titles
 from thrift_agent.brain import copy as copywriter, cover as cover_brain, labels, premium, sizes, taxonomy
 from thrift_agent.brain.extract import extract, strip_screenshot_evidence
-from thrift_agent.brain.gate import OTHER_CATEGORY_QUESTION, SIZE_NOTE, GateResult, evaluate
+from thrift_agent.brain.gate import SIZE_NOTE, GateResult, evaluate
 from thrift_agent.brain.price import price
 from thrift_agent.brain.verify import lint, verify
 from thrift_agent.config import Settings, load_yaml
@@ -731,9 +731,11 @@ def process_batch(s: Settings, db: DB, bid: str) -> None:
             db.log(bid, "grouping_accepted", {"reasons": reasons, "left_out": left_out})
             split(s, db, bid, groups, dropped=left_out)
             say_left_out(db, bid, src, [raw[int(p.stem)].name for p in kept], left_out)   # WO51 §6: every photo told
+            if fixed := [x for x in notes if not x.startswith("screenshot ")]:   # WO54 §2: put right, never asked
+                notify.say(f"📸 The {share_time(src)} share's grouping was put right by itself: {'; '.join(fixed)}.")
             return
-        # Not a partition (a photo in no item, or in two): taking it as it is would lose or double a photo, so the
-        # contact sheet asks, as before.
+        # WO54 §2: accept_grouping puts any grouping right (repair_grouping) — the contact sheet below is the old
+        # flow's only (`segmentation.auto_confirm: false`, her setting).
     if reasons or cfg["always_confirm"] or cfg.get("auto_confirm", True):
         db.set_batch(bid, status="needs_confirm")
         approve.pump(s, db)                               # the contact sheet, when it is next (one question at a time)
@@ -1029,19 +1031,54 @@ def add_photos_to_item(s: Settings, db: DB, iid: str, files: list[Path], keys: d
 
 def accept_grouping(groups: list[list[int]], n: int, kinds: list[str], unassigned: list[int] | tuple[int, ...] = (),
                     screenshots: list[int] | tuple[int, ...] = ()) -> tuple[list[list[int]], list[int], list[str]] | None:
-    """The model's grouping as the owner's "ok" (WO20b): (groups, left out, notes), or None when it can't be taken as
-    it is. A retail screenshot that matches no item (the model's `unassigned`, or a group of nothing but screenshots)
-    is left out — it isn't a photo of any item, so nothing is lost. Empty groups are dropped. Anything else must be a
-    partition of the photos: a photo of the owner's in no item, or in two, is never guessed (None: the contact sheet
-    asks)."""
+    """The model's grouping as the owner's "ok" (WO20b): (groups, left out, notes). A retail screenshot that matches no
+    item (the model's `unassigned`, or a group of nothing but screenshots) is left out — it isn't a photo of any item,
+    so nothing is lost. Empty groups are dropped. WO54 §2 (the owner: decide, never wait — before, a photo of hers in
+    no item, or in two, sent the contact sheet and the queue waited for her reply): what isn't a partition is put
+    right by code (`repair_grouping`), the notes say how. Never None now (kept in the signature for the callers)."""
     retail = {i for i, k in enumerate(kinds) if k == "retail"} | set(screenshots)
     groups = [list(g) for g in groups if g]
     screens_only = [g for g in groups if all(i in retail for i in g)]
     left_out = sorted(set(unassigned) | {i for g in screens_only for i in g})
     groups = [g for g in groups if g not in screens_only]
+    notes = [f"screenshot {i} matches no item: left out" for i in left_out]
     if not groups or partition_problems(groups, n, left_out):
-        return None
-    return groups, left_out, [f"screenshot {i} matches no item: left out" for i in left_out]
+        groups, fixed = repair_grouping(groups, n, left_out)
+        notes += fixed
+    return groups, left_out, notes
+
+
+def repair_grouping(groups: list[list[int]], n: int, left_out: list[int] | tuple[int, ...] = ()
+                    ) -> tuple[list[list[int]], list[str]]:
+    """WO54 §2: a grouping made a partition of the photos (minus `left_out`) by code — a photo that doesn't exist goes,
+    a photo in two items stays in the first, an empty item goes, and a photo in no item joins the item of the photo shot
+    just before it, else just after ("a photo in doubt joins the most likely item": the seller shoots one item
+    completely, then the next); with no item at all, the photos are one item. Returns (groups, what was done)."""
+    said, seen, out = [], set(), []
+    skip = set(left_out)
+    for g in groups:
+        keep = []
+        for i in g:
+            if not 0 <= i < n:
+                said.append(f"photo {i} doesn't exist: left out")
+            elif i in seen:
+                said.append(f"photo {i} was in two items: kept in the first")
+            elif i not in skip:
+                seen.add(i)
+                keep.append(i)
+        if keep:
+            out.append(sorted(keep))
+    missing = [i for i in range(n) if i not in seen and i not in skip]
+    if not out and missing:
+        return [missing], [*said, f"photos {missing} were in no item: one item"]
+    for m in missing:
+        near = next((g for d in range(1, n) for j in (m - d, m + d) for g in out if j in g), None)
+        if near is None:
+            continue
+        near.append(m)
+        near.sort()
+        said.append(f"photo {m} was in no item: joined item {out.index(near) + 1} (the photos shot next to it)")
+    return out, said
 
 
 LEFT_OUT_SHOWN = 8               # WO51 §6: photo names in the left-out line; the rest counted
@@ -1142,9 +1179,10 @@ def split(s: Settings, db: DB, bid: str, groups: list[list[int]], dropped: list[
         db.set_batch(bid, status="split")
         shares.step(db, shares.share_id_of(batch_dir(b)), "grouped", batch_id=bid)     # WO45 §3
 
-    if note and len(groups) > 1:
+    if note and len(groups) > 1:                         # WO54 §2: said as done — the items go on without it
         notify.say(f"⚠️ Batch {bid}: the note \"{note}\" was not applied — it can't be matched to one of the "
-                   f"{len(groups)} items ({', '.join(iids)}). Reply to the right item's card with it")
+                   f"{len(groups)} items ({', '.join(iids)}), so they go on without it (a reply to the right item's "
+                   "card adds it there)")
     archive_share(s, db, bid, batch_dir(b))
 
 
@@ -1455,8 +1493,11 @@ def duplicate_check(s: Settings, db: DB, iid: str, cover_src: Path, note: str | 
             continue
         if h - other <= max_distance:
             title = next(iter((loads(row["renders"]) or {}).values()), {}).get("title", "")
-            return str(h), (f"looks like item {row['id']} ({title}) — same item? Reply 'same item' to drop it; "
-                            f"a price lists it (WO37: a warning, never a hold)")
+            # WO54 §2: decided by the photo rules, never asked — her price lists this card, and the earlier one is
+            # retired (or, where it is live already, this one isn't listed there again: settle_twin)
+            return str(h), (f"looks like item {row['id']} ({title}) — the same photos: once this one is priced, the "
+                            "item is listed once (the earlier card retired, or this one left off a site the earlier "
+                            "one is live on)")
     return str(h), None
 
 
@@ -1479,9 +1520,12 @@ def settle_nwt(facts: Facts, note: str | None) -> tuple[Facts, list[str]]:
     return (facts.model_copy(update={"condition": "like_new"}), [NWT_QUESTION])
 
 
-NWT_QUESTION = "Listed as Like New: no photo of an attached hang tag — reply 'NWT' if the tag is attached"
+# WO54 §2: a statement on the card (⚠️), never a question — her "NWT" or "condition nwt" still makes it NWT (the name is
+# kept: the gate docs of older items hold it as a question)
+NWT_QUESTION = "Listed as Like New: no photo of an attached hang tag"
 GRADES_UP = ("good", "excellent", "like_new")      # torn between two of these: the higher (the owner's rule, WO17)
-WELL_WORN = "looked well-worn — listed as Good; check before approving"
+WELL_WORN = "looked well-worn — listed as Good"   # WO54 §2: a decision said, nothing to approve but her price
+WELL_WORN_BEFORE = "looked well-worn — listed as Good; check before approving"   # the words of older gate docs
 
 
 def settle_condition(facts: Facts) -> tuple[Facts, list[str]]:
@@ -1598,6 +1642,11 @@ def settle_shoe_kind(facts: Facts, owner_category: str | None) -> Facts:
     return facts.model_copy(update={"subcategory": home})
 
 
+# WO54 §2: the item record's words for what was decided instead of asked — kept through a re-gate (`_regate`), said
+# once in the item's "Check —" line when it goes live (crosslist._say_checks)
+DECIDED_PREFIXES = ("kids:", "category:", "department:", "title:", "removed brand names")
+
+
 def settle_open_questions(facts: Facts, fit_questions: list[str], owner_category: str | None) -> tuple[Facts, list[str]]:
     """WO37 (the owner): nothing but the price waits — what used to be a question is decided here and shown on the card,
     and a reply corrects it. Girls or Boys for a kids size: the model's reading, else Girls (Poshmark's kids clothing
@@ -1607,16 +1656,81 @@ def settle_open_questions(facts: Facts, fit_questions: list[str], owner_category
     if kids_question(facts):
         gender = facts.kids_gender if facts.kids_gender in ("girls", "boys") else "girls"
         facts = facts.model_copy(update={"kids_gender": gender})
-        said.append(f"kids: {gender} (not sure from the photos) — a reply 'boys' / 'girls' changes it")
+        said.append(f"kids: {gender} (not sure from the photos)")     # WO54 §2: a decision in words, no reply asked
     options = category_question(facts, fit_questions, owner_category)
     if options:
         own = taxonomy.place(facts, facts.department, facts.category, facts.subcategory)
         path = own or options[0]
         facts = facts.model_copy(update={"department": path.get("department") or facts.department,
                                          "category": path["category"], "subcategory": path.get("subcategory")})
-        said.append(f"category: {taxonomy.path_label(path, facts.department)} (not sure from the photos) — a reply "
-                    "'category …' changes it")
+        said.append(f"category: {taxonomy.path_label(path, facts.department)} (not sure from the photos)")
     return facts, said
+
+
+def settle_category(facts: Facts) -> tuple[Facts, list[str]]:
+    """WO54 §2 (the owner: "take your own decisions in order to post it"): a department or category Poshmark doesn't
+    have, that settle_open_questions couldn't place either (the model gave no real path to weigh), goes on the closest
+    real one — never asked: the department the model weighed, else Women (Poshmark has no Unisex department); the
+    category the item's own type words name (taxonomy.closest: "puffer jacket" → Jackets & Coats), else that
+    department's own "Other" (a real Poshmark category). Returns (facts, what was decided)."""
+    departments = taxonomy.load()["departments"]
+    said = []
+    if facts.department not in departments:
+        alt = facts.department_alternative if facts.department_alternative in departments else None
+        dept = alt or "Women"
+        said.append(f"department: Poshmark has no {facts.department} department — listed under {dept}")
+        facts = facts.model_copy(update={"department": dept})
+    path = taxonomy.closest(facts)
+    if (path["category"], path.get("subcategory")) != (facts.category, facts.subcategory):
+        said.append(f"category: {taxonomy.path_label(path, facts.department)} (the closest Poshmark has to "
+                    f"“{' › '.join(x for x in (facts.category, facts.subcategory) if x) or facts.item_type}”)")
+        facts = facts.model_copy(update={"category": path["category"], "subcategory": path.get("subcategory")})
+    return facts, said
+
+
+BRAND_NONE = "Brand: none"         # WO54 §2: the card's line when a brand not read surely is listed with no brand
+BRAND_KEPT = "Brand: "             # … and when an unsure reading of a big brand is kept ("Brand: Nike — read with doubt")
+
+
+def settle_brand(facts: Facts, sure: float = 0.70) -> tuple[Facts, str | None]:
+    """WO54 §2 (the owner, 2026-11-09: nothing waits for her but the price, a size no photo shows, a sign-in, a
+    CAPTCHA — the 🏷️ question is gone): the brand decided, before the copy names it. A brand read surely (≥ `sure`,
+    gate.min_confidence) or hers (source owner) stays; no brand to be seen stays none (the gate's NO_BRAND_NOTE). A
+    brand there but not read surely: the model's reading when it is a big brand (data/big_brands.json — WO52: a big
+    brand never ends as "no brand"), else no brand — Poshmark empty, Depop "Other", Vinted "List without brand".
+    Returns (facts, the card's ⚠️ line for what was decided, or None). Her reply 'brand …' / 'no brand' corrects it."""
+    from thrift_agent.brain.gate import brand_seen
+    ev = facts.brand
+    if ev.source == "owner" or (ev.value and ev.confidence >= sure):
+        return facts, None
+    seen = brand_seen(facts)
+    if not ev.value:
+        if seen == "none":
+            return facts, None
+        return facts, f"{BRAND_NONE} — a brand label is in the photos but couldn't be read, so it's listed with no brand"
+    if brands.big(ev.value):
+        return facts, (f"{BRAND_KEPT}{ev.value} — read with doubt ({ev.confidence:.2f}); a big brand, so it's listed as "
+                       f"{ev.value}")
+    unread = ev.model_copy(update={"value": None, "confidence": 0.0})
+    note = (f"{BRAND_NONE} — the label reads “{ev.value}” only with doubt ({ev.confidence:.2f}), so it's listed with "
+            "no brand")
+    return facts.model_copy(update={"brand": unread, "brand_seen": "unreadable"}), note
+
+
+def add_check(db: DB, iid: str, text: str) -> bool:
+    """WO54 §2: a decision made for the item after it was processed (a title built from the facts at a site's form, …),
+    kept in its gate doc's `checks` (a re-gate leaves the key alone) and said once in its "Check —" line when a site
+    shows it live (crosslist._say_checks). True when it is new."""
+    it = db.item(iid)
+    if it is None or not text:
+        return False
+    gate = loads(it["gate"]) or {}
+    checks = list(gate.get("checks") or [])
+    if text in checks:
+        return False
+    db.set_item(iid, gate={**gate, "checks": [*checks, text][-20:]})
+    db.log(iid, "check_noted", {"check": text[:300]})
+    return True
 
 
 def category_unsure(facts: Facts) -> list[str]:
@@ -1636,9 +1750,10 @@ TITLE_HELD = "title_held_said"      # kv: [item] — the "title can't be fixed" 
 
 def shop_window_title(s: Settings, title: str, facts: Facts, it=None) -> tuple[str, str | None]:
     """WO50: the title passes the shop-window rules before any site sees it — the deterministic fix ran already (the
-    end of premium.title_with_feature); what still breaks them gets ONE model rewrite, fixed and checked again. Still
-    failing: the title is kept, the item's record notes it, and the posters hold it (`titles.blocked`). The owner's own
-    title (WO27) is hers: left as it is. (title, the note or None)."""
+    end of premium.title_with_feature); what still breaks them gets ONE model rewrite, fixed and checked again. WO54 §2
+    (never hold): still failing, a title built from the facts alone — brand, item, colour, US size (titles.fallback) —
+    is the title, and the item's record says so (its "Check —" line). The owner's own title (WO27) is hers: left as it
+    is. (title, the note or None)."""
     if it is not None and it["owner_title"]:
         return title, None
     problems = titles.check(title)
@@ -1649,7 +1764,8 @@ def shop_window_title(s: Settings, title: str, facts: Facts, it=None) -> tuple[s
         again = titles.shop_window(new, facts)
         if not titles.check(again):
             return again, None
-    return title, f"title breaks the shop-window rules: {'; '.join(problems)}"
+    built = titles.fallback(facts)
+    return built, f"title: “{title}” broke the shop-window rules ({'; '.join(problems)}) — built from the facts: {built}"
 
 
 def menu_label_line(description: str, facts: Facts) -> str:
@@ -1874,13 +1990,20 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
     if spelled and brands.spelling_of(facts.brand.value, spelled):  # another spelling only: a short form stays the
         facts = facts.model_copy(update={"brand": facts.brand.model_copy(update={"value": spelled})})   # label's (WO36)
     facts = apply_owner_answers(it, facts)               # the owner's category, brand or "no brand"
+    # WO54 §2: a brand not read surely is decided here, before the copy names it — never asked (the 🏷️ question is gone)
+    facts, brand_note = settle_brand(facts, float(s["gate"]["min_confidence"]["brand"]))
+    if brand_note:
+        db.log(iid, "brand_decided", {"note": brand_note, "brand": facts.brand.value})
     # Shoes, in doubt between brand new and worn: the owner is asked before the price (WO18) — on the model's own
     # reading, before the settles below merge its two grades. Once answered, the answer is the condition.
     # WO37: never "Brand new or worn?" — NWT only with tags (settle_nwt); in doubt Like New, never Fair (settle_condition)
-    facts, nwt_questions = settle_nwt(facts, it["note"])   # NWT needs a tag photo or the owner's word; else like new
+    facts, nwt_notes = settle_nwt(facts, it["note"])     # NWT needs a tag photo or the owner's word; else like new
     facts, notes = settle_condition(facts)               # doubt -> like new; never Fair (Good, and a warning)
     if it["owner_condition"]:                            # the owner's word settles it all
-        facts, notes, nwt_questions = apply_owner_condition(facts, it["owner_condition"]), [], []
+        facts, notes, nwt_notes = apply_owner_condition(facts, it["owner_condition"]), [], []
+    # WO54 §2: what was decided under doubt is said on the card as a ⚠️ statement (never a ❓) and in the item's private
+    # "Check —" line once it is live — Like New for an NWT without a tag photo, the brand decision
+    notes = [*([brand_note] if brand_note else []), *nwt_notes, *notes]
     if it["owner_kids_gender"]:                          # the owner's [Girls]/[Boys]: never asked again
         facts = facts.model_copy(update={"kids_gender": it["owner_kids_gender"], "kids_gender_confidence": 1.0})
     facts = settle_set(facts, it["owner_category"])      # a set goes under its bottom, no question (WO27)
@@ -1894,6 +2017,12 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
     facts, decided = settle_open_questions(facts, fit_questions, it["owner_category"])   # WO37: decided, not asked
     if any(x.startswith("category:") for x in decided):
         fit_questions = []                               # the category was decided: nothing left to ask about it
+    if fit_questions:                                    # WO54 §2: nothing placed it — the closest real path, never
+        facts, fell = settle_category(facts)             # a question ("Poshmark has no Unisex department", "Other")
+        decided += fell
+        facts, more_notes, fit_questions = taxonomy.fit(facts)
+        fit_notes = [*fit_notes, *more_notes]
+    fit_questions = []                                   # WO54 §2: never asked, whatever is left (the gate notes it)
     ask_kids, options = False, []
     kept = _stored_check(it)
     kept = kept if labelled(kept) and {v.photo for v in kept.views} >= {i for i in range(len(photos))
@@ -1962,27 +2091,24 @@ def process_item(s: Settings, db: DB, iid: str) -> dict:
     gate = evaluate(facts, pr, problems, len(audit.unsupported), s["gate"], s["pricing"],
                     sized=not sizes.one_size(facts.department, facts.category, facts.subcategory))
 
-    questions = fit_questions + gate.questions + nwt_questions
-    asked = list(fit_questions)                          # a department/category Poshmark doesn't have: like "Other"
     if menu_note := size_menu_note(facts, sizes.poshmark_size(facts)):
         info.append(menu_note)                           # off Poshmark's menus: shown, never asked (WO33)
-    if options:                                          # asked with buttons, its own message: not on the card too
-        questions = [q for q in questions if q not in fit_questions and q != OTHER_CATEGORY_QUESTION]
-        asked += category_unsure(facts)
-    if asked:
-        gate = GateResult("needs_info", asked + gate.reasons, gate.notes, gate.questions)
 
     renders = build_renders(s, iid, d, photos, facts, final, pr, kinds)
     cover_src = photos[photo_order(facts, len(photos), kinds)[0]]
     cover_hash, twin = duplicate_check(s, db, iid, cover_src, it["note"])
     if twin:
-        gate = GateResult("needs_info", [twin] + gate.reasons, gate.notes, gate.questions)
-        questions = [twin] + questions
-    # `hold` marks a question a price alone must not settle: set_price() keeps a held item waiting until the owner
-    # answers it ("different item" lists it, "same item" drops it). `notes` are told to the owner but need no answer.
-    gate_doc = {"decision": gate.decision, "reasons": gate.reasons, "questions": questions, "notes": notes,
+        # WO54 §2: a possible re-share is decided by the photo rules when the card gets its price (settle_twin) — a ⚠️
+        # statement on the card, never a question; the reason keeps it findable (twin_of)
+        gate = GateResult("publish", [twin] + gate.reasons, gate.notes)
+        notes = [twin, *notes]
+    # WO54 §2: no `questions` (only the price and a size no photo shows wait for her: the card's own buttons), no
+    # `hold`; `notes` are the card's ⚠️ statements, `info` the record; both are said in the "Check —" line once live.
+    # `brand_unsure`: the brand was decided under doubt — the card offers [No brand] for a reading kept, and a plain
+    # reply to the card is taken as her brand (approve.asks_brand)
+    gate_doc = {"decision": gate.decision, "reasons": gate.reasons, "questions": [], "notes": notes,
                 "info": info + gate.notes + decided, "hold": None, "ask_kids": ask_kids,   # WO37: only the price waits
-                "ask_category": options}
+                "ask_category": options, **({"brand_unsure": True} if brand_note else {})}
     (d / "item.json").write_text(json.dumps({
         "facts": facts.model_dump(), "price": pr.model_dump(),
         "renders": {k: v.model_dump() for k, v in renders.items()},
@@ -2362,19 +2488,24 @@ def _regate(s: Settings, it, facts: Facts, renders: dict, photos: list[Path], ki
                     s["gate"], s["pricing"], sized=not sizes.one_size(facts.department, facts.category,
                                                                       facts.subcategory))
     doc = loads(it["gate"]) or {}
-    twin = next((q for q in doc.get("questions") or [] if q.startswith("looks like item")), None)
-    options = category_question(facts, fit_questions, it["owner_category"])
-    asked = list(fit_questions)
+    # WO54 §2: nothing is asked — a possible re-share and an NWT listed as Like New are the card's ⚠️ statements (an
+    # older doc kept them as questions: they move to the notes), a department or category Poshmark lacks is noted
+    old_questions = list(doc.get("questions") or [])
+    twin = next((q for q in [*old_questions, *(doc.get("reasons") or []), *notes] if q.startswith("looks like item")),
+                None)
     menu_note = size_menu_note(facts, sizes.poshmark_size(facts))
-    questions = ([twin] if twin else []) + asked + gate.questions + \
-        [q for q in doc.get("questions") or [] if q == NWT_QUESTION]
-    if options:                                          # "Which category?" asks it, with buttons
-        questions = [q for q in questions if q not in fit_questions and q != OTHER_CATEGORY_QUESTION]
-    decision = "needs_info" if twin or asked or options or gate.decision == "needs_info" else gate.decision
-    unsure = category_unsure(facts) if options else []
-    doc.update(decision=decision, reasons=([twin] if twin else []) + asked + unsure + gate.reasons, questions=questions,
-               notes=notes, info=list(fit_notes) + gate.notes + ([menu_note] if menu_note else []),
-               ask_kids=False, ask_category=[], hold=None)       # WO37: nothing but the price waits
+    carried = [q for q in old_questions if q == NWT_QUESTION or q.startswith("looks like item")]
+    notes = list(dict.fromkeys([*carried, *notes]))
+    if it["owner_brand"]:                                # her brand (or 'no brand') settles what was decided for it
+        notes = [n for n in notes if not n.startswith(BRAND_KEPT)]
+        doc.pop("brand_unsure", None)
+    if it["owner_condition"]:                            # her condition settles the grade's doubts
+        notes = [n for n in notes if n not in (NWT_QUESTION, WELL_WORN, WELL_WORN_BEFORE)]
+    decided = [x for x in doc.get("info") or [] if x.startswith(DECIDED_PREFIXES)]   # settle_open_questions' words
+    doc.update(decision="publish", reasons=([twin] if twin else []) + list(fit_questions) + gate.reasons,
+               questions=[], notes=notes,
+               info=list(dict.fromkeys([*fit_notes, *gate.notes, *([menu_note] if menu_note else []), *decided])),
+               ask_kids=False, ask_category=[], hold=None)       # WO37/WO54: nothing but the price waits
     status = it["status"]
     if status in ("awaiting_condition", "awaiting_price", "needs_info") and it["owner_price"]:
         status = "ready"                                     # WO37: the price it has is all that waited
@@ -2435,9 +2566,10 @@ def apply_brand_rule(s: Settings, db: DB) -> list[str]:
     items changed."""
     from thrift_agent import approve
     from thrift_agent.brain import gate as gate_mod
+    decided = apply_decide_rule(s, db)                  # WO54 §2, once: what was asked before is decided now
     if db.kv_get(BRAND_RULE):
-        return []
-    done = []
+        return decided
+    done = list(decided)
     for it in db.conn.execute("SELECT * FROM items WHERE status NOT IN ('posted', 'dropped', 'failed', 'new')").fetchall():
         iid = it["id"]
         try:
@@ -2460,6 +2592,63 @@ def apply_brand_rule(s: Settings, db: DB) -> list[str]:
         except Exception as e:  # noqa: BLE001 — one item never stops the others
             db.log(iid, "error", f"brand rule: {type(e).__name__}: {e}")
     db.kv_set(BRAND_RULE, now())
+    return done
+
+
+DECIDE_RULE = "decide_rule_applied"   # kv: WO54 §2's rule applied once to the items asked before it
+
+
+def apply_decide_rule(s: Settings, db: DB) -> list[str]:
+    """Once (WO54 §2, the owner 2026-11-09: decide, never wait): the items not on a site yet whose card still carries a
+    question from before — the brand, NWT, "Other", a re-share, a department or category Poshmark lacks — are decided
+    now. An unsure brand reading that isn't a big brand, or a category nothing placed, means the copy must change: the
+    item is processed again with today's rules (status 'new': settle_brand / settle_category decide, her price kept).
+    The rest is re-gated with no model call: the questions become the card's ⚠️ statements. The rows the 🏷️ question
+    parked go back in line (approve.ask_brands). Returns the items changed."""
+    from thrift_agent import approve
+    if db.kv_get(DECIDE_RULE):
+        return []
+    sure = float(s["gate"]["min_confidence"]["brand"])
+    done = []
+    for it in db.conn.execute("SELECT * FROM items WHERE status IN ('awaiting_price', 'needs_info', 'ready') AND "
+                              "COALESCE(test, 0) = 0").fetchall():
+        iid = it["id"]
+        try:
+            gate = loads(it["gate"]) or {}
+            questions = list(gate.get("questions") or [])
+            if not questions or reached_site(db, it) or not it["facts"]:
+                continue
+            facts = Facts.model_validate(loads(it["facts"]))
+            unsure = (not it["owner_brand"] and facts.brand.source != "owner" and bool(facts.brand.value)
+                      and facts.brand.confidence < sure and not brands.big(facts.brand.value))
+            unplaced = not it["owner_category"] and any(
+                q.startswith(("Category?", "Poshmark has no", "category '")) for q in questions)
+            if unsure or unplaced:
+                with db.tx():
+                    db.conn.execute("DELETE FROM listings WHERE item_id=? AND status IN ('dryrun','queued')", (iid,))
+                    db.set_item(iid, status="new")
+                    db.log(iid, "decide_rule", {"reprocess": True, "brand": unsure, "category": unplaced})
+                done.append(iid)
+                continue
+            note = None
+            if not it["owner_brand"] and any(q.startswith(("Brand?", "Brand:")) for q in questions):
+                _, note = settle_brand(facts, sure)
+            photos, kinds = _photos_of(it)
+            doc, status = _regate(s, it, facts, loads(it["renders"]) or {}, photos, kinds,
+                                  [*([note] if note else []), *(gate.get("notes") or [])])
+            if note:
+                doc["brand_unsure"] = True
+            was = approve.card(iid, it)
+            with db.tx():
+                db.set_item(iid, gate=doc, status=status)
+                db.log(iid, "decide_rule", {"status": status, "brand": note})
+                _close_changed_card(db, iid, was)
+            db.outbox_resolve("brand", iid)
+            done.append(iid)
+        except Exception as e:  # noqa: BLE001 — one item never stops the others
+            db.log(iid, "error", f"decide rule: {type(e).__name__}: {e}")
+    approve.ask_brands(s, db)                            # the rows "waiting for the brand" back in line
+    db.kv_set(DECIDE_RULE, now())
     return done
 
 
@@ -3107,7 +3296,8 @@ def answer(s: Settings, db: DB, iid: str, note: str) -> str:
         return set_no_brand(s, db, iid)
     merged = f"{it['note']}; {note}" if it["note"] else note
     gate = loads(it["gate"]) or {}
-    twin = gate.get("hold") == "reshare" or any(q.startswith("looks like item") for q in gate.get("questions") or [])
+    # WO54 §2: the re-share flag is a ⚠️ statement now (its reason), a question in older docs — 'same item' drops either
+    twin = gate.get("hold") == "reshare" or twin_of(it) is not None
     if twin and SAME_ITEM.search(note) and not NOT_A_DUPLICATE.search(note):     # WO37: a warning, no longer a hold
         tw = db.item(twin_of(it) or "")
         if tw is not None and tw["status"] == "dropped":

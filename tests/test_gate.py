@@ -16,9 +16,12 @@ def test_an_unsure_or_unread_size_is_a_note_never_a_question(facts, gate_cfg, pr
         assert f"{SIZE_NOTE} {said}" in r.notes
 
 
-def test_nwt_without_tag_photo_blocked(facts, gate_cfg, pricing_cfg):
+def test_nwt_without_tag_photo_is_kept_for_the_record_never_held(facts, gate_cfg, pricing_cfg):
+    """WO54 §2: the gate never holds — an NWT without a hang-tag photo is listed as Like New by pipeline.settle_nwt
+    before the gate; one that reaches it is a reason for the record, no question."""
     f = facts(condition="NWT", condition_evidence=Ev(value="looks new", photos=[], source="photo", confidence=0.9))
-    assert evaluate(f, OK_PRICE, [], 0, gate_cfg, pricing_cfg).decision == "needs_info"
+    r = evaluate(f, OK_PRICE, [], 0, gate_cfg, pricing_cfg)
+    assert r.decision == "publish" and r.questions == [] and "NWT claimed without a hang-tag photo" in r.reasons
 
 
 def test_nwt_from_note_allowed(facts, gate_cfg, pricing_cfg):
@@ -28,14 +31,14 @@ def test_nwt_from_note_allowed(facts, gate_cfg, pricing_cfg):
 
 def test_thresholds_follow_the_owner_rule(facts, gate_cfg, pricing_cfg):
     # The owner's only routine input is the price: a size at exactly 0.70 (an EU→US conversion) and a used condition
-    # at 0.75 (two flaws listed) publish; a brand under 0.70 is a real question.
+    # at 0.75 (two flaws listed) publish; WO54 §2: so does a brand under 0.70 (pipeline.settle_brand decided it).
     size = facts(size_us=Ev(value="7.5", photos=[3], source="derived", confidence=0.70))
     assert evaluate(size, OK_PRICE, [], 0, gate_cfg, pricing_cfg).decision == "publish"
     cond = facts(condition="good", condition_evidence=Ev(value="two scuffs", photos=[4], source="photo", confidence=0.75))
     assert evaluate(cond, OK_PRICE, [], 0, gate_cfg, pricing_cfg).decision == "publish"
     brand = facts(brand=Ev(value="Nike", photos=[3], source="photo", confidence=0.69))
     r = evaluate(brand, OK_PRICE, [], 0, gate_cfg, pricing_cfg)
-    assert r.decision == "needs_info" and r.reasons == ["brand unclear (Nike, 0.69)"]
+    assert r.decision == "publish" and r.reasons == [] and r.questions == []
 
 
 def test_price_never_blocks(facts, gate_cfg, pricing_cfg):
@@ -67,14 +70,15 @@ def test_nwt_needs_hang_tag_photo_not_just_condition_photos(facts, gate_cfg, pri
     # The old rule accepted any condition photo; a box shot or a "looks new" photo is not a hang tag.
     f = facts(condition="NWT", condition_evidence=Ev(value="looks new", photos=[2], source="photo", confidence=0.95))
     r = evaluate(f, OK_PRICE, [], 0, gate_cfg, pricing_cfg)
-    assert r.decision == "needs_info" and "NWT claimed without a hang-tag photo" in r.reasons
+    assert r.decision == "publish" and "NWT claimed without a hang-tag photo" in r.reasons
 
 
-def test_other_category_needs_info(facts, gate_cfg, pricing_cfg):
-    msg = "category/subcategory is 'Other' — pick the real Poshmark category"
+def test_other_category_is_a_note_never_a_question(facts, gate_cfg, pricing_cfg):
+    """WO54 §2: a category of "Other" left after settle_category is Poshmark's own "Other" (a real category): noted."""
     for kw in (dict(category="Other"), dict(category=" other "), dict(category=""), dict(subcategory="Other")):
         r = evaluate(facts(**kw), OK_PRICE, [], 0, gate_cfg, pricing_cfg)
-        assert r.decision == "needs_info" and msg in r.reasons, kw
+        assert r.decision == "publish" and r.questions == [], kw
+        assert any(n.startswith("category: Poshmark's own “Other”") for n in r.notes), kw
     assert evaluate(facts(subcategory=None), OK_PRICE, [], 0, gate_cfg, pricing_cfg).decision == "publish"
 
 
@@ -101,8 +105,7 @@ def test_an_unsure_condition_note_names_the_grade_it_was_weighed_against(facts, 
               condition_evidence=Ev(value="clean soles", photos=[4], source="photo", confidence=0.6))
     pr = PriceResult(target=70, list_price=85, source="brand", by_marketplace={"poshmark": 85})
     notes = evaluate(f, pr, [], 0, gate_cfg, pricing_cfg).notes
-    assert notes == ["model unsure of the condition (0.60, weighed against good): listed as like_new; reply with the "
-                     "condition if it is wrong"]
+    assert notes == ["model unsure of the condition (0.60, weighed against good): listed as like_new"]   # WO54: no ask
 
 
 

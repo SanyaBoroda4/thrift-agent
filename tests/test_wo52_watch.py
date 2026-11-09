@@ -74,18 +74,35 @@ def test_blocked_20_minutes_with_items_waiting_is_one_alarm_with_the_request(db,
     assert alarm.tick(db, at=T0 + timedelta(hours=9)) == []                 # at most twice a day
 
 
-def test_the_owners_pause_never_alarms_a_login_page_does_inside_the_hours(db, said):
-    """WO53 §3 (live 11-07/08: Depop and Vinted logged out for 31 hours, one group line and silence): a login page with
-    items waiting raises its own alarm inside the posting hours — the owner's own pause never does."""
+def test_the_owners_pause_never_alarms_a_login_page_does_at_once_whatever_the_hour(db, said):
+    """WO53 §3 (live 11-07/08: Depop and Vinted logged out for 31 hours, one group line and silence): a login page
+    raises its own alarm — WO54 §2: at once and whatever the hour, with or without items waiting (only her hands settle
+    it), again every 12 hours while it lasts — the owner's own pause never does."""
     iid = db.add_item("b1", 1, ".")
     db.upsert_listing(iid, "depop", status="queued")
     health.owner_pause(db, "depop")
     health.pause(db, "vinted", "Vinted: not logged in", "account", at=T0)
-    db.upsert_listing(iid, "vinted", status="queued")
-    assert alarm.tick(db, at=T0 + timedelta(hours=1), hours_open=False) == []
-    assert alarm.tick(db, at=T0 + timedelta(hours=1)) == ["vinted"]
+    assert alarm.tick(db, at=T0 + timedelta(minutes=1), hours_open=False) == ["vinted"]   # no item waits even
     assert any("Only you can act on it, on the Mac" in m for m in said)
     assert said[-1] == "GROUP Vinted needs you to log in on the Mac."             # and the group's plain line again
+    db.upsert_listing(iid, "vinted", status="queued")
+    assert alarm.tick(db, at=T0 + timedelta(hours=1)) == []                       # once — again only 12 h later
+    assert alarm.tick(db, at=T0 + timedelta(hours=12, minutes=2)) == ["vinted"]
+
+
+def test_a_sign_out_raises_the_alarm_the_moment_the_site_pauses(db, said):
+    """WO54 §2: crosslist.block (the poster met the login page) says the group's line AND the 🚨 at once; a CAPTCHA and
+    a check page alike; a block page ("turned the Mac away") only after the usual 20 minutes — it passes by itself."""
+    from thrift_agent import crosslist
+    crosslist.block(db, "depop", "Depop: not logged in in the Thrift Chrome — login page", "login")
+    assert "GROUP Depop needs you to log in on the Mac." in said
+    assert any(m.startswith("🚨 Depop has shown a login page since") for m in said)
+    crosslist.block(db, "vinted", "Vinted shows a CAPTCHA", "captcha")
+    assert any(m.startswith("🚨 Vinted has shown a captcha page since") for m in said)
+    said.clear()
+    crosslist.block(db, "poshmark", "Poshmark: 403 Forbidden", "block")
+    assert "GROUP Poshmark turned the Mac away for now — I'll try again by myself later." in said
+    assert not any(m.startswith("🚨") for m in said)                              # no 🚨 yet: it passes by itself
 
 
 def test_the_alarm_clears_with_the_back_to_normal_line(db, said):

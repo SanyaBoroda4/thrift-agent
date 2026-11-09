@@ -313,6 +313,52 @@ def shop_window(title: str, facts) -> str:
     return fix(title, (facts.brand.value or "").strip() or None, facts.condition, None, 0, keep)
 
 
+def _plain_words(text: str | None) -> str:
+    """An item type or category in shop-window words: letters, digits and a few joiners, each word capitalised."""
+    words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'&.-]*", str(text or ""))
+    return " ".join(w if (i and w.lower() in SMALL) else w[:1].upper() + w[1:] for i, w in enumerate(words))
+
+
+def fallback(facts, site: str | None = None, strict: int = 0) -> str:
+    """WO54 §2 (the owner: never hold a listing back): a title built from the facts alone — the brand as a shop sign
+    writes it, the item, its colours, the US size (and a set's "2-Piece Set"), fixed like any title (`fix`) — for a
+    title nothing else could make pass the shop-window rules. Shorter forms are tried in turn, whole (never a form cut
+    to fit): without the colours, the item's last words only, without the brand, the category's own words — the first
+    that fits and passes `check` for `site` (None: all three) is the title; it always names what the item is."""
+    from thrift_agent.brain import sizes
+    brand = (facts.brand.value or "").strip() or None
+    shown = display_brand(brand) if brand else ""
+    item = _plain_words(getattr(facts, "item_type", None))
+    words = item.split()
+    tail2, tail1 = " ".join(words[-2:]), " ".join(words[-1:])
+    colors = " & ".join(_plain_words(c) for c in (getattr(facts, "colors", None) or [])[:2] if c)
+    size = sizes.title_size(facts) or ""
+    pieces = f"{facts.set_pieces}-Piece Set" if getattr(facts, "set_pieces", None) else ""
+    category = _plain_words(getattr(facts, "subcategory", None) or getattr(facts, "category", None))
+    if not category or category.lower() == "other":
+        category = _plain_words(getattr(facts, "category", None)) if category else ""
+    category = category if category and category.lower() != "other" else "Item"
+    cap = title_max(site)
+    room = cap - (4 if getattr(facts, "condition", None) == "NWT" else 0)   # `fix` may put "New" after the brand
+    keep = [x for x in (size, pieces) if x]
+    what = item or category
+    candidates = ([shown, what, pieces, colors, size], [shown, what, pieces, size], [shown, tail2, pieces, size],
+                  [shown, tail1, size], [what, pieces, colors, size], [what, pieces, size], [tail2, size],
+                  [shown, category, size], [category, size], [category])
+    last = ""
+    for k, parts in enumerate(candidates):
+        text = " ".join(p for p in parts if p)
+        if not any(p and p in (what, tail2, tail1, category) for p in parts):
+            continue                                     # never a title that doesn't say what the item is
+        if len(text) > room and k < len(candidates) - 1:
+            continue                                     # a shorter form, whole, rather than this one cut
+        t = fix(text, brand if shown and shown in text else None, getattr(facts, "condition", None), cap, strict, keep)
+        last = t or last
+        if t and not check(t, site):
+            return t
+    return last or "Item"
+
+
 def for_site(title: str, site: str, strict: int = 0, brand: str | None = None, condition: str | None = None) -> str:
     """The title as `site` gets it (Vinted's title, Depop's first line), fixed for its rules — the brand as a shop sign
     writes it when it is given; the strict level comes from the site's own refusal (`crosslist.record`: fixed and

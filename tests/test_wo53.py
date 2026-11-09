@@ -469,12 +469,13 @@ def test_an_account_page_with_items_waiting_raises_the_alarm_and_the_group_line_
                  at=t0)
     alarm.account_line(db, "depop", "login", t0, force=True)
     assert said.group == ["Depop needs you to log in on the Mac."]
-    assert alarm.tick(db, t0 + timedelta(minutes=10)) == []                      # not 20 minutes yet
-    assert alarm.tick(db, t0 + timedelta(minutes=25), hours_open=False) == []    # outside the hours: quiet
-    assert alarm.tick(db, t0 + timedelta(minutes=25)) == ["depop"]
+    # WO54 §2: a sign-out is its 🚨 at once, whatever the hour (only her hands settle it), then every 12 hours
+    assert alarm.tick(db, t0 + timedelta(minutes=1), hours_open=False) == ["depop"]
     assert said.ops[-1].startswith("🚨 Depop has shown a login page since") and "Only you can act" in said.ops[-1]
-    assert said.group == ["Depop needs you to log in on the Mac."]               # said 25 min ago: not again yet
-    assert alarm.tick(db, t0 + timedelta(hours=13)) == ["depop"]                 # 4 h later: again, with the line
+    assert said.group == ["Depop needs you to log in on the Mac."]               # said a minute ago: not again yet
+    assert alarm.tick(db, t0 + timedelta(minutes=25)) == []                      # not again within 12 hours
+    assert alarm.tick(db, t0 + timedelta(hours=11)) == []
+    assert alarm.tick(db, t0 + timedelta(hours=13)) == ["depop"]                 # 12 h later: again, with the line
     assert said.group[-1] == "Depop needs you to log in on the Mac." and len(said.group) == 2
 
 
