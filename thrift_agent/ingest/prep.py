@@ -1,4 +1,8 @@
-"""Photo normalization: HEIC→JPEG, EXIF rotation, resize, near-duplicate drop, the 3:4 cover."""
+"""Photo normalization: HEIC→JPEG, EXIF rotation, resize, near-duplicate drop, the 3:4 cover.
+
+WO54 §4 (her working laptop comes first): a share's photos are prepared one at a time, each on ONE core — libheif
+decodes an iPhone HEIC's tiles on 4 threads by default (pillow_heif's DECODE_THREADS), which put a big share's
+preparation on every core of her 8 GB MacBook at once. The worker itself runs at launchd's Background priority."""
 from __future__ import annotations
 
 import io
@@ -8,9 +12,12 @@ from pathlib import Path
 
 import imagehash
 from PIL import Image, ImageFilter, ImageOps, ImageStat
+from pillow_heif import options as heif_options
 from pillow_heif import register_heif_opener
 
 register_heif_opener()
+DECODE_THREADS = 1                       # WO54 §4: one HEIC decoded on one core (libheif's own default: 4)
+heif_options.DECODE_THREADS = DECODE_THREADS
 
 IMG_EXT = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp"}
 EXIF_IFD, DATETIME_ORIGINAL, DATETIME = 0x8769, 36867, 306

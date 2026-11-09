@@ -62,11 +62,17 @@ def _shipped(name: str) -> dict:
     return yaml.safe_load((CONFIG_DIR / name).read_text(encoding="utf-8"))
 
 
-def test_example_local_settings_keep_archive_inside_icloud():
+def test_example_local_settings_keep_the_archive_on_the_macs_own_disk():
+    """WO54 §4 (the owner, 2026-11-09: nothing the agent keeps lives in iCloud Drive): the archive is on the Mac's own
+    disk, in a .noindex folder (Spotlight never indexes it), still named "archive" (the intake tells an archived folder
+    by its parent's name); only a share taken short waits in iCloud's Posh/archive, next to the inbox."""
+    from thrift_agent import pipeline
     s = Settings(_shipped("settings.local.example.yaml"))
     assert s.is_prod
-    assert s.path("archive").parent == s.path("inbox").parent    # Posh/archive next to Posh/inbox: never leaves iCloud
-    assert s.path("archive").name == "archive"
+    archive = s.path("archive")
+    assert "Mobile Documents" not in str(archive) and archive.name == "archive" and archive.parent.name.endswith(".noindex")
+    assert "Mobile Documents" in str(s.path("inbox"))
+    assert pipeline.late_archive(s) == s.path("inbox").parent / "archive"
 
 
 def test_shipped_defaults_have_duplicate_and_depop_settings():

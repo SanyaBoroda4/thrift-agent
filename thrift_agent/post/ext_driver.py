@@ -384,8 +384,9 @@ class ExtensionPoster(Poster):
         return self.shape.listing_address(url)
 
     def available(self) -> bool:
-        """The extension can take a job now (its socket is open, or it polled within 90 s)."""
-        return self.bridge is not None and self.bridge.connected()
+        """The extension can take a job now: its socket is open, it polled within 90 s, or (WO54 §4) the Thrift Chrome
+        is asleep and the bridge starts it for the job (Bridge.available)."""
+        return self.bridge is not None and self.bridge.available()
 
     # ------------------------------------------------------------ the job
 
@@ -1373,10 +1374,14 @@ class ExtensionPoster(Poster):
         return out
 
     async def wait_connected(self, timeout: float = CONNECT_WAIT) -> bool:
+        """The extension connected within `timeout` — WO54 §4: a Thrift Chrome that isn't running is asked for first
+        (it opens on demand and connects within seconds)."""
+        if self.bridge is not None and not self.bridge.connected():
+            self.bridge.want(f"{self.name}: a job waits for the extension")
         end = time.monotonic() + timeout
         while self.bridge is not None and not self.bridge.connected() and time.monotonic() < end:
             await asyncio.sleep(0.2)
-        return self.available()
+        return self.bridge is not None and self.bridge.connected()
 
     async def check_login(self) -> str:
         """The sell page in the Thrift Chrome: "form" when logged in; AccountBlocked for a login / block / CAPTCHA /

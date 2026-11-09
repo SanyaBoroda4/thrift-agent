@@ -133,8 +133,11 @@ def disk_free(s: Settings) -> tuple[int, int]:
 def sizes(s: Settings) -> dict[str, int]:
     """What thrift's folders take now: the archive and the inbox (iCloud Drive), the work copies, the prep copies,
     the staging, the evidence, the database."""
+    from thrift_agent import pipeline
     work = s.path("work")
+    late = pipeline.late_archive(s)                   # WO54 §4: the shares taken short, still in iCloud Drive
     out = {"archive": folder_bytes(s.path("archive")), "inbox": folder_bytes(s.path("inbox")),
+           "archive_icloud": folder_bytes(late) if late != s.path("archive") else 0,
            "work_items": 0, "work_all": 0, "staging": folder_bytes(work / "uploads"),
            "shots": folder_bytes(s.path("failed") / "shots"), "db": folder_bytes(s.path("db"))}
     try:
@@ -191,6 +194,9 @@ def plan(s: Settings, db: DB, now: datetime | None = None, api=None) -> tuple[li
     local = work / "_uploads" / "archive"
     if local.is_dir():
         folders += sorted(p for p in local.iterdir() if p.is_dir())
+    late = pipeline.late_archive(s)                   # WO54 §4: the shares taken short, still in iCloud: same rules
+    if late != archive and late.is_dir():
+        folders += sorted(p for p in late.iterdir() if p.is_dir())
     for d in folders:
         if d.name.endswith(ASIDE) or re.search(re.escape(ASIDE) + r"[ _]\d+$", d.name):
             removals.append(Removal(str(d), "duplicate", "the iCloud copy of a share the upload brought (set aside "

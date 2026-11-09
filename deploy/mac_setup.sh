@@ -29,8 +29,19 @@ echo "== packages ($(.venv/bin/python --version))"
 
 echo "== folders"
 mkdir -p ~/thrift/logs ~/thrift/var ~/thrift/chrome-cross
+# WO54 §4: the archive on the Mac's own disk (paths.archive), in a folder whose name ends in .noindex — Spotlight never
+# indexes such a folder, wherever it is (unlike .metadata_never_index, below)
+mkdir -p ~/thrift/var/local.noindex/archive
 ICLOUD="$HOME/Library/Mobile Documents/com~apple~CloudDocs/Posh"
-mkdir -p "$ICLOUD/inbox" "$ICLOUD/archive"     # archive stays inside iCloud, next to inbox
+mkdir -p "$ICLOUD/inbox" "$ICLOUD/archive"     # iCloud's archive: only a share taken short, where its late photos land
+# WO54 §4: the agent's own folders marked for Spotlight to skip. On recent macOS .metadata_never_index is honoured only
+# at a volume's root, so for these it is a marker at best; the sure way is ONE step by the owner: System Settings →
+# Spotlight → Search Privacy → + → the "thrift" folder in her home (the work photos, the evidence, the database and both
+# Chrome profiles, rewritten all day). Never a rename: the database's folder and its paths stay as they are.
+for d in ~/thrift ~/thrift/var ~/thrift/var/work ~/thrift/var/failed ~/thrift/logs ~/thrift/chrome-cross \
+         ~/thrift/chrome-profile; do
+  if [ -d "$d" ] && [ ! -e "$d/.metadata_never_index" ]; then touch "$d/.metadata_never_index"; fi
+done
 [ -f config/settings.local.yaml ] || cp config/settings.local.example.yaml config/settings.local.yaml
 [ -f .env ] || cp .env.example .env
 .venv/bin/thrift init

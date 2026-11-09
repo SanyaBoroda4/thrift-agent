@@ -109,8 +109,16 @@ def quiet_hours_off(request):
 
 @pytest.fixture(autouse=True)
 def no_thrift_chrome(monkeypatch):
-    """WO32: no test ever starts the Mac's Thrift Chrome (services.sh start chrome) — the suite runs there at deploy."""
+    """WO32: no test ever starts the Mac's Thrift Chrome (services.sh start chrome) — the suite runs there at deploy.
+    WO54 §4: nor wakes it on demand (no waker: the extension sites wait for a connected extension, as before) or quits
+    it."""
     monkeypatch.setattr("thrift_agent.post.runner.start_thrift_chrome", lambda s: "not in a test")
+    monkeypatch.setattr("thrift_agent.post.runner.chrome_waker", lambda s: None)
+    monkeypatch.setattr("thrift_agent.post.runner.quit_thrift_chrome", lambda s, wait=0: "not in a test")
+    from thrift_agent import memory
+    memory.reset()                         # WO54 §4: the shared memory reading of one test never reaches the next
+    yield
+    memory.reset()
 
 
 @pytest.fixture

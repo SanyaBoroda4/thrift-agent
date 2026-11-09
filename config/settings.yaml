@@ -6,7 +6,8 @@ machine_role: dev          # dev | prod — only prod may publish
 paths:
   inbox: ./var/inbox       # one folder per share from the iPhone
   work: ./var/work         # normalized photos, item folders, contact sheets
-  archive: ./var/archive   # finished shares; prod keeps this inside iCloud (Posh/archive, a sibling of inbox)
+  archive: ./var/archive   # finished shares; prod (WO54 §4): ~/thrift/var/local.noindex/archive, the Mac's own disk —
+                           # only a share taken short waits in iCloud's Posh/archive (pipeline.late_archive)
   failed: ./var/failed     # screenshots + logs for anything that broke
   db: ./var/state.db
   chrome_profile: ./var/chrome-profile

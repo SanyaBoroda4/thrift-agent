@@ -5,7 +5,9 @@ machine_role: prod
 paths:
   inbox: ~/Library/Mobile Documents/com~apple~CloudDocs/Posh/inbox
   work: ~/thrift/var/work
-  archive: ~/Library/Mobile Documents/com~apple~CloudDocs/Posh/archive   # sibling of inbox: never moves files out of iCloud
+  # WO54 §4 (the owner, 2026-11-09): the archive on the Mac's own disk, in a .noindex folder Spotlight never indexes.
+  # Only a share taken short waits in iCloud Drive's Posh/archive (next to the inbox): its late photos land there.
+  archive: ~/thrift/var/local.noindex/archive
   failed: ~/thrift/var/failed
   db: ~/thrift/var/state.db
   chrome_profile: ~/thrift/chrome-profile

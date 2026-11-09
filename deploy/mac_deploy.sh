@@ -2,7 +2,8 @@
 # Run on the Mac by deploy/deploy.ps1, right after its `git pull`:
 #     bash deploy/mac_deploy.sh <the commit before the pull>
 # private/ pull → mac_setup.sh (venv, folders, tests, launchd files, the extension's token) → the WORKER (re)started as
-# the launchd service → the Thrift Chrome started if it isn't running (WO32; never restarted) → services status,
+# the launchd service → the Thrift Chrome's job loaded from its installed plist (WO54 §4: NOT started — the poster opens
+# it when its extension has work and quits it after 10 idle minutes; a running one is left alone) → services status,
 # `thrift status` and the last 30 lines of the worker log. A failed setup or test run rolls the
 # checkout back to the commit before the pull, so launchd never runs untested code. Any failure exits non-zero.
 # The poster service is never started here: it stays off until the owner turns publishing on (the two keys).
@@ -53,7 +54,7 @@ for _ in $(seq 1 12); do
   now_scan="$(scan)"
   if [ -n "$now_scan" ] && [ "$now_scan" != never ] && [ "$now_scan" != "$last_scan" ]; then scanned=yes; break; fi
 done
-bash deploy/services.sh start chrome || echo "== the Thrift Chrome didn't start (see above)" >&2
+bash deploy/services.sh load chrome || echo "== the Thrift Chrome's job didn't load (see above)" >&2
 bash deploy/services.sh status
 echo "== thrift status"
 .venv/bin/thrift status

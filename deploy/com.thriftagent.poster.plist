@@ -12,6 +12,13 @@
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>60</integer>
+  <!-- WO54 §4 (her working laptop comes first): below her apps, and inherited by what it starts (Poshmark's Playwright
+       Chrome): Nice 10 lowers its CPU priority (Chrome's own QoS-classed threads keep their classes) and LowPriorityIO
+       makes its disk I/O yield to hers. Not ProcessType Background: that would clamp Poshmark's Chrome to background QoS
+       (efficiency cores, throttled I/O and network) and its form steps wait seconds at most; the poster's real relief
+       is that both Chromes now close after 10 idle minutes. -->
+  <key>Nice</key><integer>10</integer>
+  <key>LowPriorityIO</key><true/>
   <!-- Seconds launchd waits after SIGTERM before SIGKILL (default 20): the poster finishes the current item first. -->
   <key>ExitTimeOut</key><integer>300</integer>
   <!-- Python block-buffers stdout when it is a file: unbuffered, so poster.log fills live and nothing is lost on kickstart. -->

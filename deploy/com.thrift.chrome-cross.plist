@@ -1,32 +1,33 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- The Thrift Chrome (WO32): an ordinary Google Chrome window with its own profile (~/thrift/chrome-cross), next to the
-     owner's own Chrome and the Poshmark poster's profile. The Thrift crosslister extension (ext/) runs in it, loaded
-     unpacked once by hand. No remote debugging, no automation flags, no load-extension: the sites see a person's
-     Chrome. The two "backgrounding" switches keep the window working at full speed behind other windows and the lock
-     screen; pages can't see them. KeepAlive restarts it after a crash; a Chrome that quit normally (Cmd-Q, a relaunch
-     to update) is left to the bridge, which starts it again when no extension has checked in for 2 minutes — a plain
-     KeepAlive would start a second copy on every exit, and that copy only hands its address to the running one.
-     WO54 (live 2026-11-09: it restored old pages — hers on eBay, Vinted with ad frames — two of them burning a core each
-     since 1 AM on her laptop): never the restore-last-session switch; it opens fresh. -->
+<!-- The Thrift Chrome (WO32): an ordinary Google Chrome with its own profile (~/thrift/chrome-cross), next to the owner's
+     own Chrome and the Poshmark poster's profile. The Thrift crosslister extension (ext/) runs in it, loaded unpacked
+     once by hand. No remote debugging, no automation flags, no load-extension: the sites see a person's Chrome.
+     WO54 §4 (live 2026-11-09: open since 1 AM with old pages restored — hers on eBay, Vinted with ad frames — 9.6 GB on
+     her 8 GB laptop, two pages burning a core each): it is not her browser and runs only while there is work.
+     - RunAtLoad false and no KeepAlive: launchd never starts it by itself (not at login, not after it quits). The poster
+       starts it when its extension has a job (services.sh start chrome → launchctl kickstart) and quits it after 10
+       idle minutes (SIGTERM to this job's own pid); a crash or a quit by hand leaves it down until the next job.
+     - deploy/chrome_cross.sh sets the last session aside and execs Chrome with no window and no page
+       (no restore-last-session, no start page); its two "backgrounding" switches keep a window behind others, or the
+       lock screen, at full speed (WO28).
+     - Lower priority than her apps: Nice 10 (Chrome's own QoS-classed threads keep their classes; the nice value lowers
+       the rest) and LowPriorityIO (its disk I/O yields to hers). Not ProcessType Background: that clamps every thread to
+       background QoS (the efficiency cores, throttled I/O and network) — the throttled, hidden pages of WO28 / WO32b
+       stalled live listings inside their 3-minute limit.
+     - ExitTimeOut 30: a bootout (the quiet hours, services.sh stop chrome) gives Chrome 30 s to shut down normally. -->
 <plist version="1.0">
 <dict>
   <key>Label</key><string>com.thrift.chrome-cross</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Applications/Google Chrome.app/Contents/MacOS/Google Chrome</string>
-    <string>--user-data-dir=__HOME__/thrift/chrome-cross</string>
-    <string>--no-first-run</string>
-    <string>--no-default-browser-check</string>
-    <string>--disable-backgrounding-occluded-windows</string>
-    <string>--disable-renderer-backgrounding</string>
-    <string>--disk-cache-size=268435456</string>
-    <string>https://www.vinted.com/</string>
+    <string>/bin/bash</string>
+    <string>__HOME__/thrift-agent/deploy/chrome_cross.sh</string>
   </array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key>
-  <dict><key>SuccessfulExit</key><false/></dict>
-  <key>ThrottleInterval</key><integer>30</integer>
+  <key>RunAtLoad</key><false/>
+  <key>Nice</key><integer>10</integer>
+  <key>LowPriorityIO</key><true/>
+  <key>ExitTimeOut</key><integer>30</integer>
   <key>StandardOutPath</key><string>__HOME__/thrift/logs/chrome-cross.log</string>
   <key>StandardErrorPath</key><string>__HOME__/thrift/logs/chrome-cross.err</string>
 </dict>
