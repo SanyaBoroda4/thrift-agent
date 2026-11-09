@@ -300,7 +300,9 @@ def test_a_logged_out_marketplace_stops_for_the_window_with_one_plain_line(tmp_p
     assert len(ps["depop"].calls) == 1                                     # not tried again this window
     assert [db.listing(i, "depop")["status"] for i in (a, b)] == ["queued", "queued"]
     cards = [m for m in said.group if m.startswith("✅")]                     # WO34: Depop waits, said plainly
-    assert cards and all("Vinted</a>" in c and "⏳ Depop — later" in c for c in cards)
+    # WO53 §6: a waiting site says when it tries next and why, in plain words
+    assert cards and all("Vinted</a>" in c and "⏳ Depop — next try " in c and "it needs a login on the Mac" in c
+                         for c in cards)
     assert cards[-1].endswith(done_for_now("depop"))                     # not "All done": Depop catches up
     assert crosslist.blocked(db, "depop")
     db.kv_set(daily.SESSION_KEY, "next-window")                           # the Mac opened again
@@ -325,9 +327,11 @@ def test_a_failure_before_publishing_is_retried_next_window_three_times(tmp_path
     row = db.listing(iid, "vinted")
     assert len(ps["vinted"].calls) == 3 and row["status"] == "skipped" and "3 attempts" in row["error"]
     assert any(m.startswith(f"⏭ Vinted skipped for {iid} after 3 attempts") for m in said.ops)
-    told = [m for m in said.group if "Vinted" in m and not m.startswith("✅")]   # WO33: one line, a reply
-    assert len(told) == 1 and told[0].startswith("⏭ ") and "Reply 'retry'" in told[0]  # settles it, never a command
-    assert not any("thrift " in m for m in [*said.group, *said.ops])
+    told = [m for m in said.group if "Vinted" in m and not m.startswith("✅")]   # WO53: nothing in the group,
+    assert told == []                                                               # never a 'retry' asked
+    alarms = [m for m in said.ops if m.startswith("🚨")]                            # ONE 🚨 with the fix request
+    assert len(alarms) == 1 and "couldn't be listed on Vinted" in alarms[0], said.ops
+    assert not any("thrift " in m for m in said.group)
 
 
 class Seen(Stub):
@@ -349,18 +353,22 @@ UNCONFIRMED_DEPOP = Outcome("failed", clicked=True, error="PosterError: no produ
 
 @pytest.fixture
 def settle_now(monkeypatch):
-    """WO35 §4's quiet re-check due at once (it is 10 minutes in the poster), the questions collected."""
+    """WO35 §4's quiet re-check due at once (10 s … 10 min after the click in the poster), and rule 3's clock
+    fast-forwarded (WO53: two absent reads 10+ minutes apart, the last 30+ minutes after the click — here any two)."""
+    from thrift_agent import postcheck
     monkeypatch.setattr(crosslist, "RECHECK_AFTER", 0)
-    asked = []
-    monkeypatch.setattr(runner, "ask_unconfirmed", lambda db_, i, mp, text: asked.append((i, mp, text)))
-    return asked
+    monkeypatch.setattr(postcheck, "next_due", lambda clicked, at: at)
+    monkeypatch.setattr(postcheck, "ABSENT_GAP_S", 0)
+    monkeypatch.setattr(postcheck, "ABSENT_AFTER_S", 0)
+    return []
 
 
 @pytest.mark.parametrize("driver", ["playwright"], indirect=True)
 def test_an_unconfirmed_publish_absent_by_the_site_s_data_is_posted_again_once_after_a_last_check(
         tmp_path, loop, settle_now):
-    """WO35 §4: no question at all; the quiet re-check finds it absent → a failure now, back in line; one last look
-    right before the second post; that one goes up — the card shows it, the group never heard "can't see it"."""
+    """WO35 §4 + WO53 rule 3: no question at all; the quiet re-checks find it absent twice → back in line (never a
+    failure); one last look right before the second post; that one goes up — the card shows it, the group never heard
+    "can't see it"."""
     said, run = loop
     s = _settings(tmp_path)
     db = DB(s.path("db"))
@@ -369,16 +377,16 @@ def test_an_unconfirmed_publish_absent_by_the_site_s_data_is_posted_again_once_a
                                                                                 "shop-{slug}/")], [None]))
     run(s, db, ps)
     assert settle_now == [] and not any("can't see" in m or "can't confirm" in m for m in said.group)
-    assert len(ps["depop"].calls) == 2 and ps["depop"].looked == 2           # the re-check and the last look
+    assert len(ps["depop"].calls) == 2 and ps["depop"].looked == 3           # two re-checks and the last look
     row = db.listing(iid, "depop")
     assert row["status"] == "posted" and row["url"] == f"https://www.depop.com/products/shop-{iid.replace('_', '-')}/"
     assert crosslist.unconf_state(db, iid, "depop") is None
-    assert any(m.startswith(f"↻ Depop: {TITLE} wasn't posted") for m in said.ops)
+    assert any(m.startswith(f"↻ Depop: {TITLE} isn't there") for m in said.ops)
     assert any("Depop" in m and "<a href" in m for m in said.group)        # the card, its Depop link
 
 
 @pytest.mark.parametrize("driver", ["playwright"], indirect=True)
-def test_a_second_miss_goes_to_the_ops_chat_only_and_is_never_posted_a_third_time(tmp_path, loop, settle_now):
+def test_a_second_miss_is_one_alarm_never_a_question_and_never_a_third_post(tmp_path, loop, settle_now):
     said, run = loop
     s = _settings(tmp_path)
     db = DB(s.path("db"))
@@ -388,8 +396,9 @@ def test_a_second_miss_goes_to_the_ops_chat_only_and_is_never_posted_a_third_tim
     db.kv_set(daily.SESSION_KEY, "next")                                  # a new window: still never a third post
     run(s, db, ps)
     assert len(ps["depop"].calls) == 2
-    assert [(i, mp) for i, mp, _ in settle_now] == [(iid, "depop")]       # ONE question — runner.ask_unconfirmed:
-    assert settle_now[0][2] == runner.second_miss_text(TITLE, "depop")    # the ops chat (never the group)
+    alarms = [m for m in said.ops if m.startswith("🚨")]                   # WO53: ONE 🚨, never a question
+    assert len(alarms) == 1 and "posted twice" in alarms[0], said.ops
+    assert not any("reply" in m.lower() for m in [*said.group, *said.ops])
     assert not any("can't" in m for m in said.group)
     assert crosslist.unconf_state(db, iid, "depop")["stage"] == "given_up"
     assert db.listing(iid, "depop")["error"].startswith("unconfirmed publish: ")
@@ -402,9 +411,9 @@ def test_a_listing_that_appears_just_before_the_retry_is_never_posted_twice(tmp_
     db = DB(s.path("db"))
     iid = _item(db)
     live = f"https://www.depop.com/products/exampl3shopname-tory-burch-{iid[-4:]}/"
-    ps = _posters(depop=Seen("depop", [UNCONFIRMED_DEPOP], [None, live]))   # absent at the re-check, then there
+    ps = _posters(depop=Seen("depop", [UNCONFIRMED_DEPOP], [None, None, live]))   # absent twice, then there
     run(s, db, ps)
-    assert len(ps["depop"].calls) == 1 and ps["depop"].looked == 2
+    assert len(ps["depop"].calls) == 1 and ps["depop"].looked == 3
     row = db.listing(iid, "depop")
     assert row["status"] == "posted" and row["url"] == live
     assert any("turned out live" in m and "not posted twice" in m for m in said.ops)
@@ -600,7 +609,8 @@ def test_the_card_names_a_failed_sites_step_and_the_next_try(tmp_path):
     assert "⏳ Depop — later" in text
     assert "⏳ Vinted — photos failed, next try " in text and "Mac" not in text
     db.upsert_listing(iid, "vinted", status="failed", error="unconfirmed publish: x", attempts=1)
-    assert "⏳ Vinted — later" in crosslist.card_text(s, db, iid)     # settled by the site's own data, as before
+    assert "⏳ Vinted — submitted " in crosslist.card_text(s, db, iid) and "verifying" in \
+        crosslist.card_text(s, db, iid)                                    # WO53: being verified, said plainly
 
 
 def test_an_asked_for_dry_run_never_stops_the_poster(tmp_path, loop, monkeypatch):
@@ -639,7 +649,6 @@ def quiet(monkeypatch):
     monkeypatch.setattr(notify, "say", lambda text: said.ops.append(text))
     monkeypatch.setattr(notify, "photo", lambda path, caption: said.ops.append(caption))
     monkeypatch.setattr(notify, "ops_photo", lambda path, caption: said.ops.append(caption))
-    monkeypatch.setattr(runner, "ask_unconfirmed", lambda db_, i, mp, text: said.group.append(text))
     return said
 
 
@@ -751,7 +760,8 @@ def test_a_new_item_s_line_waits_for_every_site_to_settle_then_goes_once(tmp_pat
     db.upsert_listing(iid, "vinted", status="posted", url="https://www.vinted.com/items/77")
     text = crosslist.announce(s, db, iid)
     assert quiet.group == [text] and text.startswith(f"✅ {NAME} · $85\n\n🟣 <a href=\"https://poshmark.com/")
-    assert '🟢 <a href="https://www.vinted.com/items/77">Vinted</a>' in text and "⏳ Depop — later" in text
+    assert '🟢 <a href="https://www.vinted.com/items/77">Vinted</a>' in text and "⏳ Depop — submitted " in text
+    assert "verifying" in text                                             # WO53: the site's own data settles it
     assert text.endswith(done_for_now("depop"))
     db.upsert_listing(iid, "depop", status="posted", url=DEPOP_URL, error=None)       # the owner's link, checked
     edited = crosslist.announce(s, db, iid)                                        # WO34: the same card, edited
@@ -804,7 +814,7 @@ def test_the_card_is_edited_in_place_and_the_sleep_line_rides_on_the_newest(tmp_
     crosslist.block(db, "vinted", "failures: 3 in a row")                  # Vinted stopped for the window
     a = listed(1)
     first = crosslist.announce(s, db, a)
-    assert first.endswith(done_for_now("vinted")) and "⏳ Vinted — later" in first
+    assert first.endswith(done_for_now("vinted")) and "⏳ Vinted — next try " in first
     b = listed(2)                                                          # the next item, a while later
     crosslist.announce(s, db, b)
     sends = [c for c in bot.calls if c[0] == "send"]

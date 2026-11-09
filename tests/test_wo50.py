@@ -111,7 +111,9 @@ def test_a_second_refusal_after_the_fix_is_one_line_and_no_loop(tmp_path, loop, 
     run(s, db, ps)
     assert len(ps["vinted"].calls) == 2                                   # the one retry, never a third
     assert db.listing(iid, "vinted")["status"] == "failed"
-    assert len([m for m in said.ops if m.startswith("⛔") and "Reply 'retry'" in m]) == 1   # the one reply-able line
+    assert len([m for m in said.ops if m.startswith("⛔") and "refused the form" in m]) == 1   # the one line
+    assert not any("Reply 'retry'" in m for m in said.ops)                # WO53: nothing asked
+    assert len([m for m in said.ops if m.startswith("🚨")]) == 1          # the fix request, once
 
 
 # ---------------------------------------------------------------- sizes

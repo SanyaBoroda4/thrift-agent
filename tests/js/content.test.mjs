@@ -808,6 +808,29 @@ test("check_login: the sell form is a yes, a login page a no", async () => {
   assert.equal(q.last().page, "login");
 });
 
+test("WO53: a hidden reCAPTCHA helper frame on an ordinary page is no CAPTCHA; a shown challenge still is", () => {
+  // live 2026-11-08 11:22 PM: Vinted's listing page (logged in) carried Google's invisible helper frame and the take-down
+  // stopped as "a CAPTCHA is shown" — Vinted paused for a challenge nobody could see
+  const url = "https://www.vinted.com/items/10303333852-ugg-slippers";
+  const hidden = `<html><head><title>Vinted</title></head><body><main><h1 data-testid="item-page-title">UGG Slippers</h1>
+    <iframe src="https://www.google.com/recaptcha/api2/aframe" width="0" height="0" style="display: none;"></iframe>
+    </main></body></html>`;
+  const kind = (html) => {
+    const q = page("vinted", html, url);
+    q.w.Thrift.selectors = SELECTORS;                 // what a job hands over
+    return q.w.Thrift.classify("vinted");
+  };
+  assert.equal(kind(hidden), "listing");
+  const sized0 = hidden.replace(' style="display: none;"', "");                   // 0×0, not display:none
+  assert.equal(kind(sized0), "listing");
+  const shown = `<html><head><title>Vinted</title></head><body>
+    <iframe title="reCAPTCHA challenge" src="https://www.google.com/recaptcha/api2/bframe" width="400" height="580"></iframe>
+    </body></html>`;
+  assert.equal(kind(shown), "captcha");
+  const before = hidden.replace("<iframe", "<iframe title=\"captcha helper\"");    // a hidden one matching by title too
+  assert.equal(kind(before), "listing");
+});
+
 test("the brand is the exact name only — never another line, a shorter or a similar name (the owner, 2026-10-11)", () => {
   const { w } = page("vinted");
   const pick = w.Thrift.strictPick;

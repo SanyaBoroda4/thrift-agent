@@ -644,9 +644,9 @@ def test_every_reply_to_a_card_gets_an_answer(env, facts, monkeypatch, reply):
     assert "thrift " not in answer[0]                                          # never a terminal command
 
 
-def test_a_skipped_listing_is_settled_by_a_reply_never_a_command(env, facts, monkeypatch):
-    """WO33, the owner: no message may need a terminal command. A skipped listing's group message takes a reply:
-    'retry' puts it back in line, and the bot says so."""
+def test_a_skipped_listing_asks_nobody_and_raises_one_alarm(env, facts, monkeypatch):
+    """WO33, the owner: no message may need a terminal command. WO53 §2/§6: nor any question — a listing the form
+    couldn't take is the code's to fix: ONE private 🚨 with the fix request, nothing in the group, no 'retry' asked."""
     from thrift_agent.post import runner
     from thrift_agent.post.base import Outcome
     from thrift_agent.schema import Render
@@ -660,13 +660,13 @@ def test_a_skipped_listing_is_settled_by_a_reply_never_a_command(env, facts, mon
     said = []
     monkeypatch.setattr("thrift_agent.notify.photo", lambda path, caption: said.append(caption))
     monkeypatch.setattr("thrift_agent.notify.say", lambda text: said.append(text))
+    before = len(bot.sent())
     runner.record_outcome(db, iid, "poshmark", render, Outcome("skipped", error="skipped: no size menu"), ["poshmark"])
-    message = bot.sent()[-1]["text"]
-    assert message.startswith("⏭ Mango Knit Cardigan Tan size XS wasn't listed on Poshmark") and "'retry'" in message
-    assert not any("thrift " in t for t in [message, *said])
-    approve.handle_update(s, db, bot, _reply("retry", bot.next_id))
-    assert db.listing(iid, "poshmark")["status"] == "queued"
-    assert _answers(bot)[-1].startswith("✓ Retry — it goes back in line on Poshmark")
+    runner.record_outcome(db, iid, "poshmark", render, Outcome("skipped", error="skipped: no size menu"), ["poshmark"])
+    assert len(bot.sent()) == before                                   # nothing in the group
+    alarms = [t for t in said if t.startswith("🚨")]
+    assert len(alarms) == 1 and "couldn't be listed on Poshmark" in alarms[0], said     # once per item and site
+    assert not any("'retry'" in t or "thrift " in t.split("Paste this")[0] for t in said)
 
 
 def test_a_reply_no_handler_answered_still_gets_an_answer(env, facts, monkeypatch):
@@ -823,9 +823,12 @@ def test_the_copy_names_the_brand_as_shops_list_it(env, facts, monkeypatch):
 def test_a_form_that_read_back_otherwise_waits_and_the_group_hears_nothing(env, facts, monkeypatch):
     """WO36 §4: a Depop / Vinted form whose read-back differed is never published; it waits, tried again next window,
     and only the ops chat hears why. Since the Vinted incident of 2026-10-20 (the owner): three windows like any other
-    failure, then the group's ⏭ line naming the step — never "later" for good."""
-    from thrift_agent import crosslist
+    failure, then a line naming the step — never "later" for good. WO53: that line is ONE private 🚨 with the fix
+    request (the code must change), never the group's ⏭ asking for 'retry'."""
+    from thrift_agent import crosslist, notify
     s, db, bot = env
+    said = []
+    monkeypatch.setattr(notify, "say", said.append)
     monkeypatch.setattr("thrift_agent.brain.llm.ask", _model({"facts": lambda: facts()}))
     iid = _item(s.path("db").parent, db)
     pipeline.process_item(s, db, iid)
@@ -846,7 +849,8 @@ def test_a_form_that_read_back_otherwise_waits_and_the_group_hears_nothing(env, 
     assert crosslist.new_window(s, db)
     assert db.listing(iid, "depop")["status"] == "skipped"                # the third window: the ⏭ line, the step named
     assert db.listing(iid, "vinted")["status"] == "skipped"
-    told = [p.get("text") or p.get("caption") for p in bot.sent()[sent:]]
-    assert len(told) == 2, told
-    assert any("Depop" in t and "brand-input" in t and "'retry'" in t for t in told), told
+    assert bot.sent()[sent:] == []                                        # the group: still nothing
+    told = [t for t in said if t.startswith("🚨")]
+    assert len(told) == 2, said
+    assert any("Depop" in t and "brand-input" in t and "'retry'" not in t for t in told), told
     assert any("Vinted" in t and "the page went away" in t for t in told), told

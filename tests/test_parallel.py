@@ -196,7 +196,8 @@ def test_one_site_turned_away_never_stops_the_others(tmp_path, quick):
     # edited without it when a later card takes it — whether that happens depends on the workers' timing)
     cards = {i: [g for g in quick.group if g.startswith("✅") and f"/listing/{i}" in g] for i in items}
     assert all(cards[i] for i in items)
-    assert all("Depop</a>" not in c[-1] and "⏳ Depop — later" in c[-1] and "Vinted</a>" in c[-1] for c in cards.values())
+    assert all("Depop</a>" not in c[-1] and "⏳ Depop — next try " in c[-1] and "Vinted</a>" in c[-1]
+               for c in cards.values())                                   # WO53: when and why, plainly
 
 
 def test_a_poshmark_failure_stops_poshmark_alone(tmp_path, quick):

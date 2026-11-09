@@ -37,12 +37,14 @@ on all three sites at once, and takes an item down everywhere when it sells.
    or confirm control.
 4. **Idempotent posting, never retry blind.** Row → `posting` before Poshmark's form opens / at the extension's ONE
    go-ahead. A `posting` row after a crash is never retried; it is reconciled against the closet / the site's own data.
-   One item posts once per marketplace, ever. An unconfirmed publish is reposted only when the site's own data says it
-   is absent (Depop / Vinted), or the owner says 'retry' (Poshmark).
+   One item posts once per marketplace, ever. An unconfirmed publish is "verifying" (WO53): reposted only with proof —
+   two reads of the site's own data that show it absent, 10+ minutes apart, the last 30+ minutes after the click
+   (unreadable is never absent) — once, after one last look; never a question, never a failure (no pause).
 5. **Stop, don't guess.** Logged out / CAPTCHA / block / verification page → that site stops, one plain line, never a
    workaround. Unknown modal → fail the item with a screenshot. Never solve CAPTCHAs, never type credentials.
 6. **Pacing and hours.** `schedule` limits (hours, daily caps); no sharing / following / offers / relisting from this
-   code. Gaps between listings are 0 (WO37); caps, hours, PAUSE and stops stay.
+   code. Gaps between listings are 0 (WO37); caps, hours, PAUSE and stops stay — except WO53 rule 6: an item live on
+   one site is finished on the others the same night, whatever the hour (`scheduler.outside_hours`, `live_elsewhere`).
 7. **All selectors live in `post/<marketplace>.py:SEL` and `ext/selectors.json`.** Role/label/placeholder/text locators
    or the form's own hooks (data-vv-name, data-et-name, data-test, data-testid, ids); a CSS class only where verified
    live. Real clicks only. Unverified entries in `UNVERIFIED` / `"verified": false`; `submit()` refuses while a step it
@@ -54,9 +56,10 @@ on all three sites at once, and takes an item down everywhere when it sells.
 - **Only the price waits.** Her one routine input is the price (a button, a typed number, `thrift price`). Everything
   else is decided and shown on the card, corrected by a reply (`size … · brand … · condition … · category … · men /
   women · boys / girls · cover N`). The only other things that wait for her: a size when none is on the photos (size
-  buttons), a brand that is there but unreadable (the 🏷️ question), a 'retry' / 'posted <url>' for an unconfirmed or
-  refused publish. Never a grouping question (only a non-partition sends the contact sheet), never a poster question,
-  never a set's category, never optional facts.
+  buttons), a brand that is there but unreadable (the 🏷️ question). **Nobody is asked to check a site, ever** (WO53):
+  no "reply 'posted <url>'", no "reply 'retry'", no "Check Poshmark" — the site's own data settles it (a grep test).
+  Never a grouping question (only a non-partition sends the contact sheet), never a poster question, never a set's
+  category, never optional facts.
 - **Never leave an item unposted (WO52).** No field ever stops a listing: brands, sizes, categories fall back to the
   closest real value (never a made-up one; a big brand never "no brand"); site changes are healed or found by the form
   check; dead browsers are reopened; what still needs code is ONE 🚨 alarm within 20 minutes.
@@ -522,12 +525,14 @@ edit_save; UNVERIFIED: block, captcha, verify, skirt_length, promo_close, listin
   — photos failed, next try 4:45 PM" (`step_name`, `crosslist.next_try`); a failed-for-good / skipped site left out; a
   site landing later EDITS it (outbox kind `posted`); the 💤 line on the newest card (kv `posted_done_carrier`):
   "💤 All done — nothing is waiting." / "💤 Done for now. Vinted catches up by itself." / "💤 Done for now — waiting for a
-  size: …" (`crosslist.done_line`, `daily.done_state`, `daily.owner_waits`, `BRAND_WAIT`). Plain action lines once per
-  episode: "Depop needs you to log in on the Mac." / "… shows a CAPTCHA — solve it in its Chrome window on the Mac." / "…
-  turned the Mac away for now — I'll try again by myself later." / "… asks for a check — open it on the Mac." (`crosslist.ALERTS`);
+  size: …" (`crosslist.done_line`, `daily.done_state`, `daily.owner_waits`, `BRAND_WAIT`). Plain action lines when the
+  pause begins and again at most every 12 h while items wait (WO53, `alarm.account_line`; live 11-07: said once, then 31
+  hours of silence): "Depop needs you to log in on the Mac." / "… shows a CAPTCHA — solve it in its Chrome window on the
+  Mac." / "… turned the Mac away for now — I'll try again by myself later." / "… asks for a check — open it on the
+  Mac." (`crosslist.ALERTS`);
   "⚠️ Can't read the iCloud inbox …"; 🔋 battery low; 📭 photos still on the iPhone; "⏸ Not published automatically:
-  <title> — <site> publishes by itself only once its autopublish is on."; "⏭ <title> wasn't listed on <Site>: <why>.
-  Reply 'retry' to try it again." (once while open, `runner.ask_skipped`); 🔻 the day's drops; 💰 sales, ⚠️ sold twice,
+  <title> — <site> publishes by itself only once its autopublish is on." (WO53: no "⏭ … Reply 'retry'" line any more —
+  a listing the poster couldn't make is ONE private 🚨, `runner.ask_skipped`); 🔻 the day's drops; 💰 sales, ⚠️ sold twice,
   📦 overdue, "Couldn't take … down on <Site> — please mark it sold there.", "⚠️ <title> sold on <Site> but is still
   listed on <Sites> …"; replies to her own messages. Never ids, errno or tracebacks. No "safe to close" / "close the Mac"
   wording anywhere (a grep test).
@@ -601,15 +606,19 @@ edit_save; UNVERIFIED: block, captcha, verify, skirt_length, promo_close, listin
 - **Every failure has a kind** (`thrift_agent/health.py`, `kind_of`): item (the site refused this listing, a field it
   can't satisfy) | site (an element missing, the form changed, an unknown page; the extension's `SiteChanged`) | infra
   (browser / context / page closed, extension away, network, our code throwing — `T.errInfo` names it). Only item
-  failures use attempts (`MAX_ATTEMPTS` 3, then `skipped` + the group's ⏭ line) and count toward "3 in a row". A site /
+  failures use attempts (`MAX_ATTEMPTS` 3, then `skipped` + ONE private 🚨) and count toward "3 in a row" — an
+  unconfirmed publish ("verifying") never does (WO53 rule 4). A site /
   infra failure (`health.non_item`): row back to `queued`, attempt given back, the item behind others 10 min; the same
   failure on the next item pauses the site at once; one item meeting the same failure 3 times is the item's.
 - **Pauses** (`health.pause`, kv `site_health`; `crosslist.blocked` / `block` read and write it): ONE private line per
-  site per problem — "⛔ Depop paused: its sell form changed (shipping section not found). 6 items waiting — nothing was
-  published."; after 30 min (doubling to 4 h) the next item is filled as a quiet dry run (`parallel._poshmark_test` /
-  `_cross_test`): passing → "✅ Depop back to normal — posting resumed.". `thrift pause <site>` / `thrift resume <site>
-  [--dry]`. A login / CAPTCHA / block / check page (`crosslist.account_blocked`) stops the site with the group's plain
-  line; take-downs run on a site paused for failures, not on one with such a page.
+  site per problem, true and whole (WO53, `health.pause_text`, `health.cut` at a word) — "⛔ Depop paused at 10:58 PM:
+  its sell form changed (shipping section not found). Live today: 3. Waiting: 6. Next try 11:28 PM." (never "nothing
+  was published"); after 30 min (doubling to 4 h) the next item is filled as a quiet dry run (`parallel._poshmark_test`
+  / `_cross_test`; a test that meets the account page again is a failed test — its wait doubles, live 11-08 it ran every
+  ~5 s): passing → "✅ Depop back to normal — posting resumed, 3 items going up." (`health.going_text`: true about the
+  hours). `thrift pause <site>` / `thrift resume <site> [--dry]`. A login / CAPTCHA / block / check page
+  (`crosslist.account_blocked`) stops the site with the group's plain line; take-downs run on a site paused for
+  failures, not on one with such a page.
 - **Browsers**: Poshmark's context (`parallel.Browser`, `Browser.ensure`, probed every 5 min `PROBE_EVERY`; its "close"
   event, `browser_closed`) reopened at once, then after 30 s / 2 min / 10 min, the login checked, the same item next with
   no attempt used; three failed reopenings pause Poshmark. Closed by hand → "Poshmark's Chrome was closed on the Mac —
@@ -639,10 +648,13 @@ edit_save; UNVERIFIED: block, captcha, verify, skirt_length, promo_close, listin
   `formcheck.failed()` → the 🚨 alarm; passing again "✅ Vinted's form check passed again.". Rides the heartbeat
   (`formcheck.beat`) into the 9 PM line ("Sites: Poshmark ✓ Depop ✓ Vinted ✓ — form checks 8:30, 2:30 passed.",
   `watch.sites_line`). `thrift canary [--check <site|all> | --make [<item>]]`.
-- **The alarm** (`thrift_agent/alarm.py`, kv `alarms`): a site paused 20 min with items waiting (not her PAUSE, not a
-  login / CAPTCHA page) → ONE private "🚨 <Site> posting is blocked since … — N items waiting. Step …: … Evidence: …"
-  with a ready-to-paste Claude Code request; again only after 4 h, ≤ twice a day; cleared by "✅ <Site> back to normal —
-  posting resumed, N items going up." `alarm.raise_for`, `alarm.form_check_failed`. thrift-api's net
+- **The alarm** (`thrift_agent/alarm.py`, kv `alarms`): a site paused 20 min with items waiting (not her PAUSE) → ONE
+  private "🚨 <Site> posting is blocked since … — N items waiting. Step …: … Evidence: …" with a ready-to-paste Claude
+  Code request; again only after 4 h, ≤ twice a day; cleared by "✅ <Site> back to normal — posting resumed, N items
+  going up." WO53: a login / CAPTCHA / check page too, inside the posting hours ("🚨 Depop has shown a login page since …
+  Only you can act on it, on the Mac.", why "account") + the group's plain line again (≤ every 12 h); a listing still
+  unconfirmed 2 h after its click, a skipped listing, a refused form: one 🚨 each (keys "<mp>:verify|skipped|refused:
+  <item>"). `alarm.raise_for`, `alarm.form_check_failed`. thrift-api's net
   (`watch.not_live`): an item priced ≥ 2 h ago (within 3 days; `items.priced_at`) not live on all three → ONE 🚨 line
   naming each missing site's reason.
 - **Jobs** (`thrift_agent/jobs.py`, kv `job_health`; `jobs.ok` / errors): order sweeps, photo checks, take-downs, price
@@ -667,13 +679,27 @@ edit_save; UNVERIFIED: block, captcha, verify, skirt_length, promo_close, listin
   `thrift requeue <item>` once fixed. An item with no size is skipped before Next. A size pick that didn't register is
   picked again four ways (`SIZE_REPICKS`: plain click, keyboard, the tile's container, the button's own click).
 - Publish: Next → the Share Listing panel (our title; Promote off — one checkbox unchecked, or the panel reads "Promote
-  My Closet Off"; unreadable → stop before List, `…-panel.png`) → List This Item once → `created_listing_id` → the closet
-  reloaded every 10 s ≤ 90 s → the tile whose title AND slug are ours, the id Poshmark named (else one created since the
-  post started; several → never a guess) → `listing_url` → the live page (title, price). Not found → `failed`
-  "unconfirmed publish: …" and ONE private reply-able "⚠️ <title>: … I can't see it in the closet. Check Poshmark: if
-  it's there, reply 'posted <url>'; if not, reply 'retry'." (outbox kind `unconfirmed`). 'posted <url>' is queued for
-  the running poster, which opens the page (title, price; Depop also the SKU); 'retry' (`thrift retry`) → `queued`;
-  settled meanwhile → "✓ Already settled — it's live". Poshmark's is never decided by code alone.
+  My Closet Off"; unreadable → stop before List, `…-panel.png`) → List This Item once (Poshmark's JSON answers to the
+  click recorded, `after-list.json` "answers") → **WO53 §1, Poshmark's own data** (`thrift_agent/postcheck.py`, plain
+  HTTP of public pages, no browser): the page itself when it is a listing; else the id Poshmark named
+  (`?created_listing_id=` in its landing address — the landing is still the closet, as since 2026-10-03) → the public
+  `/listing/<id>` (it redirects to `/listing/<slug>-<id>`; its page state: title, price) → posted; else the closet
+  newest first (`?sort_by=added_desc`, its page state `$_closet.listingsPostData.data`): the named id, else our title
+  (`postcheck.title_key`: letters and digits, as the slug) at our price created after the click (the id's own UTC
+  timestamp); two → the cover photo (phash) decides; never a guess. Looked at 10 s, 30 s, 1 min after the click
+  (`postcheck.INLINE_S`, `<shot>-verify.json`). Live 2026-11-08: the closet's default order ("Just Shared",
+  `best_match`) didn't show three new listings for 100 s while `/listing/<id>` showed each at once (each went public
+  ~40 s after the click).
+- **Not confirmed at once → "submitted — verifying"** (`failed` + "unconfirmed publish: …" internally; kv
+  `unconfirmed_state`: clicked_at, due, reads, created, round): looked at again at 2, 3, 5, 10 min after the click,
+  then every 10 minutes (`postcheck.SCHEDULE_S`, `runner.recheck_unconfirmed` from each site's worker turn — Poshmark
+  too, any hour, even paused); the next item never waits. Found → posted (posted_at = the click), Depop / Vinted
+  queued, the ✅ card. Proven absent (two absent reads 10+ min apart, the last 30+ min after the click) → back in line
+  once, one last look right before List (`runner.last_look`); unreadable never counts; still unknown 2 h after the
+  click, or a second post unconfirmed too → ONE 🚨 (`runner.unconfirmed_alarm`), never a third post; a row older than 6 h
+  with no state (from before WO53) → the 🚨, never re-posted. Never asked, never a failure (it never counts toward
+  a pause). Her own 'posted <url>' / 'retry' / `thrift mark-posted` / `thrift retry` still work — nothing prompts for
+  them. A new landing kind is said once privately ("🩹 Poshmark now lands on … — handled.", `postcheck.landed`).
 - Dry-run stages (`poster.dry_run_stage`, `--stage`): `form` (fill, read back, evidence, Cancel → Discard Changes) |
   `review` (also Next, the panel recorded to `failed/shots/<item>-review.json`, ‹ Back → Cancel → Discard). Each dry run
   compares the Drafts count before / after (more → a warning). A cover dialog still open when leaving is cancelled. A
@@ -740,18 +766,19 @@ edit_save; UNVERIFIED: block, captcha, verify, skirt_length, promo_close, listin
 - **A refused form** (`T.watchAfterClick`, `T.refusal`: alerts, toasts, `aria-invalid` fields by label, the site's
   `/api/` calls with statuses): still the sell form after the click = "refused: …"; the driver takes any after-publish
   "form" page as a refusal (one look at the site's data; found → posted). A field error → `failed` "Vinted refused the
-  form: …" + ONE private "⛔ … refused the form — <error>. Nothing was published (its own data agrees). Reply 'retry' to
-  post it again." (outbox kind `refused`); never requeued by itself (`crosslist.refused`). A silent refusal
+  form: …" + ONE private "⛔ … refused the form — <error>. It isn't on Vinted (its own data agrees); not posted again by
+  itself until the code is fixed." (outbox kind `refused`: her own 'retry' still works, nothing asks for it) + ONE 🚨
+  with the fix request (WO53); never requeued by itself (`crosslist.refused`). A silent refusal
   (`crosslist.silent_refusal`) goes to the 10-min re-check (`refused: true`): found → posted; absent → posted ONCE more by
   itself; refused again → the ⛔ line. **Fixable refusals** (`crosslist.autofix_refusal`, `data/site_rules.json`: too many
   capitals, too long, forbidden characters) → fixed (`strict_level`) and retried once, "✓ Vinted had refused … the title
   was fixed and it is live: …".
-- **Unconfirmed on Depop / Vinted** (`runner.recheck_unconfirmed`, `crosslist.RECHECK_AFTER` 10 min, kv
-  `unconfirmed_state`): nothing said at first; then the site's own data — Vinted's newest-items JSON (exact title),
-  Depop's shop (title words after the username) + the SKU on /manage/. Live → posted; absent → `queued` (counted toward
-  3 in a row only now), looked for once more right before the second post (`run_cross`); a second unconfirmed → the
-  private chat only (`second_miss_text`, 'posted <link>' / 'retry'), never a third post. Unreadable ≠ absent (6 looks,
-  then the private chat).
+- **Unconfirmed on Depop / Vinted** (`runner.recheck_unconfirmed`, kv `unconfirmed_state`) — WO53, the same as
+  Poshmark's: "verifying", nothing said; the site's own data — Vinted's newest-items JSON (exact title), Depop's shop
+  (title words after the username) + the SKU on /manage/ — on postcheck's schedule. Live → posted; absent only with
+  rule 3's proof → `queued` once (never a failure), looked for once more right before the second post (`run_cross`);
+  a second unconfirmed → ONE 🚨, never a third post, never a question. Unreadable ≠ absent; unknown 2 h after the
+  click → the 🚨.
 - **The size skip**: a size no menu value fits → ONE private line naming the size and menu (`crosslist.say_size_skip`),
   the other sites go on.
 - `thrift crosslist <item> | --dry-run <item> | --backfill [--dry-run] | --check-login | --hand-listed [--apply 1,2]`.
@@ -792,7 +819,9 @@ Both sites turn away any browser driven over DevTools; the extension runs in the
   path), brand search, size, condition, colours ≤ 2, materials ≤ 3, skirt length, package radio; photos as Files in one
   DataTransfer (fallback a drop); Depop's Boost unchecked; Vinted's bump / promote closed. Depop's own suggestions
   waited for (≤ 8 s) and the page settled before our picks. Pages classified block → captcha → login → verify →
-  listing → form (`selectors.json` pages; jsdom: text without scripts). `options.html`: token + link state.
+  listing → form (`selectors.json` pages; jsdom: text without scripts); WO53: a page element counts only when shown
+  (`T.shown`: not display:none / hidden, not 0×0 — live 2026-11-08 Google's invisible reCAPTCHA helper frame on an
+  ordinary Vinted page read as "a CAPTCHA is shown" and paused Vinted). `options.html`: token + link state.
 - **The bridge** (`thrift_agent/bridge.py`, in the poster process; asyncio, hand-written RFC 6455): 127.0.0.1:8765 only;
   the token (`bridge.token_file`, `~/thrift/var/ext_token`, made once by `mac_setup.sh`, chmod 600, never rotated) on
   every request; the WebSocket from `chrome-extension://` only; a Host other than 127.0.0.1 / localhost refused. One job

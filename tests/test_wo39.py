@@ -191,19 +191,19 @@ def test_a_field_error_is_one_private_line_at_once_and_never_posted_again_by_its
     crosslist.record(s, db, iid, "vinted", "Sam Edelman Daniella Snake Print Ankle Sandals size 8.5", out, {})
     assert ops.texts() == ["⛔ Sam Edelman Daniella Snake Print Ankle Sandals size 8.5: Vinted refused the form — "
                            "Brand: Fill in brand to continue (its requests after the click: "
-                           "/api/v2/item_upload/items 400). Nothing was published (its own data agrees). Reply 'retry' "
-                           "to post it again."]
+                           "/api/v2/item_upload/items 400). It isn't on Vinted (its own data agrees); not posted again "
+                           "by itself until the code is fixed."]          # WO53: nothing asked
+    assert any(m.startswith("🚨") and "refused the form" in m for m in said)   # the fix request, once
     assert tuple(db.conn.execute("SELECT kind, ref FROM outbox WHERE chat_id=?", (str(OPS),)).fetchone()) == \
         ("refused", f"{iid}:vinted")
     db.kv_set(crosslist.WINDOW_SEEN, "yesterday")
     crosslist.new_window(s, db)                                             # a new window: NOT back in line by itself
     assert db.listing(iid, "vinted")["status"] == "failed"
-    assert daily.owner_waits(s, db)[daily.RETRY_WAIT] == ["Sam Edelman Daniella Snake Print Ankle"]
+    assert daily.RETRY_WAIT not in daily.owner_waits(s, db)                   # WO53: never waiting for a 'retry'
     msg = {"message_id": 70, "chat": {"id": OPS}, "from": {"id": OWNER}, "text": "retry",
            "reply_to_message": {"message_id": ops.next_id}}
-    approve._route_ops(s, db, {"message": msg})                               # her 'retry': back in line
+    approve._route_ops(s, db, {"message": msg})                               # her own 'retry' still works
     assert db.listing(iid, "vinted")["status"] == "queued"
-    assert daily.owner_waits(s, db)[daily.RETRY_WAIT] == []
 
 
 # ---------------------------------------------------------------- the 💤 line
@@ -291,16 +291,26 @@ def test_a_silent_refusal_is_checked_after_10_minutes_and_posted_once_more_by_it
     class Absent:
         held = set()
 
-        async def find_live(self, ctx, r, since):
+        async def find_live(self, ctx, r, since, created=None):
             return None, {"listings": 40, "how": "Vinted's newest items, the exact title"}
 
+    from thrift_agent import postcheck
+    clicked = postcheck.clicked_of(crosslist.unconf_state(db, iid, "vinted"), db.listing(iid, "vinted"))
+    for minutes in (11, 25):                                                 # WO53 rule 3: absent, but no proof yet
+        monkeypatch.setattr(postcheck, "now", lambda m=minutes: clicked + timedelta(minutes=m))
+        crosslist.set_unconf(db, iid, "vinted", due=postcheck.iso(clicked + timedelta(minutes=minutes)))
+        assert asyncio.run(runner.recheck_unconfirmed(s, db, {"vinted": Absent()}, "vinted"))
+        assert db.listing(iid, "vinted")["status"] == "failed"
+    monkeypatch.setattr(postcheck, "now", lambda: clicked + timedelta(minutes=35))   # 35 min after, 10+ after 25
+    crosslist.set_unconf(db, iid, "vinted", due=postcheck.iso(clicked + timedelta(minutes=35)))
     assert asyncio.run(runner.recheck_unconfirmed(s, db, {"vinted": Absent()}, "vinted"))
     assert db.listing(iid, "vinted")["status"] == "queued"                    # posted once more, by itself
     assert crosslist.unconf_state(db, iid, "vinted")["stage"] == "retry"      # ... after one last look
     crosslist.set_unconf(db, iid, "vinted", stage="reposted")                 # (run_cross, right before the post)
     db.upsert_listing(iid, "vinted", status="posting")
-    crosslist.record(s, db, iid, "vinted", "Sam Edelman", silent, {})        # refused again: now she is asked
+    crosslist.record(s, db, iid, "vinted", "Sam Edelman", silent, {})        # refused again: now it is said
     assert len(ops.texts()) == 1 and ops.texts()[0].startswith("⛔ Sam Edelman: Vinted refused the form")
+    assert "retry" not in ops.texts()[0]                                     # WO53: never asked
     assert crosslist.unconf_state(db, iid, "vinted") is None
     assert crosslist.rechecks_due(db, "vinted", now=later) == []             # never a third post by itself
 

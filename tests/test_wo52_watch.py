@@ -74,13 +74,18 @@ def test_blocked_20_minutes_with_items_waiting_is_one_alarm_with_the_request(db,
     assert alarm.tick(db, at=T0 + timedelta(hours=9)) == []                 # at most twice a day
 
 
-def test_the_owners_pause_and_a_login_page_never_alarm(db, said):
+def test_the_owners_pause_never_alarms_a_login_page_does_inside_the_hours(db, said):
+    """WO53 §3 (live 11-07/08: Depop and Vinted logged out for 31 hours, one group line and silence): a login page with
+    items waiting raises its own alarm inside the posting hours — the owner's own pause never does."""
     iid = db.add_item("b1", 1, ".")
     db.upsert_listing(iid, "depop", status="queued")
     health.owner_pause(db, "depop")
     health.pause(db, "vinted", "Vinted: not logged in", "account", at=T0)
     db.upsert_listing(iid, "vinted", status="queued")
-    assert alarm.tick(db, at=T0 + timedelta(hours=1)) == []
+    assert alarm.tick(db, at=T0 + timedelta(hours=1), hours_open=False) == []
+    assert alarm.tick(db, at=T0 + timedelta(hours=1)) == ["vinted"]
+    assert any("Only you can act on it, on the Mac" in m for m in said)
+    assert said[-1] == "GROUP Vinted needs you to log in on the Mac."             # and the group's plain line again
 
 
 def test_the_alarm_clears_with_the_back_to_normal_line(db, said):

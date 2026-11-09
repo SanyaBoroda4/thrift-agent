@@ -338,7 +338,8 @@ def test_a_collab_that_is_the_brand_is_never_said_twice(facts):
               size_us=Ev(value="8", photos=[4], source="photo", confidence=0.95))
     title = premium.title_with_feature("adidas by Stella McCartney Knit Running Sneakers Neon Orange size 8", f,
                                        premium.config())
-    assert title == "adidas by Stella McCartney Knit Running Sneakers Neon Orange size 8"
+    # WO53 §0.6 (the owner): a brand is never all-lowercase in a title — "Adidas", as Poshmark spells it
+    assert title == "Adidas by Stella McCartney Knit Running Sneakers Neon Orange size 8"
     collab = Premium.model_validate({"collab": {"value": "H&M x Erdem", "photos": [4], "source": "photo",
                                                 "confidence": 0.9}})
     assert premium.collab(facts(brand=Ev(value="H&M", photos=[1], source="photo", confidence=0.9),

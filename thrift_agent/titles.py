@@ -75,6 +75,12 @@ def display_brand(brand: str | None) -> str:
         return ""
     if (shown := _display().get(_key(name))) is not None:
         return shown
+    if any(c.isalpha() for c in name) and not any(c.isupper() for c in name):
+        # WO53 §0.6 (live 2026-11-08: "know one cares Floral Twist-Front Maxi Dress …"; Poshmark's own brand reads
+        # "Know One Cares"): a brand is never all-lowercase in a title — each word capitalised, acronyms in capitals
+        acr = _acronyms()
+        return " ".join(w.upper() if w.upper() in acr else w if (i and w in SMALL) else w[:1].upper() + w[1:]
+                        for i, w in enumerate(name.split()))
     return " ".join(_soften(w, strict=0) for w in name.split())
 
 
@@ -171,6 +177,8 @@ def check(title: str, site: str | None = None) -> list[str]:
         problems.append("a slash")
     if len(t) > title_max(site):
         problems.append(f"too long: {len(t)} > {title_max(site)}")
+    if re.match(r"[a-z][a-z'&.]+\b", t.strip()):                 # WO53 §0.6: a shop sign never starts in lower case
+        problems.append("starts in lower case")
     return problems
 
 
@@ -232,6 +240,8 @@ def fix(title: str, brand: str | None = None, condition: str | None = None, max_
                      else w.lower() for i, w in enumerate(t.split()))
     t = re.sub(r"\s+([,.!?])", r"\1", re.sub(r"\s{2,}", " ", t))
     t = re.sub(r"(?:,\s*){2,}", ", ", t).strip(" ,-&/")
+    if t[:1].islower():                                  # WO53 §0.6: a shop-window title never starts in lower case
+        t = t[:1].upper() + t[1:]
     cap = max_len or title_max()
     tailed = None
     if condition == "NWT":

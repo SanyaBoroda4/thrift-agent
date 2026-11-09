@@ -33,7 +33,7 @@ from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
 from thrift_agent.post import runner
 from thrift_agent.post.base import AccountBlocked, Outcome, open_browser
-from thrift_agent.scheduler import can_post, next_gap, windows
+from thrift_agent.scheduler import can_post, next_gap, outside_hours, windows
 
 IDLE = 20.0            # a worker with nothing to do looks again after this many seconds
 HOUSEKEEPING = 15.0    # the shared duties (heartbeat, feeding the cross rows, requests) run this often
@@ -389,7 +389,8 @@ async def _poshmark_test(s, db, ps, ctx, test: str) -> bool:
     job = runner.next_job(s, db, ["poshmark"], True)
     if job is None:
         if test == "resume":
-            health.resume(db, "poshmark", "resumed by the owner (nothing to test)", force=True)
+            health.resume(db, "poshmark", "resumed by the owner (nothing to test)", force=True,
+                          hours_open=can_post(s, 0, 0)[0])
         elif test == "dry":
             health.tested(db, "poshmark", True, "nothing to test")
             notify.say("🧪 Poshmark: nothing waiting to test — still paused")
@@ -410,15 +411,20 @@ async def _poshmark_test(s, db, ps, ctx, test: str) -> bool:
                                                  + (f"\n{out.note}" if out.note else ""))
     if not ok:
         health.defer(db, "poshmark", iid)
-    health.tested(db, "poshmark", ok, out.error)
+    health.tested(db, "poshmark", ok, out.error, hours_open=can_post(s, 0, 0)[0])
     return True
 
 
 async def _poshmark_turn(s, db, ps, ctx, dry, stage, state, awake, failures, marketplaces, takedowns,
                          browser=None) -> bool:
-    """One Poshmark turn: requests, take-downs, then one listing. True when it listed (or tried to)."""
+    """One Poshmark turn: requests, take-downs, a listing being verified, then one listing. True when it listed (or
+    tried to)."""
     await runner.serve_requests(s, db, ps, ctx)
     if takedowns is not None and may_take_down(s, db, "poshmark") and await takedowns("poshmark", ps["poshmark"], db, ctx):
+        return True
+    # WO53 §2: a publish being verified, looked at by Poshmark's own public pages on its schedule — quietly, any hour,
+    # also while Poshmark is paused (plain reads: nothing opened in the browser, nothing clicked)
+    if not dry and await runner.recheck_unconfirmed(s, db, ps, "poshmark", ctx):
         return True
     if (why := formcheck.due(s, db, "poshmark")) and not runner._paused(db) and not s.flag_set("PAUSE"):
         state.set("poshmark", "form check")       # WO52 §3: the canary's form filled and left — never published
@@ -438,20 +444,27 @@ async def _poshmark_turn(s, db, ps, ctx, dry, stage, state, awake, failures, mar
         state.idle("poshmark")
         return False
     hour_ago, midnight = windows(tz=s["schedule"]["timezone"])
-    ok, _ = can_post(s, db.listed_since(hour_ago, "poshmark"), db.listed_since(midnight, "poshmark"))
+    ok, why_not = can_post(s, db.listed_since(hour_ago, "poshmark"), db.listed_since(midnight, "poshmark"))
+    tonight = not ok and outside_hours(why_not)        # WO53 rule 6: an item live elsewhere is finished the same night
     hold = s.flag_set("HOLD_UNSHIPPED")
     if not dry:
         runner._tell_held(s, db, ["poshmark"])
-    job = runner.next_job(s, db, ["poshmark"], dry, allow_publish=not hold) if ok else None
+    job = (runner.next_job(s, db, ["poshmark"], dry, allow_publish=not hold, live_elsewhere=tonight)
+           if ok or tonight else None)
     if job is not None and runner._paused(db):
         job = None
     if job is None:
-        if (await listing_edit(s, db, "poshmark", ps["poshmark"], ctx, marketplaces, dry)
-                or await price_drop(s, db, "poshmark", ps["poshmark"], ctx, marketplaces, dry)):
+        if (await listing_edit(s, db, "poshmark", ps["poshmark"], ctx, marketplaces, dry)     # edits: any hour
+                or await price_drop(s, db, "poshmark", ps["poshmark"], ctx, marketplaces, dry)):  # drops: its own hours
             return True
         state.idle("poshmark")
         return False
     iid, mp, render, mode = job
+    ps[mp].held = runner.held_by_others(db, iid, mp)
+    if (crosslist.unconf_state(db, iid, mp) or {}).get("stage") == "retry" and not dry:
+        # WO53 rule 3: proven absent once — one last look by Poshmark's own data right before List is pressed again
+        if not await runner.last_look(s, db, ps, ctx, iid, mp, render):
+            return True
     await settle_after_wake(db, "poshmark")
     if not db.claim_listing(iid, mp):
         return True
@@ -492,12 +505,18 @@ async def _poshmark_turn(s, db, ps, ctx, dry, stage, state, awake, failures, mar
                               bool(s.get("poster.notify_dry_runs", False)), seconds=seconds, slept=slept, s=s,
                               announce=False)
         maybe_announce(s, db, iid)
-        failures["n"] = failures["n"] + 1 if out.status == "failed" else 0 if out.status != "skipped" else failures["n"]
+        # WO53 rule 4: a publish being verified is no failure — it never counts toward a pause (live 2026-11-08: three
+        # live listings paused Poshmark as "3 listings in a row failed … nothing was published")
+        verifying = out.status == "failed" and out.clicked and not out.url
+        if not verifying:
+            failures["n"] = (failures["n"] + 1 if out.status == "failed" else 0 if out.status != "skipped"
+                             else failures["n"])
         if failures["n"] >= int(s.get("poster.max_consecutive_failures", 3)):
             crosslist.block(db, mp, f"failures: {failures['n']} listings in a row failed (last: {out.error})")
             failures["n"] = 0
         if out.status == "posted":
             health.worked(db, mp, iid)
+            crosslist.set_unconf(db, iid, mp, stage=None)
     state.set("poshmark", None)
     return True
 
@@ -547,7 +566,8 @@ async def _cross_test(s, db, ps, mp: str, test: str) -> bool:
     job = crosslist.next_job(s, db, mps=[mp], paused_too=True)
     if job is None:
         if test == "resume":
-            health.resume(db, mp, "resumed by the owner (nothing to test)", force=True)
+            health.resume(db, mp, "resumed by the owner (nothing to test)", force=True,
+                          hours_open=can_post(s, 0, 0)[0])
         elif test == "dry":
             health.tested(db, mp, True, "nothing to test")
             notify.say(f"🧪 {crosslist.LABEL[mp]}: nothing waiting to test — still paused")
@@ -560,7 +580,7 @@ async def _cross_test(s, db, ps, mp: str, test: str) -> bool:
     ok = out.status not in ("failed", "skipped")      # a filled form, never published
     if not ok:
         health.defer(db, mp, iid)
-    health.tested(db, mp, ok, out.error)
+    health.tested(db, mp, ok, out.error, hours_open=can_post(s, 0, 0)[0])
     return True
 
 
@@ -579,7 +599,8 @@ async def _cross_turn(s, db, ps, mp, dry, state, awake, takedowns) -> bool:
     if (reachable and not dry and not crosslist.blocked(db, mp) and not runner._paused(db)
             and await listing_edit(s, db, mp, poster, None, list(ps), dry)):   # WO43: the owner's edit, any hour
         return True
-    hours_ok, _ = can_post(s, 0, 0)
+    hours_ok, why_not = can_post(s, 0, 0)
+    tonight = not hours_ok and outside_hours(why_not)   # WO53 rule 6: an item live elsewhere is finished the same night
     if (reachable and not runner._paused(db) and not s.flag_set("PAUSE") and not crosslist.account_blocked(db, mp)
             and (why := formcheck.due(s, db, mp))):
         state.set(mp, "form check")               # WO52 §3: the canary's form filled and left — never published
@@ -595,13 +616,13 @@ async def _cross_turn(s, db, ps, mp, dry, state, awake, takedowns) -> bool:
             return await _cross_test(s, db, ps, mp, test)
         finally:
             state.set(mp, None)
-    if dry or not reachable or not hours_ok or crosslist.blocked(db, mp) or runner._paused(db):
+    if dry or not reachable or not (hours_ok or tonight) or crosslist.blocked(db, mp) or runner._paused(db):
         state.idle(mp)
         return False
-    job = crosslist.next_job(s, db, mps=[mp])
+    job = crosslist.next_job(s, db, mps=[mp], live_elsewhere=not hours_ok)
     if job is None:
-        if (await listing_edit(s, db, mp, poster, None, list(ps), dry)
-                or await price_drop(s, db, mp, poster, None, list(ps), dry)):
+        if (await listing_edit(s, db, mp, poster, None, list(ps), dry)            # edits: any hour
+                or await price_drop(s, db, mp, poster, None, list(ps), dry)):      # drops: their own hours check
             return True
         state.idle(mp)
         return False
@@ -680,7 +701,7 @@ async def _housekeeping(s, db, ps, cross, dry, stop, state, sites, until_idle) -
             if not dry:                                       # WO52 §4/§5: jobs alive, one alarm per blocked site
                 from thrift_agent import alarm, jobs, memory
                 jobs.check(db)
-                alarm.tick(db)
+                alarm.tick(db, hours_open=can_post(s, 0, 0)[0])
                 memory.tick(s, db, idle=state.all_idle(sites) and not runner._paused(db))   # WO52 §7
             if until_idle and state.all_idle(sites) and _nothing_left(s, db, sites, dry):
                 stop.set()

@@ -122,6 +122,16 @@ def _step_of(mp: str, error: str) -> tuple[str, str]:
     return step.strip(), rest.strip()
 
 
+def cut(text: str, limit: int = 160) -> str:
+    """WO53 §2: shortened at a word, never in the middle of one ("…the new listing d."), with "…" when cut."""
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    head = text[:limit - 1]
+    space = head.rfind(" ")
+    return (head[:space] if space > limit // 2 else head).rstrip(" ,;:(") + "…"
+
+
 def plain(mp: str, error: str | None, kind: str) -> str:
     """The problem in the owner's words, for the one line a site's pause says."""
     e = error or ""
@@ -146,9 +156,9 @@ def plain(mp: str, error: str | None, kind: str) -> str:
     if e.lower().startswith("mismatch: "):
         return f"its form read back other than planned ({e[10:120].strip()})"
     if e.startswith("failures: "):
-        return e[len("failures: "):][:160]
+        return cut(e[len("failures: "):])
     text = f"{step}: {rest}" if step else rest
-    return (text[:157] + "…") if len(text) > 160 else text
+    return cut(text)
 
 
 # ---------------------------------------------------------------- the pauses
@@ -212,9 +222,7 @@ def pause(db: DB, mp: str, reason: str, kind: str = SITE, *, error: str | None =
                 "due": None if kind == "owner" else _iso(t + timedelta(seconds=wait)), "wait": wait,
                 "said": said, "tests": 0, "owner": kind == "owner", "page": page}
     if say and kind != "owner" and sig not in said:
-        n = waiting(db, mp)
-        text = (f"⛔ {LABEL.get(mp, mp)} paused: {plain(mp, error or reason, kind)}. "
-                f"{n} item{'s' if n != 1 else ''} waiting — nothing was published.")
+        text = pause_text(db, mp, plain(mp, error or reason, kind), t, data[mp]["due"])
         if shot and Path(shot).is_file():
             notify.ops_photo(Path(shot), text)
         else:
@@ -226,7 +234,35 @@ def pause(db: DB, mp: str, reason: str, kind: str = SITE, *, error: str | None =
     return True
 
 
-def resume(db: DB, mp: str, why: str = "test passed", say: bool = True, force: bool = False) -> bool:
+def _clock(t: datetime | None) -> str:
+    return t.astimezone().strftime("%I:%M %p").lstrip("0") if t else "later"
+
+
+def live_today(db: DB, mp: str, at: datetime | None = None) -> int:
+    """The site's listings that went live today (local midnight on), by their address."""
+    t = (at or now()).astimezone()
+    midnight = t.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).isoformat(timespec="seconds")
+    return db.conn.execute("SELECT COUNT(*) FROM listings WHERE marketplace=? AND url IS NOT NULL AND posted_at >= ? AND "
+                           "status IN ('posted', 'sold', 'delisted')", (mp, midnight)).fetchone()[0]
+
+
+def verifying_now(db: DB, mp: str) -> int:
+    """WO53: the site's publishes being verified (the final click happened, the address not confirmed yet)."""
+    return db.conn.execute("SELECT COUNT(*) FROM listings WHERE marketplace=? AND status='failed' AND url IS NULL AND "
+                           "COALESCE(error, '') LIKE 'unconfirmed publish:%'", (mp,)).fetchone()[0]
+
+
+def pause_text(db: DB, mp: str, why: str, at: datetime, due: str | None) -> str:
+    """WO53 §2: the pause line tells the truth — "⛔ Poshmark paused at 10:58 PM: <plain reason>. Live today: 3.
+    Waiting: 0. Next try 11:28 PM." Never "nothing was published" (a pause knows nothing of the listings it didn't
+    make), never cut mid-word."""
+    v = verifying_now(db, mp)
+    return (f"⛔ {LABEL.get(mp, mp)} paused at {_clock(at)}: {why.rstrip('.')}. Live today: {live_today(db, mp, at)}. "
+            + (f"Verifying: {v}. " if v else "") + f"Waiting: {waiting(db, mp)}. Next try {_clock(_when(due))}.")
+
+
+def resume(db: DB, mp: str, why: str = "test passed", say: bool = True, force: bool = False,
+           hours_open: bool | None = None) -> bool:
     """The site posts again: its pause lifted, its runs of failures forgotten; "✅ <Site> back to normal — posting
     resumed." once when its pause was said (`force`: the owner's `thrift resume` says it too). True when it was paused."""
     data = _all(db)
@@ -239,10 +275,34 @@ def resume(db: DB, mp: str, why: str = "test passed", say: bool = True, force: b
     db.kv_set(STREAK, json.dumps(streak))
     db.log(None, "site_resumed", {"mp": mp, "why": why, "kind": was.get("kind"), "tests": was.get("tests")})
     if say and (was.get("said") or force):
-        n = waiting(db, mp)
-        going = f", {n} item{'s' if n != 1 else ''} going up" if n else ""
-        notify.say(f"✅ {LABEL.get(mp, mp)} back to normal — posting resumed{going}.")
+        notify.say(f"✅ {LABEL.get(mp, mp)} back to normal — posting resumed{going_text(db, mp, hours_open)}.")
     return True
+
+
+def going_text(db: DB, mp: str, hours_open: bool | None = None) -> str:
+    """", 3 items going up" — WO53 §3: true about the hours (live 2026-11-08 10:59 PM: "3 items going up" a minute
+    before the 11 PM end of the listing hours, and nothing went up): outside them (`hours_open` False, the poster's
+    can_post), only items already live elsewhere go up (rule 6), the rest at the opening hour."""
+    n = waiting(db, mp)
+    if not n:
+        return ""
+    items = f"{n} item{'s' if n != 1 else ''}"
+    if hours_open is not False:
+        return f", {items} going up"
+    try:
+        from thrift_agent.config import settings
+        opens = str(settings()["schedule"]["hours"][0]).strip()
+    except Exception:  # noqa: BLE001 — no settings here: the usual opening
+        opens = "08:00"
+    from thrift_agent import crosslist
+    rows = db.conn.execute("SELECT DISTINCT item_id FROM listings WHERE marketplace=? AND status='queued'",
+                           (mp,)).fetchall()
+    now_n = sum(1 for r in rows if crosslist.live_elsewhere(db, r["item_id"], mp))
+    if now_n >= n:
+        return f", {items} going up now (live elsewhere: finished tonight)"
+    if now_n:
+        return f", {now_n} going up now (live elsewhere), {n - now_n} at {opens}"
+    return f", {items} waiting — they go up at {opens}"
 
 
 def test_due(db: DB, mp: str, at: datetime | None = None) -> str | None:
@@ -256,7 +316,8 @@ def test_due(db: DB, mp: str, at: datetime | None = None) -> str | None:
     return "auto" if due is not None and not p.get("owner") and (at or now()) >= due else None
 
 
-def tested(db: DB, mp: str, ok: bool, detail: str | None = None, at: datetime | None = None) -> str:
+def tested(db: DB, mp: str, ok: bool, detail: str | None = None, at: datetime | None = None,
+           hours_open: bool | None = None) -> str:
     """A test run's result: passed → resumed (an owner's `--dry` request: told, still paused); failed → paused again,
     the wait doubled (≤ COOL_MAX), no new line. Returns what happened: resumed | still | dry."""
     t = at or now()
@@ -267,7 +328,7 @@ def tested(db: DB, mp: str, ok: bool, detail: str | None = None, at: datetime | 
     request = p.pop("request", None)
     db.log(None, "site_tested", {"mp": mp, "ok": ok, "request": request, "detail": (detail or "")[:300]})
     if ok and request != "dry":
-        resume(db, mp, f"test passed ({request or 'auto'})", force=request == "resume")
+        resume(db, mp, f"test passed ({request or 'auto'})", force=request == "resume", hours_open=hours_open)
         return "resumed"
     if not ok:
         p["wait"] = min(int(p.get("wait") or COOL) * 2, COOL_MAX)

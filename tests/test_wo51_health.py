@@ -81,8 +81,9 @@ def test_the_same_failure_on_two_items_pauses_the_site_with_one_line(db, said):
     assert health.non_item(db, "depop", "i2", DEPOP, health.SITE, at=T0) == "paused"
     assert health.paused(db, "depop")
     assert [db.listing(i, "depop")["attempts"] for i in ("i1", "i2")] == [0, 0]
-    assert len(said) == 1 and said[0].startswith("⛔ Depop paused: its sell form changed (shipping section not found)")
-    assert "items waiting — nothing was published." in said[0]
+    assert len(said) == 1 and said[0].startswith("⛔ Depop paused at ")      # WO53: when, the plain reason, the
+    assert "its sell form changed (shipping section not found). Live today: 0. Waiting: " in said[0]   # counts, the
+    assert "Next try " in said[0] and "nothing was published" not in said[0]        # next try — never "nothing"
     # no third item is thrown at it
     assert crosslist.blocked(db, "depop")
     # the same problem again says nothing
@@ -92,7 +93,8 @@ def test_the_same_failure_on_two_items_pauses_the_site_with_one_line(db, said):
 
 def test_a_closed_browser_says_so_in_plain_words(db, said):
     health.pause(db, "poshmark", f"infra: {POSH}", health.INFRA, error=POSH, at=T0)
-    assert said == ["⛔ Poshmark paused: its browser was closed. 0 items waiting — nothing was published."]
+    assert len(said) == 1 and said[0].startswith("⛔ Poshmark paused at ")
+    assert said[0].split(": ", 1)[1].startswith("its browser was closed. Live today: 0. Waiting: 0. Next try ")
 
 
 def test_one_item_alone_meeting_the_same_failure_is_the_items_after_all(db, said):

@@ -81,7 +81,7 @@ const byId = (id) => Object.values(jobs).find((j) => j && j.job_id === id) || nu
 const byTab = (tabId) => Object.values(jobs).find((j) => j && j.tabId === tabId) || null;
 const anyJob = () => Object.values(jobs).some(Boolean);
 
-const HASH_SALT = "wo52-reload-1\n";
+const HASH_SALT = "wo53-reload-1\n";      // WO53: changed with bridge.HASH_SALT — every loaded copy reloads once
 async function filesHash() {
   const enc = new TextEncoder();
   const parts = [enc.encode(HASH_SALT)];      // WO52: the same salt as bridge.files_hash
@@ -101,7 +101,9 @@ async function filesHash() {
 
 async function noteLoaded() {
   try {
-    await chrome.storage.local.set({ loaded_hash: await filesHash() });
+    // WO53: a fresh load (a deploy's reload, a Chrome start) tidies at the next alarm — the pages a restored session
+    // brought back go at once, not 30 minutes later
+    await chrome.storage.local.set({ loaded_hash: await filesHash(), tidied_at: 0 });
   } catch (e) { /* a file being rewritten: the next start records it */ }
 }
 
@@ -584,8 +586,26 @@ async function finish(ev) {
     try {
       await chrome.tabs.remove(j.tabId);
     } catch (e) { /* closed already */ }
+  } else if (j && j.tabId != null) {
+    await leaveForOwner(j.site, j.tabId);
   }
   if (!wsReady) await poll();
+}
+
+// WO53 (live 2026-11-08): a paused site's test run met the login page every ~5 s and each left a new login tab open
+// for the owner — ~80 pages, the Thrift Chrome at 5.7 GB, the Mac swapping until its watchdog panicked at 11:16 PM.
+// A site keeps ONE page left for the owner: the newer replaces the older — never the tab she is on.
+async function leaveForOwner(site, tabId) {
+  const { left_open: left = {} } = await chrome.storage.local.get("left_open");
+  const old = left[site];
+  if (old != null && old !== tabId) {
+    try {
+      const t = await chrome.tabs.get(old);
+      if (t && !t.active) await chrome.tabs.remove(old);
+    } catch (e) { /* gone already */ }
+  }
+  left[site] = tabId;
+  await chrome.storage.local.set({ left_open: left });
 }
 
 // Chrome allows captureVisibleTab twice a second (MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND): captures are spaced, and
@@ -722,13 +742,14 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 // at for 6 hours (Chrome's own lastAccessed) are closed, and a site's second idle page; never a job's tab, never the
 // active tab of a window, never another site's page. A login / CAPTCHA page left for the owner goes after 6 hours too.
 const TIDY_EVERY = 30 * 60 * 1000, TIDY_OLD = 6 * 3600 * 1000;
+const PER_SITE = 2;          // WO53: at most this many idle pages of one site are kept (the newest), beside its jobs
 const OURS = /^https:\/\/([a-z0-9-]+\.)?(vinted\.com|depop\.com|poshmark\.com)\//i;
 async function tidyTabs(now) {
   const { tidied_at: last = 0 } = await chrome.storage.local.get("tidied_at");
   if (now - last < TIDY_EVERY || Object.values(jobs).some(Boolean)) return;
   await chrome.storage.local.set({ tidied_at: now });
   const tabs = await chrome.tabs.query({});
-  const idleSeen = new Set(), close = [];
+  const idleSeen = new Set(), close = [], bySite = {};
   for (const tab of tabs) {
     if (tab.active || byTab(tab.id)) continue;
     const idle = /idle\.html\?site=([a-z]+)/.exec(tab.url || "");
@@ -736,7 +757,13 @@ async function tidyTabs(now) {
       if (idleSeen.has(idle[1])) close.push(tab.id); else idleSeen.add(idle[1]);
     } else if (OURS.test(tab.url || "") && tab.lastAccessed && now - tab.lastAccessed > TIDY_OLD) {
       close.push(tab.id);
+    } else if (OURS.test(tab.url || "")) {
+      (bySite[OURS.exec(tab.url)[2].toLowerCase()] ||= []).push(tab);
     }
+  }
+  for (const list of Object.values(bySite)) {             // WO53: a site's extra idle pages, oldest first
+    list.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
+    close.push(...list.slice(PER_SITE).map((t) => t.id));
   }
   if (close.length) {
     try { await chrome.tabs.remove(close); } catch (e) { /* gone already */ }

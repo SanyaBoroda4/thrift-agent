@@ -254,8 +254,10 @@ def test_the_same_wasnt_listed_line_is_said_once(tmp_path, monkeypatch):
             sent.append(text)
             return 90 + len(sent)
     monkeypatch.setattr(approve, "bot_for", lambda s_: Bot())
+    said = []
+    monkeypatch.setattr(notify, "say", said.append)
     runner.ask_skipped(db, iid, "poshmark", "Bath & Body Works Plush Robe", "no size on Poshmark's menu")
     runner.ask_skipped(db, iid, "poshmark", "Bath & Body Works Plush Robe", "no size on Poshmark's menu")
-    assert len(sent) == 1                                                  # live 10-24: the robe's line came twice
     runner.ask_skipped(db, iid, "poshmark", "Bath & Body Works Plush Robe", "another reason")
-    assert len(sent) == 2
+    assert sent == []                                    # WO53: never a group question ('retry' asked of nobody)
+    assert len(said) == 1 and said[0].startswith("🚨")   # ONE alarm per item and site (live 10-24: twice)

@@ -66,6 +66,8 @@ class Outcome:
     clicked: bool = False        # the final publish/draft control was pressed: the listing may be live
     guesses: list[str] = field(default_factory=list)   # what the poster chose that the listing didn't say exactly
     created_id: str | None = None   # the listing id the site named after the final click (WO28: the closet check)
+    landing: str | None = None      # WO53 §1/§7: the kind of page the site landed on after the final click
+    clicked_at: float | None = None  # WO53: when the final click was (epoch seconds, UTC)
 
 
 async def open_browser(profile_dir: Path, timezone_id: str) -> tuple[object, BrowserContext]:
@@ -355,7 +357,7 @@ class Poster(ABC):
         """
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         shot = shots / f"{r.sku}-{self.name}-{stamp}.png"
-        self.shot, self.clicked, self.created_id = shot, None, None
+        self.shot, self.clicked, self.created_id, self.landing, self._clicked_at = shot, None, None, None, 0.0
         page: Page | None = None
         opened = submitted = kept = False
         count_drafts = dry_run and self.counts_drafts      # a dry-run must leave no draft: counted before and after
@@ -410,9 +412,10 @@ class Poster(ABC):
             except Exception as e:  # noqa: BLE001 — the listing IS live: keep its URL, never re-post it
                 return Outcome("failed", url=url, screenshot=str(shot), clicked=clicked, note=_joined(self.notes),
                                error=f"published but the live check failed ({type(e).__name__}: {e}) — check {url}",
-                               guesses=list(self.guesses))
+                               guesses=list(self.guesses), landing=self.landing,
+                               clicked_at=self._clicked_at or None)
             return Outcome("posted", url=url, screenshot=str(shot), clicked=clicked, note=_joined(self.notes),
-                           guesses=list(self.guesses))
+                           guesses=list(self.guesses), landing=self.landing, clicked_at=self._clicked_at or None)
         except AccountBlocked:
             await keep_evidence(page, shot)     # and nothing else: stop, don't touch a blocked account
             raise
@@ -440,7 +443,8 @@ class Poster(ABC):
             return Outcome("failed", screenshot=str(shot), error=f"{type(e).__name__}: {e}",
                            diff=getattr(e, "diff", {}), note=_joined(self.notes + [left, draft_note]),
                            draft_left=draft_left, clicked=self._may_be_live(submitted),
-                           guesses=list(self.guesses), created_id=self.created_id)
+                           guesses=list(self.guesses), created_id=self.created_id, landing=self.landing,
+                           clicked_at=self._clicked_at or None)
         finally:
             if page:
                 try:

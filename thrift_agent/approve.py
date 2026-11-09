@@ -96,7 +96,8 @@ SHIPPED_CMD =re.compile(r"^\s*shipped\s+(.+?)\s*$", re.I | re.S)       # WO33: "
 # Replies to "⚠️ … I can't see it in the closet" (outbox kind "unconfirmed", WO28 §3): "posted <url>" / "retry".
 POSTED_CMD = re.compile(r"^\s*(?:it'?s\s+)?posted\s*[:\-]?\s*(\S+)\s*$", re.I)
 RETRY_CMD = re.compile(r"^\s*(?:retry|try again|not there|isn'?t there)\s*[.!]*\s*$", re.I)
-UNCONFIRMED_HINT = "Reply 'posted <url>' if the listing is on Poshmark (its address), or 'retry' if it is not"
+# WO53 §2: an old ⚠️ message answered with something else — nothing is asked back; the site's own data settles it
+UNCONFIRMED_HINT = "✓ Nothing to do — I check the site's own data myself and record it as soon as it shows"
 _PLAIN_PRICE = re.compile(r"^\s*\$?\s*(\d{1,5}(?:\.\d{1,2})?)\s*(?:\$|usd|dollars?|bucks)?\s*$", re.I)
 
 _warned_no_users = False
@@ -1205,9 +1206,8 @@ def _route_ops(s: Settings, db: DB, update: dict) -> str:
         return f"ops: go titles ({len(rows)})"
     m = UNMATCHED_LINE.search(quoted)
     if m is None or not text:
-        bot.send_message("Replies here act on an 'Unmatched sale' message (reply with words from the item's title) or "
-                         "a '⚠️ … can't confirm' one ('posted <link>' or 'retry'); 'doctor' shows the agent's health",
-                         reply_to=mid)
+        bot.send_message("Replies here act on an 'Unmatched sale' message (words from the item's title); 'doctor' "
+                         "shows the agent's health", reply_to=mid)
         return "ops: hint"
     sale_id, words = m[2], [w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 1]
     hits = []
@@ -1383,7 +1383,8 @@ def _reply_skipped(s: Settings, db: DB, bot: Bot, ref: str, text: str, mid: int 
     iid, mp = crosslist.split_ref(ref)
     site = crosslist.LABEL.get(mp, mp)
     if not RETRY_CMD.match(text or ""):
-        bot.send_message(f"Reply 'retry' to try it on {site} again", reply_to=mid)
+        bot.send_message(f"✓ Nothing to do — {site}'s listing needs a fix in the code, and it's on its way",
+                         reply_to=mid)                 # WO53 §2: never a 'retry' asked
         return f"skipped {iid}: unreadable reply {text!r}"
     try:
         pipeline.requeue(s, db, iid, mp)
@@ -1414,8 +1415,8 @@ def _reply_unconfirmed(s: Settings, db: DB, bot: Bot, ref: str, text: str, mid: 
         try:
             address = pipeline.request_posted(s, db, iid, m[1], mp)
         except ValueError as e:
-            _tell(bot, mid, f"That isn't a {site} listing link for this item — open the listing, copy its link and "
-                            "reply 'posted <link>' again" if "listing address" in str(e) else str(e))
+            _tell(bot, mid, f"That isn't a {site} listing link for this item — nothing to do: I check {site}'s own "
+                            "data myself" if "listing address" in str(e) else str(e))
             return f"unconfirmed {iid}: rejected {m[1]!r}: {e}"
         _ack(db, bot, "unconfirmed", ref, "✓ link received — checking it")
         if not daily.poster_now(db).running:

@@ -274,8 +274,9 @@ def block(db: DB, mp: str, reason: str, page: str | None = None, shot=None) -> N
     new = health.pause(db, mp, reason, "account" if account else "items", error=reason, page=page, shot=shot)
     if new:
         db.log(None, "crosslist_blocked", {"mp": mp, "reason": reason, "page": page})
-        if account:
-            notify.group(ALERTS[alert_kind(reason, page)].format(site=LABEL[mp]))
+        if account:                                  # WO53 §3: said again (at most every 12 h) while items wait
+            from thrift_agent import alarm
+            alarm.account_line(db, mp, page, force=True, reason=reason)
 
 
 def failure(db: DB, mp: str, failed: bool, limit: int = 3) -> None:
@@ -296,7 +297,15 @@ def capped(s: Settings, db: DB, mp: str) -> bool:
     return db.listed_since(midnight, mp) >= daily_cap(s, mp)
 
 
-def pending(s: Settings, db: DB, mps: list[str] | None = None, paused_too: bool = False) -> list[tuple[str, str]]:
+def live_elsewhere(db: DB, iid: str, mp: str) -> bool:
+    """WO53 rule 6: the item is live on another site (a posted row with its address) — finished on the others the same
+    night, whatever the hour."""
+    return db.conn.execute("SELECT 1 FROM listings WHERE item_id=? AND marketplace<>? AND status='posted' AND url IS "
+                           "NOT NULL LIMIT 1", (iid, mp)).fetchone() is not None
+
+
+def pending(s: Settings, db: DB, mps: list[str] | None = None, paused_too: bool = False,
+            live_elsewhere_only: bool = False) -> list[tuple[str, str]]:
     """(item, marketplace) the poster takes now, oldest Poshmark listing first: a 'queued' row — and a 'dryrun' one
     once the marketplace publishes for real — on an enabled marketplace that isn't paused or at its daily cap
     (`paused_too`: a paused one too — its test run's item, WO51). An item put behind the others after a failure that
@@ -315,16 +324,18 @@ def pending(s: Settings, db: DB, mps: list[str] | None = None, paused_too: bool 
         #   (WO45 §2: a test share's item is never listed)
         from thrift_agent import approve
         mine = [r["item_id"] for r in rows
-                if not approve.needs_brand(db.item(r["item_id"]))]   # 2026-10-27: waits for her brand (a row a net re-queued)
+                if not approve.needs_brand(db.item(r["item_id"]))   # 2026-10-27: waits for her brand (a row a net re-queued)
+                and (not live_elsewhere_only or live_elsewhere(db, r["item_id"], mp))]   # WO53 rule 6
         out += [(iid, mp) for iid in health.behind(db, mp, mine)]
     return out
 
 
 def next_job(s: Settings, db: DB, prefer: str | None = None, mps: list[str] | None = None,
-             paused_too: bool = False) -> tuple[str, str] | None:
+             paused_too: bool = False, live_elsewhere: bool = False) -> tuple[str, str] | None:
     """The next cross-list job: the item just listed first (Poshmark → Depop → Vinted, then the next item), else the
-    oldest waiting one. `mps`: only these marketplaces (WO32: the ones whose poster can take a job now)."""
-    jobs = pending(s, db, mps, paused_too=paused_too)
+    oldest waiting one. `mps`: only these marketplaces (WO32: the ones whose poster can take a job now). WO53 rule 6
+    (`live_elsewhere`, outside the listing hours): only items already live on another site."""
+    jobs = pending(s, db, mps, paused_too=paused_too, live_elsewhere_only=live_elsewhere)
     if not jobs:
         return None
     if prefer is not None:
@@ -374,7 +385,8 @@ def record(s: Settings, db: DB, iid: str, mp: str, title: str, out, fields: dict
     note = f"\n{out.note}" if out.note else ""
     progress = f"\n{' · '.join(lines)}" if lines else ""
     if out.status == "failed" and out.clicked and not out.url:
-        unconfirmed_wait(db, iid, mp, out.screenshot)     # WO35 §4: no question — the site's own data settles it
+        clicked = (datetime.fromtimestamp(out.clicked_at, timezone.utc) if getattr(out, "clicked_at", None) else None)
+        unconfirmed_wait(db, iid, mp, out.screenshot, clicked)   # WO35 §4 / WO53: verifying — never a question
     elif out.status == "failed" and refused(error) and autofix_refusal(db, iid, mp, title, error):
         pass                                             # WO50: fixed by the code and retried once — no 'retry' asked
     elif out.status == "failed" and refused(error):
@@ -398,8 +410,8 @@ def record(s: Settings, db: DB, iid: str, mp: str, title: str, out, fields: dict
             again = (f"{what}attempt {attempts} of {MAX_ATTEMPTS} — tried again in {RETRY_AFTER // 60} min, inside "
                      f"its posting hours")
         else:
-            again = (f"{what}attempt {attempts} of {MAX_ATTEMPTS} — no more by itself: the group's ⏭ line asks for "
-                     f"'retry'")
+            again = (f"{what}attempt {attempts} of {MAX_ATTEMPTS} — no more by itself: the 🚨 line carries the fix "
+                     f"request")
         notify.ops_photo(shot, f"❌ {LABEL[mp]} failed ({iid}): {title}\n{step_text(error)}{note}\n({again})")
     elif out.status == "skipped" and NO_SIZE in (out.error or ""):
         say_no_size(title)
@@ -523,15 +535,17 @@ def silent_refusal(error: str | None) -> bool:
 
 
 def refused_text(title: str, mp: str, error: str) -> str:
+    """WO53 §2: what happened, never a question — the code must change for this form (the 🚨 carries the request)."""
     said = error.split(REFUSED, 1)[1] if REFUSED in error else error
-    return (f"⛔ {title}: {LABEL.get(mp, mp)} refused the form — {said}. Nothing was published (its own data agrees). "
-            f"Reply 'retry' to post it again.")
+    return (f"⛔ {title}: {LABEL.get(mp, mp)} refused the form — {said}. It isn't on {LABEL.get(mp, mp)} (its own data "
+            f"agrees); not posted again by itself until the code is fixed.")
 
 
 def say_refused(db: DB, iid: str, mp: str, title: str, error: str, shot: Path | None = None) -> None:
-    """WO39: a refused form, ONE private line with the site's exact error (and the picture of the form), reply-able:
-    'retry' puts it back in line. Never posted again by itself — the same form would only be refused again."""
-    from thrift_agent import approve
+    """WO39: a refused form, ONE private line with the site's exact error (and the picture of the form). Never posted
+    again by itself — the same form would only be refused again. WO53 §2: nothing is asked; the 🚨 (once) carries the
+    fix request; her reply 'retry' to an older line and `thrift retry` still work."""
+    from thrift_agent import alarm, approve
     from thrift_agent.config import settings
     text = refused_text(title, mp, error)
     if shot is not None and Path(shot).is_file():
@@ -539,13 +553,15 @@ def say_refused(db: DB, iid: str, mp: str, title: str, error: str, shot: Path | 
     bot = approve.ops_bot_for(settings())
     if bot is None:
         notify.say(text)
-        return
-    try:
-        mid = bot.send_message(text)
-    except Exception as e:  # noqa: BLE001 — the ops chat away: logged; `thrift retry` still works
-        db.log(iid, "error", f"refused message: {type(e).__name__}: {e}")
-        return
-    db.add_outbox(bot.chat_id, mid, "refused", unconfirmed_ref(iid, mp), text=text)
+    else:
+        try:            # kept reply-able (outbox "refused"): her own 'retry' still works — nothing asks for it
+            db.add_outbox(bot.chat_id, bot.send_message(text), "refused", unconfirmed_ref(iid, mp), text=text)
+        except Exception as e:  # noqa: BLE001 — the ops chat away: logged; `thrift retry` still works
+            db.log(iid, "error", f"refused message: {type(e).__name__}: {e}")
+    db.log(iid, "refused_said", {"mp": mp, "error": error[:300]})
+    alarm.raise_for(db, f"{mp}:refused:{iid}", f"{title}: {LABEL.get(mp, mp)} refused the form — "
+                    f"{error.split(REFUSED, 1)[-1][:200]}", step="the upload", why="blocked", label=LABEL.get(mp, mp),
+                    evidence=f"var/failed/shots/{Path(shot).name}" if shot else None)
 
 
 # ---------------------------------------------------------------- an unconfirmed publish (WO35 §4)
@@ -569,15 +585,15 @@ def set_unconf(db: DB, iid: str, mp: str, **state) -> None:
     db.kv_set(UNCONF, json.dumps(states))
 
 
-def unconfirmed_wait(db: DB, iid: str, mp: str, shot: str | None = None) -> int:
+def unconfirmed_wait(db: DB, iid: str, mp: str, shot: str | None = None, clicked: datetime | None = None) -> int:
     """A publish on Depop / Vinted whose listing wasn't found by its address in 5 minutes (WO35 §4): nothing is said;
-    the poster looks for it again by the site's own data RECHECK_AFTER later (runner.recheck_unconfirmed). Returns the
-    round: 2 when it was the automatic second post."""
+    WO53: "verifying" — looked for again by the site's own data on postcheck's schedule (runner.recheck_unconfirmed).
+    Returns the round: 2 when it was the automatic second post."""
+    from thrift_agent import postcheck
     was = unconf_state(db, iid, mp) or {}
-    rnd = 2 if was.get("stage") == "reposted" else 1
-    due = (datetime.now(timezone.utc) + timedelta(seconds=RECHECK_AFTER)).isoformat(timespec="seconds")
-    set_unconf(db, iid, mp, stage="wait", due=due, round=rnd, tries=0, shot=shot)
-    db.log(iid, "unconfirmed_wait", {"mp": mp, "round": rnd, "due": due})
+    rnd = 2 if was.get("stage") in ("reposted", "retry") else 1
+    st = postcheck.begin(db, iid, mp, clicked=clicked, shot=shot, round_=rnd)
+    db.log(iid, "unconfirmed_wait", {"mp": mp, "round": rnd, "due": st["due"]})
     return rnd
 
 
@@ -753,18 +769,41 @@ def card_text(s: Settings, db: DB, iid: str, last: str | None = None) -> str:
             continue
         if row["status"] == "posted" and row["url"]:
             lines.append(f'{DOT.get(mp, "•")} <a href="{html.escape(row["url"], quote=True)}">{LABEL.get(mp, mp)}</a>')
-        elif row["status"] in LATER and not (row["status"] == "failed" and row["error"]
-                                             and row["error"].startswith(UNCONFIRMED)
-                                             and (unconf_state(db, iid, mp) or {}).get("stage") == "given_up") \
-                and not (row["status"] == "dryrun" and not (s is not None and live(s, mp))):
-            if row["status"] == "failed" and row["error"] and not row["error"].startswith(UNCONFIRMED):
-                # the Vinted incident of 2026-10-20 (the owner): a failed site names its step and the next try
-                lines.append(f"⏳ {LABEL.get(mp, mp)} — {step_name(row['error'])} failed, next try {next_try(row)}")
-            else:
-                lines.append(f"⏳ {LABEL.get(mp, mp)} — later")     # a dry run on a site that won't publish: left out
+        elif row["status"] in LATER and not (row["status"] == "dryrun" and not (s is not None and live(s, mp))):
+            lines.append(html.escape(wait_line(db, iid, mp, row)))  # a dry run on a site that won't publish: left out
     if last:
         lines.append(last)
     return "\n\n".join(lines)
+
+
+ACCOUNT_WHY = {"login": "it needs a login on the Mac", "captcha": "it shows a CAPTCHA on the Mac",
+               "verify": "it asks for a check on the Mac", "block": "it turned the Mac away for now"}
+
+
+def _clock(t) -> str:
+    return t.astimezone().strftime("%I:%M %p").lstrip("0")
+
+
+def wait_line(db: DB, iid: str, mp: str, row) -> str:
+    """WO53 §6: a site not live yet on the item's card, in plain words — "⏳ Poshmark — submitted 10:50 PM, verifying",
+    "⏳ Vinted — photos failed, next try 4:45 PM", "⏳ Depop — next try 11:28 PM, it needs a login on the Mac"."""
+    from thrift_agent import health, postcheck
+    site, err = LABEL.get(mp, mp), row["error"] or ""
+    if row["status"] == "failed" and err.startswith(UNCONFIRMED):
+        st = unconf_state(db, iid, mp) or {}
+        when = _clock(postcheck.clicked_of(st, row))
+        return f"⏳ {site} — submitted {when}, " + ("still being checked" if st.get("stage") == "given_up"
+                                                    else "verifying")
+    if row["status"] == "failed":
+        # the Vinted incident of 2026-10-20 (the owner): a failed site names its step and the next try
+        return f"⏳ {site} — {step_name(err)} failed, next try {next_try(row)}"
+    p = health.state(db, mp)
+    if p:
+        due = postcheck.utc(p.get("due"))
+        why = (ACCOUNT_WHY.get(p.get("page") or alert_kind(p.get("reason") or "", p.get("page")), "it is paused")
+               if p.get("kind") == "account" else "paused by you" if p.get("owner") else "paused after a problem")
+        return f"⏳ {site} — next try {_clock(due) if due else 'when it is back'}, {why}"
+    return f"⏳ {site} — later"
 
 
 def refresh_card(s: Settings, db: DB, iid: str) -> None:

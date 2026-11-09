@@ -54,7 +54,8 @@ class Work:
     cards: int             # questions waiting for the owner's answer
     to_publish: int        # approved listings the poster will publish
     held: int              # approved listings that need the owner first (never published by the loop)
-    waits: tuple = ()      # WO39: (what, names) the owner's reply is waited for — a size, a 'retry'
+    waits: tuple = ()      # WO39: (what, names) the owner's reply is waited for — a size, a brand
+    tonight: int = 0       # WO53 rule 6: of to_publish, those live on another site — they go up at any hour
 
     @property
     def busy(self) -> bool:
@@ -74,45 +75,40 @@ def work(s: Settings, db: DB) -> Work:
     from thrift_agent.post import runner           # the poster's own rules: what it takes, what it leaves alone
     q = approve.queue(db)
     enabled = [mp for mp, c in (s.get("marketplaces") or {}).items() if (c or {}).get("enabled")]
-    publishable = {iid for iid, _ in runner.publishable(s, db, enabled)} if live(s) else set()
+    from thrift_agent import crosslist
+    jobs = runner.publishable(s, db, enabled) if live(s) else []
+    publishable = {iid for iid, _ in jobs}
     if live(s):                                        # the one being published right now is still to publish
         publishable |= {r[0] for r in db.conn.execute("SELECT item_id FROM listings WHERE status='posting'")}
-        from thrift_agent import crosslist              # WO30: Depop and Vinted still to do count as work
-        publishable |= {iid for iid, _ in crosslist.pending(s, db, crosslist.reachable(s, db))}
+        cross = crosslist.pending(s, db, crosslist.reachable(s, db))   # WO30: Depop and Vinted still to do count
+        publishable |= {iid for iid, _ in cross}
+        jobs = [*jobs, *cross]
+    tonight = {iid for iid, mp in jobs if crosslist.live_elsewhere(db, iid, mp)}
     approved = {it["id"] for it in db.items("ready") if it["owner_price"]}
     held = {iid for iid, _, _ in runner.held(s, db, enabled)} if live(s) else approved - publishable
     return Work(new_shares=sum(1 for kind, _ in q if kind == approve.NEW_BATCH),
                 processing=sum(1 for kind, _ in q if kind == approve.NEW_ITEM),
                 cards=sum(1 for kind, _ in q if kind not in (approve.NEW_BATCH, approve.NEW_ITEM)),
                 to_publish=len(publishable), held=len(held - publishable),
-                waits=tuple((what, tuple(names)) for what, names in owner_waits(s, db).items() if names))
+                waits=tuple((what, tuple(names)) for what, names in owner_waits(s, db).items() if names),
+                tonight=len(tonight & publishable))
 
 
 SIZE_WAIT = "a size"
 BRAND_WAIT = "a brand"
-RETRY_WAIT = "your 'retry'"
+RETRY_WAIT = "your 'retry'"       # WO53 §2: nothing asks for a retry any more — kept for the old records' sake
 
 
 def owner_waits(s: Settings, db: DB) -> dict[str, list[str]]:
     """WO39: what waits for the owner's reply although the Mac has nothing to do — items priced but listed nowhere for
-    want of a size (every site skipped "no size on the item"), and listings that wait for her 'retry' (a refused form,
-    a skipped listing, an unconfirmed publish she was asked about). Names as on the cards. The 💤 line says them; "All
-    done" only when this is empty."""
+    want of a size (every site skipped "no size on the item"), and items waiting for her brand. Names as on the cards.
+    The 💤 line says them; "All done" only when this is empty. WO53 §2: never a 'retry' — a publish being verified is
+    the site's data's to settle, a refused or skipped listing the code's (the 🚨)."""
     from thrift_agent import crosslist
-    sizes, retries = [crosslist.item_name(db, iid) for iid in size_waiting(db)], []
-    for row in db.conn.execute(
-            "SELECT o.ref FROM outbox o WHERE o.kind IN ('skipped', 'unconfirmed', 'refused') AND o.resolved_at IS "
-            "NULL ORDER BY o.sent_at").fetchall():
-        iid, mp = crosslist.split_ref(row["ref"])
-        it, lst = db.item(iid), db.listing(iid, mp)
-        if it is None or it["status"] == "dropped" or (lst is not None and lst["status"] in ("posted", "posting")):
-            continue
-        name = crosslist.item_name(db, iid)
-        if name not in retries:
-            retries.append(name)
+    sizes = [crosslist.item_name(db, iid) for iid in size_waiting(db)]
     brands = [crosslist.item_name(db, it["id"]) for it in db.items("ready")
               if it["owner_price"] and approve.needs_brand(it) and not ("test" in it.keys() and it["test"])]
-    return {SIZE_WAIT: sizes, BRAND_WAIT: brands, RETRY_WAIT: retries}
+    return {SIZE_WAIT: sizes, BRAND_WAIT: brands}
 
 
 def size_waiting(db: DB) -> list[str]:
@@ -219,23 +215,26 @@ def status_text(w: Work, p: PosterNow, t: Timing, hours_open: bool, block: str |
                 now: datetime) -> str:
     """The window's status line (WO28 §2). Waiting for the owner is never "working"; approved listings are, while
     the poster can publish them (inside the hours, nothing blocking, the poster running and live)."""
-    publishing = w.to_publish > 0 and hours_open and block is None and p.running and p.live
+    n_now = w.to_publish if hours_open else min(w.tonight, w.to_publish)   # WO53 rule 6: live elsewhere = tonight
+    publishing = n_now > 0 and block is None and p.running and p.live
     if w.busy or publishing:
         wait_next = max(0.0, (p.next_at - now).total_seconds()) if p.next_at and not p.busy else 0.0
         secs = w.new_shares * t.batch + w.processing * t.item
         if publishing:
-            secs += wait_next + w.to_publish * t.post + max(0, w.to_publish - 1) * t.gap
+            secs += wait_next + n_now * t.post + max(0, n_now - 1) * t.gap
         mins = max(1, math.ceil(secs / 60))
         if w.busy:
             left = [x for x in ((_n(w.new_shares, "new share") if w.new_shares else ""),
-                                _n(w.processing + (w.to_publish if publishing else 0), "item")) if x]
+                                _n(w.processing + (n_now if publishing else 0), "item")) if x]
             head = f"⏳ Working — {' and '.join(left)} left, about {mins} min."
         else:
             nxt = "publishing now" if p.busy else (f"next in ~{max(1, math.ceil(wait_next / 60))} min"
                                                    if wait_next >= 30 else "next in a moment")
-            head = f"⏳ {_n(w.to_publish, 'listing')} still to publish, {nxt}."
+            head = f"⏳ {_n(n_now, 'listing')} still to publish, {nxt}."
+        later = w.to_publish - n_now if publishing else 0
+        rest = f"\n{_n(later, 'listing')} go up at {opens}." if later > 0 else ""
         also = f"\n{_n(w.cards, 'card is', 'cards are')} also waiting for your answer." if w.cards else ""
-        return head + also
+        return head + rest + also
     parts = []
     if w.to_publish:
         if not hours_open:

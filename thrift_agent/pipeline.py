@@ -2589,12 +2589,12 @@ def requeue(s: Settings, db: DB, iid: str, marketplace: str | None = None) -> li
             raise ValueError(f"{r['marketplace']}: status is {r['status']} — only failed/dryrun rows (or a poster "
                              "question) can be requeued")
         if r["url"]:
-            raise ValueError(f"{r['marketplace']}: has a listing URL ({r['url']}) — it reached the site; "
-                             "check the closet and fix it by hand")
+            raise ValueError(f"{r['marketplace']}: has a listing URL ({r['url']}) — it reached the site and is "
+                             "recorded; nothing to requeue")
         if (r["error"] or "").startswith("unconfirmed publish: "):
-            raise ValueError(f"{r['marketplace']}: List This Item was pressed and no listing address was found — it "
-                             f"may be live; check the closet, then `thrift mark-posted {iid} {r['marketplace']} <url>` "
-                             f"(it is there) or `thrift retry {iid}` (it is not)")
+            raise ValueError(f"{r['marketplace']}: the final click was pressed and the listing is being verified by "
+                             f"the site's own data — it is recorded by itself (`thrift mark-posted {iid} "
+                             f"{r['marketplace']} <url>` / `thrift retry {iid}` are there for your own use)")
     cross_only = all(r["marketplace"] != "poshmark" for r in rows)     # Depop / Vinted rows (WO30)
     if cross_only and (db.listing(iid, "poshmark") or {"status": ""})["status"] != "posted" and \
             not (it["status"] == "ready" and it["owner_price"]):      # WO33: approved items post everywhere at once

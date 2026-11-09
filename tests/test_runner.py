@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from cards import ALL_DONE, card
-from thrift_agent import daily, notify, pipeline, power
+from thrift_agent import crosslist, daily, notify, pipeline, power
 from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
 from thrift_agent.post import runner
@@ -686,7 +686,7 @@ def test_publish_first_runs_on_the_mac_only(tmp_path, monkeypatch, harness):
     (lambda db, iid: db.upsert_listing(iid, "poshmark", status="failed", url="https://poshmark.com/listing/x"),
      "it reached the site"),
     (lambda db, iid: db.upsert_listing(iid, "poshmark", status="failed",
-                                    error=runner.UNCONFIRMED + "no address"), "may have gone live"),
+                                    error=runner.UNCONFIRMED + "no address"), "being verified"),
     (lambda db, iid: db.upsert_listing(iid, "poshmark", status="failed", error="Mismatch"),
      r"thrift requeue i_\w+` first"),
 ])
@@ -751,11 +751,12 @@ def test_a_publish_that_clicked_but_found_no_listing_is_never_requeued(tmp_path,
     _first(monkeypatch, s, db, poster, iid)
     row = db.listing(iid, "poshmark")
     assert row["status"] == "failed" and row["error"].startswith(runner.UNCONFIRMED) and row["url"] is None
-    assert any(m.startswith(runner.unconfirmed_text(RENDER.title, slept=False)) for m in said)   # ONE reply-able
-    assert not any(m.startswith("❌") for m in said)                                    # message (WO28), no ❌
-    with pytest.raises(ValueError, match="may be live"):
-        pipeline.requeue(s, db, iid)                                       # invariant 4: reconcile by hand
-    with pytest.raises(ValueError, match="may have gone live"):
+    assert not any(m.startswith("⚠️") or "reply" in m.lower() for m in said)          # WO53: verifying, nothing
+    assert not any(m.startswith("❌") for m in said)                                    # asked, no ❌
+    assert crosslist.unconf_state(db, iid, "poshmark")["stage"] == "wait"
+    with pytest.raises(ValueError, match="being verified"):
+        pipeline.requeue(s, db, iid)                                       # invariant 4: never requeued blind
+    with pytest.raises(ValueError, match="being verified"):
         _first(monkeypatch, s, db, poster, iid)
 
 
@@ -1036,7 +1037,8 @@ def test_a_publish_the_mac_slept_through_is_found_in_the_closet_and_posted(tmp_p
     assert not any(m.startswith("⚠️") for m in said)
 
 
-def test_a_publish_the_mac_slept_through_and_not_in_the_closet_asks_once(tmp_path, monkeypatch, harness, mac):
+def test_a_publish_the_mac_slept_through_and_not_in_the_closet_is_verifying_never_asked(tmp_path, monkeypatch,
+                                                                                         harness, mac):
     said, _ = harness
     s = _settings(tmp_path, role="prod", autopublish=True, dry_run=False)
     db = DB(s.path("db"))
@@ -1046,11 +1048,8 @@ def test_a_publish_the_mac_slept_through_and_not_in_the_closet_asks_once(tmp_pat
     _run(monkeypatch, s, db, poster, once=True)
     row = db.listing(iid, "poshmark")
     assert row["status"] == "failed" and row["error"].startswith(runner.UNCONFIRMED) and row["url"] is None
-    ask = runner.unconfirmed_text(RENDER.title, slept=True)
-    assert ask == (f"⚠️ {RENDER.title}: the Mac went to sleep while publishing and I can't see it in the closet. "
-                   "Check Poshmark: if it's there, reply 'posted <url>'; if not, reply 'retry'.")
-    assert [m for m in said if m.startswith("⚠️")] == [f"{ask}\n(thrift mark-posted {iid} poshmark <url> | thrift "
-                                                         f"retry {iid})"]
+    assert not [m for m in said if m.startswith("⚠️") or "reply" in m.lower()]   # WO53: nobody is asked
+    assert crosslist.unconf_state(db, iid, "poshmark")["stage"] == "wait"        # the site's own data settles it
     assert runner.next_job(s, db, ["poshmark"], False) is None                 # never retried by itself
     assert pipeline.retry_unconfirmed(s, db, iid) == "ready"                    # the owner's 'retry'
     assert db.listing(iid, "poshmark")["status"] == "queued" and runner.next_job(s, db, ["poshmark"], False)[0] == iid
@@ -1093,7 +1092,8 @@ def test_a_listing_still_posting_at_start_is_looked_for_in_the_closet(tmp_path, 
     assert db.listing(found, "poshmark")["status"] == "posted" and db.listing(found, "poshmark")["url"] == url
     row = db.listing(lost, "poshmark")
     assert row["status"] == "failed" and row["error"].startswith(runner.UNCONFIRMED)   # never retried
-    assert any(m.startswith("✅") for m in said) and sum(m.startswith("⚠️") for m in said) == 1
+    assert any(m.startswith("✅") for m in said) and not any(m.startswith("⚠️") for m in said)   # WO53: nobody asked
+    assert crosslist.unconf_state(db, lost, "poshmark")["stage"] == "wait"         # verifying by Poshmark's own data
 
 
 def test_the_owners_posted_url_is_checked_by_the_poster_between_listings(tmp_path, monkeypatch, harness):

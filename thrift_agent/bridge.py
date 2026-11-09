@@ -87,7 +87,7 @@ def new_token() -> str:
     return secrets.token_urlsafe(32)
 
 
-HASH_SALT = b"wo52-reload-1\n"
+HASH_SALT = b"wo53-reload-1\n"     # WO53: content/common.js changed (the visible-only page check): reload once
 
 
 def files_hash(ext_dir: Path = EXT_DIR) -> str:

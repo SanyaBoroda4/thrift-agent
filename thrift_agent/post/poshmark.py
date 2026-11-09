@@ -61,7 +61,7 @@ from playwright.async_api import BrowserContext, ElementHandle, Locator, Page
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
-from thrift_agent import brands, heal
+from thrift_agent import brands, heal, postcheck
 from thrift_agent.post.base import (AccountBlocked, Cancelled, Contains, Mode, Poster, PosterError, Skipped, human_type,
                                     keep_evidence, settle)
 from thrift_agent.post.fallback import matching, menu_size
@@ -512,6 +512,10 @@ class PoshmarkPoster(Poster):
         self._trace_dir: Path | None = None                # WO45 follow-up: a dry run's size-menu trace (Poster.post)
         self._closet_before: set[str] = set()              # the closet's listing ids before this post
         self._started = 0.0                                # when this post started (epoch s): new ids are younger
+        self._clicked_at = 0.0                             # WO53: when List This Item was pressed (epoch s, UTC)
+        self.landing: str | None = None                    # WO53 §1/§7: where Poshmark landed after the click
+        self.public_get = None                             # WO53: Poshmark's public pages (postcheck._get; tests' stand-in)
+        self.held: set[str] = set()                        # addresses other items hold: never taken for this one
         # The supervised first publish: an async (render, panel text) -> bool, True only when the owner typed LIST.
         self.confirm = None
         self.learned: heal.Learned | None = None            # WO52 §2: the selectors learned, kept beside the database
@@ -1363,7 +1367,7 @@ class PoshmarkPoster(Poster):
             raise PosterError(f"the Share Listing panel's List This Item differs from the recording ({n} found)")
         if self.confirm is not None and not await self.confirm(r, text):
             raise Cancelled("not published: LIST wasn't typed")
-        before, navigations, native = page.url, [], []
+        before, navigations, native, answers = page.url, [], [], []
 
         def on_navigated(frame) -> None:
             if frame == page.main_frame:
@@ -1372,15 +1376,27 @@ class PoshmarkPoster(Poster):
         async def on_dialog(dialog) -> None:           # what Playwright does by default (dismiss), but recorded
             native.append({"type": dialog.type, "message": dialog.message[:300]})
             await dialog.dismiss()
+
+        async def on_response(resp) -> None:           # WO53 §1: Poshmark's own answers to the click, read only
+            try:
+                if len(answers) >= 40 or "json" not in (resp.headers.get("content-type") or ""):
+                    return
+                ids = sorted(set(postcheck.HEX24.findall(await resp.text())))
+            except Exception:  # noqa: BLE001 — an answer that can't be read names nothing
+                return
+            fresh = [i for i in ids if (postcheck.id_time(i) or 0) >= self._clicked_at - postcheck.ID_SKEW_S]
+            answers.append({"url": resp.url[:200], "status": resp.status, "new_ids": fresh[:10]})
         page.on("framenavigated", on_navigated)
         page.on("dialog", on_dialog)
         self.clicked = True
+        self._clicked_at = time.time()
+        page.on("response", on_response)
         click_error = None
         try:
             await button.first.click()                 # exactly once, whatever happens next
         except Exception as e:  # noqa: BLE001 — it may still have gone through: watch, record, never click again
             click_error = f"{type(e).__name__}: {(str(e).strip().splitlines() or [''])[0][:200]}"
-        return await self._after_list(page, r, before, navigations, native, click_error)
+        return await self._after_list(page, r, before, navigations, native, click_error, answers)
 
     def _evidence(self, name: str, sku: str | None = None) -> Path:
         shot = self.shot or Path(f"{sku or (self._render.sku if self._render else 'item')}-{self.name}.png")
@@ -1453,11 +1469,14 @@ class PoshmarkPoster(Poster):
                 await tab.close()
 
     async def _after_list(self, page: Page, r: Render, before: str, navigations: list[str], native: list[dict],
-                          click_error: str | None) -> str:
+                          click_error: str | None, answers: list[dict] | None = None) -> str:
         """Watch the page after List This Item until it leaves the form (its address, the dialogs it shows), keep it
-        all as evidence (<shot>-after-list.png/.html/.json), then find the new listing's address: the page itself when
-        it is a listing, else the closet, reloaded until the listing shows (<shot>-closet.json). Nothing is clicked
-        here. No address found fails the item: it may be live."""
+        all as evidence (<shot>-after-list.png/.html/.json), then find the new listing's address — WO53 §1, by
+        Poshmark's own data wherever its page went: the page itself when it is a listing; else the listing id Poshmark
+        named (its landing address ?created_listing_id=, or an id in its answers to the click) read on the public
+        listing page; else the closet newest first (postcheck.find_poshmark) — looked at 10 s, 30 s and 1 min after
+        the click (<shot>-verify.json). Nothing is clicked here. Not confirmed yet: PosterError "submitted —
+        verifying" (the row turns 'verifying': looked at again later by the site's own data, never asked about)."""
         waited, left_at, dialogs = 0, None, []
         while waited < AFTER_LIST_MS and not self.listing_address(page.url) and not page.is_closed():
             try:
@@ -1475,9 +1494,10 @@ class PoshmarkPoster(Poster):
             waited += THUMB_POLL_MS
         created = _created_id([*navigations, page.url])
         self.created_id = created
+        self.landing = postcheck.landing_kind("poshmark", page.url)
         record = {"url_before": before, "url_after": page.url, "created_listing_id": created,
                   "click_error": click_error, "navigations": navigations, "dialogs": dialogs, "native_dialogs": native,
-                  "waited_ms": waited}
+                  "waited_ms": waited, "landing": self.landing, "answers": answers or []}
         try:
             record["page"] = await page.evaluate(_RECORD_JS)
         except Exception:  # noqa: BLE001
@@ -1485,59 +1505,55 @@ class PoshmarkPoster(Poster):
         await keep_evidence(page, self._evidence("after-list"), record)
         if url := self.listing_address(page.url):
             return url
-        url, closet = await self._poll_closet(page, r, created)
-        self._evidence("closet").with_suffix(".json").write_text(json.dumps(closet, indent=1), encoding="utf-8")
+        clicked = self._clicked_at or time.time()
+        extra = [i for a in (answers or []) for i in a.get("new_ids") or [] if i != created]
+        url, seen = await self._verify(r, created, extra, clicked)
+        self._evidence("verify").with_suffix(".json").write_text(json.dumps(seen, indent=1, default=str),
+                                                                 encoding="utf-8")
         if url:
-            if others := closet.get("other_new_with_this_title"):
-                self.notes.append(f"another new listing with this title showed up in the closet ({', '.join(others)}):"
-                                  " check for a duplicate")
+            if seen.get("note"):
+                self.notes.append(seen["note"])
             return url
-        last = closet["polls"][-1] if closet["polls"] else {}
-        several = len(last.get("ours") or [])
-        why = (f"{several} new listings with this title in the closet, none named by Poshmark: never a guess"
-               if several > 1 else
-               f"the new listing didn't show in the closet within {CLOSET_POLL_MS // 1000} s"
-               + (f" (Poshmark named it {created})" if created else ""))
-        clicked = f"the click raised {click_error}; " if click_error else ""
-        raise PosterError(f"after List This Item no listing address: {clicked}the page went to {page.url}; {why}. "
-                          "It may be live: check the closet, then `thrift mark-posted`")
+        raised = f"the click raised {click_error}; " if click_error else ""
+        named = f"Poshmark named it {created}" if created else "Poshmark named no listing"
+        raise PosterError(f"submitted — verifying: {raised}the page went to {page.url}; {named}; "
+                          f"{seen.get('why') or 'its pages did not show it yet'} — looked at "
+                          f"{', '.join(f'{s} s' for s in postcheck.INLINE_S)} after the click; it is looked at again "
+                          f"by Poshmark's own data")
+
+    async def _verify(self, r: Render, created: str | None, extra: list[str], clicked: float) -> tuple[str | None, dict]:
+        """WO53 §1: the looks made before the next item — postcheck.INLINE_S seconds after the click."""
+        looks = []
+        cover = postcheck.cover_matcher(r.photos[0] if r.photos else None)
+        for at in postcheck.INLINE_S:
+            wait = clicked + at - time.time()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            url, seen = await asyncio.to_thread(
+                postcheck.find_poshmark, r.title, r.price, clicked, created=created, extra_ids=extra,
+                user=self.username, held=self.held, cover=cover, get=self.public_get, base=self.base_url)
+            looks.append({"at_s": at, **{k: v for k, v in seen.items() if k != "clicked"}})
+            if url:
+                return url, {"found": url, "how": seen.get("how"), "note": seen.get("note"), "looks": looks}
+        last = looks[-1] if looks else {}
+        return None, {"found": None, "why": last.get("why") or (
+            "its listing page and the closet don't show it yet" if created else "the closet doesn't show it yet"),
+            "looks": looks}
 
     async def find_live(self, ctx: BrowserContext, r: Render, since: float, created: str | None = None,
-                        tries: int = FIND_TRIES) -> tuple[str | None, dict]:
-        """This listing in the closet, after the Mac slept (or the poster stopped) in the middle of publishing it
-        (WO28 §3): the id Poshmark named (created_listing_id) when the closet shows it, else the one listing with
-        exactly this title — the tile AND the address's slug — created since `since` (epoch seconds; its id carries
-        the time). Several: never a guess. Read only, in a tab of its own; a closet that doesn't load (the Wi-Fi still
-        waking up) is tried again. Returns (the address or None, what was seen)."""
-        want, letters = _key(r.title), _letters(r.title)
-        record: dict = {"created_listing_id": created, "since": since, "tries": []}
-        for attempt in range(tries):
-            page = await ctx.new_page()
-            try:
-                await page.goto(f"{self.base_url}/closet/{self.username}")
-                await page.wait_for_load_state("domcontentloaded")
-                try:
-                    await SEL["closet_links"](page).first.wait_for(state="attached", timeout=MENU_TIMEOUT_MS)
-                except PlaywrightTimeout:
-                    pass
-                listings = self._listings(await SEL["closet_links"](page).evaluate_all(_LINKS_JS))
-            except Exception as e:  # noqa: BLE001 — try again: the network may still be coming back
-                record["tries"].append({"error": f"{type(e).__name__}"})
-                await asyncio.sleep(FIND_WAIT_MS / 1000)
-                continue
-            finally:
-                await page.close()
-            titled = [lid for lid, x in listings.items() if want in x["titles"] and _letters(x["slug"]) == letters
-                      and _id_time(lid) >= since - ID_SKEW_S]
-            ours = [created] if created and created in listings else titled
-            record["tries"].append({"listings": len(listings), "with_this_title": titled})
-            if len(ours) == 1:
-                record["found"] = ours[0]
-                return f"{self.base_url}{listings[ours[0]]['path']}", record
-            if len(ours) > 1:
-                return None, record                       # several: never a guess
-            await asyncio.sleep(FIND_WAIT_MS / 1000)       # not (yet) shown: look once more
-        return None, record
+                        tries: int = 1) -> tuple[str | None, dict]:
+        """This listing on Poshmark by Poshmark's own public data (WO53 §1, postcheck.find_poshmark): the id Poshmark
+        named after the click (its listing page), else the closet newest first — our title at our price, created after
+        `since` (epoch seconds, UTC); two such → the cover photo; never a guess. Read only, plain HTTP: no browser
+        page, nothing clicked. Returns (the address or None, what was seen — "error" when it couldn't be read, which is
+        never "absent")."""
+        cover = postcheck.cover_matcher(r.photos[0] if r.photos else None)
+        url, seen = await asyncio.to_thread(
+            postcheck.find_poshmark, r.title, r.price, since, created=created, user=self.username, held=self.held,
+            cover=cover, get=self.public_get, base=self.base_url)
+        if seen.get("result") == "unknown":
+            seen["error"] = seen.get("why") or "Poshmark's pages couldn't be read"
+        return url, seen
 
     async def set_availability(self, ctx: BrowserContext, url: str, available: bool, probe: bool = False,
                                shots: Path | None = None) -> bool | None:

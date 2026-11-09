@@ -55,6 +55,12 @@ def can_post(s: Settings, posted_last_hour: int, posted_today: int, now: datetim
     return True, "ok"
 
 
+def outside_hours(why: str | None) -> bool:
+    """WO53 rule 6: can_post said no only because of the listing hours (not PAUSE, not a cap) — an item already live on
+    another site is still finished on the others that night."""
+    return bool(why) and str(why).startswith("outside listing hours")
+
+
 def windows(now: datetime | None = None, tz: str = "America/New_York") -> tuple[str, str]:
     """ISO UTC timestamps for 'one hour ago' and 'local midnight'."""
     now = now or datetime.now(timezone.utc)

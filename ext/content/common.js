@@ -61,6 +61,19 @@
     }
     return true;
   };
+  // WO53 §3 (live 2026-11-08 11:22 PM): what a page SHOWS — visible and of some size. Google's invisible reCAPTCHA
+  // helper (<iframe src=".../recaptcha/api2/aframe" width="0" height="0" style="display: none">) sits on ordinary
+  // Vinted pages; it matched "iframe[src*='recaptcha']" and paused Vinted for a CAPTCHA nobody could see.
+  T.shown = (el) => {
+    if (!T.visible(el)) return false;
+    if (el.getAttribute("width") === "0" || el.getAttribute("height") === "0") return false;
+    const laidOut = document.documentElement.getBoundingClientRect().width > 0;   // jsdom has no layout: all 0
+    if (laidOut) {
+      const r = el.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) return false;
+    }
+    return true;
+  };
 
   // ---- waits on the page itself: true as soon as the DOM changes into it (MutationObserver), else at a light poll
   // (properties like an input's value or an image's size change without a mutation), else null at the timeout.
@@ -539,7 +552,8 @@
     for (const name of ["block", "captcha", "login", "verify"]) {
       const p = pages[name];
       if (!p) continue;
-      if ((p.selectors && T.$(p.selectors)) || (p.text && new RegExp(p.text, "im").test(text))) return name;
+      // WO53 §3: an element counts only when the page shows it (a hidden helper frame is no CAPTCHA)
+      if ((p.selectors && T.$$(p.selectors).some(T.shown)) || (p.text && new RegExp(p.text, "im").test(text))) return name;
     }
     if (conf.listing_url && new RegExp(conf.listing_url).test(location.href)) return "listing";
     if (conf.landing_url && new RegExp(conf.landing_url).test(location.href)) return "landing";   // WO33: after Upload
