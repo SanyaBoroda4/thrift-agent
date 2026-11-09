@@ -34,7 +34,35 @@ KEEPALIVE_EXPIRY = 15.0     # an idle connection older than this is not reused (
 LEARN_EVERY = 600           # the addresses refreshed from DNS at most every 10 min, after a call that worked
 DNS_DOWN_FOR = 60           # after a DNS failure, the next minute's calls go to the known addresses at once
 SEED_ADDRESSES = ("149.154.166.110", "149.154.167.220")   # api.telegram.org (read from the Mac, 2026-10-27) / its peer
-NOT_SENT = ("ConnectError", "ConnectTimeout", "PoolTimeout", "WriteError", "WriteTimeout")
+NOT_SENT = ("ConnectError", "ConnectTimeout", "PoolTimeout", "WriteError", "WriteTimeout", "QuietHours")
+# WO54 §3: what the Mac may still call inside the owner's quiet hours — reads; everything else is a send and waits
+READS = ("getUpdates", "getMe", "getChat", "getChatMember", "getFile", "getWebhookInfo")
+# ... and the sends that make a sound on her phone: between 10 PM and 7 AM they go out silently (disable_notification)
+NOTIFYING = ("sendMessage", "sendPhoto", "sendDocument", "sendMediaGroup", "sendVideo", "sendAnimation", "sendAudio",
+             "sendVoice", "copyMessage", "forwardMessage")
+
+
+class QuietHours(httpx.TransportError):
+    """WO54 §3: inside the owner's quiet hours (8:30 AM – 2:00 PM) the Mac sends nothing — raised before the request,
+    so it never left the Mac: a notify line is held for later (notify.flush_held), a card is sent again later."""
+
+
+def quiet_now() -> bool:
+    """The one central check (WO54 §3): inside the quiet hours and not lifted by the owner's "post now" today. Never
+    raises: a check that can't be made lets the message go."""
+    try:
+        from thrift_agent import notify, quiet
+        return quiet.is_quiet(None, notify._db())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _silent_now() -> bool:
+    try:
+        from thrift_agent import quiet
+        return quiet.silent()
+    except Exception:  # noqa: BLE001
+        return False
 _DNS_ERR = re.compile(r"nodename nor servname|Name or service not known|Temporary failure in name resolution|"
                       r"getaddrinfo failed|No address associated|\[Errno (?:8|-2|-3|-5|11001|11002)\]")
 _sleep = time.sleep         # the tests' seam
@@ -115,7 +143,12 @@ def _pinned() -> str:
 def post(token: str, method: str, data=None, files=None, timeout: float = TIMEOUT) -> httpx.Response:
     """The one way to Telegram (the Bot and notify): retried 1, 2, 4 s later while the request never left the Mac;
     by a known address while DNS fails. Raises the last httpx error; a request that may have gone out (no answer) is
-    raised at once — never sent twice."""
+    raised at once — never sent twice. WO54 §3: inside the owner's quiet hours nothing but a read goes (QuietHours,
+    before anything leaves); between 10 PM and 7 AM a message makes no sound (disable_notification)."""
+    if method not in READS and quiet_now():
+        raise QuietHours(f"the owner's quiet hours: {method} not sent (it waits for them to end)")
+    if method in NOTIFYING and isinstance(data, dict) and "disable_notification" not in data and _silent_now():
+        data = {**data, "disable_notification": "true"}
     pinned = _pinned() if time.monotonic() < _STATE["dns_down_until"] else None
     for i, pause in enumerate((0.0, *RETRY_PAUSES)):
         if pause:
@@ -263,7 +296,14 @@ class Bot:
         return list(res or [])
 
     def answer_callback(self, callback_id: str, text: str = "") -> None:
-        self.call("answerCallbackQuery", callback_query_id=callback_id, text=text or None)
+        """The tap's spinner stopped. WO54 §3: a tap made while the Mac was quiet (or asleep) is applied when the
+        worker reads it; its spinner can't be answered any more ("query is too old") — that is no error: the tap was
+        taken, and "Sorry, that didn't go through" would be untrue."""
+        try:
+            self.call("answerCallbackQuery", callback_query_id=callback_id, text=text or None)
+        except RuntimeError as e:
+            if not any(w in str(e) for w in ("query is too old", "query ID is invalid", "QuietHours")):
+                raise
 
     def authorized(self, update: dict) -> bool:
         """True only for updates from self.chat_id sent by a user in self.allowed_users."""

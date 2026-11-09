@@ -4,6 +4,8 @@ UTC−4) and 07:30 on Nov 1 (EST, UTC−5). A fixed offset would open the postin
 approval card's "goes up at 8:00" an hour early from Nov 1 on."""
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from thrift_agent import approve, orders
 from thrift_agent.config import Settings
 from thrift_agent.db import DB
@@ -21,16 +23,13 @@ def _mac(tmp_path):
                      "paths": {"control": str(tmp_path)}})
 
 
-def test_the_posting_hours_follow_new_york_across_nov_1(tmp_path):
+def test_posting_runs_at_every_hour_across_nov_1(tmp_path):
+    """WO54 §3: no posting hours any more (the Mac's 08:00–23:00 is ignored) — the owner's quiet hours, DST-safe in
+    thrift_agent/quiet.py (tests/test_quiet.py, tests/test_wo54_quiet.py), are the only hours the agent keeps off."""
     s = _mac(tmp_path)
-    assert can_post(s, 0, 0, at(2026, 10, 31, 12, 30)) == (True, "ok")          # 08:30 EDT, Saturday
-    assert can_post(s, 0, 0, at(2026, 11, 1, 12, 30))[0] is False               # 07:30 EST: not yet (−4 would say 08:30)
-    assert can_post(s, 0, 0, at(2026, 11, 1, 13, 0)) == (True, "ok")            # 08:00 EST: open
-    assert can_post(s, 0, 0, at(2026, 11, 2, 3, 30)) == (True, "ok")            # 22:30 EST Nov 1
-    assert can_post(s, 0, 0, at(2026, 11, 2, 4, 1))[0] is False                 # 23:01 EST: closed (−4 would be 00:01)
-    assert can_post(s, 0, 0, at(2026, 10, 31, 3, 1))[0] is False                # 23:01 EDT Oct 30
-    for utc_hour in (5, 6):                                                      # the 1 AM hour, lived twice
-        assert can_post(s, 0, 0, at(2026, 11, 1, utc_hour, 30))[0] is False     # 01:30 EDT, then 01:30 EST
+    for t in (at(2026, 10, 31, 12, 30), at(2026, 11, 1, 12, 30), at(2026, 11, 1, 13, 0), at(2026, 11, 2, 3, 30),
+              at(2026, 11, 2, 4, 1), at(2026, 10, 31, 3, 1), at(2026, 11, 1, 5, 30), at(2026, 11, 1, 6, 30)):
+        assert can_post(s, 0, 0, t) == (True, "ok"), t                        # 01:30 EDT and 01:30 EST too
 
 
 def test_the_day_counts_from_new_york_midnight_on_the_day_of_the_change():
@@ -41,11 +40,17 @@ def test_the_day_counts_from_new_york_midnight_on_the_day_of_the_change():
     assert windows(at(2026, 10, 31, 17, 0), "America/New_York")[1] == "2026-10-31T04:00:00+00:00"
 
 
+@pytest.mark.quiet_on
 def test_the_approval_says_when_it_goes_up_in_new_york_time(tmp_path):
+    """WO54 §3: at once at every hour, except from 8:20 to the end of the quiet hours — 8:20 New York time on both
+    sides of the change (EDT on Oct 31, EST on Nov 2)."""
     s = _mac(tmp_path)
-    assert approve.when_posting(s, at(2026, 10, 31, 12, 30)) == "in the next few minutes"   # 08:30 EDT
-    assert approve.when_posting(s, at(2026, 11, 1, 12, 30)) == "at 8:00"                    # 07:30 EST
-    assert approve.when_posting(s, at(2026, 11, 1, 13, 30)) == "in the next few minutes"   # 08:30 EST
+    assert approve.when_posting(s, at(2026, 11, 1, 12, 30)) == "in the next few minutes"   # 07:30 EST
+    assert approve.when_posting(s, at(2026, 10, 31, 12, 19)) == "in the next few minutes"  # 08:19 EDT
+    assert approve.when_posting(s, at(2026, 10, 31, 12, 20)) == "at 2:00 PM"               # 08:20 EDT (−5 would be 07:20)
+    assert approve.when_posting(s, at(2026, 11, 2, 13, 19)) == "in the next few minutes"   # 08:19 EST (−4 would be 09:19)
+    assert approve.when_posting(s, at(2026, 11, 2, 13, 20)) == "at 2:00 PM"                # 08:20 EST
+    assert approve.when_posting(s, at(2026, 11, 2, 19, 0)) == "in the next few minutes"    # 14:00 EST
 
 
 def test_the_days_first_order_sweep_waits_for_8_am_new_york(tmp_path, monkeypatch):

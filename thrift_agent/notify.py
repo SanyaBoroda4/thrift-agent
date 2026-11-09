@@ -123,8 +123,11 @@ def hold(db, chat: str, text: str, why: str = "") -> bool:
         db.conn.execute("DELETE FROM kv WHERE key=?", (key,))
         db.log(None, "telegram_held_dropped", {"key": key, "why": "more than 30 held"})
     key = f"{HELD}{now.isoformat(timespec='microseconds')}:{os.getpid()}"
-    db.kv_set(key, json.dumps({"chat": chat, "text": text, "at": now.isoformat(timespec="seconds")}))
-    db.log(None, "telegram_held", {"chat": chat, "why": why[:120], "text": text[:120]})
+    from thrift_agent import telegram
+    quiet = telegram.quiet_now()                       # WO54 §3: held for the quiet hours, not for a lost link
+    db.kv_set(key, json.dumps({"chat": chat, "text": text, "at": now.isoformat(timespec="seconds"),
+                               **({"quiet": True} if quiet else {})}))
+    db.log(None, "telegram_held", {"chat": chat, "why": ("quiet hours" if quiet else why)[:120], "text": text[:120]})
     return True
 
 
@@ -140,6 +143,9 @@ def flush_held(db=None) -> int:
     db = db if db is not None else _db()
     if db is None:
         return 0
+    from thrift_agent import telegram
+    if telegram.quiet_now():                           # WO54 §3: nothing is sent (or re-sent) in the quiet hours
+        return 0
     went = 0
     rows = db.conn.execute("SELECT key, value FROM kv WHERE key LIKE ? ORDER BY key", (HELD + "%",)).fetchall()
     for key, value in rows:
@@ -154,7 +160,8 @@ def flush_held(db=None) -> int:
         ok, tok, chat = _ops_enabled() if h.get("chat") == "ops" else _enabled()
         if not ok:
             continue
-        text = f"{h.get('text')}\n\n(held back since {_clock(at)}: Telegram couldn't be reached)"
+        text = (f"{h.get('text')}\n\n(held back since {_clock(at)}: "
+                + ("the quiet hours)" if h.get("quiet") else "Telegram couldn't be reached)"))
         res = _send(tok, "sendMessage", timeout=20,
                     data={"chat_id": chat, "text": text[:4000], "disable_web_page_preview": True})
         if res == "not_sent":

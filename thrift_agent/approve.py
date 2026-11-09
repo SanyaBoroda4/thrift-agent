@@ -159,19 +159,17 @@ def _ack(db: DB, bot: Bot, kind: str, ref: str, label: str) -> None:
             db.log(ref, "card_mark_failed", f"{type(e).__name__}: {e}")
 
 
-def when_posting(s: Settings, now: datetime | None = None) -> str:
-    """When an approved listing goes up, in plain words (WO33): "in the next few minutes" inside the schedule's hours,
-    else "at 8:00" (the hours' start)."""
-    hours = s.get("schedule.hours") or ["08:00", "23:00"]
-    start, end = str(hours[0]), str(hours[1])
+def when_posting(s: Settings, now: datetime | None = None, db: DB | None = None) -> str:
+    """When an approved listing goes up, in plain words (WO33): "in the next few minutes" — WO54 §3: at every hour (no
+    listing hours any more), except from 8:20 to the end of the owner's quiet hours: "at 2:00 PM"."""
+    from thrift_agent import quiet
+    t = now or _now()
     try:
-        from zoneinfo import ZoneInfo
-        local = (now or _now()).astimezone(ZoneInfo(s.get("schedule.timezone") or "America/New_York"))
-    except Exception:  # noqa: BLE001
-        local = now or _now()
-    if start <= local.strftime("%H:%M") < end:
-        return "in the next few minutes"
-    return f"at {start[1:] if start.startswith('0') else start}"
+        if quiet.closing(t, db) and (back := quiet.resume_at(t)) is not None:
+            return f"at {quiet.clock(back)}"
+    except Exception:  # noqa: BLE001 — the words never fail an answer
+        pass
+    return "in the next few minutes"
 
 
 def _sites(s: Settings) -> str:
@@ -197,7 +195,7 @@ def next_step(s: Settings, db: DB, iid: str) -> str:
     if status == "ready" and it["owner_price"] and needs_brand(it):    # 2026-10-27: nor without a brand
         return "it goes up once you reply with its brand (or 'no brand')"
     if status == "ready" and it["owner_price"]:
-        return f"it goes up {when_posting(s)} on {_sites(s)}"
+        return f"it goes up {when_posting(s, db=db)} on {_sites(s)}"
     if status == "new":
         return "updating the listing now — its card comes back in about a minute"
     if status == "awaiting_condition":
@@ -474,6 +472,9 @@ def pump(s: Settings, db: DB) -> str | None:
     head of the queue is still being processed, or another sender holds the lock (it sends)."""
     if db.conn.in_transaction:
         return None                                   # never inside a caller's transaction; the worker pumps soon
+    from thrift_agent import quiet
+    if quiet.is_quiet(None, db):
+        return None                                   # WO54 §3: nothing is sent in the quiet hours (2:00 PM: it is)
     token = _lock(db)
     if token is None:
         return None
@@ -1187,6 +1188,9 @@ def _route_ops(s: Settings, db: DB, update: dict) -> str:
     quoted = ((msg.get("reply_to_message") or {}).get("text") or "")
     if bot is None:
         return "ignored: no ops chat"
+    from thrift_agent import quietctl
+    if word := quietctl.command(text):               # WO54 §3: the owner's "post now" / "quiet now"
+        return _quiet_word(s, db, bot, word, mid)
     reply = msg.get("reply_to_message")
     if isinstance(reply, dict) and reply.get("message_id") is not None:   # WO35: "⚠️ … can't confirm" lives here now
         row = db.outbox_lookup(msg["chat"]["id"], reply["message_id"])
@@ -1240,6 +1244,29 @@ def _route_ops(s: Settings, db: DB, update: dict) -> str:
                                                 " — nothing to take down (history, or not listed elsewhere)"),
                      reply_to=mid)
     return f"ops: matched {sale_id} to {iid}"
+
+
+def _quiet_word(s: Settings, db: DB, bot: Bot, word: str, mid: int | None) -> str:
+    """WO54 §3, the owner's overrides in the private chat. "post now": the quiet hours lifted for today — inside today's
+    window everything starts at once (deploy/quiet.sh, detached); "quiet now": back — inside it everything stops
+    again. The answer goes BEFORE they are back (inside them nothing is sent) and AFTER they are lifted; then ONE
+    heartbeat, so thrift-api mirrors the change at once (before a stop takes the worker)."""
+    from thrift_agent import quiet, quietctl
+    q = quiet.cfg()
+    if word == "post_now":
+        quiet.set_post_now(db)
+        bot.send_message(quietctl.LIFTED_TEXT, reply_to=mid)
+        quietctl.beat_now(db)
+        how = quietctl.after_override(s, db)
+        return f"ops: post now ({how or 'nothing to start'})"
+    window = quiet.current(None, q)
+    bot.send_message(f"✓ Quiet hours back — the agent stops now and starts again at {quiet.clock(window[1], q)}."
+                     if window else f"✓ Quiet hours back — from {q.label().replace(' – ', ' to ')} the agent does "
+                                    f"nothing on the Mac.", reply_to=mid)
+    quiet.clear_override(db)
+    quietctl.beat_now(db)
+    how = quietctl.after_override(s, db)
+    return f"ops: quiet now ({how or 'nothing to stop now'})"
 
 
 def _route(s: Settings, db: DB, bot: Bot, update: dict) -> str:
@@ -2065,6 +2092,9 @@ def resend_pending(s: Settings, db: DB) -> list[str]:
     Returns the refs re-sent: always none since WO37 (was: the open one past telegram.resend_after_hours)."""
     if bot_for(s) is None or db.conn.in_transaction:
         return []
+    from thrift_agent import quiet
+    if quiet.is_quiet(None, db):
+        return []                     # WO54 §3: nothing is re-sent in the quiet hours either
     token = _lock(db)
     if token is None:
         return []

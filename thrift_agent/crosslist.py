@@ -2,8 +2,8 @@
 goes up on Depop, then Vinted — no extra questions, every dropdown value from the saved catalogs (thrift_agent.catalogs).
 
 - A `listings` row per marketplace: queued when Poshmark posts (or by `thrift crosslist`), then the poster takes it,
-  right after the item's Poshmark listing (5–15 s apart, `crosslist.gap_seconds`, WO32b), within the hours and
-  `marketplaces.<m>.daily_cap` (25 a day each).
+  right after the item's Poshmark listing (5–15 s apart, `crosslist.gap_seconds`, WO32b), at any hour outside the
+  owner's quiet hours (WO54) and within `marketplaces.<m>.daily_cap` (25 a day each).
 - The same two keys as Poshmark (poster.dry_run off + poster.autopublish_confirmed on) AND
   `marketplaces.<m>.autopublish`; otherwise a dry run: the whole form filled, the screenshot and the mapped fields to the
   ops chat, the tab closed without publishing.
@@ -350,7 +350,7 @@ def next_job(s: Settings, db: DB, prefer: str | None = None, mps: list[str] | No
              paused_too: bool = False, live_elsewhere: bool = False) -> tuple[str, str] | None:
     """The next cross-list job: the item just listed first (Poshmark → Depop → Vinted, then the next item), else the
     oldest waiting one. `mps`: only these marketplaces (WO32: the ones whose poster can take a job now). WO53 rule 6
-    (`live_elsewhere`, outside the listing hours): only items already live on another site."""
+    (`live_elsewhere`): only items already live on another site (moot since WO54 §3: no listing hours any more)."""
     jobs = pending(s, db, mps, paused_too=paused_too, live_elsewhere_only=live_elsewhere)
     if not jobs:
         return None

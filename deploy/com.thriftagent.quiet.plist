@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- WO54 §3 — the owner's quiet hours (8:30 AM - 2:00 PM America/New_York): the calendar job that stops the agent at
+     8:30 and starts it again at 2:00 PM. It runs deploy/quiet.sh tick every 10 minutes of every hour (a grid in the
+     Mac's own clock: whatever its time zone, the tick decides by New York time, so 8:30 and 2:00 PM are never more
+     than 10 minutes off) and once at load (a login inside the quiet hours: the worker and the poster, loaded with it,
+     are stopped at once). A run missed while the Mac slept comes once at wake (launchd coalesces them). Inside the
+     window each tick also peeks for the owner's "post now". No KeepAlive: it runs, decides and exits; between runs it
+     holds no process and no memory. Installed and loaded by deploy/mac_setup.sh on every deploy. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.thriftagent.quiet</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__HOME__/thrift-agent/deploy/quiet.sh</string>
+    <string>tick</string>
+  </array>
+  <key>WorkingDirectory</key><string>__HOME__/thrift-agent</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Minute</key><integer>10</integer></dict>
+    <dict><key>Minute</key><integer>20</integer></dict>
+    <dict><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Minute</key><integer>40</integer></dict>
+    <dict><key>Minute</key><integer>50</integer></dict>
+  </array>
+  <!-- her laptop comes first: the tick itself runs at background priority -->
+  <key>ProcessType</key><string>Background</string>
+  <key>LowPriorityIO</key><true/>
+  <key>StandardOutPath</key><string>__HOME__/thrift/logs/quiet.out</string>
+  <key>StandardErrorPath</key><string>__HOME__/thrift/logs/quiet.err</string>
+</dict>
+</plist>

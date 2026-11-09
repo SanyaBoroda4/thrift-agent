@@ -5,7 +5,9 @@
 # the launchd service → the Thrift Chrome started if it isn't running (WO32; never restarted) → services status,
 # `thrift status` and the last 30 lines of the worker log. A failed setup or test run rolls the
 # checkout back to the commit before the pull, so launchd never runs untested code. Any failure exits non-zero.
-# The poster service is never started here: it stays off until the owner turns publishing on (the two keys).
+# The poster service is never started here: it stays off until the owner turns publishing on (the two keys); the
+# quiet hours' calendar job (WO54 §3, deploy/quiet.sh) starts it at 2:00 PM after stopping it at 8:30 AM — the owner's
+# design. Refused inside the quiet hours (below).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 before="${1:-}"
@@ -19,6 +21,18 @@ back() {   # a failure before the tests ran: the checkout goes back too, so noth
   fi
   exit 1
 }
+# WO54 §3: never inside the owner's quiet hours (8:30 AM – 2:00 PM, and nothing new from 8:20): the Mac is her laptop
+# then. THRIFT_DEPLOY_ANYWAY=1 overrides (an emergency fix with her go-ahead): the code is set up and tested, and the
+# agent stays stopped until 2:00 PM (or her "post now"). The checkout goes back (`back`): nothing untested is left.
+quiet_now() { .venv/bin/python -I -m thrift_agent.quietctl state 2>/dev/null || echo open; }
+case "$(quiet_now)" in
+  quiet|closing)
+    if [ -z "${THRIFT_DEPLOY_ANYWAY:-}" ]; then
+      echo "== not deployed: the owner's quiet hours ($(.venv/bin/python -I -m thrift_agent.quietctl status 2>/dev/null))" \
+           "— the Mac is her laptop then. Deploy after 2:00 PM (THRIFT_DEPLOY_ANYWAY=1 overrides)." >&2
+      back "the owner's quiet hours"
+    fi ;;
+esac
 if [ -d private/.git ]; then
   if [ -f .private.bundle ]; then
     # deploy.ps1 ships the PC's private repo as a bundle (an SSH session can't use the keychain's GitHub credential).
@@ -42,6 +56,14 @@ if ! THRIFT_DEPLOY=1 bash deploy/mac_setup.sh; then
   fi
   exit 1
 fi
+
+case "$(quiet_now)" in
+  quiet|closing)              # THRIFT_DEPLOY_ANYWAY inside the quiet hours: set up and tested, nothing started
+    bash deploy/quiet.sh tick || true
+    bash deploy/services.sh status
+    echo "== deployed — the owner's quiet hours: the agent starts again by itself at 2:00 PM (or with her 'post now')"
+    exit 0 ;;
+esac
 
 scan() { .venv/bin/thrift status 2>/dev/null | sed -n 's/^worker inbox scan: //p'; }
 last_scan="$(scan)"

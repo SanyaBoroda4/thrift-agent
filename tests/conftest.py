@@ -100,11 +100,19 @@ def no_cleanup_tick(monkeypatch):
 def quiet_hours_off(request):
     """WO54: the owner's quiet hours (8:30 AM - 2:00 PM, config/settings.yaml `quiet`) are off in every test that doesn't
     ask for them (`@pytest.mark.quiet_on`): the suite's fixed clocks and the Mac's own pre-deploy run at any hour must
-    not find the agent quiet."""
+    not find the agent quiet. Nor the silent nights (telegram.silent_hours, 10 PM - 7 AM: disable_notification), so a
+    test checking what is sent reads the same at any hour."""
     if request.node.get_closest_marker("quiet_on") is None:
         s = config.settings()
-        s.data = config._merge(s.data, {"quiet": {"enabled": False}})
+        s.data = config._merge(s.data, {"quiet": {"enabled": False}, "telegram": {"silent_hours": ["00:00", "00:00"]}})
     yield
+
+
+@pytest.fixture(autouse=True)
+def no_real_quiet_tick(monkeypatch):
+    """WO54 §3: no test ever runs the Mac's quiet-hours calendar job (deploy/quiet.sh: it stops and starts the real
+    worker and poster) — the suite runs on the Mac at every deploy."""
+    monkeypatch.setattr("thrift_agent.quietctl.run_tick", lambda: "not in a test")
 
 
 @pytest.fixture(autouse=True)

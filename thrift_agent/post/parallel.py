@@ -62,12 +62,36 @@ def delist_ready(site: str, poster) -> str | None:
     return f"{crosslist.LABEL[site]}'s {what} isn't recorded yet ({', '.join(missing)})" if missing else None
 
 
+def quiet_hold(s: Settings, db: DB, what: str = "new") -> bool:
+    """WO54 §3, the owner's quiet hours (8:30 AM – 2:00 PM, thrift_agent/quiet.py): True when `what` must not start now.
+    "new" — a listing, a form check, a test run, a verifying look, an edit, a price drop, an order sweep, the photo
+    check, the reconciler, a request: from 8:20 (work in hand finishes). "takedown": the same, unless the owner's
+    quiet.allow_takedowns. "any" — the housekeeping, Poshmark's browser itself: 8:30 – 2:00 PM. Inside the quiet hours
+    the poster asks for its own stop (the calendar job didn't come), unless it stays for take-downs. Never raises."""
+    try:
+        from thrift_agent import quiet, quietctl
+        if not quiet.closing(None, db):
+            return False
+        allow = quiet.cfg().allow_takedowns
+        inside = quiet.is_quiet(None, db)
+        if inside and not allow:
+            quietctl.ask_stop(s, db, "poster")
+        if what == "takedown":
+            return not allow
+        return (inside and not allow) if what == "any" else True
+    except Exception as e:  # noqa: BLE001 — the quiet hours never stop the poster
+        db.log(None, "error", f"quiet hours: {type(e).__name__}: {e}")
+        return False
+
+
 def may_take_down(s: Settings, db: DB, site: str) -> bool:
     """Take-downs run in any hour — they keep a sold item from selling twice — and before any listing, but never with
     the owner's PAUSE (the brake for everything that touches a site), the lid closed (a maintenance wake would cut one
     off half-way), or the site stopped for the window by a login / CAPTCHA / block / check page (it would only meet
-    the same wall). WO40: a site stopped for posting failures (three in a row) still takes down what sold."""
-    return not s.flag_set("PAUSE") and power.lid_closed() is not True and not crosslist.account_blocked(db, site)
+    the same wall). WO40: a site stopped for posting failures (three in a row) still takes down what sold. WO54 §3:
+    nor in the owner's quiet hours (from 8:20), unless she allows them (quiet.allow_takedowns)."""
+    return (not s.flag_set("PAUSE") and power.lid_closed() is not True and not crosslist.account_blocked(db, site)
+            and not quiet_hold(s, db, "takedown"))
 
 
 async def takedowns(site: str, poster, db: DB, ctx, sites: list[str] | None = None, shots: Path | None = None) -> bool:
@@ -81,6 +105,8 @@ async def takedowns(site: str, poster, db: DB, ctx, sites: list[str] | None = No
 async def listing_edit(s: Settings, db: DB, site: str, poster, ctx, sites: list[str], dry: bool) -> bool:
     """WO43: the site's next due listing edit (a department / category change), before a price drop."""
     from thrift_agent import edits
+    if quiet_hold(s, db):                            # WO54 §3: no edit starts in the quiet hours (from 8:20)
+        return False
     try:
         return await edits.run_one(s, db, site, poster, ctx, sites, dry_poster=dry)
     except AccountBlocked as e:
@@ -94,6 +120,8 @@ async def listing_edit(s: Settings, db: DB, site: str, poster, ctx, sites: list[
 async def price_drop(s: Settings, db: DB, site: str, poster, ctx, sites: list[str], dry: bool) -> bool:
     """WO41: the site's next due price drop, on a turn with no take-down and no listing to do. A login / CAPTCHA page
     stops the site for the window, as a listing's would. True when it worked on one."""
+    if quiet_hold(s, db):                            # WO54 §3: no price drop starts in the quiet hours (from 8:20)
+        return False
     try:
         return await pricedrop.run_one(s, db, site, poster, ctx, sites, dry=dry)
     except AccountBlocked as e:
@@ -345,6 +373,13 @@ async def _poshmark_worker(s, poster, dry, stage, halt, state, opener, takedowns
     reconciled = False
     try:
         while not halt.is_set():
+            if quiet_hold(s, db, "any"):                   # WO54 §3: 8:30 – 2:00 PM no browser at all (its stop asked)
+                if browser.alive:
+                    await browser._close_quietly()
+                    browser.lost("the quiet hours")        # opened again after them, its login checked
+                state.idle("poshmark")
+                await _rest(halt, IDLE)
+                continue
             if not await browser.ensure():                 # WO51: a closed browser reopened before anything else
                 await _rest(halt, IDLE)
                 continue
@@ -430,14 +465,16 @@ async def _poshmark_turn(s, db, ps, ctx, dry, stage, state, awake, failures, mar
                          browser=None) -> bool:
     """One Poshmark turn: requests, take-downs, a listing being verified, then one listing. True when it listed (or
     tried to)."""
-    await runner.serve_requests(s, db, ps, ctx)
+    if not quiet_hold(s, db):                          # WO54 §3: no request starts in the quiet hours (from 8:20)
+        await runner.serve_requests(s, db, ps, ctx)
     if takedowns is not None and may_take_down(s, db, "poshmark") and await takedowns("poshmark", ps["poshmark"], db, ctx):
         return True
     # WO53 §2: a publish being verified, looked at by Poshmark's own public pages on its schedule — quietly, any hour,
     # also while Poshmark is paused (plain reads: nothing opened in the browser, nothing clicked)
-    if not dry and await runner.recheck_unconfirmed(s, db, ps, "poshmark", ctx):
+    if not dry and not quiet_hold(s, db) and await runner.recheck_unconfirmed(s, db, ps, "poshmark", ctx):
         return True
-    if (why := formcheck.due(s, db, "poshmark")) and not runner._paused(db) and not s.flag_set("PAUSE"):
+    if (not quiet_hold(s, db) and (why := formcheck.due(s, db, "poshmark")) and not runner._paused(db)
+            and not s.flag_set("PAUSE")):
         state.set("poshmark", "form check")       # WO52 §3: the canary's form filled and left — never published
         try:
             await formcheck.run_poshmark(s, db, ps["poshmark"], ctx, why)
@@ -446,7 +483,7 @@ async def _poshmark_turn(s, db, ps, ctx, dry, stage, state, awake, failures, mar
         return True
     if crosslist.blocked(db, "poshmark"):
         test = health.test_due(db, "poshmark")
-        if test and not runner._paused(db) and not s.flag_set("PAUSE"):
+        if test and not runner._paused(db) and not s.flag_set("PAUSE") and not quiet_hold(s, db):
             state.set("poshmark", "test")
             try:
                 return await _poshmark_test(s, db, ps, ctx, test)
@@ -462,7 +499,7 @@ async def _poshmark_turn(s, db, ps, ctx, dry, stage, state, awake, failures, mar
         runner._tell_held(s, db, ["poshmark"])
     job = (runner.next_job(s, db, ["poshmark"], dry, allow_publish=not hold, live_elsewhere=tonight)
            if ok or tonight else None)
-    if job is not None and runner._paused(db):
+    if job is not None and (runner._paused(db) or quiet_hold(s, db)):   # WO54 §3: no listing starts from 8:20
         job = None
     if job is None:
         if (await listing_edit(s, db, "poshmark", ps["poshmark"], ctx, marketplaces, dry)     # edits: any hour
@@ -611,7 +648,7 @@ async def _cross_turn(s, db, ps, mp, dry, state, awake, takedowns) -> bool:
     # WO35 §4: an unconfirmed publish looked for again by the site's own data (quiet; any hour, never with the lid
     # closed or the site stopped by what it showed — a read runs on a site stopped by our own failures in a row:
     # live 2026-10-20 the refused Tory Burch's re-check never ran behind the brake)
-    if (reachable and may_take_down(s, db, mp) and not crosslist.account_blocked(db, mp)
+    if (reachable and may_take_down(s, db, mp) and not crosslist.account_blocked(db, mp) and not quiet_hold(s, db)
             and await runner.recheck_unconfirmed(s, db, ps, mp)):
         return True
     if (reachable and not dry and not crosslist.blocked(db, mp) and not runner._paused(db)
@@ -620,7 +657,7 @@ async def _cross_turn(s, db, ps, mp, dry, state, awake, takedowns) -> bool:
     hours_ok, why_not = can_post(s, 0, 0)
     tonight = not hours_ok and outside_hours(why_not)   # WO53 rule 6: an item live elsewhere is finished the same night
     if (reachable and not runner._paused(db) and not s.flag_set("PAUSE") and not crosslist.account_blocked(db, mp)
-            and (why := formcheck.due(s, db, mp))):
+            and not quiet_hold(s, db) and (why := formcheck.due(s, db, mp))):
         state.set(mp, "form check")               # WO52 §3: the canary's form filled and left — never published
         try:
             await formcheck.run_cross(s, db, ps, mp, why)
@@ -628,13 +665,14 @@ async def _cross_turn(s, db, ps, mp, dry, state, awake, takedowns) -> bool:
             state.set(mp, None)
         return True
     if (crosslist.blocked(db, mp) and reachable and not dry and not runner._paused(db) and not s.flag_set("PAUSE")
-            and (test := health.test_due(db, mp))):
+            and not quiet_hold(s, db) and (test := health.test_due(db, mp))):
         state.set(mp, "test")                     # WO51: a paused site's test run — its next item, never published
         try:
             return await _cross_test(s, db, ps, mp, test)
         finally:
             state.set(mp, None)
-    if dry or not reachable or not (hours_ok or tonight) or crosslist.blocked(db, mp) or runner._paused(db):
+    if (dry or not reachable or not (hours_ok or tonight) or crosslist.blocked(db, mp) or runner._paused(db)
+            or quiet_hold(s, db)):                     # WO54 §3: no listing starts from 8:20
         state.idle(mp)
         return False
     job = crosslist.next_job(s, db, mps=[mp], live_elsewhere=not hours_ok)
@@ -662,6 +700,8 @@ async def _sweep(s, db, site: str, read, gap: float | None, poster=None, lost=No
     """The site's order sweep when due (orders.maybe_sweep: on an idle turn, or inside a pause after a listing that
     leaves room for it) — never the worker's end. `lost`: told when the sweep found the browser closed (WO51: live
     2026-10-28 → 11-01, Poshmark's sweep failed every 30 minutes on a closed browser and nobody heard)."""
+    if quiet_hold(s, db):                            # WO54 §3: no order sweep starts in the quiet hours (from 8:20)
+        return
     try:
         await orders.maybe_sweep(s, db, site, read, gap, poster)
     except Exception as e:  # noqa: BLE001 — logged; the sweep comes back next time
@@ -690,6 +730,12 @@ async def _housekeeping(s, db, ps, cross, dry, stop, state, sites, until_idle) -
     except Exception as e:  # noqa: BLE001
         db.log(None, "error", f"repair_gone: {type(e).__name__}: {e}")
     while not stop.is_set():
+        if quiet_hold(s, db, "any"):                         # WO54 §3: 8:30 – 2:00 PM nothing at all (its stop asked)
+            if until_idle and state.all_idle(sites):         # (the tests' end: nothing can start now)
+                stop.set()
+                return
+            await _rest(stop, HOUSEKEEPING)
+            continue
         try:
             if worker is not None:
                 worker.tick(db, power.lid_closed())
@@ -700,11 +746,12 @@ async def _housekeeping(s, db, ps, cross, dry, stop, state, sites, until_idle) -
                 crosslist.retry_failed(s, db, at=datetime.now(timezone.utc))   # WO51: an item failure, 30 min later
                 if not dry:
                     feed(s, db)
-                if not runner._paused(db):
+                if not runner._paused(db) and not quiet_hold(s, db):     # WO54 §3: no request starts from 8:20
                     await runner.serve_cross_requests(s, db, ps, None)
                     if asked := runner.refresh.take_requests(db):
                         await runner._refresh(s, db, None, asked)
-                await runner.serve_requests(s, db, {mp: ps[mp] for mp in cross}, None)
+                if not quiet_hold(s, db):
+                    await runner.serve_requests(s, db, {mp: ps[mp] for mp in cross}, None)
             for iid in crosslist.waiting_lines(db, s):       # WO54: cards due, and open cards whose state changed
                 maybe_announce(s, db, iid)
             if not dry and s.get("price_drop.enabled", True):  # WO41: the stages that fell due; the day's one line
@@ -714,9 +761,10 @@ async def _housekeeping(s, db, ps, cross, dry, stop, state, sites, until_idle) -
                     from thrift_agent import jobs
                     jobs.ok(db, "price_drops")                # WO52 §4
                 pricedrop.announce(s, db)
-            if not dry and photocheck.due(db) and not runner._paused(db):   # WO45 §6: every listing read back
+            if not dry and photocheck.due(db) and not runner._paused(db) and not quiet_hold(s, db):   # WO45 §6, WO54
                 await photocheck.run(s, db, ps)
-            if not dry and isinstance(ps.get("poshmark"), runner.PoshmarkPoster):   # WO53 §7: the closet vs our records
+            if (not dry and isinstance(ps.get("poshmark"), runner.PoshmarkPoster)   # WO53 §7: the closet vs our records
+                    and not quiet_hold(s, db)):                                    # WO54 §3: not from 8:20
                 from thrift_agent import reconcile
                 if reconcile.due(db, time.time()):
                     try:
@@ -727,7 +775,8 @@ async def _housekeeping(s, db, ps, cross, dry, stop, state, sites, until_idle) -
                 from thrift_agent import alarm, jobs, memory
                 jobs.check(db)
                 alarm.tick(db, hours_open=can_post(s, 0, 0)[0])
-                memory.tick(s, db, idle=state.all_idle(sites) and not runner._paused(db))   # WO52 §7
+                if not quiet_hold(s, db):                     # WO54 §3: no Chrome restart from 8:20
+                    memory.tick(s, db, idle=state.all_idle(sites) and not runner._paused(db))   # WO52 §7
             if until_idle and state.all_idle(sites) and _nothing_left(s, db, sites, dry):
                 stop.set()
                 return
@@ -738,6 +787,8 @@ async def _housekeeping(s, db, ps, cross, dry, stop, state, sites, until_idle) -
 
 def _nothing_left(s, db, sites, dry) -> bool:
     """No row any worker could still take now (the test runs' end): a site stopped for the window takes none."""
+    if quiet_hold(s, db):                            # WO54 §3: from 8:20 nothing can be taken
+        return True
     if not dry and any(pricedrop.due_rows(db, m) and pricedrop.may_drop(s, db, m, dry) for m in sites):
         return False
     if ("poshmark" in sites and not crosslist.blocked(db, "poshmark")

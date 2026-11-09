@@ -111,6 +111,11 @@ def report(s: Settings, db: DB, now: datetime | None = None, api=None,
             out.append(memory())
         except Exception as e:  # noqa: BLE001 — a part it can't read says so
             out.append(f"Memory: unreadable now ({type(e).__name__})")
+    try:                                                           # WO54 §3: the owner's quiet hours
+        from thrift_agent import quietctl
+        out.append(quietctl.status_line(now, db))
+    except Exception as e:  # noqa: BLE001 — a part it can't read says so
+        out.append(f"Quiet hours: unreadable now ({type(e).__name__})")
     # the worker
     prog = loads(db.kv_get(alerts.PROGRESS)) or {}
     out.append(f"Worker: last progress {_ago(prog.get('at'), now)}" + (f" ({prog.get('what')})" if prog.get("what") else "")

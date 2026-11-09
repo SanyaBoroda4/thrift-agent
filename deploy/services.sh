@@ -4,7 +4,7 @@
 #     bash deploy/services.sh start worker|poster|chrome
 #     bash deploy/services.sh stop worker|poster|chrome|all     (all: the worker and the poster)
 #     bash deploy/services.sh restart worker|poster     (starts it when it isn't loaded)
-#     bash deploy/services.sh status
+#     bash deploy/services.sh status          (also the owner's quiet hours, WO54 §3: deploy/quiet.sh)
 #     bash deploy/services.sh logs [worker|poster] [lines]
 # mac_setup.sh writes the plists to ~/Library/LaunchAgents; `start` loads them. deploy.ps1 restarts the WORKER only:
 # the poster service stays off until the owner turns publishing on (poster.dry_run false AND
@@ -92,6 +92,14 @@ status() {
   if [ -n "$(stray_workers)" ]; then
     echo "WARNING: thrift run outside launchd:"
     stray_workers
+  fi
+  # WO54 §3: the owner's quiet hours — the calendar job that stops the agent at 8:30 AM and starts it at 2:00 PM
+  local q
+  q="$(cd "$(dirname "$0")/.." && .venv/bin/python -I -m thrift_agent.quietctl status --short 2>/dev/null || true)"
+  if loaded quiet; then
+    echo "quiet: ${q:-unknown} (deploy/quiet.sh, log ~/thrift/logs/quiet.log)"
+  else
+    echo "quiet: ${q:-unknown} — WARNING: its calendar job com.thriftagent.quiet isn't loaded: bash deploy/mac_setup.sh"
   fi
 }
 
