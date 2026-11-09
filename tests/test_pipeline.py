@@ -277,7 +277,8 @@ def test_split_reports_a_batch_note_it_could_not_apply(tmp_path, monkeypatch):
     bid, _ = _waiting_batch(s, db, [[0, 1], [2]], note="size 8, NWT")
     pipeline.confirm(s, db, bid, "ok")
     assert [it["note"] for it in db.items("new")] == [None, None]
-    assert len(said) == 1 and "size 8, NWT" in said[0] and "Reply to the right item's card" in said[0]
+    assert len(said) == 1 and "size 8, NWT" in said[0] and "a reply to the right item's card" in said[0]
+    assert "go on without it" in said[0]                               # WO54 §2: said as done, nothing waits
     assert "thrift " not in said[0]                                   # WO33: a reply is always enough
 
     said.clear()
@@ -541,25 +542,35 @@ def test_auto_confirm_leaves_out_a_screenshot_that_matches_no_item(tmp_path, mon
     ([[0, 1], [2, 3, 4], []], [], ([[0, 1], [2, 3, 4]], [], [])),                  # an empty group: nothing lost
     ([[0, 1, 2], [3]], [4], ([[0, 1, 2], [3]], [4], ["screenshot 4 matches no item: left out"])),
     ([[0, 1, 2], [3], [4]], [], ([[0, 1, 2], [3]], [4], ["screenshot 4 matches no item: left out"])),
-    ([[0, 1], [3, 4]], [], None),                                                  # photo 2 in no item: asked
-    ([[0, 1, 2], [2, 3, 4]], [], None),                                            # photo 2 twice: asked
+    # WO54 §2: put right by code, never asked (before: None — the contact sheet asked)
+    ([[0, 1], [3, 4]], [], ([[0, 1, 2], [3, 4]], [],
+                            ["photo 2 was in no item: joined item 1 (the photos shot next to it)"])),
+    ([[0, 1, 2], [2, 3, 4]], [], ([[0, 1, 2], [3, 4]], [], ["photo 2 was in two items: kept in the first"])),
 ])
 def test_accept_grouping(groups, unassigned, result):
     kinds = ["own", "own", "own", "own", "retail"]
     assert pipeline.accept_grouping(groups, 5, kinds, unassigned) == result
 
 
-def test_a_grouping_that_loses_a_photo_still_asks_with_the_contact_sheet(tmp_path, monkeypatch, facts, owner_messages):
+def test_a_grouping_that_loses_a_photo_is_put_right_never_asked(tmp_path, monkeypatch, facts, owner_messages):
+    """WO54 §2 (the owner: decide, never wait): photo 2 in no item joins the item of the photo shot before it — no
+    contact sheet (it held the whole queue until her reply), one private line says what was done."""
     s = _settings(tmp_path)
     db = DB(s.path("db"))
+    said = []
+    monkeypatch.setattr(pipeline.notify, "say", said.append)
     _mixed_share(s)
     seg_out = SegOut(groups=[Group(photos=[0, 1], summary="red flats", full_item_photos=[0], confidence=0.95),
                              Group(photos=[3, 4, 5], summary="blue dress", full_item_photos=[3], confidence=0.95)])
     monkeypatch.setattr("thrift_agent.brain.llm.ask", _wo2_ask(facts, {}, seg_out, {}))
     [folder] = pipeline.ready_folders(s)
     bid = pipeline.register(s, db, folder)
-    pipeline.process_batch(s, db, bid)                                     # photo 2 is in no item: never guessed
-    assert db.batch(bid)["status"] == "needs_confirm" and owner_messages == [("batch", bid)]
+    pipeline.process_batch(s, db, bid)
+    assert db.batch(bid)["status"] == "split" and owner_messages == []
+    assert [len(json.loads((Path(i["dir"]) / "photos.json").read_text(encoding="utf-8"))) for i in db.items("new")] \
+        == [3, 3]
+    assert any("photo 2 was in no item: joined item 1" in r for r in loads(db.batch(bid)["reasons"]))
+    assert any(m.startswith("📸 ") and "put right by itself" in m for m in said)
 
 
 def test_auto_confirm_off_is_the_old_flow(tmp_path, monkeypatch, facts, owner_messages):
@@ -595,8 +606,9 @@ def test_reshared_item_is_held_as_a_possible_duplicate(tmp_path, monkeypatch, fa
     assert first["status"] == "awaiting_price" and first["cover_hash"]
     pipeline.process_item(s, db, iids[1])
     second = db.item(iids[1])
-    assert second["status"] == "awaiting_price" and loads(second["gate"])["decision"] == "needs_info"
+    assert second["status"] == "awaiting_price" and loads(second["gate"])["decision"] == "publish"   # WO54 §2
     assert any(f"looks like item {iids[0]}" in r for r in loads(second["gate"])["reasons"])
+    assert any(n.startswith(f"looks like item {iids[0]}") for n in loads(second["gate"])["notes"])   # the card's ⚠️
     pipeline.set_price(s, db, iids[1], 60)                               # price first, then the answer
     pipeline.answer(s, db, iids[1], "different item")                    # the seller's word clears the hold
     pipeline.process_item(s, db, iids[1])
@@ -670,8 +682,8 @@ def test_archive_can_live_next_to_the_inbox(tmp_path):
 # ---------- WO4: the owner's price, open questions, kids sizes ----------
 
 def test_a_price_alone_makes_the_item_ready_whatever_it_could_not_read(tmp_path, monkeypatch, facts, owner_messages):
-    """WO37 (the owner): the only thing that waits for her is the price — an unreadable brand is a question ON the card,
-    and her price lists the item; nothing comes back for it."""
+    """WO37 (the owner): the only thing that waits for her is the price — WO54 §2: an unreadable brand is decided (no
+    brand; the card's ⚠️ line says so, no question), and her price lists the item; nothing comes back for it."""
     s = _settings(tmp_path)
     db = DB(s.path("db"))
     state = {"brand": Ev(value=None, photos=[2], confidence=0.2)}       # a brand label it can't read (2026-10-27:
@@ -685,11 +697,13 @@ def test_a_price_alone_makes_the_item_ready_whatever_it_could_not_read(tmp_path,
 
     pipeline.process_item(s, db, iid)
     it = db.item(iid)
-    assert it["status"] == "awaiting_price" and any("brand unclear" in r for r in loads(it["gate"])["reasons"])
+    gate = loads(it["gate"])
+    assert it["status"] == "awaiting_price" and gate["questions"] == [] and gate["decision"] == "publish"
     pr = loads(it["price"])                                              # no brand, no table: still a price (WO20)
     assert pr["source"] == "default" and pr["list_price"] == 20
     assert owner_messages.count(("item", iid)) == 1
-    assert any(q.startswith("Brand? Couldn't read it") for q in loads(it["gate"])["questions"])
+    assert any(n.startswith(pipeline.BRAND_NONE) for n in gate["notes"]) and gate["brand_unsure"]
+    assert loads(it["facts"])["brand"]["value"] is None
 
     assert pipeline.set_price(s, db, iid, 45) == "ready"                  # her price: listed as it is
     pipeline.answer(s, db, iid, "brand Vince")                            # a note reprocesses it, the price kept
@@ -750,8 +764,8 @@ def test_nwt_without_tag_lists_like_new_unless_the_owner_says_nwt(tmp_path, monk
     it = db.item(iid)
     gate = loads(it["gate"])
     assert loads(it["facts"])["condition"] == "like_new" and loads(it["renders"])["poshmark"]["condition"] == "like_new"
-    assert gate["decision"] == "publish" and gate["questions"] == [pipeline.NWT_QUESTION] and gate["notes"] == []
-    assert "Listed as Like New: no photo of an attached hang tag" in pipeline.NWT_QUESTION
+    assert gate["decision"] == "publish" and gate["questions"] == [] and gate["notes"] == [pipeline.NWT_QUESTION]
+    assert pipeline.NWT_QUESTION == "Listed as Like New: no photo of an attached hang tag"   # WO54 §2: a statement
     assert pipeline.set_price(s, db, iid, 90) == "ready"                  # a price alone: like new, ready
 
     pipeline.answer(s, db, iid, "NWT")                                    # the owner's word is the other proof
@@ -765,7 +779,7 @@ def test_nwt_without_tag_lists_like_new_unless_the_owner_says_nwt(tmp_path, monk
 
 def test_a_possible_reshare_is_a_warning_on_the_card_not_a_hold(tmp_path, monkeypatch, facts, owner_messages):
     """WO37 (the owner): only the price waits — a photo that looks like an item shared before is a warning on the card
-    ("same item?"); 'same item' drops it, a price lists it."""
+    (WO54 §2: a statement — the photo rules decide at her price, settle_twin); 'same item' drops it, a price lists it."""
     s = _settings(tmp_path)
     db = DB(s.path("db"))
     monkeypatch.setattr("thrift_agent.brain.llm.ask", fake_ask(facts))
@@ -783,7 +797,8 @@ def test_a_possible_reshare_is_a_warning_on_the_card_not_a_hold(tmp_path, monkey
 
     pipeline.process_item(s, db, iids[1])                                  # a warning, never a hold
     gate = loads(db.item(iids[1])["gate"])
-    assert gate["hold"] is None and any(q.startswith("looks like item") for q in gate["questions"])
+    assert gate["hold"] is None and gate["questions"] == []
+    assert any(n.startswith("looks like item") and "?" not in n for n in gate["notes"])
     sent_before = len(owner_messages)
     assert pipeline.answer(s, db, iids[1], "same item") == "dropped"       # confirmed duplicate: dropped, not reprocessed
     assert db.item(iids[1])["status"] == "dropped" and len(owner_messages) == sent_before
@@ -1016,9 +1031,9 @@ def test_a_fair_reading_goes_up_as_good_and_the_owner_is_told(tmp_path, monkeypa
     pipeline.process_item(s, db, iid)
     it = db.item(iid)
     assert loads(it["facts"])["condition"] == "good" and loads(it["renders"])["poshmark"]["condition"] == "good"
-    assert "looked well-worn — listed as Good; check before approving" in loads(it["gate"])["notes"]
+    assert "looked well-worn — listed as Good" in loads(it["gate"])["notes"]      # WO54 §2: a decision said
     caption, _ = pipeline.approve.item_caption(iid, it)
-    assert "⚠️ looked well-worn — listed as Good; check before approving" in caption
+    assert "⚠️ looked well-worn — listed as Good" in caption and "approving" not in caption
     assert "Condition: Good" in caption                               # Poshmark's label (WO20)
 
 

@@ -199,8 +199,9 @@ def _settle_known(db: DB, client, sid: str, found: Path, names: list[str], test:
                 except OSError as e:
                     db.log(sid, "share_mark_failed", f"{type(e).__name__}: {e}")
             elif found.parent.name == "archive":
+                # WO54 §2: what happened and what follows — no reply asked (nothing is listed without a price)
                 notify.say(f"🧪 The iCloud copy of test share {sid} was taken before the API said it was a test — its "
-                           "card is a real one: reply 'same item' to it, or price it if it is real.")
+                           "card is a real one in the group; nothing is listed unless it gets a price.")
     client.post(f"/shares/{sid}/fetched", {"names": names})
 
 

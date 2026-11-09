@@ -174,32 +174,62 @@ def test_a_price_on_a_card_with_no_size_never_says_queued(env, tmp_path, facts, 
 
 # ---------------------------------------------------------------- a refused form
 
-def test_a_field_error_is_one_private_line_at_once_and_never_posted_again_by_itself(env, tmp_path, facts,
-                                                                                                monkeypatch):
+def test_a_field_error_is_tried_again_by_itself_another_way_then_one_line_and_the_alarm(env, tmp_path, facts,
+                                                                                         monkeypatch):
+    """WO54 §2 (the owner: every failure is debugged, fallen back on and tried again by itself): a form refused with a
+    field error goes back in line by itself 30 minutes later, another way — a fresh page, a stricter title, the site's
+    own data looked at first; refused again, ONE private ⛔ line (true: tried, refused again, the code must change) and
+    ONE 🚨; then it is tried once more by itself only after a code update (WO39/WO53 said "never posted again by
+    itself"). Nothing asks; her own 'retry' still works."""
+    from datetime import datetime, timedelta, timezone
     from types import SimpleNamespace
     s, db, said = env
     ops = FakeBot(OPS)
     monkeypatch.setattr(approve, "ops_bot_for", lambda *_: ops)
     monkeypatch.setattr(crosslist.notify, "ops_photo", lambda *a, **k: True)
-    iid = _item(db, tmp_path, facts, "Sam Edelman Daniella Snake Print Ankle Sandals size 8.5", status="ready",
-                size="8.5", name="sam")
+    monkeypatch.setattr(crosslist, "code_version", lambda: "v1")
+    title = "Sam Edelman Daniella Snake Print Ankle Sandals size 8.5"
+    iid = _item(db, tmp_path, facts, title, status="ready", size="8.5", name="sam")
     db.set_item(iid, owner_price=25)
     db.upsert_listing(iid, "vinted", status="posting", attempts=1)
     out = SimpleNamespace(status="failed", url=None, clicked=False, guesses=[], screenshot=None, note=None,
                           error="Vinted refused the form: Brand: Fill in brand to continue (its requests after "
                                 "the click: /api/v2/item_upload/items 400)")
-    crosslist.record(s, db, iid, "vinted", "Sam Edelman Daniella Snake Print Ankle Sandals size 8.5", out, {})
-    assert ops.texts() == ["⛔ Sam Edelman Daniella Snake Print Ankle Sandals size 8.5: Vinted refused the form — "
-                           "Brand: Fill in brand to continue (its requests after the click: "
-                           "/api/v2/item_upload/items 400). It isn't on Vinted (its own data agrees); not posted again "
-                           "by itself until the code is fixed."]          # WO53: nothing asked
-    assert any(m.startswith("🚨") and "refused the form" in m for m in said)   # the fix request, once
+    crosslist.record(s, db, iid, "vinted", title, out, {})
+    assert ops.texts() == [] and not any(m.startswith(("🚨", "⛔")) for m in said)   # the first time: quietly
+    assert db.listing(iid, "vinted")["status"] == "failed"
+    now = datetime.now(timezone.utc)
+    assert crosslist.retry_failed(s, db, at=now + timedelta(minutes=20)) == []        # not before its 30 minutes
+    assert crosslist.retry_failed(s, db, at=now + timedelta(minutes=31)) == [(iid, "vinted")]
+    assert db.listing(iid, "vinted")["status"] == "queued"
+    assert crosslist.unconf_state(db, iid, "vinted")["stage"] == "retry"            # the site's own data looked at first
+    assert crosslist.strict_level(db, iid, "vinted") == 1                          # … and a stricter title
+
+    crosslist.set_unconf(db, iid, "vinted", stage="reposted")                      # (run_cross, right before the post)
+    db.upsert_listing(iid, "vinted", status="posting")
+    crosslist.record(s, db, iid, "vinted", title, out, {})                         # refused again: now it is said
+    assert ops.texts() == [f"⛔ {title}: Vinted refused the form — Brand: Fill in brand to continue (its requests "
+                           "after the click: /api/v2/item_upload/items 400). It isn't on Vinted (its own data agrees). "
+                           "Tried again by itself another way and refused again: the code must change for it (the 🚨 "
+                           "has the request); it is tried once more by itself after the next code update."]
+    assert "retry" not in ops.texts()[0].lower().replace("tried", "")          # nothing asked
+    assert len([m for m in said if m.startswith("🚨") and "refused the form" in m]) == 1   # the fix request, once
     assert tuple(db.conn.execute("SELECT kind, ref FROM outbox WHERE chat_id=?", (str(OPS),)).fetchone()) == \
         ("refused", f"{iid}:vinted")
     db.kv_set(crosslist.WINDOW_SEEN, "yesterday")
-    crosslist.new_window(s, db)                                             # a new window: NOT back in line by itself
+    crosslist.new_window(s, db)                                            # the same code: NOT back in line by itself
     assert db.listing(iid, "vinted")["status"] == "failed"
-    assert daily.RETRY_WAIT not in daily.owner_waits(s, db)                   # WO53: never waiting for a 'retry'
+    assert daily.RETRY_WAIT not in daily.owner_waits(s, db)                  # WO53: never waiting for a 'retry'
+
+    monkeypatch.setattr(crosslist, "code_version", lambda: "v2")             # a deploy changed the code
+    assert crosslist.retry_failed(s, db) == [(iid, "vinted")]                # tried once more by itself
+    assert db.listing(iid, "vinted")["status"] == "queued"
+    db.upsert_listing(iid, "vinted", status="posting")
+    crosslist.set_unconf(db, iid, "vinted", stage="reposted")
+    crosslist.record(s, db, iid, "vinted", title, out, {})                   # still refused: not said twice
+    assert len(ops.texts()) == 1
+    assert crosslist.retry_failed(s, db) == []                               # once per version, never in a loop
+
     msg = {"message_id": 70, "chat": {"id": OPS}, "from": {"id": OWNER}, "text": "retry",
            "reply_to_message": {"message_id": ops.next_id}}
     approve._route_ops(s, db, {"message": msg})                               # her own 'retry' still works

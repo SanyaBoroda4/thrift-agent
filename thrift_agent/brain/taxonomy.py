@@ -196,6 +196,29 @@ def place(facts: Facts, department: str | None, category: str, subcategory: str 
     return {"department": f.department, "category": f.category, "subcategory": f.subcategory}
 
 
+def closest(facts: Facts) -> dict:
+    """WO54 §2 (the owner: decide, never wait): the closest real Poshmark path for an item no question may settle any
+    more — the model's own when Poshmark has it (`place`), else the category the item's own words name (`_from_words`:
+    "puffer jacket" → Jackets & Coats, "graphic tee" → Shirts & Tops), else the department's own "Other" (a real
+    category of Poshmark's form). `facts.department` must be one of Poshmark's (pipeline.settle_category sees to it)."""
+    own = place(facts, facts.department, facts.category, facts.subcategory)
+    if own is not None:
+        return own
+    categories = (load()["departments"].get(facts.department) or {}).get("categories") or {}
+    for text in (facts.item_type, facts.subcategory, facts.category):
+        found = _from_words(text, facts.department, categories) if text and text.strip() else None
+        if found and _key(found) != "other":
+            return place(facts, facts.department, found, None) or {"department": facts.department, "category": found,
+                                                                   "subcategory": None}
+    words = re.findall(r"[a-z]+", (facts.item_type or "").lower())
+    for size in (2, 1):                                  # a word that is one category's subcategory ("tee": Shirts)
+        for k in range(len(words) - size, -1, -1):
+            if (lifted := _parent(" ".join(words[k:k + size]), categories)) and _key(lifted[0]) != "other":
+                return place(facts, facts.department, lifted[0], lifted[1]) or {
+                    "department": facts.department, "category": lifted[0], "subcategory": lifted[1]}
+    return {"department": facts.department, "category": _find("Other", categories) or "Other", "subcategory": None}
+
+
 def path_label(path: dict, department: str | None = None) -> str:
     """ "Skirts › Skirt Sets", "Shorts"; "Kids › Matching Sets" when the path's department isn't `department`."""
     head = [path["department"]] if department and path.get("department") not in (None, department) else []

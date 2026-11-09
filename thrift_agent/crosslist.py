@@ -187,7 +187,8 @@ def new_window(s: Settings, db: DB) -> bool:
 def retry_failed(s: Settings, db: DB, at: datetime | None = None) -> list[tuple[str, str]]:
     """WO51: an item failure (nothing published) is tried again RETRY_AFTER after it — MAX_ATTEMPTS in all, the last
     one becomes 'skipped' with the group's ⏭ line naming the step. `at` None: every such row now (a new window).
-    Never an unconfirmed publish (the site's data settles it, WO35 §4) or a refused form (WO39: her 'retry')."""
+    Never an unconfirmed publish (the site's data settles it, WO35 §4). WO54 §2: a refused form comes back on its own
+    schedule (refusal_due: once another way, then once per code update) — never the same form at once."""
     out = []
     cutoff = None if at is None else (at - timedelta(seconds=RETRY_AFTER)).isoformat(timespec="seconds")
     for row in db.conn.execute(f"SELECT * FROM listings WHERE status='failed' AND url IS NULL AND marketplace IN "
@@ -195,7 +196,10 @@ def retry_failed(s: Settings, db: DB, at: datetime | None = None) -> list[tuple[
         if (row["error"] or "").startswith(UNCONFIRMED):
             continue                                    # it may be live: settled by the site's data (WO35 §4)
         if refused(row["error"]):
-            continue                                    # WO39: never the same form again by itself — her 'retry'
+            if (why := refusal_due(db, row["item_id"], row["marketplace"], at)) is not None:
+                take_refusal_retry(db, row["item_id"], row["marketplace"], why)
+                out.append((row["item_id"], row["marketplace"]))
+            continue                                    # WO54 §2: by itself, on its own schedule
         if cutoff is not None and (row["updated_at"] or "") > cutoff:
             continue
         iid, mp = row["item_id"], row["marketplace"]
@@ -277,6 +281,9 @@ def block(db: DB, mp: str, reason: str, page: str | None = None, shot=None) -> N
         if account:                                  # WO53 §3: said again (at most every 12 h) while items wait
             from thrift_agent import alarm
             alarm.account_line(db, mp, page, force=True, reason=reason)
+            # WO54 §2: a sign-out / CAPTCHA / check page — the 🚨 at once, whatever the hour (only her hands settle it);
+            # the other sites go on posting
+            alarm.account_alarm(db, mp, health.state(db, mp) or {})
 
 
 def failure(db: DB, mp: str, failed: bool, limit: int = 3) -> None:
@@ -321,11 +328,9 @@ def pending(s: Settings, db: DB, mps: list[str] | None = None, paused_too: bool 
             f"JOIN items i ON i.id=l.item_id "
             f"WHERE l.marketplace=? AND l.status IN ({','.join('?' * len(states))}) AND COALESCE(i.test, 0)=0 "
             f"ORDER BY COALESCE(p.posted_at, l.updated_at), l.rowid", (mp, *states)).fetchall()   # ties: queue order
-        #   (WO45 §2: a test share's item is never listed)
-        from thrift_agent import approve
+        #   (WO45 §2: a test share's item is never listed; WO54 §2: never held for a brand — settle_brand decided it)
         mine = [r["item_id"] for r in rows
-                if not approve.needs_brand(db.item(r["item_id"]))   # 2026-10-27: waits for her brand (a row a net re-queued)
-                and (not live_elsewhere_only or live_elsewhere(db, r["item_id"], mp))]   # WO53 rule 6
+                if not live_elsewhere_only or live_elsewhere(db, r["item_id"], mp)]   # WO53 rule 6
         out += [(iid, mp) for iid in health.behind(db, mp, mine)]
     return out
 
@@ -397,6 +402,8 @@ def record(s: Settings, db: DB, iid: str, mp: str, title: str, out, fields: dict
             due = (datetime.now(timezone.utc) + timedelta(seconds=RECHECK_AFTER)).isoformat(timespec="seconds")
             set_unconf(db, iid, mp, stage="wait", due=due, round=1, tries=0, shot=out.screenshot, refused=True)
             db.log(iid, "refused_wait", {"mp": mp, "due": due, "error": error})
+        elif was.get("stage") != "reposted" and retry_refusal_later(db, iid, mp, title, error):
+            set_unconf(db, iid, mp, stage=None)          # WO54 §2: tried again by itself, another way — nothing said
         else:
             set_unconf(db, iid, mp, stage=None)
             say_refused(db, iid, mp, title, error, shot)
@@ -459,8 +466,9 @@ def strict_level(db: DB, iid: str, mp: str) -> int:
 
 def strict_title(db: DB, iid: str, mp: str, fields, view):
     """WO50: the mapped title (Vinted's title, Depop's description's first line) passes the site's rules before the
-    form opens — stricter after the site refused it (`strict_level`). A title that still breaks them never reaches the
-    site: MappingError (this marketplace skipped, said)."""
+    form opens — stricter after the site refused it (`strict_level`). WO54 §2 (never hold): a title that still breaks
+    them is replaced by one built from the facts (titles.fallback), said in the item's "Check —" line; MappingError
+    only when there are no facts to build one from."""
     from thrift_agent import titles
     from thrift_agent.catalogs.common import MappingError
     level = strict_level(db, iid, mp)
@@ -495,7 +503,18 @@ def strict_title(db: DB, iid: str, mp: str, fields, view):
         fields.description = f"{first}\n{rest}" if rest else first
         current = first
     if problems := titles.check(current, mp):
-        raise MappingError(f"the title breaks {LABEL.get(mp, mp)}'s rules ({'; '.join(problems)}): {current}")
+        if facts is None or not hasattr(facts, "brand"):
+            raise MappingError(f"the title breaks {LABEL.get(mp, mp)}'s rules ({'; '.join(problems)}): {current}")
+        built = titles.fallback(facts, mp, level)        # WO54 §2: built from the facts, never a skipped site
+        if mp == "vinted":
+            fields.title = built
+        else:
+            _, _, rest = (fields.description or "").partition("\n")
+            fields.description = f"{built}\n{rest}" if rest else built
+        db.log(iid, "title_fallback", {"mp": mp, "from": current, "to": built, "problems": problems})
+        from thrift_agent import pipeline
+        pipeline.add_check(db, iid, f"title on {LABEL.get(mp, mp)}: “{current}” broke its rules "
+                                    f"({'; '.join(problems)}) — built from the facts: {built}")
     return fields
 
 
@@ -506,9 +525,13 @@ def autofix_posted(db: DB, iid: str, mp: str, fields: dict) -> None:
     if entry is None:
         return
     db.kv_set(AUTOFIX, json.dumps(state))
+    refusals = _refusals(db)
+    if refusals.pop(f"{iid}|{mp}", None) is not None:   # WO54 §2: its own retry worked — nothing left to try
+        db.kv_set(REFUSAL_RETRY, json.dumps(refusals))
     new = fields.get("title") or str(fields.get("description") or "").split("\n", 1)[0]
-    notify.say(f"✓ {LABEL.get(mp, mp)} had refused {entry.get('title') or iid} ({entry.get('error')}); the title was "
-               f"fixed and it is live: {new}")
+    how = ("tried again by itself another way (a fresh page, a stricter title) and it is live" if entry.get("fix") ==
+           "another way" else "the title was fixed and it is live")
+    notify.say(f"✓ {LABEL.get(mp, mp)} had refused {entry.get('title') or iid} ({entry.get('error')}); {how}: {new}")
 
 
 def refused(error: str | None) -> bool:
@@ -534,19 +557,126 @@ def silent_refusal(error: str | None) -> bool:
     return bool(parts) and all(GENERIC_REFUSAL.search(p) for p in parts)
 
 
+REFUSAL_RETRY = "refusal_retry"   # kv (WO54 §2): {"<item>|<site>": {"due", "error", "title", "version", "after_code"}}
+CODE_RETRIES = 3                  # a form refused for want of a code change: tried once per new version, this many times
+
+
+def code_version() -> str:
+    """WO54 §2: this checkout's code as a short hash — the Python package, the extension, the data tables — so a form
+    refused for want of a fix is tried once more by itself after a deploy changed them. Read once per process."""
+    global _VERSION
+    if _VERSION is None:
+        import hashlib
+
+        from thrift_agent.config import ROOT
+        h = hashlib.sha256()
+        for pattern in ("thrift_agent/**/*.py", "ext/**/*.js", "ext/**/*.json", "data/*.json"):
+            for p in sorted(ROOT.glob(pattern)):
+                try:
+                    h.update(p.relative_to(ROOT).as_posix().encode())
+                    h.update(p.read_bytes())
+                except OSError:
+                    continue
+        _VERSION = h.hexdigest()[:12]
+    return _VERSION
+
+
+_VERSION: str | None = None
+
+
+def _refusals(db: DB) -> dict:
+    return loads(db.kv_get(REFUSAL_RETRY)) or {}
+
+
+def retry_refusal_later(db: DB, iid: str, mp: str, title: str, error: str | None, at: datetime | None = None) -> bool:
+    """WO54 §2 (the owner: every failure is debugged, fallen back on and tried again by itself): a form the site
+    refused with a field error — and no other way tried for it yet (the fixable refusals' stricter title, WO50, is one)
+    — goes back in line by itself RETRY_AFTER later, another way: a fresh page, the title made stricter (strict_level),
+    and a look at the site's own data first (stage "retry", runner.run_cross) so a listing that went up after all is
+    recorded, never posted twice. Quiet: the ⛔ and the 🚨 are for a second refusal (say_refused). True when taken."""
+    key = f"{iid}|{mp}"
+    auto = loads(db.kv_get(AUTOFIX)) or {}
+    state = _refusals(db)
+    if key in auto or key in state:
+        return False                                    # a way was tried already: the code must change (the 🚨)
+    t = at or datetime.now(timezone.utc)
+    said = (error or "").split(REFUSED, 1)[-1][:300]
+    state[key] = {"due": (t + timedelta(seconds=RETRY_AFTER)).isoformat(timespec="seconds"), "error": said,
+                  "title": title}
+    db.kv_set(REFUSAL_RETRY, json.dumps(state))
+    auto[key] = {"fix": "another way", "error": said, "stage": "retry", "title": title}
+    db.kv_set(AUTOFIX, json.dumps(auto))
+    db.log(iid, "refused_retry", {"mp": mp, "due": state[key]["due"], "error": said})
+    return True
+
+
+def refusal_due(db: DB, iid: str, mp: str, at: datetime | None = None) -> str | None:
+    """WO54 §2: is this refused row's own retry due now — "another way" (its RETRY_AFTER passed) or "after the code"
+    (refused twice, a deploy changed the code since: once per version, CODE_RETRIES at most)? None while it waits."""
+    entry = _refusals(db).get(f"{iid}|{mp}")
+    if not entry:
+        return None
+    t = at or datetime.now(timezone.utc)
+    if entry.get("version") is None:
+        if not entry.get("due"):
+            return None                                  # taken already: its outcome decides what comes next
+        try:
+            due = datetime.fromisoformat(str(entry["due"]))
+        except ValueError:
+            return "another way"
+        return "another way" if (due if due.tzinfo else due.replace(tzinfo=timezone.utc)) <= t else None
+    tried = list(entry.get("after_code") or [])
+    if entry["version"] != code_version() and code_version() not in tried and len(tried) < CODE_RETRIES:
+        return "after the code"
+    return None
+
+
+def take_refusal_retry(db: DB, iid: str, mp: str, why: str) -> None:
+    """The refused row back in line for its own retry: the site's own data looked at first (stage "retry"); a retry
+    after a code change is noted so the same version never tries twice."""
+    key = f"{iid}|{mp}"
+    state = _refusals(db)
+    entry = state.get(key) or {}
+    if why == "after the code":
+        entry["after_code"] = [*(entry.get("after_code") or []), code_version()]
+    else:
+        entry["due"] = None
+    state[key] = entry
+    db.kv_set(REFUSAL_RETRY, json.dumps(state))
+    set_unconf(db, iid, mp, stage="retry")
+    db.upsert_listing(iid, mp, status="queued", error=None)
+    db.log(iid, "refused_retried", {"mp": mp, "why": why})
+
+
 def refused_text(title: str, mp: str, error: str) -> str:
-    """WO53 §2: what happened, never a question — the code must change for this form (the 🚨 carries the request)."""
+    """WO53 §2 / WO54 §2: what happened, never a question — refused again after the other way was tried, so the code
+    must change for this form (the 🚨 carries the request); it is tried once more by itself after the next code
+    update."""
     said = error.split(REFUSED, 1)[1] if REFUSED in error else error
-    return (f"⛔ {title}: {LABEL.get(mp, mp)} refused the form — {said}. It isn't on {LABEL.get(mp, mp)} (its own data "
-            f"agrees); not posted again by itself until the code is fixed.")
+    site = LABEL.get(mp, mp)
+    return (f"⛔ {title}: {site} refused the form — {said}. It isn't on {site} (its own data agrees). Tried again by "
+            f"itself another way and refused again: the code must change for it (the 🚨 has the request); it is tried "
+            f"once more by itself after the next code update.")
 
 
 def say_refused(db: DB, iid: str, mp: str, title: str, error: str, shot: Path | None = None) -> None:
-    """WO39: a refused form, ONE private line with the site's exact error (and the picture of the form). Never posted
-    again by itself — the same form would only be refused again. WO53 §2: nothing is asked; the 🚨 (once) carries the
-    fix request; her reply 'retry' to an older line and `thrift retry` still work."""
-    from thrift_agent import alarm, approve
+    """WO39: a refused form, ONE private line with the site's exact error (and the picture of the form). WO54 §2: said
+    only once the other way was tried too (retry_refusal_later) — the code must change for it: the 🚨 (once) carries
+    the fix request, and the row is tried once more by itself after a deploy changed the code (refusal_due). The same
+    refusal again is never said twice. Nothing is asked; her reply 'retry' to an older line and `thrift retry` work."""
+    from thrift_agent import alarm, approve, health
     from thrift_agent.config import settings
+    key = f"{iid}|{mp}"
+    state = _refusals(db)
+    entry = state.get(key) or {}
+    sig = health.signature(error)
+    first = entry.get("said") != sig
+    state[key] = {**entry, "version": code_version(), "said": sig, "title": title,
+                  "error": (error or "").split(REFUSED, 1)[-1][:300]}
+    db.kv_set(REFUSAL_RETRY, json.dumps(state))
+    db.log(iid, "refused_said", {"mp": mp, "error": error[:300], "again": not first})
+    if not first:
+        return
     text = refused_text(title, mp, error)
     if shot is not None and Path(shot).is_file():
         notify.ops_photo(Path(shot), f"⛔ {LABEL.get(mp, mp)} — the form after the click: {title}")
@@ -558,7 +688,6 @@ def say_refused(db: DB, iid: str, mp: str, title: str, error: str, shot: Path | 
             db.add_outbox(bot.chat_id, bot.send_message(text), "refused", unconfirmed_ref(iid, mp), text=text)
         except Exception as e:  # noqa: BLE001 — the ops chat away: logged; `thrift retry` still works
             db.log(iid, "error", f"refused message: {type(e).__name__}: {e}")
-    db.log(iid, "refused_said", {"mp": mp, "error": error[:300]})
     alarm.raise_for(db, f"{mp}:refused:{iid}", f"{title}: {LABEL.get(mp, mp)} refused the form — "
                     f"{error.split(REFUSED, 1)[-1][:200]}", step="the upload", why="blocked", label=LABEL.get(mp, mp),
                     evidence=f"var/failed/shots/{Path(shot).name}" if shot else None)
@@ -693,8 +822,10 @@ def say_size_skip(db: DB, iid: str, mp: str, title: str, error: str | None) -> N
         return
     db.kv_set(SIZE_SKIP_SAID, json.dumps([*said, key][-300:]))
     why = str(error or "").replace(SKIPPED, "").strip()
+    # WO54 §2: what was decided, nothing asked — a size the photos show that no value of this site's menu comes near
+    # (one step, a neutral choice) is never made up; her own 'size …' on the card still puts the site back in line
     notify.say(f"📏 {title}: {LABEL.get(mp, mp)} has no reasonable value for its size ({why}) — it goes up on the "
-               "other sites; reply 'size …' to its card to list it here too.")
+               "other sites, not on this one.")
 
 
 # ---------------------------------------------------------------- the group's one line per item
@@ -855,11 +986,45 @@ def _card(s: Settings, db: DB, iid: str, text: str, edit: bool) -> None:
 
 LISTED_NO_BRAND = "listed with no brand (no brand label, tag or logo in the photos)"
 _SITE_NO_BRAND = re.compile(r"\(no brand\)$|^listed without a brand$")
+# WO54 §2: a correction hint or an old "look before approving" is no part of a decision's words in the private chat
+# (a reply there reaches no item) — "…; reply with the condition if it is wrong", "— a reply 'boys' / 'girls' changes
+# it", "; check before approving", "(WO37: a warning, never a hold)"
+_HINT_TAIL = re.compile(r"\s*(?:[;,]|—|–|-)\s*(?:a\s+)?(?:reply|check before approving)\b.*$|\s*\(WO\d+[^)]*\)\s*$",
+                        re.I | re.S)
+
+
+def item_checks(it) -> list[str]:
+    """WO54 §2 (the owner: every doubt gets the most reasonable choice, the post, and ONE check line): what was decided
+    for the item under doubt — the card's ⚠️ statements, the record's notes, the decisions made later (`checks`) — in
+    plain words, each once, for its private "Check —" line. Left out: what her own answer settled since (her size,
+    brand, condition, Girls / Boys, category), the no-brand note (LISTED_NO_BRAND says it), the copy's own findings."""
+    if it is None:
+        return []
+    gate = loads(it["gate"]) or {}
+    owner = {"size": it["owner_size"], "brand": it["owner_brand"], "condition": it["owner_condition"],
+             "kids": it["owner_kids_gender"], "category": it["owner_category"]}
+    out: list[str] = []
+    for raw in [*(gate.get("notes") or []), *(gate.get("info") or []), *(gate.get("checks") or [])]:
+        text = _HINT_TAIL.sub("", str(raw or "")).strip(" ;,")
+        if text.startswith("looks like item") and "?" in text:      # an older re-share flag, a question then
+            text = text.split(" — ", 1)[0] + " — the same photos: listed once (settled by her price)"
+        low = text.lower()
+        if not text or raw == NO_BRAND_NOTE or text in out:
+            continue
+        if (owner["size"] and low.startswith("size:")) or (owner["brand"] and low.startswith(("brand:", "no brand:")))\
+                or (owner["condition"] and ("condition" in low or "listed as like new" in low or "well-worn" in low))\
+                or (owner["kids"] and low.startswith("kids:")) \
+                or (owner["category"] and low.startswith(("category:", "department:"))):
+            continue
+        out.append(text)
+    return out
 
 
 def _say_checks(db: DB, iid: str, mps: list[str]) -> None:
     """The posters' notes (a brand left empty, a size taken as the nearest, …) to the ops chat, each once per item —
-    never to the group (WO34, the owner: nothing technical in the group; the MNG card had a Depop note twice)."""
+    never to the group (WO34, the owner: nothing technical in the group; the MNG card had a Depop note twice). WO54 §2:
+    with them, every decision the agent made for the item under doubt (item_checks) — the ONE check line that replaces
+    the questions it no longer asks."""
     said = set()
     for (detail,) in db.conn.execute("SELECT detail FROM events WHERE ref=? AND kind='checks_said'", (iid,)):
         said |= set((loads(detail) or {}).get("notes") or [])
@@ -868,9 +1033,11 @@ def _say_checks(db: DB, iid: str, mps: list[str]) -> None:
     it = db.item(iid)
     gate = (loads(it["gate"]) or {}) if it is not None else {}
     said_by_gate = [*(gate.get("notes") or []), *(gate.get("info") or [])]   # the gate's notes are kept as its "info"
-    no_brand = it is not None and not it["owner_brand"] and NO_BRAND_NOTE in said_by_gate
-    if no_brand and LISTED_NO_BRAND not in said:     # 2026-10-27: no brand to be seen — said once, for the item
-        notes.append(LISTED_NO_BRAND)
+    decided_none = any(str(n).startswith("Brand: none") for n in gate.get("notes") or [])   # pipeline.BRAND_NONE
+    no_brand = it is not None and not it["owner_brand"] and (NO_BRAND_NOTE in said_by_gate or decided_none)
+    if it is not None and not it["owner_brand"] and NO_BRAND_NOTE in said_by_gate and LISTED_NO_BRAND not in said:
+        notes.append(LISTED_NO_BRAND)                # 2026-10-27: no brand to be seen — said once, for the item
+    notes += [c for c in item_checks(it) if c not in said and c not in notes]
     for mp in mps:
         f = loads((rows.get(mp) or {})["fields_json"]) if rows.get(mp) and rows[mp]["fields_json"] else {}
         for c in [*(f.get("guesses") or []), *(f"copy: {x}" for x in (f.get("checks") or []))]:

@@ -1,8 +1,9 @@
 """The brand wait, the locked database, the NWT title (Alex, 2026-10-27).
 
-- An item priced whose brand the gate couldn't read waits — on every site — for her reply, and ONE message asks
-  ("🏷️ What brand is …?"); her reply (a name, or 'no brand') lists it. Live: the pink biker shorts went up as Depop's
-  "Other" and Vinted failed on its brand.
+- WO54 §2 (the owner, 2026-11-09: "take your own decisions in order to post it"): an item priced whose brand couldn't
+  be read never waits and nothing asks — it was decided (pipeline.settle_brand), and her reply to its card (a name, or
+  'no brand') still corrects it. Before: it waited on every site and ONE message asked ("🏷️ What brand is …?"); live
+  2026-11-09 her answer "тщ икфтв" ("no brand" on the Russian keyboard) went into Vinted's form and paused Vinted.
 - A Telegram line said inside a write transaction waits for the commit (live 14:03 EDT: process_item's private line
   held the database 30 s+ through notify's second connection — 'database is locked' for the poster and the worker).
 - ", New with Tags" says New once (live: the Levi's 501 "… Jeans New, size 26, New with Tags" was held everywhere)."""
@@ -26,24 +27,23 @@ def _shorts(db, tmp_path, facts, status="ready", price=95):
     return iid
 
 
-def test_an_item_priced_with_an_unread_brand_waits_and_one_message_asks(env, tmp_path, facts, monkeypatch):  # noqa: F811
+def test_an_item_priced_with_an_unread_brand_goes_up_and_nothing_asks(env, tmp_path, facts, monkeypatch):  # noqa: F811
     s, db, _ = env
     bot = FakeBot()
     monkeypatch.setattr(approve, "bot_for", lambda *_: bot)
     iid = _shorts(db, tmp_path, facts)
     it = db.item(iid)
     render = {"price": 95}
-    assert approve.needs_brand(it) and not runner.approved(it, render)       # nothing goes up anywhere
+    assert not approve.needs_brand(it) and runner.approved(it, render)       # WO54 §2: it goes up everywhere
     monkeypatch.setattr(parallel.crosslist, "enabled", lambda s_: ["depop", "vinted"])
-    assert parallel.feed(s, db) == [] and db.listings_for(iid) == []
-    assert approve.ask_brands(s, db) == 1
-    assert bot.texts() == [approve.BRAND_ASK.format(title=SHORTS)]
-    assert approve.ask_brands(s, db) == 0                                     # once, never repeated
-    assert len(daily.owner_waits(s, db)[daily.BRAND_WAIT]) == 1               # the 💤 line names it
-    _reply(db, s, bot, "Zella", to=bot.next_id)
+    pipeline.set_price(s, db, iid, 95)                                        # the listing carries her price
+    assert parallel.feed(s, db) == [iid] and {r["marketplace"] for r in db.listings_for(iid)} == {"depop", "vinted"}
+    assert approve.ask_brands(s, db) == 0 and bot.texts() == []               # no 🏷️, ever
+    assert daily.BRAND_WAIT not in daily.owner_waits(s, db)                   # the 💤 line never waits for a brand
+    db.add_outbox(str(CHAT), 500, "item", iid, text="card")
+    _reply(db, s, bot, "Zella", to=500)                                       # her word on the card still corrects it
     it = db.item(iid)
-    assert it["owner_brand"] == "Zella" and not approve.needs_brand(it) and runner.approved(it, render)
-    assert daily.owner_waits(s, db)[daily.BRAND_WAIT] == []
+    assert it["owner_brand"] == "Zella" and runner.approved(it, render)
 
 
 def test_no_brand_lists_it_too(env, tmp_path, facts, monkeypatch):  # noqa: F811
@@ -51,8 +51,8 @@ def test_no_brand_lists_it_too(env, tmp_path, facts, monkeypatch):  # noqa: F811
     bot = FakeBot()
     monkeypatch.setattr(approve, "bot_for", lambda *_: bot)
     iid = _shorts(db, tmp_path, facts)
-    approve.ask_brands(s, db)
-    _reply(db, s, bot, "no brand", to=bot.next_id)
+    db.add_outbox(str(CHAT), 500, "brand", iid, text=approve.BRAND_ASK.format(title=SHORTS))   # sent before WO54
+    _reply(db, s, bot, "no brand", to=500)                                    # a reply to it still lands
     it = db.item(iid)
     assert it["owner_brand"] == pipeline.NO_BRAND and not approve.needs_brand(it)
 
@@ -65,21 +65,22 @@ def test_a_brand_read_well_or_surely_absent_never_asks(env, tmp_path, facts):  #
     assert approve.ask_brands(s, db) == 0
 
 
-def test_the_price_says_it_waits_for_the_brand_and_asks_at_once(env, tmp_path, facts, monkeypatch):  # noqa: F811
+def test_the_price_queues_it_and_nothing_asks_the_brand(env, tmp_path, facts, monkeypatch):  # noqa: F811
     s, db, _ = env
     bot = FakeBot()
     monkeypatch.setattr(approve, "bot_for", lambda *_: bot)
     iid = _shorts(db, tmp_path, facts, status="awaiting_price", price=None)
     db.add_outbox(str(CHAT), 500, "item", iid, text="card")
     approve._set_price(s, db, bot, iid, 95, 501)
-    assert any(m == "editMessageReplyMarkup" and approve.NEEDS_BRAND in str(p) for m, p in bot.calls)
-    assert approve.BRAND_ASK.format(title=SHORTS) in bot.texts()
-    assert approve.next_step(s, db, iid) == "it goes up once you reply with its brand (or 'no brand')"
+    assert any(m == "editMessageReplyMarkup" and "✓ $95 — queued" in str(p) for m, p in bot.calls)
+    assert approve.BRAND_ASK.format(title=SHORTS) not in bot.texts()
+    assert approve.next_step(s, db, iid).startswith("it goes up ")
 
 
 def test_an_item_live_on_some_sites_gets_her_brand_for_the_rest(env, tmp_path, facts, monkeypatch):  # noqa: F811
-    """The biker shorts went up on Poshmark and Depop before the rule; Vinted failed on its brand: that row waits
-    (both safety nets leave it), and her 'no brand' puts it back in line — the live listings untouched."""
+    """The biker shorts went up on Poshmark and Depop before the rule; Vinted's row was parked "waiting for the brand"
+    by the 🏷️ question: WO54 §2 lets it go (back in line by itself), and her 'no brand' to the old 🏷️ message still
+    reaches the sites waiting — the live listings untouched."""
     s, db, _ = env
     bot = FakeBot()
     monkeypatch.setattr(approve, "bot_for", lambda *_: bot)
@@ -87,14 +88,12 @@ def test_an_item_live_on_some_sites_gets_her_brand_for_the_rest(env, tmp_path, f
     db.set_item(iid, status="posted")
     db.upsert_listing(iid, "poshmark", status="posted", url="https://poshmark.com/listing/x-" + "a" * 24)
     db.upsert_listing(iid, "depop", status="posted", url="https://www.depop.com/products/shop-shorts-8413/")
-    db.upsert_listing(iid, "vinted", status="failed", error="Vinted brand: no 'List without brand' in Vinted's brand menu")
-    db.set_item(iid, status="ready")                                          # what ask_brands looks at
-    assert approve.ask_brands(s, db) == 1
-    row = db.listing(iid, "vinted")
-    assert row["status"] == "skipped" and row["error"].startswith(approve.BRAND_WAITING)
-    assert any(k in row["error"] for k in sales.KEEP_REASONS)               # the Mac's net leaves it
-    _reply(db, s, bot, "no brand", to=bot.next_id)
-    assert db.listing(iid, "vinted")["status"] == "queued"
+    db.upsert_listing(iid, "vinted", status="skipped", error=f"{approve.BRAND_WAITING} (was: failed)")
+    assert any(k in db.listing(iid, "vinted")["error"] for k in sales.KEEP_REASONS)   # the Mac's net leaves it
+    assert approve.ask_brands(s, db) == 0 and bot.texts() == []               # nothing asked …
+    assert db.listing(iid, "vinted")["status"] == "queued"                     # … and the parked row goes on
+    db.add_outbox(str(CHAT), 500, "brand", iid, text="🏷️ (sent before WO54)")
+    _reply(db, s, bot, "no brand", to=500)
     assert db.listing(iid, "poshmark")["status"] == "posted" and db.item(iid)["owner_brand"] == pipeline.NO_BRAND
 
 
@@ -103,17 +102,19 @@ def test_the_apis_net_keeps_a_row_waiting_for_the_brand():
     assert '"waiting for the brand"' in (config.ROOT / "api" / "thrift_api" / "watch.py").read_text(encoding="utf-8")
 
 
-def test_a_row_a_net_re_queued_waits_for_the_brand_too(env, tmp_path, facts, monkeypatch):  # noqa: F811
+def test_a_queued_row_of_an_unread_brand_is_taken(env, tmp_path, facts, monkeypatch):  # noqa: F811
+    """WO54 §2: a queued row is never held for a brand — the site's fallback (Depop "Other", Vinted "List without
+    brand") or a big brand's reading is what the form gets."""
     s, db, _ = env
     monkeypatch.setattr(approve, "bot_for", lambda *_: FakeBot())
     iid = _shorts(db, tmp_path, facts)
-    db.upsert_listing(iid, "vinted", status="queued")                         # the API's repost, before her answer
+    db.upsert_listing(iid, "vinted", status="queued")
     from thrift_agent import crosslist
     monkeypatch.setattr(crosslist, "enabled", lambda s_: ["vinted"])
     monkeypatch.setattr(crosslist, "live", lambda s_, mp: True)
-    assert crosslist.pending(s, db, ["vinted"]) == []                         # never taken while it waits
+    assert crosslist.pending(s, db, ["vinted"]) == [(iid, "vinted")]
     approve.ask_brands(s, db)
-    assert db.listing(iid, "vinted")["error"].startswith(approve.BRAND_WAITING)
+    assert db.listing(iid, "vinted")["status"] == "queued" and not db.listing(iid, "vinted")["error"]
 
 
 # ---------------------------------------------------------------- the locked database

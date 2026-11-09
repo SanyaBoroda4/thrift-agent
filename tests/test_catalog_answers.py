@@ -268,7 +268,9 @@ def test_a_sure_category_is_never_asked(env, facts, monkeypatch):
 
 # ---------- 4. "no brand" ----------
 
-def test_no_brand_is_a_button_on_a_brand_question_and_keeps_the_card(env, facts, monkeypatch):
+def test_no_brand_is_decided_for_an_unreadable_tag_and_an_old_cards_button_still_works(env, facts, monkeypatch):
+    """WO54 §2: a tag in the photos it can't read is listed with no brand at once — the card says so (no button
+    needed); the [No brand] button of a card sent before still works."""
     s, db, bot = env
     monkeypatch.setattr("thrift_agent.brain.llm.ask",                # a tag in the photos it can't read (2026-10-27)
                         _model({"facts": lambda: facts(brand=Ev(photos=[3]), brand_seen="unreadable"),
@@ -276,7 +278,8 @@ def test_no_brand_is_a_button_on_a_brand_question_and_keeps_the_card(env, facts,
     iid = _item(s.path("db").parent, db)
     pipeline.process_item(s, db, iid)
     card = bot.next_id
-    assert ("No brand", f"nobrand:{iid}") in bot.buttons()
+    assert ("No brand", f"nobrand:{iid}") not in bot.buttons()
+    assert "⚠️ Brand: none — a brand label is in the photos but couldn't be read" in bot.sent()[-1]["caption"]
     sends = len(bot.sent())
     approve.handle_update(s, db, bot, _cb(f"nobrand:{iid}", card))
     it = db.item(iid)
@@ -298,15 +301,19 @@ def test_no_brand_never_shows_without_a_brand_question(env, facts, monkeypatch):
 
 
 def test_no_brand_on_a_guessed_brand_rewrites_the_listing_without_it(env, facts, monkeypatch):
+    """WO54 §2: an unsure guess that isn't a big brand never reached the listing (pipeline.settle_brand) — her 'no
+    brand' then needs no reprocessing: recorded, the card's decision line gone, the item ready at her price."""
     s, db, bot = env
     notes = []
     guess = Ev(value="Mistguided", photos=[2], source="photo", confidence=0.6)
     monkeypatch.setattr("thrift_agent.brain.llm.ask", _model({"facts": lambda: facts(brand=guess)}, notes))
     iid = _item(s.path("db").parent, db)
     pipeline.process_item(s, db, iid)
+    assert loads(db.item(iid)["facts"])["brand"]["value"] is None                 # decided: no brand
     approve.handle_update(s, db, bot, _reply("unbranded, 25", bot.next_id))        # the price, then no brand
     it = db.item(iid)
-    assert it["owner_price"] == 25 and it["owner_brand"] == "none" and it["status"] == "new"
+    assert it["owner_price"] == 25 and it["owner_brand"] == "none" and it["status"] == "ready"
+    assert not any(n.startswith("Brand: ") for n in loads(it["gate"])["notes"])
     pipeline.process_item(s, db, iid)                                               # the model still guesses
     it = db.item(iid)
     assert loads(it["facts"])["brand"] == {"value": None, "photos": [], "source": "owner", "confidence": 1.0}
@@ -432,12 +439,12 @@ def test_a_plain_reply_to_the_cards_brand_question_is_the_brand(env, facts, monk
     """WO27 1e: "Vince" replied to a card that asks the brand sets the brand (live: "J. Crew" was taken as a note)."""
     s, db, bot = env
     state = {"facts": lambda: facts(brand=Ev(value="Vinse", photos=[1], source="photo", confidence=0.5)),
-             "title": "Vinse Red Ballet Flats size 7.5"}
+             "title": "Red Ballet Flats size 7.5"}      # WO54 §2: the unsure "Vinse" is decided away before the copy
     monkeypatch.setattr("thrift_agent.brain.llm.ask", _model(state))
     iid = _item(s.path("db").parent, db)
     pipeline.process_item(s, db, iid)
     card = bot.next_id
-    assert "reply 'brand …'" in bot.sent()[-1]["caption"]
+    assert "⚠️ Brand: none — the label reads “Vinse” only with doubt (0.50)" in bot.sent()[-1]["caption"]
     out = approve.handle_update(s, db, bot, _reply("Vince", card))
     it = db.item(iid)
     assert out == f"brand {iid}: 'Vince' (awaiting_price)" and it["owner_brand"] == "Vince" and it["note"] is None

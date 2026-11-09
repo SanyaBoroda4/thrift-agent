@@ -8,6 +8,11 @@ items waiting. Step "brand": Illegal invocation (content/vinted.js:812). Evidenc
 request for Claude Code in a code block. Repeated only if still blocked 4 hours later, at most twice a day. When it
 clears: "✅ Vinted back to normal — posting resumed, 9 items going up." (health.resume says it).
 
+WO54 §2 (the owner, 2026-11-09: only a password / sign-in code and a real CAPTCHA wait for her hands): a login, CAPTCHA
+or check page is its own alarm — at once, whatever the hour and whether or not items wait, again every 12 hours while it
+lasts, with the group's plain line (`account_alarm`); the other sites keep posting. Never a password typed, never a
+CAPTCHA solved.
+
 kv `alarms`: {site: {"since", "said": [iso…], "problem"}}."""
 from __future__ import annotations
 
@@ -83,10 +88,16 @@ def _all(db: DB) -> dict:
     return loads(db.kv_get(KEY)) or {}
 
 
-def _may_say(a: dict, t: datetime) -> bool:
+ACCOUNT_REPEAT = timedelta(hours=12)   # WO54 §2: a sign-out / CAPTCHA / check page — again every 12 h while it lasts
+ACCOUNT_PAGES = ("login", "captcha", "verify")   # what only her hands settle (a block page passes by itself: tested)
+
+
+def _may_say(a: dict, t: datetime, every: timedelta | None = None) -> bool:
     said = [x for x in (_when(s) for s in a.get("said") or []) if x is not None]
     if not said:
         return True
+    if every is not None:                       # WO54 §2: a fixed rhythm (an account page: every 12 h, no daily cap)
+        return t - max(said) >= every
     if t - max(said) < REPEAT:
         return False
     return sum(1 for x in said if t - x < timedelta(days=1)) < PER_DAY
@@ -101,7 +112,7 @@ def raise_for(db: DB, site: str, error: str, *, step: str | None = None, evidenc
     t = at or _now()
     data = _all(db)
     a = data.get(site) or {}
-    if not _may_say(a, t):
+    if not _may_say(a, t, ACCOUNT_REPEAT if why == "account" else None):
         return False
     started = since or _when(a.get("since")) or t
     mp = site.split(":", 1)[0]
@@ -148,11 +159,37 @@ def account_line(db: DB, mp: str, page: str | None, at: datetime | None = None, 
     return True
 
 
+def account_alarm(db: DB, mp: str, p: dict, at: datetime | None = None) -> bool:
+    """WO54 §2 (the owner: only a password / sign-in code and a real CAPTCHA wait for her hands): a site that shows a
+    login, CAPTCHA or check page raises its 🚨 AT ONCE — whatever the hour, whether or not items wait (her sold items'
+    take-downs wait on it too) — and again every 12 hours while it lasts, with the group's plain line; the other sites
+    keep posting (a pause stops only its own site). The agent never types a password and never solves a CAPTCHA. A
+    block page ("turned the Mac away") passes by itself — its self-test runs; the 20-minute alarm covers it. True when
+    the 🚨 went."""
+    t = at or _now()
+    page = p.get("page") or crosslist_kind(p)
+    if page not in ACCOUNT_PAGES:
+        return False
+    since = _when(p.get("since")) or t
+    if not raise_for(db, mp, p.get("reason") or f"a {page} page", step=page, evidence=_evidence(db, mp), since=since,
+                     at=t, why="account"):
+        return False
+    account_line(db, mp, page, t, reason=p.get("reason") or "")
+    return True
+
+
+def crosslist_kind(p: dict) -> str:
+    """What the site showed, from the pause's own words (crosslist.alert_kind)."""
+    from thrift_agent import crosslist
+    return crosslist.alert_kind(p.get("reason") or "", p.get("page"))
+
+
 def tick(db: DB, at: datetime | None = None, hours_open: bool = True) -> list[str]:
     """From the poster's housekeeping: every site paused 20 minutes with items waiting (not by the owner) gets its
-    alarm — WO53 §3: a login / CAPTCHA / check page too, inside the posting hours (its own words: only the owner can act,
-    and the group's plain line again, at most every 12 hours); a site no longer paused is forgotten (its ✅ line is
-    health.resume's). Returns the sites said."""
+    alarm — WO53 §3 / WO54 §2: a login / CAPTCHA / check page at once and whatever the hour (`account_alarm`: only the
+    owner can act; the group's plain line again, every 12 hours while it lasts); a site no longer paused is forgotten
+    (its ✅ line is health.resume's). `hours_open` is kept for the callers (WO54: the account alarm no longer waits for
+    the posting hours). Returns the sites said."""
     t = at or _now()
     data = _all(db)
     out = []
@@ -163,16 +200,16 @@ def tick(db: DB, at: datetime | None = None, hours_open: bool = True) -> list[st
     for mp, p in (loads(db.kv_get(health.HEALTH)) or {}).items():
         if p.get("owner"):
             continue
+        if p.get("kind") == "account" and crosslist_kind(p) in ACCOUNT_PAGES:
+            if account_alarm(db, mp, p, t):
+                out.append(mp)
+            continue
         since = _when(p.get("since"))
         if since is None or t - since < AFTER or health.waiting(db, mp) <= 0:
             continue
-        if p.get("kind") == "account":
-            if not hours_open:
-                continue
-            page = p.get("page") or "login"
-            if raise_for(db, mp, p.get("reason") or f"a {page} page", step=page, evidence=_evidence(db, mp),
-                         since=since, at=t, why="account"):
-                account_line(db, mp, page, t, reason=p.get("reason") or "")
+        if p.get("kind") == "account":                   # a block page: tested by itself; 20 minutes on, the 🚨
+            if raise_for(db, mp, p.get("reason") or "the site turned the Mac away", step="block",
+                         evidence=_evidence(db, mp), since=since, at=t):
                 out.append(mp)
             continue
         step, err = _step_error(mp, p)

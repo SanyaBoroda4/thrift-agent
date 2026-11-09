@@ -95,20 +95,19 @@ def work(s: Settings, db: DB) -> Work:
 
 
 SIZE_WAIT = "a size"
-BRAND_WAIT = "a brand"
+BRAND_WAIT = "a brand"            # WO54 §2: nothing waits for a brand any more — kept for the old records' sake
 RETRY_WAIT = "your 'retry'"       # WO53 §2: nothing asks for a retry any more — kept for the old records' sake
 
 
 def owner_waits(s: Settings, db: DB) -> dict[str, list[str]]:
     """WO39: what waits for the owner's reply although the Mac has nothing to do — items priced but listed nowhere for
-    want of a size (every site skipped "no size on the item"), and items waiting for her brand. Names as on the cards.
-    The 💤 line says them; "All done" only when this is empty. WO53 §2: never a 'retry' — a publish being verified is
-    the site's data's to settle, a refused or skipped listing the code's (the 🚨)."""
+    want of a size (every site skipped "no size on the item": no photo shows one — the card's size buttons). Names as
+    on the cards. The 💤 line says them; "All done" only when this is empty. WO53 §2: never a 'retry' — a publish being
+    verified is the site's data's to settle, a refused or skipped listing the code's (the 🚨). WO54 §2: never a brand —
+    one not read surely is decided (pipeline.settle_brand)."""
     from thrift_agent import crosslist
     sizes = [crosslist.item_name(db, iid) for iid in size_waiting(db)]
-    brands = [crosslist.item_name(db, it["id"]) for it in db.items("ready")
-              if it["owner_price"] and approve.needs_brand(it) and not ("test" in it.keys() and it["test"])]
-    return {SIZE_WAIT: sizes, BRAND_WAIT: brands}
+    return {SIZE_WAIT: sizes}
 
 
 def size_waiting(db: DB) -> list[str]:
@@ -379,7 +378,7 @@ class Window:
         except Exception as e:  # noqa: BLE001 — tried again on the next tick
             self.db.log(None, "error", f"size message: {type(e).__name__}: {e}")
         try:
-            approve.ask_brands(self.s, self.db)       # 2026-10-27: "🏷️ What brand is …?", once per item
+            approve.ask_brands(self.s, self.db)       # WO54 §2: asks nothing — lets go of the rows the 🏷️ parked
         except Exception as e:  # noqa: BLE001 — tried again on the next tick
             self.db.log(None, "error", f"brand message: {type(e).__name__}: {e}")
         return text
