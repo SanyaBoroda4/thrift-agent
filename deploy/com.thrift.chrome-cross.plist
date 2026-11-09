@@ -6,7 +6,9 @@
      Chrome. The two "backgrounding" switches keep the window working at full speed behind other windows and the lock
      screen; pages can't see them. KeepAlive restarts it after a crash; a Chrome that quit normally (Cmd-Q, a relaunch
      to update) is left to the bridge, which starts it again when no extension has checked in for 2 minutes — a plain
-     KeepAlive would start a second copy on every exit, and that copy only hands its address to the running one. -->
+     KeepAlive would start a second copy on every exit, and that copy only hands its address to the running one.
+     WO54 (live 2026-11-09: it restored old pages — hers on eBay, Vinted with ad frames — two of them burning a core each
+     since 1 AM on her laptop): never the restore-last-session switch; it opens fresh. -->
 <plist version="1.0">
 <dict>
   <key>Label</key><string>com.thrift.chrome-cross</string>
@@ -16,7 +18,6 @@
     <string>--user-data-dir=__HOME__/thrift/chrome-cross</string>
     <string>--no-first-run</string>
     <string>--no-default-browser-check</string>
-    <string>--restore-last-session</string>
     <string>--disable-backgrounding-occluded-windows</string>
     <string>--disable-renderer-backgrounding</string>
     <string>--disk-cache-size=268435456</string>

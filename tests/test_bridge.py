@@ -1046,11 +1046,12 @@ def test_the_thrift_chrome_launch_agent():
     assert plist["KeepAlive"] == {"SuccessfulExit": False}
     assert plist["ProgramArguments"] == [
         "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "--user-data-dir=__HOME__/thrift/chrome-cross",
-        "--no-first-run", "--no-default-browser-check", "--restore-last-session",
+        "--no-first-run", "--no-default-browser-check",
         "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding",
         "--disk-cache-size=268435456", "https://www.vinted.com/"]                       # WO53 §5: the cache capped
     joined = " ".join(plist["ProgramArguments"])
-    for forbidden in ("--remote-debugging", "--enable-automation", "--load-extension", "--headless"):
+    for forbidden in ("--remote-debugging", "--enable-automation", "--load-extension", "--headless",
+                      "--restore-last-session"):                          # WO54: never restores old pages
         assert forbidden not in joined
     services = (ROOT / "deploy" / "services.sh").read_text(encoding="utf-8")
     assert 'echo "com.thrift.chrome-cross"' in services and "for svc in worker poster chrome" in services
