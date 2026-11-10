@@ -42,8 +42,8 @@ on all three sites at once, and takes an item down everywhere when it sells.
    One item posts once per marketplace, ever. An unconfirmed publish is "verifying" (WO53): reposted only with proof —
    two reads of the site's own data that show it absent, 10+ minutes apart, the last 30+ minutes after the click
    (unreadable is never absent) — once, after one last look; never a question, never a failure (no pause).
-5. **Stop, don't guess.** Logged out / CAPTCHA / block / verification page → that site stops, one plain line, never a
-   workaround. Unknown modal → fail the item with a screenshot. Never solve CAPTCHAs, never type credentials.
+5. **Stop, don't guess.** Logged out / CAPTCHA / block / verification page → that site stops, never a workaround; a
+   sign-in, a one-time code, a real CAPTCHA and a "verify you are human" page that stayed are HUMAN STEPS (WO56). Unknown modal → fail the item with a screenshot. Never solve CAPTCHAs, never type credentials.
 6. **Pacing and hours.** No posting hours (WO54 §3): every hour outside the owner's quiet hours (8:30 AM – 2:00 PM
    New York, `quiet:`), posting included. Caps (25 a site), PAUSE and stops stay; no sharing / following / offers /
    relisting from this code; gaps 0 (WO37). WO53 rule 6 (`scheduler.outside_hours`) is moot.
@@ -57,9 +57,11 @@ on all three sites at once, and takes an item down everywhere when it sells.
 **The owner's standing rules:**
 - **Only four things wait for a person (WO54 §2,** the owner 2026-11-09: "take your own decisions in order to post it
   other than just hold off till human will intrude"): her price (a button, a typed number, `thrift price`); a size
-  no photo shows (the card's size buttons); a password or sign-in code; a real CAPTCHA — for the last two the
-  group's plain line and ONE 🚨 at once, any hour, again every 12 h while it lasts. The agent never types a password
-  and never solves a CAPTCHA. **Everything else is decided**: the most reasonable choice, the post, and ONE line in
+  no photo shows (the card's size buttons); a password or sign-in code; a real CAPTCHA — for the last two a HUMAN
+  STEP (WO56, below): ONE private message with the page's screenshot and "reply show" — never the group, never a 🚨
+  — reminders every 12 h and once at 2:05 PM after the quiet hours. The agent never types a password, never solves a
+  CAPTCHA, never uses a solving service. WO56 §6 adds one human step no code can take: a share whose upload didn't
+  finish (only her phone has the photos) — ONE group line asks her to share them again, no reply. **Everything else is decided**: the most reasonable choice, the post, and ONE line in
   the item's private "Check —" message (`crosslist.item_checks`) — a brand not read surely is the reading when it
   is a big brand, else no brand (`pipeline.settle_brand`); NWT without a tag photo is Like New; a category Poshmark
   lacks becomes the closest real one (`taxonomy.closest`); a title nothing fixes is built from the facts
@@ -222,6 +224,14 @@ edit_save; UNVERIFIED: block, captcha, verify, skirt_length, promo_close, listin
 `<all_urls>` or `activeTab`.
 
 ## Shares and intake
+- **The Shortcut's new order (WO56 §6, `docs/SHORTCUT_UPLOAD.md`):** the upload first; the iCloud folder only when the
+  phone has no internet. **Whole** = every photo its count names (`uploads.whole`): taken at once, never waits for or
+  mentions an iCloud copy. **Held** (`uploads.short` → `uploads.hold`): a share that ended short or never ended, with
+  no iCloud copy, is never taken short — its photos wait in `work/_uploads/held/<id>`; 15 min after its last photo
+  ONE group line "📸 The photos shared at 7:42 PM didn't finish uploading — please share them again." (ledger
+  `held`); a newer share carrying any of its photos replaces it (ledger `replaced`; held photos are never in the
+  photo memory, so the re-share is no repeat); 7 days → its folder goes. The 30-min partial rule is for iCloud copies
+  only.
 - **Two copies, one share id** (the Shortcut's `yyyy-MM-dd_HHmmss_<random>`): the iCloud folder and the direct upload.
   **The upload** (`api/thrift_api/uploads.py`, `thrift_agent/uploads.py`): `POST /share/<id>/photo?n=&of=&name=` (raw or
   one multipart file; HEIC + EXIF kept; images only, ≤ 30 MB, ≤ 200 a share — `uploads.MAX_PHOTOS`; same bytes stored
@@ -558,7 +568,9 @@ edit_save; UNVERIFIED: block, captcha, verify, skirt_length, promo_close, listin
   — photos failed, next try 4:45 PM" (`step_name`, `crosslist.next_try`); a failed-for-good / skipped site left out; a
   site landing later EDITS it (outbox kind `posted`); the 💤 line on the newest card (kv `posted_done_carrier`):
   "💤 All done — nothing is waiting." / "💤 Done for now. Vinted catches up by itself." / "💤 Done for now — waiting for a
-  size: …" (`crosslist.done_line`, `daily.done_state`, `daily.owner_waits`, `BRAND_WAIT`). Plain action lines when the
+  size: …" (`crosslist.done_line`, `daily.done_state`, `daily.owner_waits`, `BRAND_WAIT`). WO56: a sign-in / CAPTCHA / check page is a
+  human step (private, above) — the group hears only the block line and "📸 … please share them again". Before WO56:
+  plain action lines when the
   pause begins and again at most every 12 h while items wait (WO53, `alarm.account_line`; live 11-07: said once, then 31
   hours of silence): "Depop needs you to log in on the Mac." / "… shows a CAPTCHA — solve it in its Chrome window on the
   Mac." / "… turned the Mac away for now — I'll try again by myself later." / "… asks for a check — open it on the
@@ -617,6 +629,27 @@ edit_save; UNVERIFIED: block, captcha, verify, skirt_length, promo_close, listin
   5:19 PM. Is it plugged in, with the lid open? …" — after the quiet hours "The Mac didn't come back after its quiet
   hours …"; nothing in the quiet hours or the 30 minutes after; ONE "Mac back at …" only for an outage whose line
   was said (settings `mac_down_since`).
+
+## Human steps (WO56, `thrift_agent/humansteps.py`; the owner's setup: `docs/HUMAN_STEPS.md`)
+- **What:** a sign-in (login); a one-time code or the site's own "confirm it's you" (verify); a real CAPTCHA; a "Just a
+  moment… verifying you are human" page (class `challenge`, checked before the CAPTCHA) that didn't pass within 2 min
+  (`T.challengeWait`) on two loads 15 min apart — the first is a quiet pause retried by the self-test
+  (`quiet_challenge`); one that passes says nothing. A block page ("turned the Mac away") is none: its group line and
+  the 20-minute 🚨.
+- **Held:** `crosslist.block` → an account pause (no ⛔ line) + `humansteps.begin`: ONE private message with the
+  page's screenshot — "🔐 Vinted wants a person — a CAPTCHA (screenshot), since 7:12 PM. 1 minute: connect to the Mac's
+  screen (Screen Sharing, <`human_steps.vnc_address`>), reply show, solve it in the window that comes up, and that's
+  it. Depop and Poshmark keep posting meanwhile." (a sign-in / code: "… type the password or code yourself …"). The
+  extension moves the page into a window of its own titled "<Site> — human step" (`T.stepTitle`), never tidied,
+  read every 10 s (`step_page` → `humansteps.seen`); no idle quit while a step is pending (`Bridge.quit_reason`).
+- **Her words** (the private chat, also on the Russian layout): "show [site]" → that window to the front — the only
+  window ever focused — for 5 min, then minimized (its own window, never reused for a job); "later" → no reminder
+  for 12 h; "done" → looked at again now. Poshmark's step: its own browser (`parallel._poshmark_step`).
+- **Clear:** a form / listing page at once, any other on the second reading in a row → ONE "✅ <Site> back — posting
+  resumed …", `health.resume`, the step's tab closed (window and all). **Reminders:** every 12 h and once at 2:05 PM
+  after the quiet hours, never more. **Record:** event `human_step` {site, kind, page, at, cleared_at, seconds,
+  person_needed}, kv `human_step_log`, `thrift doctor` "🔐 Human step: …". The Thrift Chrome's cookies survive its
+  restarts (`chrome_cross.sh` moves only `Default/Sessions` aside).
 
 ## The quiet hours (WO54 §3)
 - **The rule** (the owner, 2026-11-09: the Mac is her working laptop): 8:30 AM – 2:00 PM America/New_York every day
@@ -1055,6 +1088,19 @@ Both sites turn away any browser driven over DevTools; the extension runs in the
   Mac doesn't settle itself → ONE `repost` task (`sales.repost`: back to `queued` once; KEEP_REASONS: no size, a twin,
   sold, autopublish off, unconfirmed, mismatch, refused the form, waiting for the brand, not the item's family, held) →
   still not live an hour later → ONE "⚠️ <title> isn't on Poshmark: <reason>"; `watch.not_live` (the 2-hour 🚨).
+- **WO56 §0.3 — the bulk read reaches every listing:** Vinted's wardrobe to its last page (`vinted.js wardrobePages`,
+  96 a page), Depop's products JSON by its own cursor (`depop.js shopAll`: the address the shop page fetched, else
+  `selectors.json depop.shop_products`, unverified; else the tiles scrolled to the end); `photocheck_bulk` logs pages,
+  complete, `base` (record it in selectors.json). A listing the bulk data lacks is flagged ONCE and read by its OWN
+  data (`photocheck.confirm_absent` → `ExtensionPoster.listing_states`; a listing known live read first — a 404
+  counts only when it answers): live → cleared; sold → the sale net; 404 → gone when seen again 10+ min later.
+  `thrift photocheck --recheck-not-in-bulk [--since …] [--dry-run]`.
+- **Gone vs sold (WO56):** only a SALE acts on the other sites (`sold_found`); Poshmark's own Not for Sale keeps WO49's
+  rule (her signal: `not_for_sale`, the other sites come down). A listing merely GONE — its own page / data 404,
+  removed, closed without a sale — is that row only: `delisted` "gone from <Site> (its own data: …) — not
+  relisted", ONE private line "Vinted no longer has <title> (deleted by you, or removed by Vinted — check the Vinted
+  app's notifications). Still live on Poshmark and Depop." (`photocheck.gone_line`); never relisted; its drops go on
+  elsewhere.
 - **The sale net without email** (photo check): a `posted` listing its site shows sold or no longer for sale — Poshmark's
   public JSON (sold_out → sold; not_for_sale / 404), Depop's / Vinted's shop data (sold / closed; hidden never acted on)
   → `sales.listing_gone` (`sold_found` / `not_for_sale`) → take-downs elsewhere; the row `sold` / `delisted`. SOLD acts at
