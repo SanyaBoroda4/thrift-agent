@@ -6,7 +6,9 @@
    titles, among that marketplace's posted listings first, then among its delisted / sold ones (a buyer who paid while
    the take-down was under way must still make a "Sold twice"); a title the email cut short ("…") is compared with
    the same length of ours;
-3. else no item: unmatched. Two different items equally close is also unmatched."""
+3. else no item: unmatched. Two different items equally close is also unmatched.
+
+WO57: an eBay sale is ours by rule 1 only (the SKU, or the listing id the mirror holds) — never by its title."""
 from __future__ import annotations
 
 import re
@@ -120,6 +122,10 @@ def match_sale(db: Database, marketplace: str, parsed: dict) -> tuple[str | None
     item = item_for_listing(db, marketplace, parsed.get("listing_id"), parsed.get("listing_url"))
     if item:
         return item, "listing"
+    if marketplace == "ebay":
+        # WO57: on eBay only the SKU (our item id) or the listing's own id says a sale is ours — she lists there by
+        # hand too, and a title of hers that reads like one of ours is never taken for it
+        return None, None
     item = item_for_title(db, marketplace, parsed.get("title"))
     if item:
         return item, "title"

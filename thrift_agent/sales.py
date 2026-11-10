@@ -173,7 +173,7 @@ def listing_doc(db: DB, iid: str, mp: str) -> dict | None:
         return None
     fields = loads(row["fields_json"]) or {}
     return {"item_id": iid, "marketplace": mp, "status": row["status"], "url": row["url"],
-            "listing_id": row["listing_id"], "sku": iid if mp == "depop" else None, "price": row["price"],
+            "listing_id": row["listing_id"], "sku": iid if mp in ("depop", "ebay") else None, "price": row["price"],
             "posted_at": row["posted_at"], "updated_at": row["updated_at"],
             "price_live": row["price_live"], "price_read_at": row["price_read_at"],           # WO41
             "error": (row["error"] or "")[:200] or None,                                     # WO45 §7: its reason
@@ -338,6 +338,7 @@ def fetch_tasks(db: DB, sites: list[str], force: bool = False) -> int:
     whatever this Mac thought of it (live: the UGG's rows were 'failed' here after three quick tries the API had taken
     as one, and the API, never reaching 3, re-leased them silently for a day)."""
     client = api()
+    sites = [s for s in sites if s != "ebay"]      # WO57 rule 5: eBay's take-downs are thrift-api's own, never asked for
     if client is None or not sites or not _claim(db, LAST_TASKS, TASKS_EVERY, force):
         return 0                                    # (the API down: asked again after TASKS_EVERY, never a storm)
     from thrift_agent import jobs
@@ -354,6 +355,9 @@ def fetch_tasks(db: DB, sites: list[str], force: bool = False) -> int:
     for entry in answer.get("sold_on") or []:       # and the site it sold ON holds it as sold (2026-10-27)
         if isinstance(entry, dict):
             mark_sold_here(db, entry.get("item"), entry.get("site"))
+    for entry in answer.get("ended") or []:         # WO57: a listing thrift-api itself took down (eBay, by API)
+        if isinstance(entry, dict):
+            mark_ended_by_api(db, entry.get("item"), entry.get("site"), entry.get("result"), entry.get("at"))
     reposts = [t for t in got if t.get("kind") == "repost"]      # WO45 §7: the API's safety net asks for one retry
     got = [t for t in got if t.get("kind") != "repost"]
     for t in reposts:
@@ -371,7 +375,9 @@ def fetch_tasks(db: DB, sites: list[str], force: bool = False) -> int:
 
 KEEP_REASONS = ("no size on the item", "shared again", "already live", "sold", "not published automatically",
                 "unconfirmed publish", "Mismatch", "refused the form",
-                "waiting for the brand", "isn't the item's family")   # a listing row left as it is: its reason is
+                "waiting for the brand", "isn't the item's family",
+                "refused by eBay", "eBay takes only")   # (WO57: eBay's own refusal, a used item where it takes only new)
+#                                                         a listing row left as it is: its reason is
 # the owner's to settle, or the Mac's own flow settles it (a refused form: WO39's re-check — live 2026-10-20 the net
 # re-queued the Tory Burch before the re-check could run)
 
@@ -414,6 +420,21 @@ def mark_sold_here(db: DB, iid: str | None, site: str | None) -> bool:
         return False
     db.upsert_listing(iid, site, status="sold")
     db.log(iid, "listing_sold_here", {"site": site})
+    return True
+
+
+def mark_ended_by_api(db: DB, iid: str | None, site: str | None, result: str | None, at: str | None = None) -> bool:
+    """WO57 rule 5: thrift-api ended this item's listing itself, by the site's API (eBay) — at once after a sale
+    elsewhere, also in the quiet hours and with the Mac asleep. The Mac records it when it next asks: the row
+    `delisted` ("sold": eBay showed it sold already — the sale's own row), its queued rows and open price drops called
+    off like any sold item's. The same answer again changes nothing."""
+    row = db.listing(iid, site) if iid and site else None
+    if row is None or row["status"] not in ("posted", "queued", "failed", "dryrun"):
+        return False
+    skip_sold(db, iid)
+    status = "sold" if result == "sold" else "delisted"
+    db.upsert_listing(iid, site, status=status)
+    db.log(iid, "listing_ended_by_api", {"site": site, "result": result, "at": at, "was": row["status"]})
     return True
 
 

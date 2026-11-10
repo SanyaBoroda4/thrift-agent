@@ -2,7 +2,8 @@
 
 Photos shot on an iPhone become live Poshmark, Depop and Vinted listings with no typing. The seller shoots, taps Share
 → "New item"; the Mac groups the photos into items, writes the listings, asks her only for the price in Telegram, posts
-on all three sites at once, and takes an item down everywhere when it sells.
+on all three sites at once, and takes an item down everywhere when it sells. **eBay is the fourth site (WO57): built,
+through eBay's official API with no browser, and OFF until its keys arrive** (the section "eBay — the fourth site").
 **History and evidence (the per-WO sections, live incidents, superseded rules, the full verified-selector log):
 `docs/history.md`.** This file is the rules in force and what the code does now.
 
@@ -983,6 +984,125 @@ Both sites turn away any browser driven over DevTools; the extension runs in the
   the row stays `queued`, event `publish_cancelled`); `mark-posted` reads the page in the Thrift Chrome; `thrift login
   --site vinted|depop` says to log in there; `thrift status` "extension: connected / not connected".
 
+## eBay — the fourth site (WO57, `thrift_agent/ebay/`; the owner's steps: `docs/EBAY_SETUP.md`)
+**State 2026-11-10: built against a fake eBay and recorded shapes, OFF (`marketplaces.ebay.enabled: false`) until the
+developer account is approved, the keys are in Azure and she clicked Agree. Nothing below has met the real eBay yet —
+the sandbox spike (`thrift ebay spike`) is the first thing on the day the keys arrive.**
+- **The owner's rules (2026-11-10):** everything she shares goes to eBay too (designer brands included), on her own
+  account; eBay's official API, **no browser** — every eBay action is an HTTPS call, nothing opens on the Mac; **the
+  same profit as Poshmark**: the eBay price is computed from her price, never typed; the price stays adjustable (the
+  agent's drops, her "price 35" reply; her hand changes on eBay are read and never undone); the buyer pays shipping;
+  returns 30 days, the buyer pays return shipping; Best Offer on; a sale anywhere ends the eBay listing at once **from
+  Azure** (quiet hours, Mac asleep); **the agent never touches her hand-made eBay listings** — it acts only on a
+  listing whose SKU is one of our item ids (`EbayPoster.ours`, thrift-api the same); keys and tokens only in
+  `private/.env` on the PC and Azure's app settings, never printed, committed or in a chat; no buyer name or address
+  stored.
+- **Which API (decided by the spike; today's choice):** eBay's **Listing API** (GraphQL, `POST
+  https://graphqlapi.ebay.com/graphql`, release 1.0.0 of 2026-10-26, scope `sell.listing`; inputs through variables
+  only; HTTP 200 may carry `errors`; results are unions with `violations`): `createListing` (an `idempotencyKey` of 32
+  hex — `client.idempotency_key(item id, generation)`; `options.operationMode: VALIDATE` checks everything and creates
+  nothing), `updateListing`, `bulkUpdateInventory` (the price), `endListing`, the reads `sellerListings` (by id) and
+  `sellerListingSearch` (active / ended, by SKU). Shipping, returns and the item location go INLINE — only for an
+  account NOT opted in to business policies (hers isn't: never opt it in while this API is used). Fallback: the
+  Inventory API (REST; needs the business-policy opt-in, three policies and a location; its listings can't be edited
+  by hand or by the other API — **never mix the two**) behind the same seam (`EBAY_API`, not built). Photos: Media
+  API `createImageFromFile` (host `apim.ebay.com`, multipart field `image`, scope `sell.inventory`) → EPS addresses.
+  Categories / item specifics / conditions / shipping-service codes: Taxonomy and Metadata (`api.ebay.com`, an
+  application token), kept 7 days beside the DB (`<var>/ebay/*.json`). Orders: Fulfillment `getOrders` (host
+  `apiz.ebay.com`, scope `sell.fulfillment.readonly`) — thrift-api only. Never the Trading API (retired call by call).
+  NOT in eBay's docs, so unverified until the spike (`client.HOSTS`, `data/ebay_shipping.json`): the GraphQL sandbox
+  address, the USPS Ground Advantage service code (read from eBay's own list first: `client.service_code`), whether a
+  listing made this way can be edited by hand in eBay's app.
+- **The price** (`ebay/fees.py`, `data/ebay_fees.json` — dated `checked`; `thrift doctor` shows it; ONE private line
+  at 90 days, `duties.note_stale`): base B = her price (the one she tapped; after a drop the old base less 10%; her
+  "price 35"; a backfilled item: its Poshmark price that day). Target = Poshmark's payout (`B − 2.95` under $15, else
+  `0.80 B`). eBay's payout = `price − rate × (price + shipping + tax) − order fee` — rate by eBay category (the
+  listing's category path, `category_ids`): most 13.6%, women's bags 15%, athletic shoes from a $150 total 8% with no
+  order fee; order fee $0.30 up to a $10 total, $0.40 above; `shipping` = what the buyer is charged (the parcel
+  table's), tax = `marketplaces.ebay.tax_rate` (0.07) of price + shipping. Solved exactly, rounded to the nearest
+  dollar (a price that would fall just under a cheaper rule's threshold takes the dollar above it). With $6 shipping:
+  $20 → $20, $50 → $48, $10 → $10. `thrift ebay price 10 20 50` / `--items N` prints both profits side by side.
+- **A listing** (`ebay/mapping.py`; fixed price, Good 'Til Cancelled, quantity 1, SKU = our item id): the title (≤ 80,
+  `titles.for_site(…, "ebay")`); the category from eBay's own suggestions (`category_queries`: "women's wrap midi
+  dress", then the title) picked inside the item's family AND department, else the closest valid one with a check
+  line, never refused (a pet item → Pet Supplies); the condition from the conditions that category takes — NWT → 1000,
+  new without tags → 1500, like new / excellent → 2990, good (and a fair reading) → 3000, **never 3010 Fair**; a
+  category that takes only new items (underwear) leaves a used one off eBay ("eBay takes only …"); **item specifics**
+  from the facts in eBay's own spelling (Brand — eBay's spelling, else the name as text, "Unbranded" when none; Size
+  Type from Poshmark's size tab; Department; Color; Type / Style and the like by the item's own words as whole
+  phrases; a material only from a read label, the approved title, or visible denim); a REQUIRED specific the photos
+  don't show is never invented — eBay's own neutral value ("Unknown", "Other") or "Unknown" as text, said in the
+  check line; an optional one we don't know is left out. **Sizes: eBay's list is CLOSED since 2026-08-26** (a
+  non-standard size blocks the listing whatever the metadata says about free text): the exact value in eBay's
+  spelling ("12M" = "12 Months", "XXL" = "2XL"), under another Size Type when it stands there ("16W" → Plus), then
+  the other sites' order (the bigger of a dual label, the nearest one step, One Size for a one-size item, the list's
+  neutral choice) — but first the item's OTHER own categories that eBay suggested (`mapping.ranked_categories`, ≤ 3:
+  a 3T under "Baby & Toddler Clothing", a 10 under "Girls' Clothing (Sizes 4 & Up)"), the one holding the size as
+  written winning (`size_as_written`); the closed list is fashion's only (a dog's coat keeps "One Size"); nothing
+  near in any → that site left out with the 📏 line; no size at all → the size buttons, as on every
+  site. The label's own size goes into the description when eBay's value differs. Shipping (`ebay/shipping.py`,
+  `data/ebay_shipping.json`): the parcel per item family, rounded up; `marketplaces.ebay.shipping.type` calculated
+  (USPS Ground Advantage by weight and size) or flat — **her own listings' type is read on the spike day and
+  mirrored**; handling 3 business days; returns and location from settings — the location is the seller's own data
+  (`private/settings.yaml`; eBay stays off without its ZIP code, `ebay.ready`).
+- **The poster** (`ebay/poster.py:EbayPoster`, `driver: api`; a fourth site worker beside Depop's and Vinted's —
+  `catalogs.CROSS` holds `ebay`, so the queue, rule 4, the ✅ card, the verifying flow, the photo check, the alarms
+  and the nets cover it): `plan` (eBay's answers) → the photos up (cover first, ≤ 24) → VALIDATE → a dry run ends
+  there (`marketplaces.ebay.autopublish` off, a paused site's self-test, the canary's start check: eBay has no form,
+  its "form check" is the canary through VALIDATE) → the seller's listings looked at by SKU (one already there is
+  recorded, never made twice; one eBay itself removed is never followed by another) → the ONE go-ahead (the row
+  `posting`) → `createListing` → read back by API (title, price, photos, size, shipping, returns, location: a
+  difference is a note) → posted with `https://www.ebay.com/itm/<id>`. Evidence is a JSON file beside the other
+  sites' (`failed/shots/<item>-ebay-<time>.json`; never a token). Failures by kind (`client.EbayError.kind`): `item`
+  (eBay's violations: the item's own — retried, set aside, rule 4), `policy` (a refusal for good, eBay's own removal:
+  `skipped` "refused by eBay …", ONE private line, never posted there again, the other sites untouched, no alarm),
+  `auth` (the consent is gone: eBay waits quietly — no group line, no "show"; thrift-api's private message has the
+  link — and resumes by its own test), `limit` / `site` / `infra` (never the item's: back in line, the same failure
+  on the next item pauses the site). An answer that never came (`unknown`) is "verifying": found by SKU, never
+  created again blind — and a repeat carries the same idempotency key.
+- **Around it:** the ✅ card's fourth line "🔵 eBay" — each live site's line says its own price when eBay's differs
+  (`crosslist.card_text`); "price 35" → one `price_changes` row per live site, eBay's carrying the price worked out
+  from 35 (`pricedrop.owner_price`, `ebay/prices.py`); a drop recomputes eBay's price from the base less 10% — and
+  never raises a price she lowered there by hand (then 10% off what eBay shows); the listing row's `fields_json`
+  keeps `base_price`, `category_ids`, the parcel and the quote. The photo check reads eBay by API (`read_shop`: our
+  active listings only; a missing one by its own data: sold → the sale net, ended or removed → "gone from eBay …" for
+  that row only). Edits: photos, title / description (never over her own wording), brand; a category change isn't
+  made on eBay. **Take-downs are thrift-api's** (below): the Mac never asks for eBay's (`sales.fetch_tasks`), it
+  records "ended" (`sales.mark_ended_by_api`). Housekeeping (`ebay/duties.py`): kv `ebay_link`, the backfill's next
+  item, the fee file's age, "From now each new eBay listing costs $0.35 this month." the first time eBay names an
+  insertion fee in a month; the heartbeat's `ebay` {on, live, connected, free_used, fees_checked}; doctor's eBay lines.
+- **thrift-api's side** (`api/thrift_api/ebay.py`; its tests `tests/api/test_api_ebay*.py` against
+  `tests/api/ebayfake.py`): ANONYMOUS `GET`/`POST /ebay/account-deletion` (the challenge: SHA-256 hex of the code +
+  `EBAY_VERIFICATION_TOKEN` + `EBAY_DELETION_ENDPOINT`, the exact registered string; a notice is acknowledged —
+  nothing of any eBay user is stored), `GET /ebay/oauth/callback` / `/ebay/oauth/declined` / `/ebay/privacy`;
+  FUNCTION `GET /ebay/oauth/start` (its own function key `ebay`, the only key in the consent link `EBAY_START_LINK`),
+  `GET /ebay/token?kind=user|app` (the Mac's short-lived token — the refresh token never leaves Azure: kept in the
+  database sealed with `EBAY_TOKEN_KEY`, Fernet, a key only in the app settings), `GET /ebay/status`. The consent:
+  ONE private "🔗 eBay consent link …" once per keyset while never connected; a consent from another eBay account
+  than the shop's (`EBAY_SELLER`, token introspection, best-effort) keeps nothing; reminders 30 / 14 / 7 / 3 / 2 / 1
+  days before it ends; refused → ONE private 🔐 line, again every 12 h, tried again by itself hourly. Orders
+  (`getOrders` every 5 min, by SKU or the mirror's listing id only, never by title) → the usual sales path; a sale
+  of a listing not ours is hers (the quiet `NOT_OURS` line, no reminders). **eBay take-downs are done from Azure**
+  (`run_takedowns`, right after the sale's transaction and on the timer; a listing is ended only when its SKU is the
+  item's id; `GET /tasks` never hands one to the Mac and answers `ended`). `provision.py ebay` (secrets made once in
+  `var/azure/secrets.json`; the keyset written only when all three are in `private/.env`; names printed, never
+  values) · `ebay status` · `ebay show` (a real terminal only: the endpoint, the token, the three addresses, the link).
+- **The backfill** (`ebay/backfill.py`, kv `ebay_backfill`): `thrift ebay backfill [--since 2026-10-13] [--dry-run |
+  --status]` plans every item first posted since the day that is still live on a site and not sold; the running
+  poster lets ONE in per housekeeping turn up to 25 a day, oldest first, each at its Poshmark price that day; new
+  shares always go first (`crosslist.pending`); eBay's daily cap is 50 (25 + the day's new shares); a backfilled eBay
+  listing never moves the price-drop clock (`pricedrop.plan`).
+- **Commands:** `thrift ebay status | price [bases…] [--items N] | plan <item> | validate <item> | first <item>
+  [--yes] | hers | backfill … | record | spike <item>` — `hers` reads her own eBay listings (shipping type, handling
+  time — to mirror in settings; read only); `first` is WO57 §7's ONE real listing (the Mac; validated, created,
+  read back, its link to the private chat; without `--yes` it only validates); `spike` the whole round on the sandbox
+  (refused on production); `record` keeps eBay's real answers for the tests (`tests/fixtures/ebay/`, the items
+  themselves in `private/tests/ebay/items.json`).
+- **Tests:** `tests/test_ebay_fees.py`, `test_ebay_mapping.py` (twenty items — a kids' shoe, a 12M snowsuit, a
+  handbag, a no-brand item, the dog coat — against the STAND-IN category table of `tests/ebay_fake.py`: not
+  recordings, replaced for the real items by `thrift ebay record`), `test_ebay_client.py`, `test_ebay_flow.py` (the
+  real poster and queue against the fake eBay), `tests/api/test_api_ebay.py`.
+
 ## Live listing edits and read-backs
 - **`listing_edits`** (`edits.py`; one row per item, site and kind — `category`, `photos`, `text`, `brand`; pending →
   saving → done | unconfirmed | failed | skipped): taken by each site worker on an idle turn in any hour
@@ -1217,6 +1337,8 @@ Both sites turn away any browser driven over DevTools; the extension runs in the
   `cover-fix <item> …` · `price-drop --list | --skip | --dry-run | --now <item>` · `login --site poshmark|vinted|depop`.
 - Sales: `sales [--open|--unmatched|--all] | sales match <sale> <item> | delist --run | --verify … | --practice … | --item
   <item> --marketplace poshmark | relist <item> | orders --sweep | --probe | sync --push [--all] | api ping | cleanup`.
+- WO57: `ebay status | price [bases…] [--items N] | plan <item> | validate <item> | first <item> [--yes] | backfill
+  [--since D] [--dry-run | --status] | record | spike <item>` (the section "eBay — the fourth site").
 - WO54: `cards --backfill [--dry-run]` (the ✅ cards never sent, oldest first; refused in the quiet hours) · `quiet
   [--status | --tick | --post-now | --quiet-now]` · `text <item> --title … | --add-line …` (WO53).
 - Telegram: `telegram setup | test [--ops]`. `--marketplace poshmark|depop|vinted` on `poster --publish-first`, `retry`,
@@ -1246,5 +1368,9 @@ replay harness (keyed by model, prompt, tool, images' bytes; a replay never asks
   a new recording.
 - Eval (M0): `eval/fixtures/<case>/{photos,expected.yaml}`, `thrift eval`; targets segmentation ≥ 95%, brand / size ≥
   95%, condition ≥ 90%. Tune `segmentation.pause_*` / `visual_change_*` on real rolls.
+- Still open (WO57, eBay — everything is built against a fake and nothing has met the real eBay): the sandbox spike
+  (which API; whether a hand edit in eBay's app works; the GraphQL sandbox address; the USPS Ground Advantage code;
+  her listings' shipping type and handling time), eBay's real category answers recorded for the tests (`thrift ebay
+  record`), the Inventory API fallback (not built), the fee table's rates above $2,000 / $7,500 (not in the file).
 - Still open: Poshmark's `draft_saved`, the Promote toggle's markup, the CAPTCHA wording; Depop's API (`DEPOP_API_KEY`);
   M4 Airtable / n8n (not built); M6 sold-comps pricing (tune `private/brand_tiers.yaml` from sales).

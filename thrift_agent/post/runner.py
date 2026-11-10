@@ -45,7 +45,8 @@ UNCONFIRMED = "unconfirmed publish: "
 SKIPPED = "skipped: "            # error of an item the form couldn't take (a required field): requeue it once fixed
 SLEPT = "interrupted by sleep: "   # error of a listing the Mac slept through before its final click: requeued
 SLEEP_RETRIES = 3                  # ... at most this many attempts in all; then it is an ordinary failure
-PRESSED = {"poshmark": ("List", "closet"), "depop": ("Post", "shop"), "vinted": ("Upload", "closet")}
+PRESSED = {"poshmark": ("List", "closet"), "depop": ("Post", "shop"), "vinted": ("Upload", "closet"),
+           "ebay": ("Create", "listings")}
 LEGACY_AFTER_S = 6 * 3600   # WO53: an unconfirmed row with no verifying state, older than this, is never re-posted
 
 
@@ -64,7 +65,10 @@ def posters(s: Settings) -> dict[str, Poster]:
     for mp in crosslist.enabled(s):
         shop = str(s.get(f"marketplaces.{mp}.shop") or s.get(f"marketplaces.{mp}.username") or "")
         driver = crosslist.driver(s, mp)
-        if driver == "extension":
+        if mp == "ebay":                               # WO57: eBay's official API — no browser, no bridge
+            from thrift_agent.ebay.poster import EbayPoster
+            out[mp] = EbayPoster(s, brands.for_settings(s))
+        elif driver == "extension":
             out[mp] = ExtensionPoster(mp, shop, brands.for_settings(s))     # WO36: the alias file on both sites
         elif driver == "api":
             out[mp] = DepopApiPoster(shop)
@@ -1090,11 +1094,14 @@ def cross_render_of(db: DB, iid: str, mp: str, fields=None) -> Render:
     posh = Render.model_validate((loads(it["renders"]) or {})["poshmark"])
     f = fields.model_dump() if hasattr(fields, "model_dump") else (fields or loads((db.listing(iid, mp) or {})["fields_json"]
                                                                                   if db.listing(iid, mp) else None) or {})
-    return Render(marketplace=mp, title=posh.title, description=f.get("description") or posh.description,
+    own = mp == "ebay"            # WO57: eBay's own title (80 characters) and its own price (the fee formula's)
+    return Render(marketplace=mp, title=(f.get("title") if own else None) or posh.title,
+                  description=f.get("description") or posh.description,
                   tags=f.get("hashtags") or [], brand=posh.brand, department=posh.department,
                   category=f.get("category") or f.get("category_path") or posh.category, subcategory=None,
                   size=f.get("size"), colors=f.get("colors") or posh.colors, condition=posh.condition,
-                  price=int(it["owner_price"] or posh.price), photos=f.get("photos") or posh.photos, sku=iid)
+                  price=int((f.get("price") if own else None) or it["owner_price"] or posh.price),
+                  photos=f.get("photos") or posh.photos, sku=iid)
 
 
 def map_fields(mp: str, view: ItemView):
@@ -1140,7 +1147,30 @@ async def _run_cross(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, *, d
     title = ((loads(it["renders"]) or {}).get("poshmark") or {}).get("title") or iid
     try:
         view = ItemView.from_row(it)
-        fields = crosslist.strict_title(db, iid, mp, map_fields(mp, view), view)    # WO50: the site's title rules
+        if mp == "ebay":                           # WO57 §5: a backfilled item's base is its price on its sites today
+            from thrift_agent.ebay import backfill as ebay_backfill
+            if (base := ebay_backfill.base(db, iid)) is not None:
+                view.price = base
+        if hasattr(ps[mp], "plan"):                # WO57: eBay's own answers (category, item specifics) — API calls
+            try:
+                planned = await ps[mp].plan(view)
+            except (MappingError, CatalogError):
+                raise
+            except AccountBlocked as e:
+                crosslist.block(db, mp, str(e), e.page, getattr(e, "shot", None))
+                return Outcome("failed", error=str(e)) if request else None
+            except Exception as e:  # noqa: BLE001 — eBay couldn't be read: never the item's fault, nothing was sent
+                err = f"{type(e).__name__}: {e}"
+                kind = "auth" if getattr(e, "kind", None) == "auth" else None
+                if kind == "auth":
+                    crosslist.block(db, mp, err, "login")
+                elif not request:
+                    health.non_item(db, mp, iid, f"eBay's API: {err}", health.INFRA
+                                    if getattr(e, "kind", None) == "infra" else health.SITE)
+                return Outcome("failed", error=f"eBay's API: {err}") if request else None
+        else:
+            planned = map_fields(mp, view)
+        fields = crosslist.strict_title(db, iid, mp, planned, view)    # WO50: the site's title rules
     except MappingError as e:
         if request:
             if not quiet:
@@ -1152,8 +1182,11 @@ async def _run_cross(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, *, d
         crosslist.block(db, mp, f"failures: catalog — {e}")
         return None
     facts = getattr(view, "facts", None)
-    wrong = crosslist.family_problem(getattr(facts, "item_type", None), mp,
-                                     getattr(fields, "category_path", None) or getattr(fields, "category", None))
+    # (WO57: eBay's category was picked by the item's family from eBay's own suggestions, its note said — and its tree's
+    #  root, "Clothing, Shoes & Accessories", names three families at once: no second reading here)
+    wrong = None if mp == "ebay" else crosslist.family_problem(
+        getattr(facts, "item_type", None), mp,
+        getattr(fields, "category_path", None) or getattr(fields, "category", None))
     if wrong:                                       # WO51 §5: never posted in another family's category …
         if request:
             if not quiet:
@@ -1166,7 +1199,8 @@ async def _run_cross(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, *, d
     poster = ps[mp]
     poster.fields, poster.confirm, poster.strict = fields, None, not dry
     poster.held = held_by_others(db, iid, mp)        # WO35: another item's listing is never taken for this one
-    extension = getattr(poster, "driver", "playwright") == "extension"
+    # staged: the row becomes 'posting' only at the ONE go-ahead — the extension's click, eBay's create call (WO57)
+    extension = getattr(poster, "driver", "playwright") in ("extension", "api")
     if extension:
         poster.on_go_ahead, poster.progress = None, progress
     shots = s.path("failed") / "shots"
@@ -1190,7 +1224,7 @@ async def _run_cross(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, *, d
                                           "quiet": quiet or None})
         if quiet:
             return out
-        notify.ops_photo(Path(out.screenshot or ""),
+        notify.ops_photo(crosslist.evidence(out.screenshot),
                          f"🧪 dry-run {crosslist.LABEL[mp]} ({iid}): {title} — ${fields.price} [{out.status}]\n"
                          f"{crosslist.fields_summary(fields.model_dump())}"
                          + (f"\n{' · '.join(lines)}" if lines else "")
@@ -1264,6 +1298,9 @@ async def _run_cross(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, *, d
     if out.status == "posted":
         health.worked(db, mp, iid)
         crosslist.set_unconf(db, iid, mp, stage=None)
+        if mp == "ebay":                            # WO57 §5: the first listing of a month that costs to insert
+            from thrift_agent.ebay import duties
+            duties.note_fee(s, db, getattr(poster, "last_fee", None))
     elif not out.clicked and (crosslist.unconf_state(db, iid, mp) or {}).get("stage") == "reposted":
         crosslist.set_unconf(db, iid, mp, stage="retry")   # nothing was clicked: the next try still looks first
     return out
@@ -1278,6 +1315,8 @@ async def publish_first_cross(s: Settings, db: DB, iid: str, mp: str, confirm) -
                            "touches the shop")
     if mp not in crosslist.CROSS:
         raise ValueError(f"unknown marketplace {mp!r}")
+    if mp == "ebay":              # WO57: no form to watch and no POST to type — its first real listing has its own way
+        raise ValueError("eBay's first real listing is `thrift ebay first <item> --yes` (validated, created, read back)")
     it = db.item(iid)
     if it is None:
         raise ValueError(f"unknown item {iid}")

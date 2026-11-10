@@ -31,6 +31,7 @@ from zoneinfo import ZoneInfo
 from thrift_agent import crosslist, notify
 from thrift_agent.config import Settings
 from thrift_agent.db import DB
+from thrift_agent.ebay import prices as ebay_prices
 
 STAGES = ("auto_1", "auto_2")            # never a third
 AFTER = timedelta(days=30)                # live on all sites → drop 1; drop 1 → drop 2
@@ -39,7 +40,7 @@ RETRY_AFTER = timedelta(hours=6)          # a failed attempt: tried again the ne
 RECHECK_AFTER = timedelta(minutes=5)      # saved, the site's data not showing it yet: read again
 MAX_ATTEMPTS = 3
 PERCENT = 10
-SITE_MIN = {"poshmark": 3, "depop": 1, "vinted": 1}    # each site's own lowest price
+SITE_MIN = {"poshmark": 3, "depop": 1, "vinted": 1, "ebay": 1}    # each site's own lowest price
 OPEN = ("pending", "saving", "unconfirmed")
 SAID = "price_drop_said"                  # kv: the local day the group's line went out
 NO_DROP = re.compile(r"^\s*no[\s-]*(price[\s-]*)?drops?\s*[.!]?\s*$", re.I)
@@ -139,6 +140,8 @@ def plan(db: DB, now: datetime | None = None, item: str | None = None, force: bo
     price-drop --now`) gets one row per live site. Returns 'item:stage' for each stage started."""
     now = now or _now()
     started = []
+    from thrift_agent.ebay import backfill as ebay_backfill
+    backfilled = ebay_backfill.items(db)
     sql = "SELECT * FROM items WHERE status='posted'" + (" AND id=?" if item else "")
     for it in db.conn.execute(sql, (item,) if item else ()).fetchall():
         iid, rows = it["id"], db.listings_for(it["id"])
@@ -147,7 +150,8 @@ def plan(db: DB, now: datetime | None = None, item: str | None = None, force: bo
             stage = 0
             db.set_item(iid, drop_stage=0, last_drop_at=None)
             db.log(iid, "price_drop_clock", {"why": "relisted: a new clock"})
-        start = clock(rows, now)
+        # WO57 §5: an eBay listing added later by the backfill never moves the clock (it isn't reset)
+        start = clock([r for r in rows if not (r["marketplace"] == "ebay" and iid in backfilled)], now)
         last = _t(it["last_drop_at"])
         blocked = why_not(db, it, rows)
         if stage >= len(STAGES) or start is None or blocked:
@@ -195,9 +199,12 @@ def owner_price(db: DB, iid: str, amount: int) -> list[str]:
     with db.tx() as c:
         for r in live:
             rid = f"pc_{iid}_{r['marketplace']}_{OWNER}_{stamp}"
+            # WO57 §3: her price is the base on all four sites — eBay's own price is worked out from it (the same
+            # profit as on Poshmark), never typed
+            new = float(ebay_prices.for_base(r, amount)) if r["marketplace"] == "ebay" else float(amount)
             c.execute("INSERT OR IGNORE INTO price_changes (id, item_id, marketplace, stage, new_price, status, due_at, "
                       "created_at, updated_at) VALUES (?,?,?,?,?,'pending',?,?,?)",
-                      (rid, iid, r["marketplace"], OWNER, float(amount), _iso(now), _iso(now), _iso(now)))
+                      (rid, iid, r["marketplace"], OWNER, new, _iso(now), _iso(now), _iso(now)))
             rows.append(rid)
         c.execute("UPDATE items SET owner_price=?, updated_at=? WHERE id=?", (int(amount), _iso(_now()), iid))
     db.log(iid, "owner_price_change", {"amount": amount, "sites": [r["marketplace"] for r in live]})
@@ -212,10 +219,16 @@ def _owner_done(db: DB, iid: str) -> None:
     mine = [r for r in rows if r["created_at"] == newest]
     if not mine or any(r["status"] in OPEN for r in mine) or any(r["announced_at"] for r in mine):
         return
-    done = [crosslist.LABEL.get(r["marketplace"], r["marketplace"]) for r in mine if r["status"] == "done"]
+    it = db.item(iid)
+    hers = float(it["owner_price"]) if it is not None and it["owner_price"] else mine[0]["new_price"]
+
+    def named(r) -> str:          # WO57: a site whose own price differs (eBay's, worked out from hers) says it
+        label = crosslist.LABEL.get(r["marketplace"], r["marketplace"])
+        return label if r["new_price"] is None or float(r["new_price"]) == float(hers) else f"{label} ${r['new_price']:g}"
+    done = [named(r) for r in mine if r["status"] == "done"]
     missed = [f"{crosslist.LABEL.get(r['marketplace'], r['marketplace'])} ({r['error'] or r['status']})"
               for r in mine if r["status"] != "done"]
-    new = mine[0]["new_price"]
+    new = hers
     text = f"✓ {short_name(db, iid)}: ${new:g} on {', '.join(done)}" if done else f"⚠️ {short_name(db, iid)}: ${new:g}"
     if missed:
         text += (" — not on " if done else " not changed on ") + ", ".join(missed)
@@ -307,6 +320,13 @@ def _done(db: DB, row, new: float, note: str, stage: str | None = None) -> None:
             **({"stage": stage} if stage else {}))
     db.upsert_listing(row["item_id"], row["marketplace"], price_live=new, price_read_at=_iso(_now()),
                       **({"price": int(round(new))} if row["stage"] == OWNER else {}))   # her price is the listing's
+    if row["marketplace"] == "ebay" and not row["dry"] and "by hand" not in (note or ""):
+        # WO57: the base the eBay price now stands for — her new price, or the old base after its own 10% drop
+        it = db.item(row["item_id"])
+        was = ebay_prices.base_of(db.listing(row["item_id"], "ebay"))
+        base = (int(it["owner_price"]) if it is not None and it["owner_price"] else None) if row["stage"] == OWNER \
+            else (dropped(was) if was else None)
+        ebay_prices.record(db, row["item_id"], base=base, price=new)
     db.log(row["item_id"], "price_dropped", {"mp": row["marketplace"], "stage": stage or row["stage"], "old": old,
                                              "new": new, "note": note})
     if row["stage"] == OWNER:
@@ -401,8 +421,12 @@ async def apply(s: Settings, db: DB, row, poster, ctx, sites: list[str]) -> str:
     old = live
     if owner:
         new = float(row["new_price"])
+    elif row["new_price"] is not None and row["old_price"] == live:
+        new = row["new_price"]
+    elif site == "ebay":          # WO57 §5: recomputed from the new base (the same profit as Poshmark's new price)
+        new = ebay_prices.after_drop(listing, live, dropped)[0]
     else:
-        new = row["new_price"] if row["new_price"] is not None and row["old_price"] == live else dropped(live)
+        new = dropped(live)
     if (low := too_low(site, new, None if owner else floor_of(s))) and not dry:
         _update(db, row["id"], old_price=old, new_price=new)
         _skip(db, row, low)
@@ -513,9 +537,14 @@ def announce(s: Settings, db: DB, now: datetime | None = None) -> str | None:
     for iid in sorted(order, key=order.get):                 # the oldest item first
         mine = [r for r in rows if r["item_id"] == iid]
         pairs = {(r["old_price"], r["new_price"]) for r in mine}
+        rest = {(r["old_price"], r["new_price"]) for r in mine if r["marketplace"] != "ebay"}
         if len(pairs) == 1:
             old, new = next(iter(pairs))
             prices = f"${old:g} → ${new:g}"
+        elif len(rest) == 1:      # WO57: one price on the three, eBay's own beside it
+            old, new = next(iter(rest))
+            e = next(r for r in mine if r["marketplace"] == "ebay")
+            prices = f"${old:g} → ${new:g} (eBay ${e['old_price']:g} → ${e['new_price']:g})"
         else:
             prices = ", ".join(f"{crosslist.LABEL.get(r['marketplace'], r['marketplace'])} ${r['old_price']:g} → "
                                f"${r['new_price']:g}" for r in mine)

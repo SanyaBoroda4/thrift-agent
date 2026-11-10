@@ -130,6 +130,29 @@ marketplaces:
     gap_seconds: [0, 0]    # no pause after a Vinted listing (the owner, WO37)
     max_photos: 20
     shop: ""               # vinted.com/member/<shop> (the member page's path)
+  # WO57: eBay, the fourth site — posted through eBay's official API (driver: api): plain HTTPS calls, no browser,
+  # nothing opened on the Mac. Its price is never typed: it is worked out from her price so that a sale on eBay leaves
+  # the same profit as the same sale on Poshmark (data/ebay_fees.json). The tokens come from thrift-api (the refresh
+  # token never leaves Azure). OFF until the keys are in Azure and the owner clicked Agree (docs/EBAY_SETUP.md).
+  ebay:
+    enabled: false
+    driver: api
+    autopublish: false     # the owner's go-live step, after the first real listing read back right (WO57 §7)
+    environment: production   # production | sandbox (the spike)
+    daily_cap: 50          # 25 backfilled items a day + the day's new shares (new shares always go at once)
+    gap_seconds: [0, 0]
+    max_photos: 24
+    tax_rate: 0.07         # the average sales tax in the price formula (eBay's fee is a share of item + shipping + tax)
+    best_offer: true       # as on her own listings; an accepted offer is her decision
+    handling_days: 3       # business days (hers, read from her listings on the day the keys arrive)
+    hand_listings: 10      # her own hand-made eBay listings: they use the month's free listings too (never touched)
+    shipping:
+      type: calculated     # calculated (eBay works it out from the parcel and the buyer's ZIP) | flat — her listings' own
+      # flat: 6.00         # with type flat: one charge for every item instead of the parcel table's
+    returns: {accepted: true, days: 30, payer: buyer}
+    location: {city: "", state: "", postal_code: "", country: "US"}   # where the items are: set in
+                           # private/settings.yaml (the seller's own data); eBay stays off without its ZIP code
+    backfill: {since: "2026-10-13", per_day: 25}
 
 crosslist:
   gap_seconds: [0, 0]      # between an item's marketplaces in the sequential loop (WO37: no pauses)

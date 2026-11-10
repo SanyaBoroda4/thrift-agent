@@ -1,0 +1,48 @@
+{
+  "_about": "WO57 §4: what an eBay listing says about its parcel — the buyer pays the shipping. Per item family (thrift_agent/families.py) a packed weight in ounces, ROUNDED UP (the garment plus its mailer or box), and a parcel size class; a coat, a boot or a kids' item moves it (`heavier`, `kids`). `rates`: what a buyer is typically charged for USPS Ground Advantage at that weight — an ESTIMATE for the price formula (thrift_agent/ebay/fees.py: eBay's fee is a share of item + shipping + tax) and the charge itself when the listings use flat shipping; with calculated shipping eBay works out the real charge from the weight, the size and the buyer's ZIP code. `checked`: the day the rates were last compared with USPS's price list.",
+  "checked": "2026-11-10",
+  "service": "USPS Ground Advantage",
+  "service_code": "USPSGroundAdvantage",
+  "families": {
+    "top": {"weight_oz": 8, "size": "small"},
+    "intimates": {"weight_oz": 8, "size": "small"},
+    "swim": {"weight_oz": 8, "size": "small"},
+    "accessory": {"weight_oz": 8, "size": "small"},
+    "pet": {"weight_oz": 12, "size": "small"},
+    "skirt": {"weight_oz": 12, "size": "small"},
+    "shorts": {"weight_oz": 12, "size": "small"},
+    "dress": {"weight_oz": 16, "size": "medium"},
+    "sleepwear": {"weight_oz": 16, "size": "medium"},
+    "bottoms": {"weight_oz": 24, "size": "medium"},
+    "jumpsuit": {"weight_oz": 24, "size": "medium"},
+    "costume": {"weight_oz": 24, "size": "medium"},
+    "sweater": {"weight_oz": 24, "size": "medium"},
+    "set": {"weight_oz": 32, "size": "medium"},
+    "bag": {"weight_oz": 32, "size": "large"},
+    "outerwear": {"weight_oz": 32, "size": "large"},
+    "shoes": {"weight_oz": 48, "size": "shoebox"}
+  },
+  "default": {"weight_oz": 16, "size": "medium"},
+  "heavier": {"outerwear": {"weight_oz": 64, "size": "large"}, "shoes": {"weight_oz": 64, "size": "bootbox"}},
+  "kids": {"clothing": {"weight_oz": 8, "size": "small"}, "outerwear": {"weight_oz": 24, "size": "medium"},
+           "shoes": {"weight_oz": 24, "size": "kidsbox"}},
+  "sizes": {
+    "small": {"length": 10, "width": 8, "height": 2},
+    "medium": {"length": 12, "width": 10, "height": 3},
+    "large": {"length": 14, "width": 12, "height": 5},
+    "kidsbox": {"length": 9, "width": 6, "height": 4},
+    "shoebox": {"length": 13, "width": 8, "height": 5},
+    "bootbox": {"length": 15, "width": 12, "height": 5}
+  },
+  "rates": [
+    {"up_to_oz": 4, "buyer_pays": 5.25},
+    {"up_to_oz": 8, "buyer_pays": 6.00},
+    {"up_to_oz": 12, "buyer_pays": 7.00},
+    {"up_to_oz": 16, "buyer_pays": 8.25},
+    {"up_to_oz": 32, "buyer_pays": 9.75},
+    {"up_to_oz": 48, "buyer_pays": 11.00},
+    {"up_to_oz": 64, "buyer_pays": 12.50},
+    {"up_to_oz": 80, "buyer_pays": 14.00},
+    {"up_to_oz": 160, "buyer_pays": 18.00}
+  ]
+}

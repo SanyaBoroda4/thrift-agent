@@ -50,8 +50,8 @@ LISTING_PATH = re.compile(r"^/listing/(?P<slug>[^/]+)-(?P<id>[0-9a-f]{24})/?$")
 HEX24 = re.compile(r"\b[0-9a-f]{24}\b")
 LANDINGS = "site_landings"                      # kv: {site: [landing kinds seen after the final click]}
 KNOWN_LANDINGS = {"poshmark": ["closet", "listing"], "depop": ["success", "listing"], "vinted": ["member", "listing"]}
-LABEL = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted"}
-BUTTON = {"poshmark": "List", "depop": "Post", "vinted": "Upload"}
+LABEL = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted", "ebay": "eBay"}
+BUTTON = {"poshmark": "List", "depop": "Post", "vinted": "Upload", "ebay": "the create call"}
 
 Get = Callable[[str], tuple]                    # url → (status or None, text, final url)
 

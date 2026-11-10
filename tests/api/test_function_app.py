@@ -13,7 +13,15 @@ ROUTES = {("POST", "email"), ("POST", "samples"), ("POST", "heartbeat"), ("POST"
           ("POST", "test-message"), ("GET", "dashboard"), ("GET", "health"), ("POST", "replay"),
           # WO45 §2: the iPhone's shares
           ("POST", "share/{share_id}/photo"), ("POST", "share/{share_id}/end"), ("GET", "shares/pending"),
-          ("GET", "shares/{share_id}/photo/{name}"), ("POST", "shares/{share_id}/fetched")}
+          ("GET", "shares/{share_id}/photo/{name}"), ("POST", "shares/{share_id}/fetched"),
+          # WO57: eBay
+          ("GET", "ebay/account-deletion"), ("POST", "ebay/account-deletion"), ("GET", "ebay/oauth/start"),
+          ("GET", "ebay/oauth/callback"), ("GET", "ebay/oauth/declined"), ("GET", "ebay/token"), ("GET", "ebay/status"),
+          ("GET", "ebay/privacy")}
+# WO57: the four routes eBay itself must reach — its account-deletion endpoint (the check and the notices), the two
+# pages its consent sends the owner's browser back to, the privacy page. No other route is open without the function key.
+ANONYMOUS = {("GET", "ebay/account-deletion"), ("POST", "ebay/account-deletion"), ("GET", "ebay/oauth/callback"),
+             ("GET", "ebay/oauth/declined"), ("GET", "ebay/privacy")}
 
 
 @pytest.fixture(scope="module")
@@ -36,11 +44,30 @@ def user_function(app, name: str):
     return next(f for f in app if f.get_function_name() == name).get_user_function()
 
 
-def test_every_route_needs_the_function_key(app, func):
+def test_every_route_needs_the_function_key_but_the_four_ebay_reaches(app, func):
     http = [t for t in triggers(app).values() if t["type"] == "httpTrigger"]
     assert {(str(getattr(m, "value", m)), t["route"]) for t in http for m in t["methods"]} == ROUTES
     assert len(http) == len(ROUTES)                                     # one method per route
-    assert all(t["authLevel"] == func.AuthLevel.FUNCTION for t in http)
+    levels = {(str(getattr(m, "value", m)), t["route"]): t["authLevel"] for t in http for m in t["methods"]}
+    assert {route for route, level in levels.items() if level != func.AuthLevel.FUNCTION} == ANONYMOUS
+    assert all(levels[route] == func.AuthLevel.ANONYMOUS for route in ANONYMOUS)
+    assert {route for _, route in ANONYMOUS} == {"ebay/account-deletion", "ebay/oauth/callback", "ebay/oauth/declined",
+                                                 "ebay/privacy"}                           # four paths, no other
+
+
+def test_ebays_deletion_notice_is_acknowledged_without_reading_its_body(app, func):
+    """WO57: POST /ebay/account-deletion answers 200 {} and never asks Azure for the body (nothing of a notice is
+    read, kept or logged); the challenge goes through the app without a key or a database."""
+    class NoBody(func.HttpRequest):
+        def get_body(self):
+            raise AssertionError("the notice's body was read")
+    notice = NoBody(method="POST", url="https://thrift.example/ebay/account-deletion", headers={}, params={},
+                    body=b'{"notification": {"data": {"username": "janeq_closet"}}}')
+    answer = user_function(app, "post_ebay_account_deletion")(notice)
+    assert (answer.status_code, json.loads(answer.get_body())) == (200, {})
+    check = user_function(app, "get_ebay_account_deletion")(func.HttpRequest(
+        method="GET", url="https://thrift.example/ebay/account-deletion", headers={}, params={}, body=b""))
+    assert check.status_code == 400                                     # no challenge code (and no database asked for)
 
 
 def test_two_timers(app):
@@ -98,8 +125,9 @@ def test_the_deployment_files():
     assert (host["version"], host["extensions"]["http"]["routePrefix"]) == ("2.0", "")
     assert host["logging"]["applicationInsights"]["samplingSettings"]["isEnabled"] is True
     assert host["logging"]["logLevel"]["default"] == "Warning"            # WO35: the log levels (test_api_logs.py)
-    assert (api / "requirements.txt").read_text(encoding="utf-8").split() == ["azure-functions", "psycopg[binary]>=3.2",
-                                                                              "tzdata", "azure-storage-blob>=12.19"]
+    assert (api / "requirements.txt").read_text(encoding="utf-8").split() == [
+        "azure-functions", "psycopg[binary]>=3.2", "tzdata", "azure-storage-blob>=12.19",
+        "cryptography>=42"]                                               # WO57: eBay's tokens are stored sealed (Fernet)
     assert {"tests", "__pycache__", ".venv", "local.settings.json"} <= set((api / ".funcignore").read_text(
         encoding="utf-8").split())
     dev = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["optional-dependencies"]["dev"]

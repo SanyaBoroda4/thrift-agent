@@ -12,8 +12,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 UTC = timezone.utc
-SITES = ("poshmark", "depop", "vinted")
-SITE_NAMES = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted"}
+# WO57: eBay is the fourth marketplace — known everywhere a site is named or sorted (SITES), but only "on" once the Mac
+# says so (ebay.on / ebay.sites): while it is off the three CORE_SITES are the sites, exactly as before.
+CORE_SITES = ("poshmark", "depop", "vinted")
+EBAY = "ebay"
+SITES = (*CORE_SITES, EBAY)
+SITE_NAMES = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted", "ebay": "eBay"}
 SITE_ORDER = {site: n for n, site in enumerate(SITES)}
 MODES = ("off", "replay", "live")
 DEFAULT_MODE = "replay"

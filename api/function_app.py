@@ -1,7 +1,9 @@
 """The Azure Function (WO33; Python v2 programming model, Flex Consumption): every HTTP route and the two timers, a thin
 adapter over thrift_api.http.handle and thrift_api.timers. Every route needs the function key (AuthLevel.FUNCTION):
-the x-functions-key header, or ?code= for the dashboard opened on the phone. host.json sets the route prefix to "", so
-the paths are /email, /tasks, … (no /api)."""
+the x-functions-key header, or ?code= for the dashboard opened on the phone — but the four eBay itself must reach
+(WO57, AuthLevel.ANONYMOUS): its account-deletion endpoint, the two pages its consent sends the owner's browser
+back to, and the privacy page its RuName form asks for. host.json sets the route prefix to "", so the paths are
+/email, /tasks, … (no /api)."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -11,6 +13,7 @@ import azure.functions as func
 from thrift_api import http, timers, util
 
 FUNCTION = func.AuthLevel.FUNCTION
+ANONYMOUS = func.AuthLevel.ANONYMOUS
 app = func.FunctionApp(http_auth_level=FUNCTION)
 
 
@@ -126,6 +129,53 @@ def post_share_fetched(req: func.HttpRequest) -> func.HttpResponse:
     return _respond(req, f"/shares/{req.route_params.get('share_id', '')}/fetched")
 
 
+# WO57: eBay, the fourth marketplace (thrift_api/ebay.py). eBay calls the account-deletion endpoint without a key, and
+# its consent redirects the owner's browser to the callback with eBay's own ?code= — which Azure would read as the
+# function key on a keyed route: those are ANONYMOUS (the callback is guarded by its single-use `state`). The link the
+# owner opens (/ebay/oauth/start) and the Mac's two routes keep the key.
+
+@app.route(route="ebay/account-deletion", methods=["GET"], auth_level=ANONYMOUS)
+def get_ebay_account_deletion(req: func.HttpRequest) -> func.HttpResponse:
+    return _respond(req, "/ebay/account-deletion")
+
+
+@app.route(route="ebay/account-deletion", methods=["POST"], auth_level=ANONYMOUS)
+def post_ebay_account_deletion(req: func.HttpRequest) -> func.HttpResponse:
+    """A deletion notice is acknowledged without its body ever being asked for: nothing of it is read, kept or logged."""
+    status, headers, body = http.handle("POST", "/ebay/account-deletion", {}, b"")
+    return func.HttpResponse(body=body, status_code=status, headers=headers)
+
+
+@app.route(route="ebay/oauth/start", methods=["GET"], auth_level=FUNCTION)
+def get_ebay_oauth_start(req: func.HttpRequest) -> func.HttpResponse:
+    return _respond(req, "/ebay/oauth/start")
+
+
+@app.route(route="ebay/oauth/callback", methods=["GET"], auth_level=ANONYMOUS)
+def get_ebay_oauth_callback(req: func.HttpRequest) -> func.HttpResponse:
+    return _respond(req, "/ebay/oauth/callback")
+
+
+@app.route(route="ebay/oauth/declined", methods=["GET"], auth_level=ANONYMOUS)
+def get_ebay_oauth_declined(req: func.HttpRequest) -> func.HttpResponse:
+    return _respond(req, "/ebay/oauth/declined")
+
+
+@app.route(route="ebay/privacy", methods=["GET"], auth_level=ANONYMOUS)
+def get_ebay_privacy(req: func.HttpRequest) -> func.HttpResponse:
+    return _respond(req, "/ebay/privacy")
+
+
+@app.route(route="ebay/token", methods=["GET"], auth_level=FUNCTION)
+def get_ebay_token(req: func.HttpRequest) -> func.HttpResponse:
+    return _respond(req, "/ebay/token")
+
+
+@app.route(route="ebay/status", methods=["GET"], auth_level=FUNCTION)
+def get_ebay_status(req: func.HttpRequest) -> func.HttpResponse:
+    return _respond(req, "/ebay/status")
+
+
 @app.timer_trigger(schedule="0 */15 * * * *", arg_name="timer", run_on_startup=False, use_monitor=True)
 def every_15_min(timer: func.TimerRequest) -> None:
     """Reminders, the Gmail reader's heartbeat, failed emails again."""
@@ -134,7 +184,8 @@ def every_15_min(timer: func.TimerRequest) -> None:
 
 @app.timer_trigger(schedule="0 */5 * * * *", arg_name="timer", run_on_startup=False, use_monitor=True)
 def every_5_min(timer: func.TimerRequest) -> None:
-    """WO45 §3: the share watchdog (a complete share with no outcome while the Mac is online)."""
+    """WO45 §3: the share watchdog (a complete share with no outcome while the Mac is online). WO57: eBay's orders read,
+    its open take-downs done."""
     _timer(lambda: timers.every_5_min(http.get_db(), datetime.now(timezone.utc)))
 
 

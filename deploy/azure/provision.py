@@ -21,18 +21,31 @@ subscription or the server changes.
     python deploy/azure/provision.py uploads   # WO45 §2 (part of `up`, after the deploy): the `shares` blob container,
                                                # its 30-day lifecycle rule, the Shortcut's function-scoped `upload`
                                                # key (keys.txt; told to the owner's private chat ONCE, never printed)
+    python deploy/azure/provision.py ebay      # WO57 (after a deploy): eBay's app settings — the account-deletion
+                                               # endpoint's verification token and the key that seals eBay's tokens
+                                               # (each made ONCE, kept in var/azure/), the endpoint's address, the
+                                               # keyset from private/.env (EBAY_CLIENT_ID, EBAY_CLIENT_SECRET,
+                                               # EBAY_RUNAME; optional EBAY_ENV, EBAY_SCOPES, EBAY_API, EBAY_SELLER) when it is
+                                               # there, and the owner's consent link with its own function-scoped key
+    python deploy/azure/provision.py ebay status   # read only: which EBAY_ settings Azure has (names, never values)
+                                                   # and what GET /ebay/status says
+    python deploy/azure/provision.py ebay show     # the endpoint, its verification token, the RuName's two addresses
+                                                   # and the consent link — only in a real terminal (the owner's)
 
-Secrets are never printed (but by `keys`, in the owner's terminal) or committed: the function keys and thrift_app's
-password stay in var/azure/ (git-ignored, this PC only). The Telegram token and the group's chat id are read from the
+Secrets are never printed (but by `keys` and `ebay show`, in the owner's terminal) or committed: the function keys,
+thrift_app's password and eBay's verification token and token key stay in var/azure/ (git-ignored, this PC only). The
+Telegram token and the group's chat id are read from the
 Mac's .env over SSH (read only) and handed to Azure's app settings through a temporary file, deleted at once."""
 from __future__ import annotations
 
+import base64
 import getpass
 import hashlib
 import json
 import os
 import secrets
 import shutil
+import string
 import subprocess
 import sys
 import tempfile
@@ -40,6 +53,7 @@ import time
 import urllib.request
 from datetime import date
 from pathlib import Path
+from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parents[2]
 VAR = ROOT / "var" / "azure"
@@ -63,6 +77,17 @@ UPLOAD_FUNCTIONS = ("post_share_photo", "post_share_end")
 WEB_API = "2023-12-01"                # Microsoft.Web's API version for a function key put through `az rest`
 UPLOAD_KEY_LINE = ("🔑 The upload key for the Shortcut: {key} — paste it into the Shortcut's x-functions-key header; "
                    "this message is the only place it is shown.")
+# WO57: eBay
+EBAY_ENV_FILE = ROOT / "private" / ".env"     # the keyset from eBay's developer portal, on this PC (git-ignored repo)
+EBAY_KEYSET = ("EBAY_CLIENT_ID", "EBAY_CLIENT_SECRET", "EBAY_RUNAME")      # set together, or not at all
+EBAY_OPTIONAL = ("EBAY_ENV", "EBAY_SCOPES", "EBAY_API", "EBAY_SELLER")
+EBAY_SETTINGS_FILE = ROOT / "private" / "settings.yaml"   # marketplaces.ebay.shop: the shop's eBay username (EBAY_SELLER)
+EBAY_SETTINGS = ("EBAY_VERIFICATION_TOKEN", "EBAY_TOKEN_KEY", "EBAY_DELETION_ENDPOINT", *EBAY_KEYSET, *EBAY_OPTIONAL,
+                 "EBAY_START_LINK")
+EBAY_START_FUNCTION = "get_ebay_oauth_start"  # the owner's consent link opens this function, and only this one
+EBAY_KEY = "ebay"                             # its function-scoped key (keys.txt: ebay_start)
+EBAY_TOKEN_CHARS = string.ascii_letters + string.digits + "_-"             # what eBay allows in a verification token
+EBAY_TOKEN_LENGTH = 64                        # eBay: 32 to 80 characters
 
 
 def say(line: str) -> None:
@@ -569,6 +594,163 @@ def uploads(st: dict) -> None:
     tell_upload_key(st, upload_key(st))
 
 
+# ---------------------------------------------------------------- WO57: eBay, the fourth marketplace
+
+def read_env(path: Path) -> dict:
+    """The KEY=VALUE lines of a .env file ({} when it isn't there): blank lines, # comments and lines without = are
+    skipped; an `export ` before the name and one pair of quotes around the value are dropped."""
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except OSError:
+        return {}
+    out = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        name, value = name.strip().removeprefix("export ").strip(), value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if name:
+            out[name] = value
+    return out
+
+
+def ebay_verification_token() -> str:
+    """A verification token for eBay's account-deletion endpoint: 64 characters of letters, digits, _ and -."""
+    return "".join(secrets.choice(EBAY_TOKEN_CHARS) for _ in range(EBAY_TOKEN_LENGTH))
+
+
+def fernet_key() -> str:
+    """A Fernet key (32 random bytes, URL-safe base64) — what thrift-api seals eBay's tokens with."""
+    return base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii")
+
+
+def ebay_secrets(sec: dict) -> bool:
+    """The two secrets eBay's side needs, made ONCE into `sec` (var/azure/secrets.json) and never again: a new token
+    key would orphan the refresh token stored under the old one, a new verification token would fail eBay's check of
+    the registered endpoint. True when one was made now."""
+    made = False
+    for name, make in (("ebay_verification_token", ebay_verification_token), ("ebay_token_key", fernet_key)):
+        if not sec.get(name):
+            sec[name] = make()
+            made = True
+    return made
+
+
+def ebay_settings(url: str, sec: dict, env: dict, start_key: str | None = None) -> tuple[dict, list[str]]:
+    """(the app settings to write, the keyset names still missing). Always: the verification token, the token key and
+    the endpoint's exact address (the string to register with eBay) — enough for the account-deletion endpoint to
+    answer before any eBay key exists. The keyset (client id, client secret, RuName) only when all three are in
+    private/.env (a half keyset would turn eBay on and broken); the optional ones when given; the consent link when
+    its function key exists."""
+    url = url.rstrip("/")
+    values = {"EBAY_VERIFICATION_TOKEN": sec["ebay_verification_token"], "EBAY_TOKEN_KEY": sec["ebay_token_key"],
+              "EBAY_DELETION_ENDPOINT": f"{url}/ebay/account-deletion"}
+    missing = [name for name in EBAY_KEYSET if not env.get(name)]
+    if not missing:
+        values.update({name: env[name] for name in EBAY_KEYSET})
+    values.update({name: env[name] for name in EBAY_OPTIONAL if env.get(name)})
+    if start_key:
+        values["EBAY_START_LINK"] = f"{url}/ebay/oauth/start?code={quote(start_key, safe='')}"
+    return values, missing
+
+
+def ebay_seller(env: dict, path: Path | None = None) -> dict:
+    """`env` with EBAY_SELLER (the shop's eBay username: a consent given with another account is refused) — from
+    private/.env, else private/settings.yaml's marketplaces.ebay.shop; neither → left unset. Never printed."""
+    if env.get("EBAY_SELLER"):
+        return env
+    try:
+        import yaml
+        cfg = yaml.safe_load((path or EBAY_SETTINGS_FILE).read_text(encoding="utf-8")) or {}
+        shop = ((cfg.get("marketplaces") or {}).get("ebay") or {}).get("shop")
+    except Exception:  # noqa: BLE001 — no file, no yaml, another shape: unset
+        shop = None
+    return {**env, "EBAY_SELLER": str(shop).strip()} if isinstance(shop, str) and shop.strip() else env
+
+
+def ebay_start_key(st: dict) -> str | None:
+    """The function-scoped key `ebay` on get_ebay_oauth_start — the only key in the owner's consent link, opening
+    nothing else: made by Azure when missing and read back (keys.txt: ebay_start; never printed). None while the
+    function isn't deployed yet."""
+    value = function_key(st, EBAY_START_FUNCTION, EBAY_KEY)
+    if not value:
+        az("functionapp", "function", "keys", "set", "-g", RG, "-n", st["app"], "--function-name", EBAY_START_FUNCTION,
+           "--key-name", EBAY_KEY, parse=False, check=False)
+        value = function_key(st, EBAY_START_FUNCTION, EBAY_KEY)
+    if value:
+        write_keys({"ebay_start": value})
+    return value or None
+
+
+def ebay(st: dict) -> None:
+    """WO57: eBay's app settings (see the module). Works before eBay's keys exist: then the account-deletion endpoint
+    alone is set up, and the names still missing are said (names only)."""
+    if not st.get("app") or not st.get("url"):
+        sys.exit("thrift-api isn't in Azure yet: run `provision.py up` first.")
+    sec = load(SECRETS)
+    if ebay_secrets(sec):
+        save(SECRETS, sec)
+    key = ebay_start_key(st)
+    values, missing = ebay_settings(st["url"], sec, ebay_seller(read_env(EBAY_ENV_FILE)), key)
+    set_settings(st, values)
+    st["ebay"] = {"settings": sorted(values), "missing": missing}
+    say(f"✓ eBay app settings: {', '.join(sorted(values))} (names; the values are never printed)")
+    say(f"✓ the account-deletion endpoint: {st['url']}/ebay/account-deletion — its verification token: "
+        "`provision.py ebay show`, in your own terminal")
+    if missing:
+        say(f"… not in private/.env yet: {', '.join(missing)} — add them as KEY=VALUE lines and run `provision.py ebay` "
+            "again; until then eBay stays off (the endpoint above answers already)")
+    if key is None:
+        say(f"… the consent link: the function {EBAY_START_FUNCTION} isn't in Azure yet — `provision.py deploy`, then "
+            "`provision.py ebay` again")
+    else:
+        say("✓ the consent link is set (EBAY_START_LINK, its own function key) — `provision.py ebay show` prints it")
+
+
+def ebay_status(st: dict) -> None:
+    """Read only: which EBAY_ settings the Function has (names, never values), and thrift-api's own /ebay/status."""
+    rows = az("functionapp", "config", "appsettings", "list", "-g", RG, "-n", st["app"]) or []
+    have = {row.get("name") for row in rows if row.get("value")}
+    say("eBay app settings: " + ", ".join(f"{name} {'✓' if name in have else '—'}" for name in EBAY_SETTINGS))
+    mac = read_keys().get("mac")
+    if not mac:
+        say("… /ebay/status: the mac key isn't in keys.txt (run `provision.py finish` first)")
+        return
+    try:
+        answer = call(st, mac, "GET", "/ebay/status")
+    except Exception as e:  # noqa: BLE001
+        say(f"… /ebay/status didn't answer ({type(e).__name__}) — is the code deployed?")
+        return
+    say("thrift-api: " + ", ".join(f"{name} {answer.get(name)}" for name in (
+        "configured", "connected", "environment", "consent_expires_at", "needs_consent_since", "orders_read_at",
+        "orders_error", "ended")))
+
+
+def ebay_show(st: dict) -> None:
+    """What the owner types into eBay's developer portal, and the consent link — only into a real terminal (the
+    owner's)."""
+    if not sys.stdout.isatty():
+        raise SystemExit("eBay's verification token and the consent link are shown only in your own terminal: "
+                         ".venv\\Scripts\\python deploy\\azure\\provision.py ebay show")
+    sec, url = load(SECRETS), st["url"]
+    if not sec.get("ebay_verification_token"):
+        raise SystemExit("Nothing to show yet: run `provision.py ebay` first.")
+    say("\neBay developer portal → Application Keys → Notifications → Marketplace Account Deletion:")
+    say(f"  Notification Endpoint URL  {url}/ebay/account-deletion")
+    say(f"  Verification token         {sec['ebay_verification_token']}")
+    say("\neBay developer portal → User Tokens → the RuName (eBay Redirect URL name):")
+    say(f"  Your auth accepted URL     {url}/ebay/oauth/callback")
+    say(f"  Your auth declined URL     {url}/ebay/oauth/declined")
+    say(f"  Your privacy policy URL    {url}/ebay/privacy")
+    key = read_keys().get("ebay_start")
+    say("\nThe consent link (open it signed in to eBay as the shop's account, click Agree and Continue):")
+    say(f"  {url}/ebay/oauth/start?code={quote(key, safe='')}\n" if key else
+        "  not made yet — `provision.py deploy`, then `provision.py ebay`\n")
+
+
 def main(argv: list[str]) -> None:
     what = argv[1] if len(argv) > 1 else "up"
     st = load(STATE)
@@ -619,6 +801,12 @@ def main(argv: list[str]) -> None:
         cleanup(st)
     elif what == "keys":
         show_keys(st)
+    elif what == "ebay" and len(argv) == 2:      # WO57
+        ebay(st)
+    elif what == "ebay" and argv[2:] == ["status"]:
+        ebay_status(st)
+    elif what == "ebay" and argv[2:] == ["show"]:
+        ebay_show(st)
     else:
         sys.exit(__doc__)
     save(STATE, st)

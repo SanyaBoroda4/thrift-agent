@@ -436,7 +436,7 @@ def live_titles(db) -> dict[str, dict[str, str]]:
         posh = (loads(r["renders"]) or {}).get("poshmark") or {}
         if r["marketplace"] == "poshmark":
             t = posh.get("title")
-        elif r["marketplace"] == "vinted":
+        elif r["marketplace"] in ("vinted", "ebay"):          # a title field of their own (WO57: eBay)
             t = fields.get("title") or posh.get("title")
         else:
             t = (str(fields.get("description") or "").split("\n", 1)[0].strip()) or posh.get("title")

@@ -14,9 +14,32 @@ def api_env(monkeypatch):
     """SALES_MODE and DATABASE_URL never come from the machine running the tests, and the database the API opens
     lazily is forgotten after each test."""
     from thrift_api import http
-    for name in ("SALES_MODE", "DATABASE_URL"):
+    for name in ("SALES_MODE", "DATABASE_URL", *EBAY_ENV):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(http, "_DB", None)
+
+
+EBAY_ENV = ("EBAY_ENV", "EBAY_CLIENT_ID", "EBAY_CLIENT_SECRET", "EBAY_RUNAME", "EBAY_SCOPES", "EBAY_VERIFICATION_TOKEN",
+            "EBAY_DELETION_ENDPOINT", "EBAY_TOKEN_KEY", "EBAY_START_LINK", "EBAY_API")
+
+
+@pytest.fixture(autouse=True)
+def no_ebay(monkeypatch):
+    """WO57: no test ever reaches eBay — the one way out (thrift_api.ebay.SENDER) fails loudly unless a test puts its
+    own fake there (ebayfake.FakeEbay); eBay's settings never come from the machine (api_env)."""
+    from thrift_api import ebay
+
+    def refuse(method, url, headers, body, timeout):
+        raise AssertionError(f"a test called eBay without a fake: {method} {url.split('?')[0]}")
+    monkeypatch.setattr(ebay, "SENDER", refuse)
+
+
+@pytest.fixture
+def fake_ebay(monkeypatch, no_ebay):
+    """WO57: eBay set up (its settings as provision.py makes them) and tests/api/ebayfake.FakeEbay in place of the one
+    way out to it — the token endpoint, the Listing API, the orders."""
+    from ebayfake import install
+    return install(monkeypatch)
 
 
 @pytest.fixture(autouse=True)

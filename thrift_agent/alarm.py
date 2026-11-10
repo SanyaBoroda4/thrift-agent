@@ -32,7 +32,7 @@ KEY = "alarms"
 AFTER = timedelta(minutes=20)
 REPEAT = timedelta(hours=4)
 PER_DAY = 2
-LABEL = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted"}
+LABEL = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted", "ebay": "eBay"}
 
 
 def _now() -> datetime:
@@ -212,6 +212,8 @@ def tick(db: DB, at: datetime | None = None, hours_open: bool = True) -> list[st
     for mp, p in (loads(db.kv_get(health.HEALTH)) or {}).items():
         if p.get("owner"):
             continue
+        if mp == "ebay" and p.get("kind") == "account":
+            continue          # WO57: eBay's consent — thrift-api's own private message has the link (no page to show)
         if p.get("kind") == "account" and (p.get("page") == "challenge"
                                            or humansteps.kind_of(p.get("page"), p.get("reason") or "")):
             # WO56: a human step — its one message and its reminders are humansteps' (never a 🚨, never the group);

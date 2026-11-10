@@ -427,7 +427,8 @@ def _stale_what(db: DB, table: str, row) -> str:
     it = db.item(row["item_id"])
     posh = ((loads(it["renders"]) or {}).get("poshmark") or {}) if it is not None else {}
     title = posh.get("title") or row["item_id"]
-    site = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted"}.get(row["marketplace"], row["marketplace"])
+    site = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted",
+            "ebay": "eBay"}.get(row["marketplace"], row["marketplace"])
     if table == "listing_edits":
         return f"The {row['kind']} change of {title} on {site}"
     old, new = row["old_price"], row["new_price"]

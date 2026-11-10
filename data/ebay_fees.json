@@ -1,0 +1,14 @@
+{
+  "_about": "WO57 §3: eBay's selling fees for a seller WITHOUT a store (ebay.com, US), as thrift_agent/ebay/fees.py reads them: the final value fee is a share of the TOTAL amount of the sale (item price + what the buyer pays for shipping + sales tax), by category, plus a per-order fee. `checked` is the day these numbers were compared with eBay's fee page; `thrift doctor` shows it and ONE private line says so when it is 90 days old. A rule applies to a listing whose category — or any of its ancestors — is one of `categories` (eBay category ids, EBAY_US tree); the first rule that applies wins, else `default`. `tiers`: the rate on the part of the total up to `up_to`, then the next. `when_total_at_least`: the rule applies only to a sale whose total reaches it (below it the next matching rule, else `default`). `order_fee: false`: no per-order fee under this rule. NOT in this file (2026-11-10): eBay's lower rates on a very large sale (the part above $7,500 in most categories, above $2,000 for bags) — a price worked out without them is a little higher than needed, never lower; add a tier (`up_to`) when a sale that large is in sight.",
+  "checked": "2026-11-10",
+  "source": "https://www.ebay.com/help/selling/fees-credits-invoices/selling-fees?id=4822",
+  "seller": "no store",
+  "insertion": {"free_per_month": 250, "fee": 0.35},
+  "order_fee": [{"up_to": 10.00, "fee": 0.30}, {"fee": 0.40}],
+  "default": {"name": "Most categories", "tiers": [{"rate": 0.136}]},
+  "rules": [
+    {"name": "Athletic shoes, $150 or more", "categories": ["15709", "95672"], "when_total_at_least": 150,
+     "tiers": [{"rate": 0.08}], "order_fee": false},
+    {"name": "Women's bags and handbags", "categories": ["169291"], "tiers": [{"rate": 0.15}]}
+  ]
+}

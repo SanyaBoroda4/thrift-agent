@@ -25,7 +25,7 @@ LIMITS = {                     # hours without a success before the one line
 LABEL = {"order_sweep": "The order sweep", "photo_check": "The listing photo check", "takedowns": "The take-downs",
          "price_drops": "The price drops", "form_check": "The form check", "sync": "The sync to thrift-api",
          "cleanup": "The daily cleanup", "inbox": "The inbox look", "heartbeat": "The heartbeat to thrift-api"}
-SITE = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted"}
+SITE = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted", "ebay": "eBay"}
 
 
 def _now() -> datetime:

@@ -24,6 +24,9 @@ from thrift_agent.db import DB, loads
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 telegram_app = typer.Typer(help="Telegram bot helpers: setup (find the ids for .env) and test (send a message).")
 app.add_typer(telegram_app, name="telegram")
+from thrift_agent.ebay import cli as _ebay_cli  # noqa: E402 — WO57: `thrift ebay …`, the fourth site's own commands
+
+app.add_typer(_ebay_cli.app, name="ebay")
 
 
 @app.callback()
@@ -334,10 +337,16 @@ def beat_info(db) -> dict:
         except ValueError:
             return value
     from thrift_agent import alarm, formcheck, health, quiet
+    from thrift_agent.ebay import duties as ebay_duties
+    try:                                                   # WO57: is eBay on; the month's free listings (the 9 PM line)
+        ebay = ebay_duties.beat(settings(), db)
+    except Exception as e:  # noqa: BLE001 — the heartbeat never fails for one part of it
+        ebay = {"on": False, "error": type(e).__name__}
     return {"inbox_look": kv(alerts.SCAN_DONE), "progress": kv(alerts.PROGRESS), "uploads_poll": kv(uploads.LAST_POLL),
             "cleanup": kv(cleanup.LAST), "formcheck": formcheck.beat(db),   # WO52 §3: the 9 PM sites line
             "sites": health.beat(db), "alarms": alarm.beat(db),            # WO53 §3: why a site is ✗, the 🚨 said
-            "quiet": quiet.beat(db)}                       # WO54 §3: thrift-api mirrors the owner's quiet hours
+            "quiet": quiet.beat(db),                       # WO54 §3: thrift-api mirrors the owner's quiet hours
+            "ebay": ebay}
 
 
 def _safe_window(db, fn) -> None:
@@ -1212,13 +1221,15 @@ def show(item_id: str) -> None:
         raise typer.BadParameter(f"unknown item {item_id}")
     print(json.dumps({k: loads(row[k]) for k in ("facts", "price", "gate", "renders")}, indent=1))
     t = Table("marketplace", "status", "price", "url", "listing id", "attempts", "error")
-    for mp in ("poshmark", "depop", "vinted"):
+    for mp in ("poshmark", "depop", "vinted", "ebay"):
         r = db.listing(item_id, mp)
+        if r is None and mp == "ebay":
+            continue                                   # WO57: eBay's row only once the item has one
         t.add_row(mp, *(["—"] * 6) if r is None else
                   (r["status"], str(r["price"] or ""), r["url"] or "", r["listing_id"] or "", str(r["attempts"]),
                    escape((r["error"] or "")[:80])))
     print(t)
-    for mp in ("depop", "vinted"):
+    for mp in ("depop", "vinted", "ebay"):
         if (r := db.listing(item_id, mp)) is not None and r["fields_json"]:
             print(f"{mp} fields: " + escape(json.dumps(loads(r["fields_json"]), ensure_ascii=False)[:1500]))
 

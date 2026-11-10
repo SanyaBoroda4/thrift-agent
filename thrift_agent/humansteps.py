@@ -55,7 +55,7 @@ CHALLENGE_WITHIN = timedelta(hours=2)    # ... a second one within this is the h
 WATCH_FRESH = 45.0                       # the extension read the held page this recently (s): watched, no self-test
 STALE_AFTER = 120.0                      # ... no reading this long: its page is opened again by the self-test (once)
 DEFAULT_ADDRESS = "100.109.116.57"       # the Mac's Tailscale address (settings human_steps.vnc_address)
-LABEL = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted"}
+LABEL = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted", "ebay": "eBay"}
 WHAT = {"captcha": "a CAPTCHA", "verify": "a check that it's you (a code or a confirmation)",
         "challenge": "a “verify you are human” check that didn't pass by itself", "login": "a sign-in"}
 DO = {"captcha": "solve it", "verify": "do the check (any code is typed by you)",

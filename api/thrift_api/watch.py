@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from . import core, deadlines, quiet, util
+from . import core, deadlines, ebay, quiet, util
 from .db import Database
 from .util import iso, parse_time, site_name
 
@@ -212,7 +212,7 @@ def _unposted_rows(db: Database, now: datetime) -> list[dict]:
 NOT_LIVE_AFTER = timedelta(hours=2)       # WO52 §5: priced this long ago and not live on all three sites
 NOT_LIVE_WINDOW = timedelta(days=3)       # … priced within this (history is never replayed)
 NOT_LIVE_SAID = "not_live_said:"          # settings: + item — the 🚨 line said (once)
-SITES = ("poshmark", "depop", "vinted")
+SITES = util.CORE_SITES                   # the three; eBay with them while it is on (WO57, ebay.on)
 
 
 def not_live(db: Database, now: datetime | None = None, mode: str | None = None,
@@ -222,7 +222,9 @@ def not_live(db: Database, now: datetime | None = None, mode: str | None = None,
     above skips the reasons the Mac settles itself; this one names them): "🚨 Zara Moto Jacket isn't live everywhere 2 h
     after its price — Depop: refused the form …; Vinted: not tried yet". Returns the items said.
     WO54 §3: never in the quiet hours or the 30 minutes after them, and the 2 hours are the Mac's working time: an
-    item priced at 8:00 AM is 2 h old at 3:30 PM (8:00–8:30, then 2:00–3:30)."""
+    item priced at 8:00 AM is 2 h old at 3:30 PM (8:00–8:30, then 2:00–3:30).
+    WO57: while eBay is on (the Mac's heartbeat) "everywhere" is all four — eBay named like the others; an item priced
+    before eBay came on owes it nothing unless it has an eBay row (the day eBay starts is not a day of alarms)."""
     now, mode = (util.aware(now) if now else util.utcnow()), mode or util.mode()
     if mode != "live":
         return []
@@ -232,6 +234,7 @@ def not_live(db: Database, now: datetime | None = None, mode: str | None = None,
     out = core.Outbox(now, mode)
     said = []
     paused = _paused_sites(db)
+    ebay_since = ebay.on_since(db, now)
     with db.tx():
         rows = db.query("SELECT id, title, priced_at FROM items WHERE COALESCE(priced, 0) = 1 AND COALESCE(test, 0) = 0 "
                         "AND COALESCE(status, '') NOT IN ('dropped', 'sold') AND priced_at IS NOT NULL AND priced_at <= ? "
@@ -244,9 +247,12 @@ def not_live(db: Database, now: datetime | None = None, mode: str | None = None,
                 continue
             listings = {r["marketplace"]: r for r in db.query(
                 "SELECT marketplace, status, error FROM listings WHERE item_id = ?", (it["id"],))}
-            if any((listings.get(mp) or {}).get("status") in ("sold", "delisted") for mp in SITES):
+            sites = SITES
+            if ebay_since is not None and (util.EBAY in listings or priced >= ebay_since):
+                sites = util.SITES                            # WO57: eBay is on, and this item is its to list
+            if any((listings.get(mp) or {}).get("status") in ("sold", "delisted") for mp in sites):
                 continue                                      # sold or taken down somewhere: not this net's
-            missing = [mp for mp in SITES if (listings.get(mp) or {}).get("status") != "posted"]
+            missing = [mp for mp in sites if (listings.get(mp) or {}).get("status") != "posted"]
             if not missing:
                 continue
             parts = []
@@ -342,7 +348,7 @@ def _cleanup_today(db: Database, day: str) -> str:
     return f" 🧹 Cleanup freed {size}."
 
 
-SITE_LABEL = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted"}
+SITE_LABEL = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted", "ebay": "eBay"}
 
 
 ACCOUNT_WORDS = {"login": "logged out", "captcha": "shows a CAPTCHA", "verify": "asks for a check",
@@ -389,7 +395,10 @@ def sites_line(db: Database, day: str, now: datetime | None = None) -> str:
     A site is ✗ for what it is (its pause: a login page, failures, the owner's pause; today's failed check, its step and
     time) — never for a stale check of another day (live 2026-11-08: Nov 7's checks shown as "one failed"); a 🚨 is
     named only when one was said in the last day ("see the 🚨 line" with none sent). Nothing for a Mac that sends
-    neither checks nor pauses."""
+    neither checks nor pauses.
+    WO57, while eBay is on: "· eBay ✓" after the three (ebay.site_mark: ✓ when connected with no take-down of its own
+    left open, else what is wrong — "eBay ✗ its permission ended") and, when the Mac counts them, " eBay: 12 of 250
+    free listings used this month."."""
     import json
     beat = db.one("SELECT info FROM heartbeats WHERE source = 'mac'")
     try:
@@ -400,11 +409,12 @@ def sites_line(db: Database, day: str, now: datetime | None = None) -> str:
     checks = info.get("formcheck") if isinstance(info.get("formcheck"), dict) else {}
     paused = info.get("sites") if isinstance(info.get("sites"), dict) else {}
     alarms = info.get("alarms") if isinstance(info.get("alarms"), dict) else {}
-    if not checks and not paused:
+    with_ebay = ebay.on(db)
+    if not checks and not paused and not with_ebay:
         return ""
     from .timers import clock
     marks, done = [], []
-    for site in util.SITES:
+    for site in util.CORE_SITES:
         label = SITE_LABEL.get(site, site)
         c = checks.get(site) if isinstance(checks.get(site), dict) else None
         p = paused.get(site) if isinstance(paused.get(site), dict) else None
@@ -432,6 +442,19 @@ def sites_line(db: Database, day: str, now: datetime | None = None) -> str:
         if passed or failed:
             done.append(f"{label} " + " ".join([*(f"{_slot(x)} ✓" for x in passed), *(f"{_slot(x)} ✗" for x in failed)]))
     when = (" — form checks today: " + ", ".join(done)) if done else " — no form check ran today"
+    if with_ebay:
+        # WO57: eBay has no form to check — its mark is thrift-api's own knowledge (the permission, its take-downs, its
+        # orders), or the Mac's pause of it; then the month's free listings as the Mac counts them
+        now = util.aware(now) if now else util.utcnow()
+        p = paused.get(util.EBAY) if isinstance(paused.get(util.EBAY), dict) else None
+        if p:
+            marks.append(f"eBay ✗ {pause_words(p)} since {clock(parse_time(p.get('since')), now)}"
+                         + (" (see the 🚨 line)" if any(str(k).split(":", 1)[0] == util.EBAY for k in alarms) else ""))
+        else:
+            marks.append(ebay.site_mark(db, now))
+        if not checks and not paused:
+            when = ""                                 # a Mac that says nothing of the three: eBay's mark alone
+        return "\nSites: " + " · ".join(marks) + when + "." + ebay.free_line(db, now)
     return "\nSites: " + " · ".join(marks) + when + "."
 
 
@@ -452,10 +475,11 @@ def evening_line(db: Database, now: datetime | None = None, mode: str | None = N
     items = db.query("SELECT id FROM items WHERE created_at LIKE ? AND COALESCE(test, 0) = 0", (f"{day}%",))
     item_ids = [r["id"] for r in items]
     live_all = 0
+    sites = ebay.sites(db)                            # WO57: the three, and eBay while it is on
     for iid in item_ids:
         rows = db.query("SELECT marketplace, status, photos_sent, photos_live FROM listings WHERE item_id = ?", (iid,))
         posted = {r["marketplace"]: r for r in rows if r["status"] == "posted"}
-        if set(posted) >= set(util.SITES) and all(
+        if set(posted) >= set(sites) and all(
                 r["photos_live"] is None or r["photos_sent"] is None or int(r["photos_live"]) >= int(r["photos_sent"])
                 for r in posted.values()):
             live_all += 1
@@ -475,7 +499,7 @@ def evening_line(db: Database, now: datetime | None = None, mode: str | None = N
     elif seen is not None and mac_silent(seen, now, q, MAC_OFFLINE):
         head = f"📊 Today (the Mac is offline since {clock(seen, now)} — its figures as of then)"
     text = (f"{head}: {len(shares)} share{'s' if len(shares) != 1 else ''} → {len(item_ids)} item"
-            f"{'s' if len(item_ids) != 1 else ''}, {live_all} live on all {len(util.SITES)} sites with all photos"
+            f"{'s' if len(item_ids) != 1 else ''}, {live_all} live on all {len(sites)} sites with all photos"
             + (f", {n_wait} waiting for a size" if n_wait else "") + "." + _cleanup_today(db, day)
             + sites_line(db, day, now))
     out = core.Outbox(now, mode)

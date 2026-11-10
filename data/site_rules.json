@@ -95,6 +95,11 @@
       "description_max": 1000,
       "photos_max": 8,
       "title_is": "the description's first line"
+    },
+    "ebay": {
+      "title_max": 80,
+      "description_max": 4000,
+      "photos_max": 24
     }
   },
   "refusals": [

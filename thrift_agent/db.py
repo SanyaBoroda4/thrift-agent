@@ -179,6 +179,9 @@ def listing_id_from(mp: str, url: str | None) -> str | None:
     if mp == "vinted":
         m = re.search(r"/items/(\d+)", path)
         return m.group(1) if m else None
+    if mp == "ebay":        # https://www.ebay.com/itm/<id>, with or without a title slug before the id (WO57)
+        m = re.search(r"/itm/(?:[^/]+/)?(\d{9,})$", path)
+        return m.group(1) if m else None
     if mp == "depop":       # <shop>-<words> (never "create"); Post lands on its /manage/ view (WO32b)
         m = re.search(r"/products/([a-z0-9]+(?:-[a-z0-9]+)+)(?:/manage)?$", path)
         return m.group(1) if m else None
@@ -362,7 +365,7 @@ class DB:
         """The item's rows, in the order the poster takes the marketplaces: Poshmark, Depop, Vinted."""
         return self.conn.execute(
             "SELECT * FROM listings WHERE item_id=? ORDER BY CASE marketplace WHEN 'poshmark' THEN 0 WHEN 'depop' THEN 1 "
-            "WHEN 'vinted' THEN 2 ELSE 3 END", (iid,)).fetchall()
+            "WHEN 'vinted' THEN 2 WHEN 'ebay' THEN 3 ELSE 4 END", (iid,)).fetchall()
 
     # key/value (the Telegram getUpdates offset)
     def kv_get(self, key: str, default: str | None = None) -> str | None:

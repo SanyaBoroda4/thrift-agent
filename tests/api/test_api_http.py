@@ -37,7 +37,7 @@ def test_bad_requests(db):
     assert call(db, "POST", "/samples", {"samples": "nope"})[0] == 400
     assert call(db, "POST", "/sync", {"items": [{"title": "no id"}]})[0] == 400
     assert call(db, "GET", "/sales", query={"state": "closed"})[0] == 400
-    assert call(db, "GET", "/tasks", query={"sites": "depop,ebay"})[0] == 400
+    assert call(db, "GET", "/tasks", query={"sites": "depop,etsy"})[0] == 400      # (WO57: ebay is a site now)
     assert call(db, "POST", "/tasks/t_1", {"result": "done", "manual": "yes"})[0] == 400
     assert call(db, "POST", "/mac-event", {"kind": "bogus"})[0] == 400
 

@@ -16,7 +16,10 @@ from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 FILES = {"depop": "depop_catalog.json", "vinted": "vinted_catalog.json"}
-CROSS = ("depop", "vinted")                 # the marketplaces an item is cross-listed on after Poshmark (WO30)
+CROSS = ("depop", "vinted", "ebay")         # the marketplaces an item is cross-listed on after Poshmark (WO30);
+#                                             eBay (WO57) has no catalog file: its categories, item specifics and
+#                                             conditions are eBay's own answers (thrift_agent.ebay), its fee and
+#                                             parcel tables are checked by thrift_agent.ebay.ready
 
 
 class CatalogError(ValueError):
@@ -289,12 +292,13 @@ def vinted_catalog() -> Vinted:
 
 
 def check() -> dict[str, str | None]:
-    """The startup check: {marketplace: None (fine) | the problem} for Depop and Vinted."""
+    """The startup check: {marketplace: None (fine) | the problem} for Depop and Vinted (eBay: `ebay.ready`)."""
     out: dict[str, str | None] = {}
-    for mp in CROSS:
+    for mp in FILES:
         try:
             load(mp)
             out[mp] = None
         except CatalogError as e:
             out[mp] = str(e)
     return out
+

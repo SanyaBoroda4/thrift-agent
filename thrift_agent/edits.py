@@ -396,7 +396,7 @@ def _mirror(db: DB, iid: str, site: str, payload: dict) -> None:
                 renders["poshmark"] = posh
                 db.set_item(iid, renders=renders)
         else:
-            if payload.get("title") is not None and site == "vinted":
+            if payload.get("title") is not None and site in ("vinted", "ebay"):
                 fields["title"] = payload["title"]
             if payload.get("description") is not None:
                 fields["description"] = payload["description"]
@@ -424,7 +424,7 @@ def queue_brand(s: Settings, db: DB, iid: str, sites: list[str] | None = None, b
         return []
     names = brands.candidates(name, posh.get("brand_label"), brands.for_settings(s))
     payloads = {}
-    for site in sites or ["poshmark", "depop", "vinted"]:
+    for site in sites or ["poshmark", "depop", "vinted", "ebay"]:
         row = db.listing(iid, site)
         if row is None or row["status"] != "posted" or not row["url"]:
             continue
@@ -480,7 +480,7 @@ def queue_text(db: DB, iid: str, title: str | None = None, sites: list[str] | No
             if desc is not None:
                 p["description"] = desc
                 p["expect_description"] = posh.get("description")    # her own wording on the site is never overwritten
-        elif site == "vinted":
+        elif site in ("vinted", "ebay"):                          # a title field of its own (WO57: eBay too)
             p = {"expect_title": fields.get("title")}
             if title:
                 p["title"] = title

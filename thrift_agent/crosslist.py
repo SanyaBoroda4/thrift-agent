@@ -30,7 +30,7 @@ from thrift_agent.db import DB, listing_id_from, loads
 
 CROSS = catalogs.CROSS
 ORDER = ("poshmark", *CROSS)
-LABEL = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted"}
+LABEL = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted", "ebay": "eBay"}
 BLOCKS = "crosslist_blocked"           # kv: {mp: {"window", "reason", "since"}}: stopped for this window
 WINDOW_SEEN = "crosslist_window"       # kv: the daily window the poster last saw
 STREAK = "crosslist_failures"          # kv: {mp: failures in a row}: N in a row stop that marketplace for the window
@@ -45,9 +45,11 @@ ALERTS = {"login": "{site} needs you to log in on the Mac.",
           "captcha": "{site} shows a CAPTCHA — solve it in its Chrome window on the Mac.",
           "verify": "{site} asks for a check — open it on the Mac.",
           "block": "{site} turned the Mac away for now — I'll try again by myself later."}
-DRIVERS = {"depop": ("extension", "playwright", "api"), "vinted": ("extension", "playwright")}
+DRIVERS = {"depop": ("extension", "playwright", "api"), "vinted": ("extension", "playwright"), "ebay": ("api",)}
+DEFAULT_DRIVER = {"ebay": "api"}       # WO57: eBay has one way — its official API (no browser)
+EBAY_LINK = "ebay_link"                # kv: {"connected", "at", "why"}: the poster's view of the eBay consent (WO57)
 ALL_DONE_LINE = "💤 All done — nothing is waiting."             # WO34: the group card's last line (WO52 §6: no Mac)
-DOT = {"poshmark": "🟣", "depop": "🔴", "vinted": "🟢"}
+DOT = {"poshmark": "🟣", "depop": "🔴", "vinted": "🟢", "ebay": "🔵"}
 CARRIER = "posted_done_carrier"         # kv: the item whose group card carries the 💤 line now (WO34)
 LATER = ("queued", "posting", "dryrun", "failed")   # a site still to come: "⏳ Vinted — later"
 WAS_LIVE = ("posted", "sold", "delisted")           # a site the card links to (WO54: edits keep a sold one's link)
@@ -60,14 +62,19 @@ RECHECK_TRIES = 6              # ... the site's data unreadable this many times 
 def enabled(s: Settings) -> list[str]:
     """The cross-list marketplaces that are on and whose catalog loads (a broken catalog turns only that one off)."""
     ok = catalogs.check()
-    return [mp for mp in CROSS if s.get(f"marketplaces.{mp}.enabled", False) and ok.get(mp) is None]
+    on = [mp for mp in CROSS if s.get(f"marketplaces.{mp}.enabled", False) and ok.get(mp) is None]
+    if "ebay" in on:
+        from thrift_agent import ebay
+        if ebay.ready(s) is not None:
+            on.remove("ebay")                          # WO57: a table that doesn't load, no location: off for the run
+    return on
 
 
 def driver(s: Settings, mp: str) -> str:
     """How a marketplace is posted to (WO32): "extension" — the Thrift Chrome's extension, the seller's own Chrome (the
     default); "playwright" — WO30's poster profile (Vinted and Depop turn it away); "api" — Depop's Selling API (a
     stub until its key arrives)."""
-    d = str(s.get(f"marketplaces.{mp}.driver") or "extension").strip().lower()
+    d = str(s.get(f"marketplaces.{mp}.driver") or DEFAULT_DRIVER.get(mp, "extension")).strip().lower()
     if d not in DRIVERS.get(mp, ("playwright",)):
         raise ValueError(f"marketplaces.{mp}.driver must be one of {', '.join(DRIVERS.get(mp, ()))}, not {d!r}")
     return d
@@ -91,8 +98,10 @@ def reachable(s: Settings, db: DB) -> list[str]:
     """The enabled marketplaces the poster can work on now: one on the extension driver only while the poster sees the
     extension connected (WO32) — for the daily window's "still to publish", which mustn't wait on a missing Chrome."""
     link = loads(db.kv_get(EXT_LINK)) or {}
+    ebay = loads(db.kv_get(EBAY_LINK)) or {}
     return [mp for mp in enabled(s) if driver(s, mp) == "playwright"
-            or (driver(s, mp) == "extension" and link.get("connected"))]
+            or (driver(s, mp) == "extension" and link.get("connected"))
+            or (driver(s, mp) == "api" and ebay.get("connected"))]
 
 
 def live(s: Settings, mp: str) -> bool:
@@ -296,6 +305,13 @@ def block(db: DB, mp: str, reason: str, page: str | None = None, shot=None) -> N
     the 20-minute 🚨, as before (nobody can type or click it away)."""
     from thrift_agent import health, humansteps
     account = not reason.startswith("failures:")
+    if account and mp == "ebay":
+        # WO57: eBay has no page to show and nothing to do on the Mac — its consent is gone (revoked, expired). The
+        # site waits quietly; thrift-api's ONE private message carries the link to click Agree again, and the site's
+        # own test (eBay's VALIDATE on the canary) resumes it once a token comes again. Never the group, never "show".
+        if health.pause(db, mp, reason, "account", error=reason, page="login", say=False):
+            db.log(None, "crosslist_blocked", {"mp": mp, "reason": reason, "page": "login", "human": "thrift-api"})
+        return
     if account and humansteps.quiet_challenge(db, mp, reason, page):
         return                                       # WO56: a first "Just a moment" — tried again quietly in 15 min
     human = account and humansteps.kind_of(page, reason) is not None
@@ -357,6 +373,10 @@ def pending(s: Settings, db: DB, mps: list[str] | None = None, paused_too: bool 
         #   (WO45 §2: a test share's item is never listed; WO54 §2: never held for a brand — settle_brand decided it)
         mine = [r["item_id"] for r in rows
                 if not live_elsewhere_only or live_elsewhere(db, r["item_id"], mp)]   # WO53 rule 6
+        if mp == "ebay":              # WO57 §5: new shares always go at once — a backfilled item waits behind them
+            from thrift_agent.ebay import backfill
+            late = backfill.items(db)
+            mine = [i for i in mine if i not in late] + [i for i in mine if i in late]
         out += [(iid, mp) for iid in health.behind(db, mp, mine)]
     return out
 
@@ -412,7 +432,7 @@ def record(s: Settings, db: DB, iid: str, mp: str, title: str, out, fields: dict
                                        "note": out.note, "clicked": out.clicked, "guesses": guesses,
                                        "seconds": round(seconds, 1) if seconds else None, "slept": slept or None,
                                        "progress": list(lines) if lines else None})
-    shot = Path(out.screenshot or "")
+    shot = evidence(out.screenshot)
     note = f"\n{out.note}" if out.note else ""
     progress = f"\n{' · '.join(lines)}" if lines else ""
     if out.status == "failed" and out.clicked and not out.url:
@@ -448,6 +468,12 @@ def record(s: Settings, db: DB, iid: str, mp: str, title: str, out, fields: dict
         notify.ops_photo(shot, f"❌ {LABEL[mp]} failed ({iid}): {title}\n{step_text(error)}{note}\n({again})")
     elif out.status == "skipped" and NO_SIZE in (out.error or ""):
         say_no_size(title)
+    elif out.status == "skipped" and REFUSED_FOR_GOOD in (out.error or ""):
+        # WO57 rule 4: eBay itself refused the item (a policy) — recorded, never posted there again; the other sites
+        # aren't touched. ONE private line; no alarm (no code change makes eBay take it)
+        why = (out.error or "").split(REFUSED_FOR_GOOD, 1)[-1].split(" — not posted", 1)[0].strip(" ()")
+        notify.say(f"⏭ {title}: {LABEL[mp]} refused it for good ({why[:300]}). It stays on the other sites; it isn't "
+                   f"tried on {LABEL[mp]} again.")
     elif out.status == "skipped":
         notify.ops_photo(shot, f"⏭ {LABEL[mp]} skipped ({iid}): {title}\n{out.error}{note}")
         from thrift_agent.post import runner
@@ -462,6 +488,17 @@ def record(s: Settings, db: DB, iid: str, mp: str, title: str, out, fields: dict
 
 
 AUTOFIX = "title_autofix"          # kv: {item|site: {"fix", "error", "stage": "retry"|"done"}} (WO50)
+
+
+REFUSED_FOR_GOOD = "refused by eBay"          # thrift_agent.ebay.poster: a policy refusal, eBay's own removal (WO57)
+IMAGES = (".png", ".jpg", ".jpeg", ".webp")
+
+
+def evidence(path) -> Path:
+    """A job's evidence as the private chat can show it: a picture as it is; anything else (eBay's API has no page to
+    picture: its evidence is a JSON file) as no picture — the line then goes as text."""
+    p = Path(path or "")
+    return p if p.suffix.lower() in IMAGES else Path("")
 
 
 def autofix_refusal(db: DB, iid: str, mp: str, title: str, error: str | None) -> bool:
@@ -516,10 +553,10 @@ def strict_title(db: DB, iid: str, mp: str, fields, view):
                     gone += found
         if gone:
             db.log(iid, "marks_removed", {"mp": mp, "marks": sorted(set(gone))})
-    if mp == "vinted":
+    if mp in ("vinted", "ebay"):                      # a title field of its own (eBay: 80 characters)
         if not getattr(fields, "title", None):
             return fields
-        fields.title = titles.for_site(fields.title, "vinted", level, brand, condition)
+        fields.title = titles.for_site(fields.title, mp, level, brand, condition)
         current = fields.title
     elif not getattr(fields, "description", None):
         return fields
@@ -532,7 +569,7 @@ def strict_title(db: DB, iid: str, mp: str, fields, view):
         if facts is None or not hasattr(facts, "brand"):
             raise MappingError(f"the title breaks {LABEL.get(mp, mp)}'s rules ({'; '.join(problems)}): {current}")
         built = titles.fallback(facts, mp, level)        # WO54 §2: built from the facts, never a skipped site
-        if mp == "vinted":
+        if mp in ("vinted", "ebay"):
             fields.title = built
         else:
             _, _, rest = (fields.description or "").partition("\n")
@@ -945,6 +982,11 @@ def card_text(s: Settings, db: DB, iid: str, last: str | None = None) -> str:
     lines = [f"✅ {html.escape(name)} · ${price}"]
     sites = [*(["poshmark"] if s is None or s.get("marketplaces.poshmark.enabled", True) else []),
              *(enabled(s) if s is not None else [m for m in ORDER if m != "poshmark" and m in rows])]
+    # WO57 §3: eBay's price is worked out from hers (the same profit as on Poshmark) — when it differs, each live
+    # site's line says its own price
+    ebay = rows.get("ebay")
+    each = bool(ebay is not None and ebay["status"] in WAS_LIVE and ebay["url"] and ebay["price"] and price
+                and int(ebay["price"]) != int(price))
     for mp in sites:
         row = rows.get(mp)
         if row is None:
@@ -952,7 +994,9 @@ def card_text(s: Settings, db: DB, iid: str, last: str | None = None) -> str:
                 lines.append(html.escape(wait_line(db, iid, mp, None, s), quote=False))
             continue
         if row["status"] in WAS_LIVE and row["url"]:          # WO54: a card edited later keeps a sold site's link
-            lines.append(f'{DOT.get(mp, "•")} <a href="{html.escape(row["url"], quote=True)}">{LABEL.get(mp, mp)}</a>')
+            own = f" · ${int(row['price'] or price)}" if each else ""
+            lines.append(f'{DOT.get(mp, "•")} <a href="{html.escape(row["url"], quote=True)}">{LABEL.get(mp, mp)}</a>'
+                         f'{own}')
         elif row["status"] in LATER and not (row["status"] == "dryrun" and not (s is not None and live(s, mp))):
             lines.append(html.escape(wait_line(db, iid, mp, row, s), quote=False))   # a dry run that won't publish: out
         elif row["status"] == "skipped" and NO_SIZE in (row["error"] or ""):

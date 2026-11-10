@@ -19,7 +19,7 @@ to none and nothing new is recorded: never a guess, never a second row of one sa
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from . import core, match, util
 from .db import Database
@@ -33,7 +33,8 @@ MAX_ORDERS = 200
 RECENT = timedelta(days=45)        # an order our records lack is recorded only if sold this recently
 NEAR = timedelta(days=3)           # a sale and an order this close in time can be the same one
 FIELDS = ("order_id", "status", "status_text", "title", "price", "sold_at", "listing_id", "listing_url", "sku",
-          "shipped_at", "delivered_at", "completed_at")
+          "shipped_at", "delivered_at", "completed_at",
+          "ship_by")                # WO57: the day the site itself says to ship by ("YYYY-MM-DD"; eBay's orders give it)
 
 
 def report(db: Database, body: dict, now: datetime | None = None, mode: str | None = None) -> dict:
@@ -43,12 +44,19 @@ def report(db: Database, body: dict, now: datetime | None = None, mode: str | No
     if not isinstance(body, dict):
         raise BadRequest("the body must be a JSON object")
     mp = core._text(body.get("marketplace")).strip().lower()
-    if mp not in util.SITES:
+    if mp not in core._sites(db):
         raise BadRequest("marketplace is poshmark, depop or vinted")
     raw = body.get("orders")
     if not isinstance(raw, list) or len(raw) > MAX_ORDERS:
         raise BadRequest(f"orders is a list of at most {MAX_ORDERS}")
     seen_at = min(parse_time(body.get("swept_at")) or now, now)
+    results = sweep(db, mp, raw, seen_at, now, mode)
+    return {"marketplace": mp, "orders": len(results), "results": results}
+
+
+def sweep(db: Database, mp: str, raw: list, seen_at: datetime, now: datetime, mode: str) -> list[dict]:
+    """The orders of one sweep, each recorded and acted on, and the site's last sweep kept — the Mac's report of a
+    site's sold orders, and (WO57) thrift-api's own read of eBay's (ebay.read_orders). [results]"""
     results = []
     for entry in raw:
         order = clean(entry)
@@ -57,7 +65,7 @@ def report(db: Database, body: dict, now: datetime | None = None, mode: str | No
             continue
         results.append(one(db, mp, order, seen_at, now, mode))
     core.heartbeat(db, f"orders:{mp}", {"orders": len(results), "at": iso(seen_at)}, now, mode)
-    return {"marketplace": mp, "orders": len(results), "results": results}
+    return results
 
 
 def clean(entry: object) -> dict | None:
@@ -74,6 +82,10 @@ def clean(entry: object) -> dict | None:
     order["price"] = util.number(order["price"])
     for key in ("sold_at", "shipped_at", "delivered_at", "completed_at"):
         order[key] = parse_time(order[key])
+    try:
+        order["ship_by"] = date.fromisoformat(str(order["ship_by"])[:10]) if order["ship_by"] else None
+    except ValueError:
+        order["ship_by"] = None
     return order
 
 
@@ -97,6 +109,8 @@ def one(db: Database, mp: str, order: dict, seen_at: datetime, now: datetime, mo
                 "SELECT id FROM sales WHERE marketplace = ? AND order_id = ? AND id <> ?",
                 (mp, order["order_id"], sale["id"])):
             db.execute("UPDATE sales SET order_id = ? WHERE id = ?", (order["order_id"], sale["id"]))
+        if action == "linked" and order["ship_by"] is not None:       # WO57: the site's own ship-by day wins
+            core._fill_sale(db, sale, {"ship_by_stated": order["ship_by"]})
         keep(db, mp, order, sale, seen_at)
         changed = transition(db, mp, order, sale, seen_at, now, mode, out)
         if sale.get("item_id") and order["status"] != "cancelled":
@@ -105,6 +119,7 @@ def one(db: Database, mp: str, order: dict, seen_at: datetime, now: datetime, mo
             if made := core.ensure_takedowns(db, sale["item_id"], now, mode, reopen=True):
                 changed = ", ".join(filter(None, [changed, "take-downs: " + ", ".join(t["marketplace"] for t in made)]))
     out.flush()
+    core._ebay_kick(db, now, mode)            # WO57: an eBay take-down made here is done by thrift-api itself, at once
     return {"order_id": order["order_id"], "status": order["status"], "sale_id": sale["id"],
             "action": f"{action}{', ' + changed if changed else ''}"}
 
@@ -125,6 +140,8 @@ def find_sale(db: Database, mp: str, order: dict) -> tuple[dict | None, bool]:
             return rows[0], False
         if len(rows) > 1:
             return None, True
+    if mp == util.EBAY:
+        return None, False        # WO57: an eBay order is tied by its id, the SKU or the listing id only — never a title
     rows = [r for r in db.query("SELECT s.*, i.title AS item_title FROM sales s LEFT JOIN items i ON i.id = s.item_id "
                                 "WHERE s.marketplace = ? AND s.status <> 'merged'", (mp,))
             if _near(r, order) and _free(r, order)]
@@ -177,7 +194,7 @@ def record_sale(db: Database, mp: str, order: dict, now: datetime, mode: str, ou
              "parsed_json": json.dumps(facts), "raw_text": None}
     if core._insert_event(db, event, "new", now):
         received = order["sold_at"]
-        parsed = {**facts, "sold_at": received, "ship_by_stated": None}
+        parsed = {**facts, "sold_at": received, "ship_by_stated": order.get("ship_by")}
         result = core._sale(db, mp, parsed, message_id, event["subject"], core._handling(db, mode, received, now), now,
                             out)
         db.execute("UPDATE email_events SET status = ?, attempts = 1 WHERE message_id = ?", (result["status"], message_id))

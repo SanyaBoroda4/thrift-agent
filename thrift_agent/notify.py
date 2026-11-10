@@ -309,7 +309,11 @@ def ops_photo(path: Path, caption: str) -> bool:
     if not ok:
         _print(f"[ops] {caption}  ({path})")
         return False
-    if not Path(path).is_file():                       # e.g. the screenshot itself failed
+    if not Path(path).is_file() or Path(path).suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+        # e.g. the screenshot itself failed. WO57: evidence that is no picture (eBay's API has no page: a JSON file),
+        # or none at all — the line alone, never a file Telegram would refuse as a photo
+        if str(path) in ("", ".") or Path(path).is_file():
+            return ops(caption)
         return ops(f"{caption}\n(no image: {path})")
     db = _db()
     if _repeat(db, caption) or ops_down(db):

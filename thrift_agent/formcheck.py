@@ -60,8 +60,9 @@ SLOT_LATE = timedelta(hours=4)  # WO54 §4: a night's slot the Mac slept through
 #                                 opens her laptop in the morning (the poster's 2:00 PM start checks the sites anyway)
 PROVEN_BEFORE = timedelta(hours=1)   # WO54: a real listing live this long before a slot proves the site for that slot
 HAND = "asked by hand"          # `thrift canary --check`: the canary's form always (never skipped for real work)
-LABEL = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted"}
-SITES = ("poshmark", "depop", "vinted")
+LABEL = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted", "ebay": "eBay"}
+SITES = ("poshmark", "depop", "vinted", "ebay")   # eBay (WO57) has no form: its check is the canary through
+#                                                    eBay's own VALIDATE — everything checked, nothing created
 # WO54: the check ended before it could judge the form — its job not taken or not done in time, the bridge or the page
 # gone (health's "infra" kind says the rest: the browser closed, the network …)
 NO_VERDICT = re.compile(r"wasn't done in|didn't take the job|went away before|bridge|cancelled|called off|"

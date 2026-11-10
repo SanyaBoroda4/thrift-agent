@@ -17,11 +17,14 @@ is quiet on purpose or starting back, and its clock counts only the Mac's workin
 reader's watch and the sales lines are not the Mac's: they go on as before."""
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 
-from . import core, deadlines, orders, quiet, uploads, util, watch
+from . import core, deadlines, ebay, orders, quiet, uploads, util, watch
 from .db import Database
 from .util import iso, parse_time, site_name
+
+log = logging.getLogger(__name__)
 
 GMAIL_SILENCE = timedelta(minutes=30)
 GMAIL_DOWN = "gmail_down_since"          # settings: the episode, while it lasts
@@ -45,19 +48,34 @@ def every_15_min(db: Database, now: datetime | None = None, mode: str | None = N
             "retried": retry_failed(db, now, mode), "late_takedowns": core.say_late_takedowns(db, now, mode, q),
             "unposted": watch.unposted(db, now, mode, q),       # WO45 §7: an item priced but not live on a site
             "not_live": watch.not_live(db, now, mode, q),       # WO52 §5: … 2 h after its price, whatever the reason
+            "ebay": _ebay(ebay.consent_watch, db, now, mode),   # WO57: eBay's permission — refused, or near its end
             "quiet": quiet.describe(now, q)["now"]}
+
+
+def _ebay(job, db: Database, now: datetime, mode: str):
+    """WO57: one piece of eBay's work in a timer. A failure there never stops the timer's other work: it is logged as
+    its type and place (never its message: a token or an order could be in it) and the next run tries again. Azure's
+    eBay work is not the Mac's: it goes on in the owner's quiet hours."""
+    try:
+        return job(db, now, mode)
+    except Exception as e:  # noqa: BLE001
+        log.error("the timer's eBay work failed: %s", util.where(e))
+        return "failed"
 
 
 def every_5_min(db: Database, now: datetime | None = None, mode: str | None = None) -> dict:
     """WO45 §3: the share watchdog — a complete share with no outcome after 15 minutes (30 past 20 photos) while the
     Mac is online → one private line per share. WO49: and an upload the Mac hasn't fetched 10 minutes after it ended
     (live 2026-10-24: a 20-photo share sat in Azure 71 minutes, never watched — the watchdog saw only shares the Mac
-    had taken). WO54 §3: both rest in the quiet hours and count the Mac's working time only."""
+    had taken). WO54 §3: both rest in the quiet hours and count the Mac's working time only.
+    WO57: eBay's orders read (a sale there → the 💰 line, the take-downs elsewhere) and every open eBay take-down done
+    (ebay.tick) — whatever the Mac does, in the quiet hours too."""
     now, mode = (util.aware(now) if now else util.utcnow()), mode or util.mode()
     if mode == "off":
         return {"mode": mode}
     q = quiet.read(db)
-    return {"mode": mode, "shares": watch.shares_watch(db, now, mode, q), "uploads": watch.uploads_watch(db, now, mode, q)}
+    return {"mode": mode, "shares": watch.shares_watch(db, now, mode, q), "uploads": watch.uploads_watch(db, now, mode, q),
+            "ebay": _ebay(ebay.tick, db, now, mode)}
 
 
 def evening(db: Database, now: datetime | None = None, mode: str | None = None) -> dict:
@@ -147,6 +165,8 @@ def reminders(db: Database, now: datetime, mode: str) -> list[list[str]]:
                     "FROM sales s LEFT JOIN items i ON i.id = s.item_id LEFT JOIN orders o ON o.sale_id = s.id "
                     "WHERE s.shipped_at IS NULL "
                     "AND s.ship_by IS NOT NULL AND s.status NOT IN ('cancelled', 'double_sale', 'done', 'merged') "
+                    # WO57: an eBay sale of a listing that isn't ours is hers (core.hers): no reminder of it
+                    "AND NOT (s.marketplace = 'ebay' AND s.item_id IS NULL) "
                     "ORDER BY s.ship_by, s.sold_at, s.id")
     sent = {(row["sale_id"], row["kind"]) for row in db.query("SELECT sale_id, kind FROM reminders")}
     swept = orders.swept(db)

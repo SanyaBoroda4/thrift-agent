@@ -10,6 +10,8 @@ the ones that act take `mode` too (default SALES_MODE):
 
 A sale's take-downs: one `delist_tasks` row for every OTHER marketplace where the item's listing is posted. The Mac
 leases them (`take_tasks`, 10 minutes), takes the listing down and reports (`task_result`). Nothing here ever relists.
+WO57: eBay's are never the Mac's — thrift-api ends the eBay listing itself, right after the transaction that made the
+task (`_ebay_kick` → ebay.run_takedowns), and answers through the same `task_result`.
 
 Messages are collected while a transaction runs and sent only after it commits (`Outbox`): a change that rolled back is
 never announced, and a message recorded as sent is never sent twice."""
@@ -45,8 +47,9 @@ FOLLOWUP_OPEN = {"SHIPPED": "s.shipped_at IS NULL AND s.status NOT IN ('cancelle
                  "CANCELLED": "s.status NOT IN ('cancelled', 'done', 'merged')"}
 # Vinted mails one sale twice — "You sold an item" (no transaction id), its shipping label minutes later (the id)
 SAME_SALE_WINDOW = timedelta(days=3)
-# tasks made together come out in the sites' order: Poshmark, Depop, Vinted
-SITE_SORT = "CASE {0}marketplace WHEN 'poshmark' THEN 0 WHEN 'depop' THEN 1 WHEN 'vinted' THEN 2 ELSE 3 END"
+# tasks made together come out in the sites' order: Poshmark, Depop, Vinted, eBay (WO57)
+SITE_SORT = ("CASE {0}marketplace WHEN 'poshmark' THEN 0 WHEN 'depop' THEN 1 WHEN 'vinted' THEN 2 WHEN 'ebay' THEN 3 "
+             "ELSE 4 END")
 TASK_ORDER = f"created_at, {SITE_SORT.format('')}, id"
 ITEM_COLUMNS = ("title", "brand", "size", "price", "created_at",
                 "all_live_at", "drop_stage", "next_drop_at", "no_drop",              # WO41: the price-drop clock
@@ -333,7 +336,15 @@ def _process(db: Database, event: dict, now: datetime, mode: str, fresh: bool, l
                        "WHERE message_id = ?", (failed, message_id))
         return {**base, "status": "failed", "error": reason}
     out.flush()
+    _ebay_kick(db, now, mode)                 # WO57: a take-down on eBay this sale made is done from here, at once
     return {**base, **result, "handling": handling}
+
+
+def _ebay_kick(db: Database, now: datetime, mode: str) -> None:
+    """WO57: after a transaction that may have made an eBay take-down has committed — thrift-api ends the eBay listing
+    itself, now, whatever the Mac does (ebay.kick: never inside a transaction, never raising)."""
+    from . import ebay
+    ebay.kick(db, now, mode)
 
 
 def _facts_of(event: dict, received: datetime) -> dict:
@@ -406,6 +417,8 @@ def _sale(db: Database, mp: str, parsed: dict, message_id: str, subject: str | N
         title, site = _title(db, item_id, parsed.get("title"), parsed.get("listing_id")), site_name(mp)
         if status == "double_sale":
             _sold_twice(db, out, item_id, title, site_name(first["marketplace"]), site, now)
+        elif hers(mp, item_id):
+            pass                  # WO57: an eBay sale of a listing that isn't ours is hers — the quiet line below, no more
         elif late:
             # WO49: found after the fact (a rule fixed since, or the ship reminder): the private chat hears it with
             # what was done — the group already knows from the site itself, and a days-late 💰 line would confuse
@@ -418,6 +431,13 @@ def _sale(db: Database, mp: str, parsed: dict, message_id: str, subject: str | N
             out.ops(NOT_OURS.format(site=site, title=_short(parsed.get("title") or subject or title)))
     return {"status": "unmatched" if status == "unmatched" else "matched", "sale_id": sale_id, "sale_status": status,
             "item_id": item_id, "matched_by": how, "ship_by": ship_day.isoformat(), "tasks": [t["id"] for t in tasks]}
+
+
+def hers(marketplace: str | None, item_id: str | None) -> bool:
+    """WO57 (the owner): a sale on eBay of a listing that isn't one of the agent's — she lists there by hand too, and
+    those sales are hers: recorded, ONE quiet private line, and nothing in the group (no 💰 line, no reminder, no
+    cancellation line). On the other three sites a sale that matched no item is said as before."""
+    return marketplace == util.EBAY and not item_id
 
 
 def _same_sale(db: Database, mp: str, order_id: str | None, item_id: str | None, title: str | None = None,
@@ -790,7 +810,8 @@ def _cancel(db: Database, sale: dict, title: str, handling: str, out: Outbox) ->
     if stands:
         line += (f" The {site_name(stands['marketplace'])} sale stands — ship it by "
                  f"{deadlines.fmt_day(day_of(stands['ship_by']))}.")
-    out.group(line)
+    if not hers(sale["marketplace"], sale["item_id"]):        # WO57: her own eBay sale: the private line only
+        out.group(line)
     order = f", order {sale['order_id']}" if sale["order_id"] else ""
     details = [f"Cancelled: {title} on {site} ({sale['id']}{order})."]
     if called_off:
@@ -853,6 +874,7 @@ def sync(db: Database, body: dict, now: datetime | None = None) -> dict:
         for item_id in sorted({_text(r.get("item_id")).strip() for r in listings
                                if _text(r.get("status")).strip().lower() == "posted"}):
             ensure_takedowns(db, item_id, now, util.mode())
+    _ebay_kick(db, now, util.mode())          # WO57: an eBay listing synced after its item sold comes down at once
     return counts
 
 
@@ -891,7 +913,9 @@ def _column(column: str, value: object) -> object:
 
 def take_tasks(db: Database, sites: list[str], now: datetime | None = None, mode: str | None = None) -> list[dict]:
     """The take-downs the Mac should do now on `sites`: pending ones, and running ones whose lease ran out; each is
-    leased for 10 minutes (status running). Outside live mode none (nothing is taken down in replay or off)."""
+    leased for 10 minutes (status running). Outside live mode none (nothing is taken down in replay or off).
+    WO57: `sites` may name eBay, but an eBay take-down is never the Mac's — thrift-api ends the eBay listing itself
+    (ebay.run_takedowns); only the safety net's "repost" of an eBay row is handed out."""
     now, mode = _clock(now), mode or util.mode()
     sites = [s for s in sites if s in util.SITES]
     if mode != "live" or not sites:
@@ -906,7 +930,8 @@ def take_tasks(db: Database, sites: list[str], now: datetime | None = None, mode
             "COALESCE(i.title, s.title_seen) AS title FROM delist_tasks t "
             "LEFT JOIN items i ON i.id = t.item_id LEFT JOIN sales s ON s.id = t.sale_id "
             "LEFT JOIN listings l ON l.item_id = t.item_id AND l.marketplace = t.marketplace "
-            f"WHERE t.marketplace IN ({marks}) AND (t.status = 'pending' OR (t.status = 'running' "
+            f"WHERE t.marketplace IN ({marks}) AND (t.marketplace <> 'ebay' OR COALESCE(t.kind, 'delist') = 'repost') "
+            "AND (t.status = 'pending' OR (t.status = 'running' "
             f"AND (t.lease_until IS NULL OR t.lease_until < ?))) ORDER BY t.created_at, {SITE_SORT.format('t.')}, t.id",
             (*sites, iso(now)))
         for row in rows:
@@ -1042,14 +1067,21 @@ def _mac_not_for_sale(db: Database, body: dict, now: datetime, mode: str) -> dic
     marketplace = _text(body.get("marketplace")).strip().lower()
     if not item_id:
         raise BadRequest("item_id is required")
-    if marketplace not in util.SITES:
+    if marketplace not in _sites(db):
         raise BadRequest("marketplace is poshmark, depop or vinted")
     if mode != "live":
         return {"tasks": 0, "task_ids": [], "mode": mode}
     with db.tx():
         created = _create_tasks(db, None, item_id, marketplace, now,
                                 skip=("pending", "running", "done", "failed", "not_found"))
+    _ebay_kick(db, now, mode)
     return {"tasks": len(created), "task_ids": [t["id"] for t in created], "mode": mode}
+
+
+def _sites(db: Database) -> tuple[str, ...]:
+    """The marketplaces the Mac may speak of: the three — and eBay once it is on (WO57, ebay.on)."""
+    from . import ebay
+    return ebay.sites(db)
 
 
 def _mac_shipped(db: Database, words: object, now: datetime, mode: str) -> dict:
@@ -1080,7 +1112,7 @@ def _mac_shipped(db: Database, words: object, now: datetime, mode: str) -> dict:
 
 def _mac_sold_found(db: Database, body: dict, now: datetime, mode: str) -> dict:
     marketplace = _text(body.get("marketplace")).strip().lower()
-    if marketplace not in util.SITES:
+    if marketplace not in _sites(db):
         raise BadRequest("marketplace is poshmark, depop or vinted")
     url = _text(body.get("listing_url")).strip() or None
     listing_id = _text(body.get("listing_id")).strip() or emails.listing_id_from_url(marketplace, url)
@@ -1220,6 +1252,7 @@ def match_sale(db: Database, sale_id: str, item_id: object, now: datetime | None
         downs = f"; take-downs: {util.and_list([site_name(t['marketplace']) for t in tasks])}" if tasks else ""
         out.ops(f"Matched the {site} sale {sale_id} to {title} ({status}){downs}.")
     out.flush()
+    _ebay_kick(db, now, mode)
     return {"sale_id": sale_id, "item_id": item_id, "status": status, "tasks": [t["id"] for t in tasks], "changed": True}
 
 
@@ -1293,9 +1326,10 @@ def dashboard_data(db: Database, now: datetime | None = None) -> dict:
     for entry in late:                                  # WO40: still listed elsewhere 2 h after the sale
         if entry["item_id"] in items:
             items[entry["item_id"]]["still_listed"] = [site_name(m) for m in entry["sites"]]
-    from . import watch                                 # WO45 §3: the day's shares (the ledger)
+    from . import ebay, watch                           # WO45 §3: the day's shares (the ledger)
     return {"items": list(items.values()), "unmatched": unmatched, "swept": swept, "generated_at": iso(now),
-            "late_takedowns": [{**e, "line": late_line(e)} for e in late], "shares": watch.shares_today(db, now)}
+            "late_takedowns": [{**e, "line": late_line(e)} for e in late], "shares": watch.shares_today(db, now),
+            **({"ebay": True} if ebay.on(db) else {})}       # WO57: the fourth column, only while eBay is on
 
 
 def _drops(row: dict, now: datetime) -> dict:

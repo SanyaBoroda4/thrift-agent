@@ -164,6 +164,8 @@ LISTING_URLS = {
                            re.I),
     "depop": re.compile(r"https?://(?:www\.)?depop\.com/products/(?P<id>[a-z0-9][a-z0-9_-]*)/?", re.I),
     "vinted": re.compile(r"https?://(?:www\.)?vinted\.com/items/(?P<id>\d+)(?:-[^\s/?#\"'<>]*)?", re.I),
+    # WO57: no eBay email is ever parsed (its orders come by API) — only the id in a stored eBay listing address
+    "ebay": re.compile(r"https?://(?:www\.)?ebay\.com/itm/(?:[^\s/?#\"'<>]+/)?(?P<id>\d{9,15})(?!\d)", re.I),
 }
 ORDER_URLS = {"poshmark": re.compile(r"poshmark\.com/order/sales/(?P<id>[0-9a-f]{24})", re.I)}
 ORDER_ID = re.compile(r"\b(?:order|transaction)[ \t]*(?:id|number|no\.?|#)[ \t]*[:#.]?\s*#?[ \t]*"

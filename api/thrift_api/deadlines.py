@@ -1,8 +1,9 @@
 """Ship-by dates and shipping reminders (WO33): pure date logic — nothing is read, stored or sent here.
 
 Each marketplace gives the seller a number of days to ship (`DEFAULT_RULES`, overridden by `shipping.deadlines`):
-Poshmark 7 calendar days, Vinted 5 business days, Depop 5 calendar days after the sale's LOCAL date (America/New_York:
-a sale at 23:30 local is that day's, whatever the UTC date). A date the sale email states wins over the rule. Business
+Poshmark 7 calendar days, Vinted 5 business days, Depop 5 calendar days, eBay 3 business days (WO57) after the sale's
+LOCAL date (America/New_York: a sale at 23:30 local is that day's, whatever the UTC date). A date the sale email (or
+eBay's order) states wins over the rule. Business
 days are Monday to Friday except the observed US federal holidays. Reminders are due from 09:00 local: the day before
 the ship-by date, on it, and once after it; `night` tells the night hours, in which a message goes out silently
 (WO54 §3: 22:00–07:00 local; 23:00–08:00 before). The owner's daytime quiet hours (8:30 AM – 2:00 PM, the Mac runs
@@ -17,7 +18,9 @@ from zoneinfo import ZoneInfo
 TZ = "America/New_York"
 DEFAULT_RULES = {"poshmark": {"kind": "calendar", "days": 7},
                  "vinted": {"kind": "business", "days": 5},
-                 "depop": {"kind": "calendar", "days": 5}}
+                 "depop": {"kind": "calendar", "days": 5},
+                 # WO57: eBay's order names its own ship-by day (it wins, like a date an email states); else 3 business days
+                 "ebay": {"kind": "business", "days": 3}}
 RULE_KINDS = ("calendar", "business")
 CLOSED = frozenset({"cancelled", "double_sale", "done"})      # a sale in one of these needs no reminder
 DAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")

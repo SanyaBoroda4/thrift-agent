@@ -1592,6 +1592,56 @@ shipping choice were found only by her 12 items). `thrift_agent/formcheck.py`:
   8:30, 2:30 passed." (`watch.sites_line`; nothing from a Mac before WO52).
 - Tests: `tests/test_wo52_formcheck.py`, `tests/api/test_api_wo52.py`, the WO52 part of `tests/js/content.test.mjs`.
 
+## eBay, the fourth site — built before the keys (WO57, 2026-11-10)
+- **The owner's decisions (Nov 10):** everything she shares goes to eBay too, designer brands included, on her own
+  account; eBay's newer method (its API), the price adjustable by the agent and by her; every item posted in the last
+  four weeks that is still for sale goes to eBay as well; the buyer pays shipping; returns 30 days, the buyer pays
+  return shipping; the eBay price worked out, after she taps her price, so that a sale on eBay leaves the same profit
+  as the same sale on Poshmark; the agent's drops (10% at 30 and 60 days) apply on eBay; posting still runs on her
+  Mac, outside the quiet hours.
+- **Her account as the architect read it (Nov 10, read only):** feedback 6, 10 active listings made by hand, 2 sales
+  in 90 days; limits 5,000 items or $50,000 a month; 243 of 250 free listings left; NOT opted in to business
+  policies, Seller Hub never started; her listings Buy It Now + Best Offer, the buyer pays shipping, Good 'Til
+  Cancelled. The developer account was created Nov 10, 11:00 AM (approval about a day).
+- **What eBay's own files say (read Nov 10 from the GraphQL schema, the OpenAPI specs and the guides — kept in the
+  git-ignored `var/ebay_research/`):**
+  - The **Listing API** exists and is public: release notes "Release Version 1.0.0 — Release Date 2026-10-26"; three
+    months earlier (eBay Connect, July 2026) it was "restricted beta". `POST https://graphqlapi.ebay.com/graphql`;
+    scope `sell.listing`; `createListing` needs a 32-hex `idempotencyKey`; `options.operationMode: VALIDATE`; call
+    limits 5K a day per operation. The architect's sentence "Modernized REST and GraphQL APIs are now Generally
+    Available" was not found in any page that could be read. Whether a keyset may call it is decided by its scopes.
+  - Inline shipping / returns are for an account not opted in to business policies; the Inventory API requires that
+    opt-in, and its listings "cannot be edited through Seller Hub or any other listing platform". The two families
+    don't mix ("The GraphQL APIs can be used only for listings that were created through the Trading API").
+  - **Sizes:** "eBay has discontinued the support of custom, non-standard size values … the listing will be blocked"
+    (enforced from 2026-08-26); "You may see Taxonomy API metadata that describes Size as FREE_TEXT. This does not mean
+    that any size value can be used"; "If the exact tagged or branded size is not available, choose the closest
+    supported size and add extra sizing detail in the title, description …".
+  - Apparel conditions: 1000 New with tags, 1500 New without tags, 1750 New with defects, 2990 Pre-owned – Excellent,
+    3000 Pre-owned – Good, 3010 Pre-owned – Fair; underwear takes only the three new ones.
+  - Media `createImageFromFile` at `apim.ebay.com` (multipart field `image`, scope `sell.inventory`); Fulfillment
+    `getOrders` at `apiz.ebay.com` (scope `sell.fulfillment.readonly`); OAuth access token 7,200 s, refresh token
+    47,304,000 s (about 18 months), every scope asked up front; the account-deletion challenge = SHA-256 hex of
+    challengeCode + verificationToken + endpoint, JSON, 200 (eBay's page gives NO worked example with real values).
+  - Trading API: `UploadSiteHostedPictures` gone, `GetOrders` deprecated 2026-11-06 (off 2027-06-30), `GeteBayDetails`
+    off 2027-03-15. Nothing of it is used.
+  - Not found in eBay's docs: the GraphQL sandbox address, the USPS Ground Advantage service code, a statement about
+    editing a Listing-API listing by hand, the body of a refused token refresh.
+- **What was built that day, against a fake eBay (`tests/ebay_fake.py`) and a stand-in category table:** the price
+  formula with its dated fee file (the WO's examples hold: $20 → $20, $50 → $48, $10 → $10 at $6 shipping); the
+  parcel table; the mapping (category by family and department, conditions, standard sizes, item specifics); the API
+  client (Listing API, Media, Taxonomy, Metadata); the poster as a fourth site worker; the card's fourth link and
+  prices; "price 35" and the drops on four sites; the backfill (25 a day behind the new shares, no clock reset);
+  eBay's own reconciler and photo check; thrift-api's account-deletion endpoint, OAuth, token endpoint, order
+  reader, the eBay take-down from Azure and the token human step; `docs/EBAY_SETUP.md`.
+- **Decisions taken in the build (for the owner to overrule):** the refresh token is kept in thrift-api's database
+  encrypted with a key that lives only in Azure's app settings (a function can't write its own settings); eBay's
+  daily cap is 50 (25 backfilled + the day's new shares); a required item specific the photos don't show gets eBay's
+  neutral value, never a guess; a size nowhere near eBay's list leaves eBay out for that item (never a made-up size);
+  a used item in a category that takes only new ones (underwear) isn't listed on eBay; the items' location is in
+  `private/settings.yaml`; the fee file holds only the rates the fee page was checked for (not the lower rates on the
+  part of a sale above $2,000 / $7,500).
+
 # Part 2 — the core sections as they stood on 2026-11-01
 
 ## (Preamble)

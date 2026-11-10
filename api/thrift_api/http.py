@@ -4,7 +4,8 @@ JSON object is 400, an unknown path 404, a known path with another method 405; a
 ({"error": …}); anything unexpected is a 500 that is logged — its type and where, never its message or a body
 (WO35: no email text, buyer details, keys or tokens in the logs) — and says nothing more.
 
-The routes (every one needs the function key; Azure checks it before this code runs):
+The routes (every one needs the function key — Azure checks it before this code runs — but the three eBay must reach
+without one: /ebay/account-deletion, /ebay/oauth/callback, /ebay/oauth/declined, /ebay/privacy, WO57 below):
   POST /email               {message_id, thread_id, from, subject, date, text}   one email from the Gmail reader
   POST /samples             {"samples": [the same payloads]}                    the developer's examples
   POST /heartbeat           {source, info}
@@ -24,6 +25,19 @@ The routes (every one needs the function key; Azure checks it before this code r
   GET  /shares/pending                         the shares the Mac hasn't fetched, with their photos
   GET  /shares/{id}/photo/{name}               the bytes, with their Content-Type
   POST /shares/{id}/fetched {"names": [...]}   the Mac has it
+  WO57 (ebay.py): eBay, the fourth marketplace —
+  GET  /ebay/account-deletion?challenge_code=  eBay's endpoint check: {"challengeResponse": 64 hex}      (no key)
+  POST /ebay/account-deletion                  a deletion notice: 200 {} — nothing read, kept or logged   (no key)
+  GET  /ebay/oauth/start                       302 to eBay's consent page (the owner's link, with its own key)
+  GET  /ebay/oauth/callback?code=&state=       eBay's redirect after Agree: the token stored, a small page (no key:
+                                               eBay's `code` would be read as the function key; the single-use
+                                               `state` guards it)
+  GET  /ebay/oauth/declined                    eBay's redirect after "Not now": a small page               (no key)
+  GET  /ebay/privacy                           the privacy page eBay's RuName form asks for               (no key)
+  GET  /ebay/token?kind=user|app               {"access_token", "expires_at", "environment"} for the Mac; 409 not
+                                               connected, 404 eBay not set up, 503 eBay away
+  GET  /ebay/status                            configured / connected / the consent's end / the orders read (no secret)
+  GET /tasks then also answers "ended": the eBay take-downs thrift-api did itself (an eBay take-down is never the Mac's).
 
 The database is DATABASE_URL's, opened at the first request that needs it (migrations then, once per process). In live
 mode every request that uses it is a live call: the first one writes go_live_at when it is missing."""
@@ -37,7 +51,7 @@ import threading
 from collections.abc import Callable
 from datetime import datetime
 
-from . import core, dashboard, orders, uploads, util
+from . import core, dashboard, ebay, orders, uploads, util
 from .db import Database
 from .schema import migrate
 from .util import ApiError, BadRequest
@@ -62,6 +76,14 @@ class Binary:
 
     def __init__(self, data: bytes, content_type: str):
         self.data, self.content_type = data, content_type
+
+
+class Redirect:
+    """A route's answer that sends the browser on (WO57: to eBay's consent page) — its status with a Location."""
+
+    def __init__(self, url: str):
+        self.url = url
+
 
 _DB: Database | None = None
 _DB_LOCK = threading.Lock()
@@ -103,11 +125,16 @@ def _sync(db, body, query, params, now):
 def _tasks(db, body, query, params, now):
     raw = _param(query, "sites")
     sites = [s.strip().lower() for s in raw.split(",") if s.strip()] if raw else list(util.SITES)
-    unknown = [s for s in sites if s not in util.SITES]
+    unknown = [s for s in sites if s not in util.SITES]       # WO57: `ebay` is a site here whether or not it is on yet
     if unknown:
         raise BadRequest(f"unknown sites: {', '.join(unknown)} (poshmark, depop, vinted)")
-    return 200, {"tasks": core.take_tasks(db, sites, now), "sold": core.sold_items(db, now),
-                 "sold_on": core.sold_sites(db, now), "mode": util.mode()}
+    answer = {"tasks": core.take_tasks(db, sites, now), "sold": core.sold_items(db, now),
+              "sold_on": core.sold_sites(db, now), "mode": util.mode()}
+    if ebay.configured():
+        # WO57: an eBay take-down is never in "tasks" — thrift-api ends the eBay listing itself; here is what it ended
+        # (30 days), for the Mac to mark its own row. Without eBay set up the answer is as it always was.
+        answer["ended"] = ebay.ended(db, now)
+    return 200, answer
 
 
 def _task_result(db, body, query, params, now):
@@ -187,6 +214,50 @@ def _share_fetched(db, body, query, params, now):
     return 200, uploads.mark_fetched(db, params["share_id"], body, now, uploads.store())   # WO47: the blobs go too
 
 
+# WO57 — eBay (ebay.py)
+
+def _ebay_challenge(db, body, query, params, now):
+    """eBay's check of the account-deletion endpoint. Exactly "application/json", made by the JSON library (eBay: a
+    hand-written body often carries a byte order mark, which fails its check)."""
+    answer = ebay.challenge(_param(query, "challenge_code"))
+    return 200, Binary(json.dumps(answer).encode("utf-8"), "application/json")
+
+
+def _ebay_deletion(db, body, query, params, now):
+    """A marketplace account deletion / closure notice: acknowledged, and that is all. thrift-api keeps nothing about
+    any other eBay user (no buyer's name, username or address is ever stored), so there is nothing to delete — the
+    body isn't read (function_app never asks Azure for it), kept or logged. eBay's signature isn't checked: its own
+    wording is that a developer "should" verify it, and an endpoint that does nothing with the notice has nothing a
+    forged one could abuse."""
+    return 200, {}
+
+
+def _ebay_start(db, body, query, params, now):
+    return 302, Redirect(ebay.oauth_start(db, now))
+
+
+def _ebay_callback(db, body, query, params, now):
+    return ebay.oauth_callback(db, {"code": _param(query, "code"), "state": _param(query, "state")}, now)
+
+
+def _ebay_declined(db, body, query, params, now):
+    return 200, ebay.page(ebay.PAGE_DECLINED)
+
+
+def _ebay_privacy(db, body, query, params, now):
+    """The "Privacy Policy URL" eBay's RuName form asks for."""
+    return 200, ebay.page(ebay.PAGE_PRIVACY, "Privacy")
+
+
+def _ebay_token(db, body, query, params, now):
+    """The one route that answers with a token (never logged: no line of this package carries an answer)."""
+    return 200, ebay.access_token(db, _param(query, "kind") or "user", now)
+
+
+def _ebay_status(db, body, query, params, now):
+    return 200, ebay.status(db, now)
+
+
 Route = tuple[str, re.Pattern, Callable, bool]          # method, path, handler, needs the database; a fifth element
 #                                                         "raw" hands the handler the body as it came (http.Raw)
 ROUTES: tuple[tuple, ...] = (
@@ -209,6 +280,14 @@ ROUTES: tuple[tuple, ...] = (
     ("GET", re.compile(r"/shares/pending"), _shares_pending, True),
     ("GET", re.compile(r"/shares/(?P<share_id>[^/]+)/photo/(?P<name>[^/]+)"), _share_photo_get, True),
     ("POST", re.compile(r"/shares/(?P<share_id>[^/]+)/fetched"), _share_fetched, True),
+    ("GET", re.compile(r"/ebay/account-deletion"), _ebay_challenge, False),                             # WO57
+    ("POST", re.compile(r"/ebay/account-deletion"), _ebay_deletion, False, "raw"),
+    ("GET", re.compile(r"/ebay/oauth/start"), _ebay_start, True),
+    ("GET", re.compile(r"/ebay/oauth/callback"), _ebay_callback, True),
+    ("GET", re.compile(r"/ebay/oauth/declined"), _ebay_declined, False),
+    ("GET", re.compile(r"/ebay/privacy"), _ebay_privacy, False),
+    ("GET", re.compile(r"/ebay/token"), _ebay_token, True),
+    ("GET", re.compile(r"/ebay/status"), _ebay_status, True),
 )
 
 
@@ -258,6 +337,8 @@ def handle(method: str, path: str, query: dict | None = None, body: bytes | None
     if isinstance(result, Binary):
         return status, {"Content-Type": result.content_type, "Cache-Control": "no-store",
                         "X-Content-Type-Options": "nosniff"}, result.data
+    if isinstance(result, Redirect):
+        return status, {"Location": result.url, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}, b""
     return _json(status, result)
 
 

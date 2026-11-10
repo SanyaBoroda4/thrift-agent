@@ -56,6 +56,8 @@ def delist_ready(site: str, poster) -> str | None:
         from thrift_agent.post import poshmark
         missing = sorted(poshmark.AVAILABILITY_NEEDS & poshmark.UNVERIFIED)
         return f"Poshmark's Not for Sale isn't recorded yet ({', '.join(missing)})" if missing else None
+    if getattr(poster, "driver", "") == "api":
+        return None                                    # WO57: an API call — no page control to record
     from thrift_agent.post.ext_driver import DELIST_NEEDS, SELECTORS, unverified
     missing = sorted(DELIST_NEEDS.get(site, frozenset()) & unverified(site, getattr(poster, "selectors_path", SELECTORS)))
     what = {"vinted": "Hide", "depop": "Mark as sold"}.get(site, "take-down")
@@ -205,15 +207,23 @@ async def run_parallel(s: Settings, db: DB, ps: dict, *, dry: bool, stage: str, 
     halt = threading.Event()
     cross = [mp for mp in ps if mp in crosslist.CROSS]
     sites = [*(["poshmark"] if "poshmark" in ps else []), *cross]
+    # WO57 rule 5: an eBay take-down is thrift-api's own (it ends the listing by API, at any hour): the Mac never
+    # asks for those — it only records them ("ended" in GET /tasks' answer)
+    task_sites = [mp for mp in sites if getattr(ps[mp], "driver", "") != "api"]
     if takedowns is None and sales.api() is not None:     # the API is set up (.env): the sales' take-downs too
-        takedowns = functools.partial(globals()["takedowns"], sites=sites, shots=shots_dir(s))
+        takedowns = functools.partial(globals()["takedowns"], sites=task_sites, shots=shots_dir(s))
     bridge, watch = await runner.open_bridge(s, db, ps)
     started = f"Poster started ({f'DRY-RUN, {stage} stage' if dry else 'LIVE'}) — {', '.join(ps)} · parallel"
     notify.say(f"{started} · {datetime.now():%H:%M}" + (f"\n{runner.why_dry(s, force_dry)}" if dry and s.is_prod else ""))
     print(started)
     db.log(None, "poster_started", {"live": not dry, "stage": None if not dry else stage, "pid": os.getpid(),
                                     "parallel": True})
-    if bad := {mp: why for mp, why in catalogs.check().items() if why}:
+    bad = {mp: why for mp, why in catalogs.check().items() if why}
+    if s.get("marketplaces.ebay.enabled", False):          # WO57: eBay's own tables and the items' location
+        from thrift_agent import ebay
+        if why := ebay.ready(s):
+            bad["ebay"] = why
+    if bad:
         notify.say("❗ cross-listing off: " + "; ".join(f"{mp}: {why}" for mp, why in bad.items()))
     state = State()
     formcheck.request(db, sites, "the poster started")          # WO52 §3: a form check after every start (a deploy)
@@ -908,6 +918,11 @@ async def _housekeeping(s, db, ps, cross, dry, stop, state, sites, until_idle) -
                         await runner._refresh(s, db, None, asked)
                 if not quiet_hold(s, db):
                     await runner.serve_requests(s, db, {mp: ps[mp] for mp in cross}, None)
+            if "ebay" in ps and not quiet_hold(s, db):       # WO57: eBay's consent, the backfill's next item, the
+                from thrift_agent.ebay import duties        #   fee file's age (never from 8:20: quiet_hold)
+                duties.tick(s, db, ps, dry=dry or not crosslist.live(s, "ebay"))
+                if not dry and duties.reconcile_due(db, time.time()):     # its records against eBay's own listings
+                    await duties.reconcile(s, db, ps)
             for iid in crosslist.waiting_lines(db, s):       # WO54: cards due, and open cards whose state changed
                 maybe_announce(s, db, iid)
             if not dry and s.get("price_drop.enabled", True):  # WO41: the stages that fell due; the day's one line

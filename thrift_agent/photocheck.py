@@ -345,7 +345,8 @@ async def run(s: Settings, db: DB, ps: dict, limit: int = PER_RUN) -> list[str]:
                     record(db, iid, mp, rec.get("photos"), rec.get("price"))
                     closing = str(rec.get("closing") or "").lower()
                     if rec.get("sold") or (rec.get("is_closed") and (not closing or "sold" in closing)):
-                        _gone(db, row, mp, f"{mp.title()} shows it sold", True, rec.get("price"))   # WO49: its take-
+                        _gone(db, row, mp, f"{crosslist.LABEL.get(mp, mp)} shows it sold", True,
+                              rec.get("price"))               # WO49: its take-
                     elif rec.get("is_closed"):                 # downs elsewhere. WO56: closed without a sale — gone
                         _gone(db, row, mp, f"its own data: closed on {crosslist.LABEL.get(mp, mp)} ({closing})", False)
                     continue                                 # hidden (by hand, or our own take-down): nothing to say

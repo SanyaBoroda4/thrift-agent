@@ -82,6 +82,13 @@ class Database:
     def __repr__(self) -> str:
         return f"<Database {self.kind}>"            # never the URL: it carries the password
 
+    @property
+    def in_transaction(self) -> bool:
+        """This thread is inside `tx()` (WO57: a call to another service is never made there — ebay.kick waits for the
+        commit). Another thread's transaction is waited out first: the lock is its, from BEGIN to COMMIT."""
+        with self._lock:
+            return self._depth > 0
+
     # --- the statements
 
     def execute(self, sql: str, params: Sequence = ()) -> int:

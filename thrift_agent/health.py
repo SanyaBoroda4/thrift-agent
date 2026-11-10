@@ -57,7 +57,7 @@ ASIDE_ALARM = 3               # set aside this many times: ONE 🚨 (code must c
 SET_ASIDE = "set aside: "     # the row's error while it waits (status 'failed', nothing was published)
 BRAKE = "site_brake"          # kv: {mp: [{"item", "sig", "at"}]} — the site's failures since a listing last went through
 BRAKE_ITEMS = 3               # this many DIFFERENT items failing in a row pause the site
-LABEL = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted"}
+LABEL = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted", "ebay": "eBay"}
 ACCOUNT_PAGES = ("login", "captcha", "block", "verify", "challenge")   # WO56: a "Just a moment" that didn't pass
 
 # What a failure is about — read from its words (the extension also names a code error and a page it doesn't know).

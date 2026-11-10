@@ -14,6 +14,7 @@ The snapshot. Only these keys are read, so nothing else a record carries (the bu
                           "done": [{"marketplace", "old_price", "new_price", "done_at"}]}}],
      "unmatched": int,                                                             # sales that matched no item
      "swept": {"poshmark" | "depop" | "vinted": "ISO-8601"},          # WO38: when each site's orders were last read
+     "ebay": True,                # WO57 (absent: off): eBay is on — a fourth site in the cards, the table, the footer
      "generated_at": "ISO-8601"}
 
 Every value is escaped; only absolute http(s) URLs become links. Times without an offset are UTC; everything is shown in
@@ -32,7 +33,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 __all__ = ["render"]
 
 SITES = (("poshmark", "Poshmark"), ("depop", "Depop"), ("vinted", "Vinted"))
-SITE_NAMES = dict(SITES)
+EBAY = ("ebay", "eBay")                 # WO57: the fourth column, only for a snapshot that says "ebay": true
+SITE_NAMES = dict((*SITES, EBAY))
 DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 DASH = "—"
@@ -57,8 +59,14 @@ NOT_LISTED = ("—", "dim", "not listed")
 LEGEND = (("✓", "ok", "live (tap to open)"), ("⏳", "wait", "queued"), ("✗", "bad", "failed"), ("–", "dim", "skipped"),
           ("↓", "dim", "delisted"), ("💰", "sold", "sold"), ("·", "dim", "draft / dry run"), NOT_LISTED)
 FILTERS = (("all", "All"), ("active", "Active"), ("sold", "Sold"), ("toship", "To ship"))
-COLUMNS = (("t", "Item"), ("p", "Price"), *(("s", name) for _, name in SITES),
-           ("d", "Sold"), ("d", "Ship by"), ("d", "Shipping"))
+
+
+def _columns(sites: tuple) -> tuple:
+    return (("t", "Item"), ("p", "Price"), *(("s", name) for _, name in sites),
+            ("d", "Sold"), ("d", "Ship by"), ("d", "Shipping"))
+
+
+COLUMNS = _columns(SITES)
 # WO38: where a sale is, as the site itself last showed it (the order sweep) or our records say
 SHIPPING = {"to_ship": ("To ship", "late"), "shipped": ("Shipped", "ok"), "delivered": ("Delivered", "ok"),
             "completed": ("Completed", "ok"), "returned": ("Returned", "warn"), "cancelled": ("Cancelled", "dim")}
@@ -202,8 +210,9 @@ def render(data: dict, now: datetime | None = None, tz: str = "America/New_York"
     local_now = moment.astimezone(zone)
     today = local_now.date()
     data = data if isinstance(data, dict) else {}
+    sites = (*SITES, EBAY) if data.get("ebay") is True else SITES     # WO57: eBay's column only while eBay is on
     raw = data.get("items")
-    items = [_item(x) for x in raw if isinstance(x, dict)] if isinstance(raw, list) else []
+    items = [_item(x, sites) for x in raw if isinstance(x, dict)] if isinstance(raw, list) else []
     items.sort(key=lambda item: _sort_key(item, zone), reverse=True)      # stable: equal keys keep their order
     parts = [
         "<!doctype html>",
@@ -220,11 +229,11 @@ def render(data: dict, now: datetime | None = None, tz: str = "America/New_York"
         "<body>",
         "<main>",
         "<h1>Thrift dashboard</h1>",
-        _cards(items, _count(data.get("unmatched")), zone, local_now),
+        _cards(items, _count(data.get("unmatched")), zone, local_now, sites),
         _shares_panel(data.get("shares"), zone),
         _filters(),
-        _table(items, zone, today),
-        _footer(data.get("generated_at"), zone, today, data.get("swept")),
+        _table(items, zone, today, sites),
+        _footer(data.get("generated_at"), zone, today, data.get("swept"), sites),
         "</main>",
         f"<script>{SCRIPT}</script>",
         "</body>",
@@ -235,11 +244,11 @@ def render(data: dict, now: datetime | None = None, tz: str = "America/New_York"
 
 # --- the snapshot, read --------------------------------------------------------------------------------------------
 
-def _item(raw: dict) -> dict:
+def _item(raw: dict, columns: tuple = SITES) -> dict:
     """Only the keys the page shows, copied out of the raw item: whatever else it or its sale carries stays behind."""
     listings = raw.get("listings") if isinstance(raw.get("listings"), dict) else {}
     sites = {}
-    for key, _ in SITES:
+    for key, _ in columns:
         entry = listings.get(key)
         if isinstance(entry, dict) and _norm(entry.get("status")):
             sites[key] = {"status": _norm(entry.get("status")), "url": entry.get("url")}
@@ -300,9 +309,9 @@ def _sort_key(item: dict, zone: tzinfo) -> datetime:
 
 # --- the page's parts --------------------------------------------------------------------------------------------
 
-def _cards(items: list[dict], unmatched: int, zone: tzinfo, now: datetime) -> str:
+def _cards(items: list[dict], unmatched: int, zone: tzinfo, now: datetime, columns: tuple = SITES) -> str:
     today = now.date()
-    live = {key: 0 for key, _ in SITES}
+    live = {key: 0 for key, _ in columns}
     sold, total, to_ship, next_by = 0, 0.0, 0, None
     for item in items:
         for key, entry in item["sites"].items():
@@ -325,7 +334,7 @@ def _cards(items: list[dict], unmatched: int, zone: tzinfo, now: datetime) -> st
         ship += ' <span class="late">late</span>' if late else ""
     else:
         ship = f'<span id="c-shipby">{"no ship-by date yet" if to_ship else "nothing to ship"}</span>'
-    sites = "".join(f'<dt>{name}</dt><dd id="c-{key}">{live[key]}</dd>' for key, name in SITES)
+    sites = "".join(f'<dt>{name}</dt><dd id="c-{key}">{live[key]}</dd>' for key, name in columns)
     return "".join((
         '<section class="cards" aria-label="Summary">',
         f'<div class="card"><h2>Active listings</h2><dl class="sites">{sites}</dl></div>',
@@ -455,19 +464,20 @@ def _filters() -> str:
     return f'<div class="filters" id="filters" role="group" aria-label="Filter items" hidden>{buttons}</div>'
 
 
-def _table(items: list[dict], zone: tzinfo, today: date) -> str:
-    head = "".join(f'<th scope="col" class="{cls}">{name}</th>' for cls, name in COLUMNS)
-    span = len(COLUMNS)
+def _table(items: list[dict], zone: tzinfo, today: date, sites: tuple = SITES) -> str:
+    columns = _columns(sites)
+    head = "".join(f'<th scope="col" class="{cls}">{name}</th>' for cls, name in columns)
+    span = len(columns)
     if items:
         rows = [f'<tr class="empty" id="none" hidden><td colspan="{span}">Nothing here</td></tr>']
-        rows += [_row(item, zone, today) for item in items]
+        rows += [_row(item, zone, today, sites) for item in items]
     else:
         rows = [f'<tr class="empty"><td colspan="{span}">Nothing yet</td></tr>']
     body = "\n".join(rows)
     return f'<div class="wrap"><table id="items"><thead><tr>{head}</tr></thead>\n<tbody>\n{body}\n</tbody></table></div>'
 
 
-def _row(item: dict, zone: tzinfo, today: date) -> str:
+def _row(item: dict, zone: tzinfo, today: date, sites: tuple = SITES) -> str:
     sale = item["sale"]
     flags = (("active", _is_active(item)), ("sold", _is_sold(sale)), ("toship", _to_ship(sale)))
     attrs = "".join(f' data-{name}="{int(on)}"' for name, on in flags)
@@ -478,7 +488,7 @@ def _row(item: dict, zone: tzinfo, today: date) -> str:
             f' <span class="warn still">⚠️ still listed on {_esc(", ".join(item["still_listed"]))}</span>'
             if item.get("still_listed") else "") + _drops_line(item, zone, today)),
         _td("p", "Price", _esc(_money((item.get("drops") or {}).get("price_now") or item["price"]))),
-        *(_td("s", name, _site(item["sites"].get(key), name)) for key, name in SITES),
+        *(_td("s", name, _site(item["sites"].get(key), name)) for key, name in sites),
         _td("d sale", "Sold", _sold_cell(sale, zone, today)),
         _td("d", "Ship by", _ship_by_cell(sale, zone, today)),
         _td("d", "Shipping", _shipping_cell(sale, zone, today)),
@@ -552,7 +562,7 @@ def _shipping_cell(sale: dict | None, zone: tzinfo, today: date) -> str:
     return f"{tick} {_day_html(day, today)}"
 
 
-def _footer(generated_at: object, zone: tzinfo, today: date, swept: object = None) -> str:
+def _footer(generated_at: object, zone: tzinfo, today: date, swept: object = None, sites: tuple = SITES) -> str:
     when = _when(generated_at)
     if isinstance(when, datetime):
         local = when.astimezone(zone)
@@ -565,7 +575,8 @@ def _footer(generated_at: object, zone: tzinfo, today: date, swept: object = Non
                      for icon, cls, words in LEGEND)
     swept = swept if isinstance(swept, dict) else {}
     read = []
-    for key, name in SITES:                          # WO38: when each site's orders were last read by the Mac
+    for key, name in sites:                          # WO38: when each site's orders were last read (WO57: eBay's by
+        #                                              thrift-api itself)
         moment = _when(swept.get(key))
         if isinstance(moment, datetime):
             local = moment.astimezone(zone)

@@ -3031,8 +3031,8 @@ def settle_twin(s: Settings, db: DB, iid: str) -> str | None:
         notify.say(f"♻️ {title}: the same item was shared before (“{ttitle}”) — that earlier card is retired, "
                    f"this one is the one listed")
         return f"retired {tid}"
-    sites = sorted(live, key=lambda mp: ("poshmark", "depop", "vinted").index(mp) if mp in
-                   ("poshmark", "depop", "vinted") else 9)
+    sites = sorted(live, key=lambda mp: ("poshmark", "depop", "vinted", "ebay").index(mp) if mp in
+                   ("poshmark", "depop", "vinted", "ebay") else 9)
     with db.tx():
         for mp in sites:
             row = db.listing(iid, mp)
@@ -3120,6 +3120,10 @@ def listing_address(mp: str, url: str) -> str | None:
     if mp == "vinted":
         from thrift_agent.post.vinted import listing_address as vinted
         return vinted(url)
+    if mp == "ebay":                                   # WO57: https://www.ebay.com/itm/<id>
+        from thrift_agent.db import listing_id_from
+        lid = listing_id_from("ebay", url)
+        return f"https://www.ebay.com/itm/{lid}" if lid else None
     return None
 
 

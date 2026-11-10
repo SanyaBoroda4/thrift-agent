@@ -109,10 +109,10 @@ def test_a_stated_date_wins():
 
 
 def test_an_unknown_marketplace_is_an_error():
+    with pytest.raises(ValueError):                                   # (WO57: eBay has its rule now)
+        ship_by("etsy", utc(2026, 10, 8, 15, 0))
     with pytest.raises(ValueError):
-        ship_by("ebay", utc(2026, 10, 8, 15, 0))
-    with pytest.raises(ValueError):
-        ship_by("ebay", utc(2026, 10, 8, 15, 0), stated=date(2026, 10, 20))
+        ship_by("etsy", utc(2026, 10, 8, 15, 0), stated=date(2026, 10, 20))
 
 
 def test_rules_merge_overrides():
@@ -128,7 +128,7 @@ def test_rules_merge_overrides():
 
 
 @pytest.mark.parametrize("bad", [{"vinted": {"kind": "weekly"}}, {"vinted": {"days": -1}}, {"vinted": {"days": "five"}},
-                                 {"ebay": {"days": 3}}, {"vinted": 5}])
+                                 {"etsy": {"days": 3}}, {"vinted": 5}])
 def test_rules_refuse_a_bad_override(bad):
     with pytest.raises(ValueError):
         rules(bad)

@@ -301,7 +301,7 @@ class CopyOut(BaseModel):
 
 
 class Render(BaseModel):
-    marketplace: Literal["poshmark", "depop", "vinted"]
+    marketplace: Literal["poshmark", "depop", "vinted", "ebay"]
     title: str
     description: str
     tags: list[str] = Field(default_factory=list)
