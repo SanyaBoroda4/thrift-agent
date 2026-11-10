@@ -593,7 +593,8 @@ def _gone(db: DB, row, mp: str, why: str, sold: bool, price=None, not_for_sale: 
         db.kv_set(GONE_SEEN, json.dumps(seen))
     try:
         title = ((loads((db.item(row["item_id"]) or {"renders": None})["renders"]) or {}).get("poshmark") or {}).get("title")
-        did = sales.listing_gone(db, row["item_id"], mp, why, sold, row["url"], title, price, not_for_sale=not_for_sale)
+        did = sales.listing_gone(db, row["item_id"], mp, why, sold, row["url"], title, price,
+                                 **({"not_for_sale": True} if not_for_sale else {}))
     except Exception as e:  # noqa: BLE001 — the check goes on
         db.log(row["item_id"], "listing_gone_failed", {"site": mp, "error": f"{type(e).__name__}: {e}"[:200]})
         return False

@@ -287,7 +287,8 @@ def test_a_login_page_stops_that_sites_sweep_for_the_day_with_one_private_line(d
         raise orders.Stopped("login")
     assert run_sweep(db, "depop", read)["status"] == "stopped"
     assert run_sweep(db, "depop", read)["status"] == "stopped"
-    assert quiet.said == ["⏸ Can't read Depop's orders today — it shows its login page. I'll try again tomorrow."]
+    # WO56: the sign-in is a human step — ONE private message ("reply show"), not the old "Can't read" line
+    assert len(quiet.said) == 1 and quiet.said[0].startswith("🔐 Depop wants you to sign in") and "reply show" in quiet.said[0]
     assert not orders.due(db, "depop") and quiet.posted == []
     assert orders._kv(db, orders.KV_STOPPED)["depop"] == datetime.now(UTC).astimezone(
         orders.ZoneInfo("America/New_York")).date().isoformat()

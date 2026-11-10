@@ -221,7 +221,7 @@ def test_the_photo_check_reads_poshmark_every_two_hours_and_reports_a_sold_one(e
     monkeypatch.setattr(photocheck.crosslist, "poshmark_listing",
                         lambda url: {"for_sale": False, "status": "sold_out", "sold": True, "photos": 9, "price": 145})
     gone = []
-    monkeypatch.setattr(sales, "listing_gone", lambda db_, iid, mp, why, sold, url, title=None, price=None:
+    monkeypatch.setattr(sales, "listing_gone", lambda db_, iid, mp, why, sold, url, title=None, price=None, not_for_sale=False:
                         gone.append((iid, mp, sold)) or "sold")
     asyncio.run(photocheck.run(s, db, {}))
     assert gone == [("i_261021_382586", "poshmark", True)]
@@ -343,7 +343,7 @@ def test_one_odd_poshmark_answer_never_takes_anything_down(env, monkeypatch):
     row = db.listings_for("i_261021_382586")[0]
     gone, now = [], {"t": T0}
     monkeypatch.setattr(photocheck.time, "time", lambda: now["t"])
-    monkeypatch.setattr(sales, "listing_gone", lambda db_, iid, mp, why, sold, url, title=None, price=None:
+    monkeypatch.setattr(sales, "listing_gone", lambda db_, iid, mp, why, sold, url, title=None, price=None, not_for_sale=False:
                         gone.append(sold) or "x")
     photocheck._gone(db, row, "poshmark", "Poshmark shows it gone", False)
     assert gone == []                                                     # the first sighting: only remembered
