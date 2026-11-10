@@ -1100,7 +1100,9 @@ Both sites turn away any browser driven over DevTools; the extension runs in the
 - **WO56 §0.3 — the bulk read reaches every listing:** Vinted's wardrobe to its last page (`vinted.js wardrobePages`,
   96 a page), Depop's products JSON by its own cursor (`depop.js shopAll`: the address the shop page fetched, else
   `selectors.json depop.shop_products`, unverified; else the tiles scrolled to the end); `photocheck_bulk` logs pages,
-  complete, `base` (record it in selectors.json). A listing the bulk data lacks is flagged ONCE and read by its OWN
+  complete, `base` (record it in selectors.json); a refused next page's note names the parameters it was asked with, the
+  last page's meta keys and the refusal's words (WO56b — live 11-10: v3 by shop id answered page 1, refused page 2;
+  Depop's paging still open). A listing the bulk data lacks is flagged ONCE and read by its OWN
   data (`photocheck.confirm_absent` → `ExtensionPoster.listing_states`; a listing known live read first — a 404
   counts only when it answers): live → cleared; sold → the sale net; 404 → gone when seen again 10+ min later.
   `thrift photocheck --recheck-not-in-bulk [--since …] [--dry-run]`.

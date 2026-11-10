@@ -1731,6 +1731,32 @@ test("Depop: the address the shop page itself fetched comes first; a cursor that
   assert.match(r.note, /no product not seen before/);
 });
 
+test("Depop: a next page refused — the note says what it was asked with, the last page's meta keys and the refusal, never the token (WO56b)", async () => {
+  // live 2026-11-10 7:18 AM: v3 by shop id answered page 1 (24 listings) and refused page 2 with HTTP 400
+  const data = `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify(
+    { props: { pageProps: { shop: { id: 4242, username: "exampleshopname" } } } })}</script>`;
+  const p = page("depop", shopPage(["exampleshopname-item-0"], data), "https://www.depop.com/exampleshopname/");
+  p.d.cookie = "access_token=tok123secretsecretsecretsecret";
+  p.w.fetch = async (u) => {
+    const url = new URL(String(u));
+    if (!/^\/api\/v3\/shop\/4242\/products\/$/.test(url.pathname)) return answer(404, { error: "not found" });
+    if (url.searchParams.get("cursor")) {
+      return answer(400, { error: "invalid parameter cursor; token tok123secretsecretsecretsecret" });
+    }
+    const list = Array.from({ length: 24 }, (_, i) => ({ id: 7000 + i, slug: `exampleshopname-x-${i}` }));
+    return answer(200, { products: list, meta: { cursor: "c-24", end: false, result_count: 24 } });
+  };
+  await p.w.Thrift.run({ job: { job_id: "d-400", site: "depop", mode: "find", shop: "exampleshopname", all: true },
+                         selectors: SELECTORS, photos: [], pace: "fast" });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r).slice(0, 400));
+  assert.equal(r.listings.length, 24);
+  assert.equal(r.complete, false);
+  assert.match(r.note, /^page 2 answered HTTP 400 — 24 listings read \(asked with: [^;]*cursor[^;]*; page 1's meta: cursor,end,result_count; it said: /);
+  assert.match(r.note, /invalid parameter cursor/);
+  assert.doesNotMatch(r.note, /tok123secret/, "never the token");
+});
+
 test("Depop: with no products JSON the shop page's tiles are read to its end, scrolled — nothing clicked (WO56 §0.3)", async () => {
   const html = `<html><head><title>Depop</title></head><body><main id="grid"></main><script>
     let n = 0;

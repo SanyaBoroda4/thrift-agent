@@ -362,7 +362,16 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
         try {
           const r = await fetch(next, { credentials: "omit", headers });
           if (!r.ok) {
-            note = `page ${pages + 1} answered HTTP ${r.status} — ${listings.length} listings read`;
+            // WO56b (live 2026-11-10 7:18 AM: v3 by shop id answered page 1, refused page 2 with 400): what the next
+            // page was asked with (its parameters' names), what the last page's meta held (its keys) and what the
+            // refusal said — the paging to record. Never a header (the token) nor a value that looks like one.
+            let said = "";
+            try { said = (await r.text()).replace(/\s+/g, " ").replace(/[A-Za-z0-9._~+/=-]{24,}/g, "…").slice(0, 120); }
+            catch (e) { /* no body */ }
+            const asked = [...new URL(next).searchParams.keys()].join(",") || "none";
+            const meta = data?.meta && typeof data.meta === "object" ? Object.keys(data.meta).join(",") : "";
+            note = `page ${pages + 1} answered HTTP ${r.status} — ${listings.length} listings read (asked with: ${asked}; `
+              + `page ${pages}'s meta: ${meta || "none"}; it said: ${said || "nothing"})`;
             break;
           }
           data = await r.json();
