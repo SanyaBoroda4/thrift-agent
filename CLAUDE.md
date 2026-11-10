@@ -951,7 +951,7 @@ Both sites turn away any browser driven over DevTools; the extension runs in the
   the token (`bridge.token_file`, `~/thrift/var/ext_token`, made once by `mac_setup.sh`, chmod 600, never rotated) on
   every request; the WebSocket from `chrome-extension://` only; a Host other than 127.0.0.1 / localhost refused. One job
   per site (`Bridge._busy(site)`, `_next`); a job called off gets ONE `cancel`, the next waits ≤ 90 s (`DRAIN`); after a
-  reload hello no job for 2 s (`RELOAD_HOLD`). `GET /photos/<site>/<item>/<n>.jpg` (CORS only for the two sites), `GET
+  reload hello no job for 5 s (`RELOAD_HOLD`; WO56b). `GET /photos/<site>/<item>/<n>.jpg` (CORS only for the two sites), `GET
   /health`. Screenshots / HTML beside the job's evidence (`failed/shots/<item>-<mp>-<time>.png`, `…-after-publish.png`,
   `…-login.png`). **The watch** (`watch_tick`, 15 s, lid-open time only): no extension 2 min → `services.sh start chrome`
   (event `thrift_chrome_started`); 5 min → restart it (`runner.restart_thrift_chrome`); 10 min → ONE private line
@@ -1029,6 +1029,15 @@ Both sites turn away any browser driven over DevTools; the extension runs in the
   (`background.js maybeReload`); a restarted service worker hashes the files on disk while Chrome may still run the old
   background script (live 2026-11-01: a new job mode opened the sell page). `bridge.HASH_SALT` / background.js
   `HASH_SALT` (the same value) is changed to force every loaded copy to reload once.
+- **A reload never loses a job (WO56b**, live 2026-11-09 10:32 PM: the Thrift Chrome, started for two form checks right
+  after the WO56 deploy, read the last session's files hash in its hello and its reload check, reloaded itself with both
+  jobs just handed — each "wasn't done in 3 min"): the loaded files' hash is recorded ONCE per load (session `noted`;
+  a Chrome start, an install, a reload) before the first hello, poll or reload check (`noting`); a job just handed
+  (`pending`, before `startJob` registers it) holds a reload off like one in hand; a reload held off comes when the
+  job ends (`finish`). The hello names the jobs it holds (`holding`): a job an earlier copy took and never said a word
+  about — not clicked, not given up — is handed again (`Bridge._rehand`, event `ext_job_rehanded`; nothing of it can be
+  live: a publish needs its `ready` and our go-ahead). `GET /jobs/next` hands a job only to a copy whose
+  `X-Thrift-Loaded` is ours and answers `X-Thrift-Hash` (a copy behind reloads at once). Salt `wo56-reload-2`.
 ## Sales, take-downs, thrift-api
 - **thrift-api** (`api/`: Python 3.12 Azure Function, Flex Consumption, App Insights capped 0.1 GB/day, $5 budget alert
   on `thrift-rg`; database `thrift` on the owner's Postgres, login `thrift_app`; SQLite in tests).

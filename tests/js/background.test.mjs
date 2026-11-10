@@ -25,9 +25,10 @@ function event() {
 }
 
 // background.js in a fresh realm: `tabs` / `windows` are what this Chrome holds when the worker starts.
-function load({ tabs = [], windows = [], token = "tok-" + "x".repeat(30) } = {}) {
+function load({ tabs = [], windows = [], token = "tok-" + "x".repeat(30), local = {}, session = {},
+                jobsNext = null } = {}) {
   const calls = [];
-  const stores = { local: { token }, session: {} };
+  const stores = { local: { token, ...local }, session: { ...session } };   // WO56b: storage as a load left it
   const area = (name) => ({
     get: async (keys) => {
       const s = stores[name];
@@ -108,11 +109,14 @@ function load({ tabs = [], windows = [], token = "tok-" + "x".repeat(30) } = {})
     close() { this.readyState = 3; if (this.onclose) this.onclose(); }
   }
   const posted = [];                                 // events sent over HTTP (the bridge's POST /events)
+  const fetched = [];                                // WO56b: every request to the bridge, with its headers
   const fetch = async (u, init = {}) => {
     if (String(u).startsWith(EXT)) {
       return { ok: true, arrayBuffer: async () => new TextEncoder().encode(String(u)).buffer,
                json: async () => JSON.parse(SELECTORS) };
     }
+    fetched.push({ url: String(u), headers: { ...(init.headers || {}) } });
+    if (jobsNext && String(u).endsWith("/jobs/next")) return jobsNext(init);
     if (String(u).endsWith("/events")) {
       posted.push(JSON.parse(init.body));
       return { ok: true, status: 200, json: async () => ({ commands: [] }) };
@@ -128,7 +132,8 @@ function load({ tabs = [], windows = [], token = "tok-" + "x".repeat(30) } = {})
   });
   vm.runInContext(SOURCE, ctx, { filename: "ext/background.js" });
   const ev = (code) => vm.runInContext(code, ctx);
-  return { chrome, calls, stores, st, sockets, posted, ev, stop: () => timers.forEach((t) => clearTimeout(t)) };
+  return { chrome, calls, stores, st, sockets, posted, fetched, ev,
+           stop: () => timers.forEach((t) => clearTimeout(t)) };
 }
 
 const plain = (v) => JSON.parse(JSON.stringify(v));     // values from the worker's realm, as data
@@ -417,5 +422,72 @@ test("WO56: a \"Just a moment\" that passes moves the page on by itself — no r
     assert.ok(sock.sent.some((m) => m.type === "event" && m.event === "challenge" && m.state === "cleared"
                               && m.site === "vinted"));
     assert.ok(sock.sent.some((m) => m.type === "event" && m.event === "progress" && m.challenge === "cleared"));
+  } finally { x.stop(); }
+});
+
+// ---------------------------------------------------------------- WO56b: the reload race (live 2026-11-09 10:32 PM)
+// The Thrift Chrome, started for two form checks right after a deploy: its hello and its reload check read the LAST
+// session's files hash (onStartup wrote this load's a moment later), it reloaded itself with both jobs just handed, and
+// each waited out its 3 minutes ("the form wasn't done in 3 min").
+
+const reloads = (x) => x.calls.filter(([what]) => what === "reload").length;
+
+test("WO56b: at a Chrome start the hello carries THIS load's hash, never the last session's — ours: no reload", async () => {
+  const x = load({ local: { loaded_hash: "the-last-session" } });
+  try {
+    await x.chrome.runtime.onStartup.fire();
+    await flush(40);
+    const mine = x.stores.local.loaded_hash;
+    assert.notEqual(mine, "the-last-session", "this load's hash, recorded before anything asks for it");
+    const sock = x.sockets.at(-1);
+    sock.readyState = 1;
+    sock.onopen();
+    assert.equal(sock.sent[0].type, "hello");
+    assert.equal(sock.sent[0].loaded, mine, "the hello says the files this copy loaded");
+    assert.deepEqual(plain(sock.sent[0].holding), [], "and the jobs it holds (none)");
+    await sock.onmessage({ data: JSON.stringify({ type: "welcome", ext_hash: mine }) });
+    await flush(40);
+    assert.equal(reloads(x), 0, "the files the bridge has: never reloaded");
+    assert.equal(x.stores.session.noted, true, "a wake of this worker keeps what its load recorded");
+  } finally { x.stop(); }
+});
+
+test("WO56b: a job handed as the welcome comes holds the reload off — the reload comes once that job is over", async () => {
+  // a copy whose load recorded the files before the deploy: it must reload — but never with a job just handed
+  const x = load({ local: { loaded_hash: "the-files-before-the-deploy" }, session: { noted: true } });
+  try {
+    await flush();
+    const sock = x.sockets.at(-1);
+    sock.readyState = 1;
+    sock.onopen();
+    assert.equal(sock.sent[0].loaded, "the-files-before-the-deploy");
+    const job = { job_id: "vinted-9", site: "vinted", mode: "verify", listing_url: "https://www.vinted.com/items/9" };
+    sock.onmessage({ data: JSON.stringify({ type: "job", job }) });                  // not awaited: they come together
+    await sock.onmessage({ data: JSON.stringify({ type: "welcome", ext_hash: "the-new-files" }) });
+    await flush(60);
+    assert.equal(reloads(x), 0, "no reload with a job just handed (it would be lost with it)");
+    assert.equal(x.stores.local.reloaded_for ?? null, null, "nor marked as done for these files");
+    await x.ev(`finish({ event: "result", job_id: "vinted-9", url: "https://www.vinted.com/items/9" })`);
+    await new Promise((r) => setTimeout(r, 1800));
+    await flush(40);
+    assert.equal(reloads(x), 1, "the job over: it reloads, between jobs");
+    assert.equal(x.stores.local.reloaded_for, "the-new-files");
+    assert.ok(sock.sent.some((m) => m.type === "event" && m.event === "result" && m.job_id === "vinted-9"),
+              "the job's last word went first");
+  } finally { x.stop(); }
+});
+
+test("WO56b: the poll says the files this copy loaded; told of newer ones it takes no job and reloads", async () => {
+  const told = () => ({ ok: false, status: 204, json: async () => ({}),
+                        headers: { get: (k) => (k === "X-Thrift-Hash" ? "the-new-files" : null) } });
+  const x = load({ local: { loaded_hash: "the-files-before-the-deploy" }, session: { noted: true }, jobsNext: told });
+  try {
+    await flush();
+    await x.ev("poll()");
+    await flush(40);
+    const asked = x.fetched.filter((f) => f.url.endsWith("/jobs/next"));
+    assert.equal(asked.length, 1, "one ask: the answer says it is behind");
+    assert.equal(asked[0].headers["X-Thrift-Loaded"], "the-files-before-the-deploy");
+    assert.equal(reloads(x), 1, "no job in hand: it reloads at once");
   } finally { x.stop(); }
 });

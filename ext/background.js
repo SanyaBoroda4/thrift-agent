@@ -111,8 +111,13 @@ async function restore() {
 const byId = (id) => Object.values(jobs).find((j) => j && j.job_id === id) || null;
 const byTab = (tabId) => Object.values(jobs).find((j) => j && j.tabId === tabId) || null;
 const anyJob = () => Object.values(jobs).some(Boolean);
+// WO56b: the job ids just handed to us that startJob hasn't put in `jobs` yet (it does after two awaits) — they hold a
+// reload off like a job in hand (live 2026-11-09 10:32 PM: the reload check saw "no job" with two just handed: lost)
+const pending = new Set();
+const holdingIds = () => [...new Set([...Object.values(jobs).filter(Boolean).map((j) => j.job_id), ...pending])];
+let bridgeHash = null;      // WO56b: the bridge's files hash from its last word (a reload a job held off waits for it)
 
-const HASH_SALT = "wo56-reload-1\n";      // WO56: changed with bridge.HASH_SALT — every loaded copy reloads once
+const HASH_SALT = "wo56-reload-2\n";      // WO56b: changed with bridge.HASH_SALT — every loaded copy reloads once
 async function filesHash() {
   const enc = new TextEncoder();
   const parts = [enc.encode(HASH_SALT)];      // WO52: the same salt as bridge.files_hash
@@ -130,21 +135,39 @@ async function filesHash() {
   return [...digest].map((x) => x.toString(16).padStart(2, "0")).join("");
 }
 
-async function noteLoaded() {
+// The hash of the files this copy loaded, recorded ONCE per load — a Chrome start, an install, a reload (session storage
+// starts empty then) — before this worker's first hello, poll or reload check: they all wait for it (WO56b). Live
+// 2026-11-09 10:32 PM: the Chrome started for two jobs, its hello and its reload check read the LAST session's hash
+// (onStartup wrote the new one a moment later), and it reloaded itself with both jobs just handed — lost, 3 minutes
+// each. A wake of this worker (MV3 puts it to sleep) keeps what its load recorded: the content scripts are that load's.
+const noting = (async () => {
   try {
+    if ((await chrome.storage.session.get("noted")).noted) return;
     // WO53: a fresh load (a deploy's reload, a Chrome start) tidies at the next alarm — the pages a restored session
     // brought back go at once, not 30 minutes later
     await chrome.storage.local.set({ loaded_hash: await filesHash(), tidied_at: 0 });
+    await chrome.storage.session.set({ noted: true });
   } catch (e) { /* a file being rewritten: the next start records it */ }
+})();
+
+async function noteLoaded() {
+  await noting;
 }
 
-// The bridge has other files than the ones loaded (a deploy pulled new code): reload, once per version, between jobs.
+// The bridge has other files than the ones loaded (a deploy pulled new code): reload, once per version, between jobs —
+// never with a job in hand or just handed (WO56b); one a job held off comes when that job ends (finish).
 async function maybeReload(hash) {
+  if (hash) bridgeHash = hash;
+  await noting;
   await restore();
-  if (!hash || anyJob()) return;
-  const { loaded_hash, reloaded_for } = await chrome.storage.local.get(["loaded_hash", "reloaded_for"]);
+  if (!hash || anyJob() || pending.size) return;
+  const { loaded_hash, reloaded_for = null } = await chrome.storage.local.get(["loaded_hash", "reloaded_for"]);
   if (!loaded_hash || loaded_hash === hash || reloaded_for === hash) return;
   await chrome.storage.local.set({ reloaded_for: hash });
+  if (anyJob() || pending.size) {                  // a job came while the storage answered: it holds the reload off
+    await chrome.storage.local.set({ reloaded_for });
+    return;
+  }
   chrome.runtime.reload();
 }
 
@@ -158,6 +181,8 @@ async function connect() {
     return;
   }
   // The files it loaded (their hash): the bridge hands no job for a moment to an extension that is about to reload.
+  await noting;                                    // WO56b: this load's own hash, never the last session's
+  await restore();                                 // the jobs it holds: the hello names them
   const { loaded_hash = null } = await chrome.storage.local.get("loaded_hash");
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
   let sock;
@@ -168,8 +193,10 @@ async function connect() {
     return;
   }
   ws = sock;
+  // WO56b: `holding` — a job handed to an earlier copy of us (one that reloaded) that this one doesn't hold is lost: the
+  // bridge hands it again
   sock.onopen = () => sock.send(JSON.stringify({ type: "hello", token, version: chrome.runtime.getManifest().version,
-                                                 loaded: loaded_hash }));
+                                                 loaded: loaded_hash, holding: holdingIds() }));
   sock.onmessage = (m) => {
     let msg;
     try {
@@ -232,7 +259,7 @@ async function onBridge(msg) {
     refused = true;
     await setState("the bridge refused the token: paste it again (cat ~/thrift/var/ext_token)");
   } else if (msg.type === "job") {
-    startJob(msg.job);                               // not awaited: the other site's job may come meanwhile
+    take(msg.job);                                   // not awaited: the other site's job may come meanwhile
   } else if (msg.type === "submit" || msg.type === "cancel") {
     await relay(msg);
   } else if (msg.type === "answer") {                // WO52 §2: the Mac named a field the page couldn't find
@@ -250,18 +277,32 @@ async function onBridge(msg) {
   }
 }
 
-// GET /jobs/next: the way in while the socket is down (the alarm's tick) — one job per free site.
+// A job handed to us (the socket, or GET /jobs/next): held from this moment — before startJob's first await — so no
+// reload loses it (WO56b).
+function take(job) {
+  const id = job && job.job_id;
+  if (id) pending.add(id);
+  startJob(job).catch(() => {}).finally(() => { if (id) pending.delete(id); });
+}
+
+// GET /jobs/next: the way in while the socket is down (the alarm's tick) — one job per free site. WO56b: it says the
+// files this copy loaded (X-Thrift-Loaded): the bridge hands no job to a copy about to reload — it reloads instead.
 async function poll() {
   if (wsReady) return;
   const { token } = await settings();
   if (!token) return;
+  await noting;
+  const { loaded_hash = "" } = await chrome.storage.local.get("loaded_hash");
   for (let i = 0; i < 3; i++) {
     try {
-      const r = await fetch(`${BRIDGE}/jobs/next`, { headers: { "X-Thrift-Token": token } });
+      const r = await fetch(`${BRIDGE}/jobs/next`, { headers: { "X-Thrift-Token": token,
+                                                                 "X-Thrift-Loaded": loaded_hash || "" } });
       if (r.status === 401) return setState("the bridge refused the token: paste it again (cat ~/thrift/var/ext_token)");
+      const theirs = r.headers && r.headers.get ? r.headers.get("X-Thrift-Hash") : null;
+      if (theirs && theirs !== loaded_hash) return maybeReload(theirs);     // new files: reload, no job meanwhile
       if (r.status !== 200) return;
       await setState("polling (the socket is down)");
-      startJob(await r.json());
+      take(await r.json());
     } catch (e) {
       return setState("the bridge isn't reachable (the poster isn't running, or Depop / Vinted are off)");
     }
@@ -497,6 +538,7 @@ async function startJob(job) {
   }
   jobs[job.site] = { job_id: job.job_id, site: job.site, mode: job.mode, tabId: null, windowId: null, clicked: false,
                      after: false, decided: false, delivered: false, started: Date.now(), job };
+  pending.delete(job.job_id);                      // WO56b: `jobs` holds it from here (a reload waits for its end)
   await remember();
   // Still this job? (A cancel can come while the tab opens: it is ended before the page has it.)
   const ours = async () => { await restore(); const j = jobs[job.site]; return j && j.job_id === job.job_id ? j : null; };
@@ -657,6 +699,8 @@ async function finish(ev) {
   }
   if (!wsReady) await poll();
   tidyTabs(Date.now(), true).catch(() => {});      // WO54 §4: whatever the job's pages left behind goes now
+  // WO56b: a reload this job held off (the bridge has new files) comes now, between jobs — the job's last word sent
+  if (bridgeHash) setTimeout(() => { maybeReload(bridgeHash).catch(() => {}); }, 1500);
 }
 
 // WO53 (live 2026-11-08): a paused site's test run met the login page every ~5 s and each left a new login tab open

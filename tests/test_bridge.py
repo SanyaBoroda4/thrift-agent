@@ -149,7 +149,7 @@ def test_one_job_at_a_time_per_site_through_the_alarms_poll():
         first = b.submit("vinted", "dry_run", {"fields": {}, "copy": {}, "price": 1, "photos": []})
         again = b.submit("vinted", "dry_run", {"fields": {}, "copy": {}, "price": 1, "photos": []})
         other = b.submit("depop", "dry_run", {"fields": {}, "copy": {}, "price": 1, "photos": []})
-        h = {"X-Thrift-Token": TOKEN}
+        h = {"X-Thrift-Token": TOKEN, "X-Thrift-Loaded": bm.files_hash()}     # WO56b: the files it loaded are ours
         async with _client(b) as c:
             got = (await c.get("/jobs/next", headers=h)).json()
             assert got["job_id"] == first.id and got["site"] == "vinted" and got["mode"] == "dry_run"
@@ -1264,3 +1264,93 @@ def test_the_page_s_note_event_lands_in_the_row_s_note(tmp_path, selectors, monk
     shown = ext_driver.PackageShown(["Small", "Medium"])
     assert shown.floor == "Medium" and shown.matches("Extra small") and not shown.matches("Huge")
     assert shown.below("Small") and not shown.below("Medium") and not shown.below("Large") and not shown.below("")
+
+
+# ---------------------------------------------------------------- WO56b: the reload race (live 2026-11-09 10:32 PM)
+
+def test_a_job_lost_with_a_reloaded_copy_of_the_extension_is_handed_again_to_the_copy_that_comes_back():
+    """Live 2026-11-09 10:32 PM: the Thrift Chrome, started for two form checks right after a deploy, reloaded itself for
+    the new files a moment after both jobs were handed; the reloaded copy knew nothing of them and each waited out its
+    3 minutes ("the form wasn't done in 3 min"). Now its hello names the jobs it holds: one it doesn't hold, never
+    spoken of, is handed to it again — and the event says so."""
+    async def go():
+        b = await _bridge()
+        seen = []
+        b.on_ext_event = seen.append
+        try:
+            r, w, _ = await ws_open(b.port)
+            ws_send(w, {"type": "hello", "token": TOKEN, "loaded": bm.files_hash(), "holding": []})
+            assert (await ws_recv(r))["type"] == "welcome"
+            job = b.submit("depop", "dry_run", {"fields": {}, "copy": {}, "price": 1, "photos": []})
+            got = await ws_recv(r, timeout=2)
+            assert got["type"] == "job" and job.handed is not None
+            w.close()                                                  # the copy reloads: gone without a word
+            for _ in range(100):
+                if not b.sockets:
+                    break
+                await asyncio.sleep(0.02)
+            r2, w2, _ = await ws_open(b.port)
+            ws_send(w2, {"type": "hello", "token": TOKEN, "loaded": bm.files_hash(), "holding": []})
+            assert (await ws_recv(r2))["type"] == "welcome"
+            again = await ws_recv(r2, timeout=2)
+            w2.close()
+            return job, got, again, seen
+        finally:
+            await b.close()
+    job, got, again, seen = run(go())
+    assert again["type"] == "job" and again["job"]["job_id"] == job.id == got["job"]["job_id"]
+    assert {"event": "rehanded", "site": "depop", "mode": "dry_run", "job": job.id} in seen
+    assert bm.ext_event_row(seen[-1]) == ("ext_job_rehanded", {"site": "depop", "mode": "dry_run", "job": job.id})
+
+
+def test_never_handed_again_a_job_the_copy_holds_one_it_spoke_of_or_its_go_ahead_and_an_old_copy_changes_nothing():
+    """The net is narrow: a job the new copy names (a worker woken from sleep keeps its jobs), one any copy already said
+    a word about (its tab may be open), one whose go-ahead was sent (it may be live), and every job when the hello is
+    an old copy's (no `holding`) — none is handed again."""
+    async def go():
+        b = await _bridge()
+        try:
+            held = b.submit("depop", "dry_run", {"fields": {}, "copy": {}, "price": 1, "photos": []})
+            spoke = b.submit("vinted", "dry_run", {"fields": {}, "copy": {}, "price": 1, "photos": []})
+            for job in (held, spoke):
+                b.queue.remove(job)
+                job.handed = 1.0
+            b._event({"event": "progress", "job_id": spoke.id, "what": "tab opened"})
+            assert b._rehand({held.id}) == 0                           # held there / spoken of: left alone
+            clicked = b.submit("vinted", "publish", {"fields": {}, "copy": {}, "price": 1, "photos": []})
+            b.queue.remove(clicked)
+            clicked.handed, clicked.clicked = 1.0, True
+            assert b._rehand(set()) == 1 and held.handed is None       # only `held`, once its copy forgot it
+            r, w, _ = await ws_open(b.port)                            # an old copy: no `holding` in its hello
+            lost = b.submit("depop", "verify", {"listing_url": "u"})
+            b.queue.remove(lost)
+            lost.handed = 1.0
+            ws_send(w, {"type": "hello", "token": TOKEN, "loaded": bm.files_hash()})
+            assert (await ws_recv(r))["type"] == "welcome"
+            await asyncio.sleep(0.2)
+            w.close()
+            return held, spoke, clicked, lost
+        finally:
+            await b.close()
+    _, spoke, clicked, lost = run(go())
+    assert spoke.handed == 1.0 and clicked.handed == 1.0 and lost.handed == 1.0
+
+
+def test_the_alarms_poll_hands_a_job_only_to_a_copy_that_loaded_our_files_and_tells_it_our_hash():
+    """WO56b: GET /jobs/next (the way in while the socket is down) from a copy about to reload — its files older than
+    ours — or one too old to say what it loaded gets no job (it would die with the reload); the answer carries our
+    hash (X-Thrift-Hash) so the copy reloads at once."""
+    async def go():
+        b = await _bridge()
+        job = b.submit("vinted", "dry_run", {"fields": {}, "copy": {}, "price": 1, "photos": []})
+        h = {"X-Thrift-Token": TOKEN}
+        async with _client(b) as c:
+            old = await c.get("/jobs/next", headers=h)
+            stale = await c.get("/jobs/next", headers={**h, "X-Thrift-Loaded": "the-files-before-the-deploy"})
+            ours = await c.get("/jobs/next", headers={**h, "X-Thrift-Loaded": bm.files_hash()})
+        await b.close()
+        return job, old, stale, ours
+    job, old, stale, ours = run(go())
+    assert old.status_code == stale.status_code == 204
+    assert old.headers["X-Thrift-Hash"] == stale.headers["X-Thrift-Hash"] == bm.files_hash()
+    assert ours.status_code == 200 and ours.json()["job_id"] == job.id

@@ -79,7 +79,8 @@ OWNER_PAGES = ("login", "captcha", "verify")    # the pages only she can act on,
 WATCH_EVERY = 15.0           # the watch's tick
 MAX_BODY = 40 * 1024 * 1024  # a screenshot with the page's HTML fits easily
 DRAIN = 90.0                 # a job called off: the next one waits this long at most for the extension to let it go
-RELOAD_HOLD = 2.0            # an extension told of new files reloads at once: no job for its socket meanwhile
+RELOAD_HOLD = 5.0            # an extension told of new files reloads at once: no job for its socket meanwhile (WO56b:
+#                              5 s, not 2 — a Chrome cold-started beside Poshmark's on a busy 8 GB Mac answers slowly)
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 FINAL = ("result", "error")
 # WO54: the extension's own events (no job) the poster records — background.js tidyTabs; WO56: a human step's held page
@@ -119,7 +120,7 @@ def new_token() -> str:
     return secrets.token_urlsafe(32)
 
 
-HASH_SALT = b"wo56-reload-1\n"     # WO56: background.js changed (the human steps, the "show"): every loaded copy reloads
+HASH_SALT = b"wo56-reload-2\n"     # WO56b: background.js changed (the reload race): every loaded copy reloads
 
 
 def files_hash(ext_dir: Path = EXT_DIR) -> str:
@@ -139,7 +140,11 @@ def files_hash(ext_dir: Path = EXT_DIR) -> str:
 def ext_event_row(ev: dict) -> tuple[str, dict] | None:
     """The events row for one of the extension's own events: "tidied" → ("ext_tidied", {"closed", "kept", "tabs",
     "why"}) — the tab tidy's proof (WO54; background.js tidyTabs, every 30 min with no job: the pages it closed, the
-    agent's pages it kept, all the tabs of the Thrift Chrome, what each closed page was). None for anything else."""
+    agent's pages it kept, all the tabs of the Thrift Chrome, what each closed page was). WO56b: "rehanded" (the
+    bridge's own note: a job lost with a reloaded copy of the extension, handed again) → ("ext_job_rehanded", {"site",
+    "mode", "job"}). None for anything else."""
+    if ev.get("event") == "rehanded":
+        return "ext_job_rehanded", {k: str(ev.get(k) or "")[:80] for k in ("site", "mode", "job")}
     if ev.get("event") != "tidied":
         return None
 
@@ -183,6 +188,7 @@ class Job:
     cancelled: bool = False               # its cancel was sent (once is enough)
     extra: float = 0.0                    # WO56: more time — its page waited out a "Just a moment" (CHALLENGE_EXTRA)
     sock: object | None = None            # the socket it was pushed to: its go-ahead goes there first
+    heard: float | None = None            # WO56b: when the extension last said anything about it (never: maybe lost)
     steps: list[dict] = field(default_factory=list)
     shots: list[dict] = field(default_factory=list)
     final: dict | None = None
@@ -629,7 +635,7 @@ class Bridge:
                 self._ext_event(ev)
             return []
         kind = ev.get("event")
-        self.last_work = time.monotonic()        # WO54 §4: the idle clock
+        self.last_work = job.heard = time.monotonic()    # WO54 §4: the idle clock; WO56b: the job is known over there
         if kind in FINAL and job.final is None:  # WO54 §4: a page left there for the owner keeps the Thrift Chrome open
             if kind == "error" and ev.get("page") in OWNER_PAGES:
                 self.left_for_owner[job.site] = (str(ev.get("page")), self.last_work)
@@ -669,6 +675,24 @@ class Bridge:
         if kind in FINAL:
             self._push()
         return out
+
+    def _rehand(self, holding: set[str]) -> int:
+        """WO56b (live 2026-11-09 10:32 PM: the Thrift Chrome, started for two form checks, reloaded itself for the
+        deploy's files right after both jobs were handed; the reloaded copy knew nothing of them and each waited out its
+        3 minutes): a copy of the extension names in its hello the jobs it holds. A job handed earlier that it doesn't
+        hold, that no copy ever said a word about, neither clicked nor given up on, was lost with the copy that took it
+        and is handed again (the event `ext_job_rehanded`). Nothing of it can be live — a publish needs its `ready` and
+        then our go-ahead. A copy too old to name them changes nothing. Returns how many."""
+        n = 0
+        for job in list(self.jobs.values()):
+            if (job.handed is None or job.done or job.final is not None or job.clicked or job.dropped is not None
+                    or job.heard is not None or job.id in holding):
+                continue
+            job.handed, job.sock = None, None
+            self.queue.appendleft(job)
+            n += 1
+            self._ext_event({"event": "rehanded", "site": job.site, "mode": job.mode, "job": job.id})
+        return n
 
     def _ext_event(self, ev: dict) -> None:
         """One of the extension's own events (no job): kept, and handed to `on_ext_event` — never breaking the link."""
@@ -863,8 +887,13 @@ class Bridge:
         self.last_seen = self.last_polled = time.monotonic()
         self.refused = 0
         if method == "GET" and path == "/jobs/next":
+            # WO56b: the way in while its socket is down hands a job only to a copy that says it loaded OUR files — one
+            # about to reload (a deploy's new files) or too old to say would lose it; told our hash, it reloads instead
+            told = {**cors, "X-Thrift-Hash": self.ext_hash}
+            if headers.get("x-thrift-loaded") != self.ext_hash:
+                return 204, told, b""
             job = self._next()
-            return (204, cors, b"") if job is None else (200, cors, json.dumps(job.message()).encode())
+            return (204, told, b"") if job is None else (200, told, json.dumps(job.message()).encode())
         if method == "POST" and path == "/events":
             try:
                 ev = json.loads(body or b"{}")
@@ -914,6 +943,8 @@ class Bridge:
             self._hello_steps(sock)                 # WO56: the human steps it holds, and a show that waited for it
             if hello.get("loaded") != self.ext_hash:    # it loaded other files than ours: it reloads now (a deploy)
                 self._hold(sock)
+            if isinstance(hello.get("holding"), list):  # WO56b: the jobs this copy holds — one an earlier copy took
+                self._rehand({str(x) for x in hello["holding"]})      # and never spoke of is handed again
             for job in self.jobs.values():          # a go-ahead its old socket never delivered (it reconnected)
                 if job.handed is not None and not job.done and job.commands:
                     for cmd in job.commands:
