@@ -112,23 +112,36 @@ def test_a_whole_share_lands_in_the_inbox_as_a_folder(env):
     #                                                                                     again, our own folder, no event
 
 
-def test_a_short_share_waits_until_quiet(env):
+def test_a_short_share_waits_until_quiet_then_is_held_never_taken(env):
+    """WO56 §6: ended short (2 of 3), no iCloud copy — fetched once quiet (Azure's copy deleted, as before) but into
+    the held folder, never the intake: never posted with a photo missing."""
     s, db = env
     api = FakeApi()
     share(api, count=3, last=NOW - timedelta(seconds=60))
     assert uploads.fetch_new(s, db, api, NOW) == [] and not (intake(s) / SID).exists()
     assert uploads.fetch_new(s, db, api, NOW + timedelta(seconds=61)) == [SID]
-    assert (intake(s) / SID / "_done.txt").read_text() == "done 3"                # the Shortcut's count: iCloud
-    #                                                                                     may complete it (WO42's rule)
+    assert not (intake(s) / SID).exists()
+    held = uploads.held_dir(s) / SID
+    assert (held / "_done.txt").read_text() == "done 3" and (held / "IMG_2.HEIC").read_bytes() == HEIC
+    assert uploads.held_meta(held)["received"] == 2 and uploads.held_meta(held)["count"] == 3
+    assert api.posts == [(f"/shares/{SID}/fetched", {"names": ["IMG_1.jpeg", "IMG_2.HEIC"]})]
+    from thrift_agent import pipeline
+    assert pipeline.upload_folders(s) == []                                       # the intake never sees it
 
 
-def test_a_share_never_ended_is_taken_after_ten_minutes(env):
+def test_a_share_never_ended_is_held_after_ten_minutes_and_one_with_every_photo_is_whole(env):
+    """Never ended, 2 of 3 (the Shortcut stopped mid-upload): held after ten minutes and five quiet ones (WO54's
+    moment, WO56's hold). Every photo in but no end call (its count from the photos' `of=`): whole, taken at once."""
     s, db = env
     api = FakeApi()
-    share(api, ended=False, started=NOW - timedelta(minutes=5))
+    share(api, ended=False, count=3, started=NOW - timedelta(minutes=5))
     assert uploads.fetch_new(s, db, api, NOW) == []
     assert uploads.fetch_new(s, db, api, NOW + timedelta(minutes=5, seconds=1)) == [SID]
-    assert (intake(s) / SID / "_done.txt").read_text() == "done 2"
+    assert not (intake(s) / SID).exists() and uploads.held_copy(s, SID) is not None
+    sid2 = "2026-10-18_160000_7777"
+    share(api, sid=sid2, ended=False, started=NOW - timedelta(minutes=1))           # 2 of 2, no end call
+    assert uploads.whole(api.shares[-1]) and uploads.fetch_new(s, db, api, NOW + timedelta(minutes=6)) == [SID, sid2]
+    assert (intake(s) / sid2 / "_done.txt").read_text() == "done 2"
 
 
 def test_nothing_without_photos(env):
@@ -439,11 +452,15 @@ def test_takeable_rules():
     assert not uploads.takeable({**base, "count": 2}, NOW + timedelta(seconds=119))
     assert uploads.takeable({**base, "count": 2}, NOW + timedelta(seconds=120))
     assert uploads.takeable({**base, "count": None, "received": 1}, NOW)                # no count: what came
-    assert not uploads.takeable({**base, "ended": False}, NOW + timedelta(minutes=9))
-    assert uploads.takeable({**base, "ended": False}, NOW + timedelta(minutes=10))
-    assert not uploads.takeable({**base, "ended": False, "started_at": "garbage"}, NOW + timedelta(days=1))
+    stopped = {**base, "ended": False, "count": 2}                                      # never ended, 1 of 2
+    assert not uploads.takeable(stopped, NOW + timedelta(minutes=9))
+    assert uploads.takeable(stopped, NOW + timedelta(minutes=10)) and uploads.short(stopped)   # WO56: then held
+    assert not uploads.takeable({**stopped, "started_at": "garbage"}, NOW + timedelta(days=1))
+    assert uploads.takeable({**base, "ended": False}, NOW) and not uploads.short({**base, "ended": False})   # WO56:
+    #                                                                                     every photo in = whole
+    assert uploads.short({**base, "count": 2}) and not uploads.short({**base, "count": None})
     # WO54: never ended, started 10 minutes ago, but its photos still coming in — not a share the Shortcut gave up on
-    receiving = {**base, "ended": False, "last_received_at": iso(NOW + timedelta(minutes=9, seconds=57))}
+    receiving = {**stopped, "last_received_at": iso(NOW + timedelta(minutes=9, seconds=57))}
     assert not uploads.takeable(receiving, NOW + timedelta(minutes=10))
     assert not uploads.takeable(receiving, NOW + timedelta(minutes=14, seconds=56))
     assert uploads.takeable(receiving, NOW + timedelta(minutes=14, seconds=57))      # five quiet minutes

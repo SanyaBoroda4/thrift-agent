@@ -4,7 +4,8 @@ Live (Oct 12–18): 4 of 23 shares never became a card and 11 came short or late
 step trusted what arrived and no record tied a share to its end. Now every share is one row in `shares`, keyed by the
 share id (the Shortcut's folder name, the same for the iCloud folder and the direct upload), with the time of each
 step — received → complete → grouped → carded — and its outcome: `carded` (a card per item), `repeat`, `empty`,
-`same_share` (the second copy of a share that arrived twice) or `failed` with its reason. Each step is recorded before
+`same_share` (the second copy of a share that arrived twice), `failed` with its reason, or (WO56 §6) `held` (its upload
+didn't finish: never posted, she is asked to share again) and `replaced` (she did). Each step is recorded before
 the next starts; the rows go to thrift-api with the rest of the sync, where a watchdog that doesn't depend on the Mac
 tells the owner about a complete share with no outcome (api/thrift_api/timers.shares_watch) and the dashboard shows
 the day's shares.
@@ -21,7 +22,8 @@ from pathlib import Path
 
 from thrift_agent.db import DB, now
 
-OUTCOMES = ("carded", "repeat", "empty", "same_share", "failed", "joined")
+OUTCOMES = ("carded", "repeat", "empty", "same_share", "failed", "joined",
+            "held", "replaced")      # WO56 §6: an upload that didn't finish (held, never posted) · then shared again
 _ARCHIVE = re.compile(r"^\d{8}_(?P<id>.+?)(?:_\d{1,3})?$")      # 20261018_<id>, 20261018_<id>_2
 
 
@@ -83,9 +85,9 @@ def step(db: DB, sid: str, name: str, batch_id: str | None = None) -> None:
 
 
 def outcome(db: DB, sid: str, what: str, reason: str | None = None, batch_id: str | None = None) -> None:
-    """The share's end: carded | repeat | empty | same_share | failed | joined. A share carded once stays carded (a
-    later failure of one item is that item's, told on its own); any other outcome may be replaced by a later one
-    (empty → carded when the photos came after all)."""
+    """The share's end: carded | repeat | empty | same_share | failed | joined | held | replaced. A share carded once
+    stays carded (a later failure of one item is that item's, told on its own); any other outcome may be replaced by a
+    later one (empty → carded when the photos came after all; held → replaced when she shared them again)."""
     assert what in OUTCOMES, what
     row = db.conn.execute("SELECT * FROM shares WHERE id=?", (sid,)).fetchone()
     if row is None:

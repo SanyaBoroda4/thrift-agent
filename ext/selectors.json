@@ -328,6 +328,12 @@
       }
     },
     "edit_url": "https://www.vinted.com/items/{id}/edit",
+    "item_details": {
+      "json": "/api/v2/items/{id}/details",
+      "how": "WO56 §0.3: one listing's own state (same origin, the seller's cookies) for a listing the wardrobe JSON lacks: 404 / 410 = gone from Vinted; an item = live, sold (closed by a sale), hidden or a draft — a 404 counts only when a listing known live answers as an item",
+      "verified": false,
+      "seen": "2026-11-09, the architect (read only): the Tory Burch loafers' /api/v2/items/10356602078/details answered 404 \"Content not found\" and the wardrobe's 192 entries lacked it; a live item's answer not yet recorded"
+    },
     "orders": {
       "url": "https://www.vinted.com/my_orders?order_type=sold",
       "json": "/api/v2/my_orders?type=sold&status=all&page=1&per_page=20",
@@ -606,6 +612,19 @@
       }
     },
     "edit_url": "https://www.depop.com/products/edit/{slug}/",
+    "shop_products": {
+      "json": [
+        "https://webapi.depop.com/presentation/api/v1/shop/{shop}/products/?limit=24",
+        "https://webapi.depop.com/api/v3/shop/{user_id}/products/?limit=24",
+        "https://webapi.depop.com/api/v2/shop/{user_id}/products/?limit=24",
+        "https://webapi.depop.com/api/v1/shop/{user_id}/products/?limit=24",
+        "https://webapi.depop.com/api/v1/shop/{user_id}/filteredProducts/selling?limit=24",
+        "https://webapi.depop.com/api/v2/shop/{shop}/products/?limit=200"
+      ],
+      "how": "WO56 §0.3: the shop's products JSON (the page's sign-in token, no cookies — the receipts' way): the address the shop page itself fetched comes first (its performance entries), then these in order ({shop} the username, {user_id} the shop's number from the page's data or /api/v1/shop/<username>/); the first that answers with a product list is followed page by page (meta.cursor / last_offset_id) to meta.end; the bulk read logs the one that answered (photocheck_bulk 'base') — record it here first",
+      "verified": false,
+      "seen": "2026-10-20 → 2026-11-09 (the Mac's photocheck_bulk events): the old single address (api/v2/shop/<username>/products/?limit=200) never answered — every read fell back to the shop page's first 25 tiles"
+    },
     "orders": {
       "url": "https://www.depop.com/sellinghub/sold-items/",
       "json": "https://webapi.depop.com/presentation/api/v1/receipts/?role=seller&limit=24",

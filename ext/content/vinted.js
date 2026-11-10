@@ -91,56 +91,143 @@
     is_reserved: !!x.is_reserved, is_hidden: !!x.is_hidden, is_closed: !!x.is_closed, is_draft: !!x.is_draft,
     photos: Array.isArray(x.photos) ? x.photos.length : (Number.isInteger(x.photos_count) ? x.photos_count
       : Number.isInteger(x.photo_count) ? x.photo_count : null),
+    // WO56 §0.3: why a closed item closed (the wardrobe carries item_closing_action): a closed one that didn't close by
+    // a sale is no sale (the Mac takes the other sites' listings down only for a sale)
+    closing: x.item_closing_action != null && x.item_closing_action !== "" ? String(x.item_closing_action) : null,
   });
 
-  // Every wardrobe item (96 a page, 5 pages at most): one JSON call a page — the bulk read of every listing's price,
-  // state and photo count, never a listing page each (WO45 follow-up: the owner, "looks like a bot").
-  async function wardrobeAll(member) {
+  // WO56 §0.3: the wardrobe JSON read to its END. Until WO56 a fixed 5 pages of 96 (`page=` swapped by a pattern that
+  // also matched `per_page=`); now Vinted's own pagination decides — `pagination.total_pages` when it gives it, else a
+  // page shorter than its `per_page` — and the guards: a page that adds no item not seen before (Vinted repeating a
+  // page) ends it, and so does WARDROBE_CAP pages (said in `note`, `complete` false). `pick(items)` ends it early with
+  // what it found (one listing looked for). Throws on an HTTP error (the caller says what it was).
+  const WARDROBE_PER_PAGE = 96;
+  const WARDROBE_CAP = 60;                     // 60 × 96 = 5,760 listings: past any shop of hers, never an endless loop
+  async function wardrobePages(member, { pick = null, cap = WARDROBE_CAP } = {}) {
     const base = String(S().wardrobe?.url || "/api/v2/wardrobe/{member}/items?order=newest_first&per_page=40&page=1")
-      .replace("{member}", encodeURIComponent(member)).replace(/per_page=\d+/, "per_page=96");
-    const out = [];
-    let shape = null;
-    for (let n = 1; n <= 5; n++) {
-      const r = await fetch(new URL(base.replace(/page=\d+$/, `page=${n}`), location.origin).href,
-                            { credentials: "include", headers: { Accept: "application/json" } });
-      if (!r.ok) throw new Error(`Vinted's data answered HTTP ${r.status}`);
+      .replace("{member}", encodeURIComponent(member));
+    const seen = new Set();
+    const items = [];
+    let shape = null, total = null, pages = 0, complete = false, note = null, found = null;
+    for (let n = 1; n <= cap; n++) {
+      const url = new URL(base, location.origin);
+      url.searchParams.set("per_page", String(WARDROBE_PER_PAGE));
+      url.searchParams.set("page", String(n));
+      const r = await fetch(url.href, { credentials: "include", headers: { Accept: "application/json" } });
+      if (!r.ok) throw new Error(`Vinted's data answered HTTP ${r.status} (page ${n})`);
       const data = await r.json();
-      const items = data.items || [];
-      if (!shape && items[0]) shape = Object.keys(items[0]).slice(0, 40);
-      for (const x of items) {
-        if (x && x.id) out.push({ id: String(x.id), title: String(x.title || ""), ...itemFacts(x) });
+      const list = Array.isArray(data?.items) ? data.items : [];
+      const pg = data?.pagination || {};
+      pages = n;
+      if (Number.isInteger(pg.total_entries)) total = pg.total_entries;
+      if (!shape && list[0]) shape = Object.keys(list[0]).slice(0, 40);
+      let fresh = 0;
+      for (const x of list) {
+        if (!x || x.id == null || seen.has(String(x.id))) continue;
+        seen.add(String(x.id));
+        items.push(x);
+        fresh++;
       }
-      if (items.length < 96) break;
+      if (pick && (found = pick(list))) break;
+      const per = Number.isInteger(pg.per_page) && pg.per_page > 0 ? pg.per_page : WARDROBE_PER_PAGE;
+      const last = Number.isInteger(pg.total_pages) ? n >= pg.total_pages : list.length < per;
+      if (last || !list.length) {
+        complete = true;
+        break;
+      }
+      if (!fresh) {
+        note = `page ${n} brought no listing not seen before (Vinted repeated a page) — stopped there`;
+        break;
+      }
+      if (n === cap) note = `stopped at the cap of ${cap} pages (${items.length} listings read)`;
     }
-    return { items: out, shape };
+    if (complete && total != null && items.length < total) {
+      note = `${items.length} of the ${total} listings Vinted counts were read`;
+    }
+    return { items, shape, total, pages, complete, note, found };
+  }
+
+  // Every wardrobe item: one JSON call a page, every page — the bulk read of every listing's price, state and photo
+  // count, never a listing page each (WO45 follow-up: the owner, "looks like a bot"; WO56: to the end of the shop).
+  async function wardrobeAll(member) {
+    const all = await wardrobePages(member);
+    return { items: all.items.map((x) => ({ id: String(x.id), title: String(x.title || ""), ...itemFacts(x) })),
+             shape: all.shape, total: all.total, pages: all.pages, complete: all.complete, note: all.note };
   }
 
   // WO41: ONE of the seller's listings in Vinted's own JSON, by its id (the price drop reads its price and whether
-  // it is reserved / hidden / closed): the wardrobe's pages, newest first, until it shows (5 pages of 96 at most).
+  // it is reserved / hidden / closed): the wardrobe's pages, newest first, until it shows (WO56: every page, no
+  // longer 5 of 96 at most — her shop passed 192 listings on 2026-11-09).
   async function wardrobeItem(member, id) {
-    const base = String(S().wardrobe?.url || "/api/v2/wardrobe/{member}/items?order=newest_first&per_page=40&page=1")
-      .replace("{member}", encodeURIComponent(member)).replace(/per_page=\d+/, "per_page=96");
-    for (let n = 1; n <= 5; n++) {
-      const r = await fetch(new URL(base.replace(/page=\d+$/, `page=${n}`), location.origin).href,
-                            { credentials: "include", headers: { Accept: "application/json" } });
-      if (!r.ok) throw new Error(`Vinted's data answered HTTP ${r.status}`);
-      const data = await r.json();
-      const items = data.items || [];
-      const x = items.find((i) => String(i?.id) === String(id));
-      if (x) {
-        return { id: String(x.id), title: String(x.title || ""), price: x.price ?? null,
-                 is_reserved: !!x.is_reserved, is_hidden: !!x.is_hidden, is_closed: !!x.is_closed,
-                 is_draft: !!x.is_draft,
-                 // WO52 follow-up: the buyers' interest — likes and views as Vinted counts them (null: not given)
-                 favourite_count: x.favourite_count ?? x.favourites_count ?? null, view_count: x.view_count ?? null,
-                 // WO52 follow-up: the photos' ids and file names — an inbox entry names its item only by its photos
-                 photo_keys: [...(x.photos || []), x.photo].filter(Boolean)
-                   .flatMap((p) => [p.id, String(p.url || p.full_size_url || "").split("?")[0].split("/").pop()])
-                   .filter((k) => k !== undefined && k !== null && String(k).length > 2).map(String) };
-      }
-      if (items.length < 96) return null;
+    const all = await wardrobePages(member, { pick: (list) => list.find((i) => String(i?.id) === String(id)) });
+    const x = all.found;
+    if (!x) return null;
+    return { id: String(x.id), title: String(x.title || ""), price: x.price ?? null,
+             is_reserved: !!x.is_reserved, is_hidden: !!x.is_hidden, is_closed: !!x.is_closed,
+             is_draft: !!x.is_draft,
+             // WO52 follow-up: the buyers' interest — likes and views as Vinted counts them (null: not given)
+             favourite_count: x.favourite_count ?? x.favourites_count ?? null, view_count: x.view_count ?? null,
+             // WO52 follow-up: the photos' ids and file names — an inbox entry names its item only by its photos
+             photo_keys: [...(x.photos || []), x.photo].filter(Boolean)
+               .flatMap((p) => [p.id, String(p.url || p.full_size_url || "").split("?")[0].split("/").pop()])
+               .filter((k) => k !== undefined && k !== null && String(k).length > 2).map(String) };
+  }
+
+  // WO56 §0.3: ONE listing's own state from Vinted's item JSON — never from its absence in the wardrobe. The address
+  // is ext/selectors.json's vinted.item_details (the architect's read of 2026-11-09: the Tory Burch loafers'
+  // /api/v2/items/10356602078/details answered 404 "Content not found" while the wardrobe's 192 entries lacked it).
+  // "gone" only on a 404 / 410; an item that answers is live, sold (closed, not by a delete), hidden or a draft; any
+  // other answer is "unknown" — never gone.
+  const politely = (ms) => new Promise((resolve) => setTimeout(resolve, ms * T.timeoutScale));
+  async function itemState(id) {
+    const tpl = String(T.selectors.vinted.item_details?.json || "/api/v2/items/{id}/details");
+    let r;
+    try {
+      r = await fetch(new URL(tpl.replace("{id}", encodeURIComponent(id)), location.origin).href,
+                      { credentials: "include", headers: { Accept: "application/json" } });
+    } catch (e) {
+      return { state: "unknown", detail: String(e && e.message ? e.message : e).slice(0, 80) };
     }
-    return null;
+    if (r.status === 404 || r.status === 410) return { state: "gone", http: r.status, how: "Vinted's item data" };
+    if (!r.ok) return { state: "unknown", http: r.status };
+    let data = null;
+    try { data = await r.json(); } catch (e) { /* below */ }
+    const x = data && typeof data === "object" ? (data.item && typeof data.item === "object" ? data.item : data) : null;
+    if (!x || x.id == null) return { state: "unknown", http: r.status, detail: "no item in Vinted's answer" };
+    const facts = itemFacts(x);
+    const closing = String(x.item_closing_action ?? "").toLowerCase();
+    const state = facts.is_closed ? (closing && !/sold/.test(closing) ? "gone" : "sold")
+      : facts.is_hidden ? "hidden" : facts.is_draft ? "draft" : "live";
+    return { state, http: r.status, how: "Vinted's item data", photos: facts.photos,
+             price: facts.price != null ? String(facts.price) : null, closing: closing || null };
+  }
+
+  // WO56 §0.3: the listings the bulk read lacked, each read by its own data, in ONE job from the member page. A
+  // listing known live is read first (`job.control`, else the wardrobe's newest): a 404 is believed only when that
+  // one answers as an item — a wrong address would answer 404 for every listing.
+  async function statesOf(job, member) {
+    let control = job.control && job.control.key ? job.control : null;
+    if (!control && member) {
+      try {
+        const first = (await wardrobePages(member, { cap: 1 })).items[0];
+        if (first) control = { key: String(first.id), url: `${location.origin}/items/${first.id}` };
+      } catch (e) { /* no control: no 404 is believed */ }
+    }
+    const checked = control ? await itemState(control.key) : { state: "unknown", detail: "no listing known live" };
+    const trusted = ["live", "sold", "hidden", "draft"].includes(checked.state);
+    const states = {};
+    const want = (job.states || []).filter((x) => x && x.key);
+    for (const [i, x] of want.entries()) {
+      if (i) await politely(400);                     // one item at a time, a breath between (a person's pace)
+      let st = await itemState(x.key);
+      if (st.state === "gone" && !trusted) {
+        st = { ...st, state: "unknown", detail: `${st.http}, but the listing known live (${control?.key || "none"}) `
+          + `didn't answer as an item either (${checked.http || checked.detail || checked.state})` };
+      }
+      states[x.key] = st;
+      if (i % 10 === 9) T.emit({ event: "progress", job_id: job.job_id, what: `own data: ${i + 1} of ${want.length}` });
+    }
+    return { states, control: control ? { ...control, ...checked } : null, trusted, source: "own" };
   }
 
   async function pick(st, name, value, { optional = false } = {}) {
@@ -839,13 +926,18 @@
       // WO35: Vinted's own JSON of the seller's newest items (same origin, from the member page): each listing's exact
       // title and address — the confirmation after an upload. The tiles below only when the JSON can't be read.
       const member = (location.pathname.match(/\/member\/(\d+)/) || [])[1] || job.shop;
+      if (Array.isArray(job.states)) {                  // WO56 §0.3: listings the bulk read lacked, by their own data
+        const out = await statesOf(job, member);
+        return T.emit({ event: "result", job_id: job.job_id, ...out, url: location.href });
+      }
       if (job.all) {                                    // WO45 follow-up: every listing's price, state, photo count
         if (!member) return T.emit({ event: "error", job_id: job.job_id, stage: "find", page: "unknown",
                                      message: "no member page to read Vinted's data from" });
         try {
           const all = await wardrobeAll(member);
           return T.emit({ event: "result", job_id: job.job_id, listings: all.items, shape: all.shape,
-                          source: "wardrobe", url: location.href });
+                          source: "wardrobe", url: location.href, pages: all.pages, total: all.total,
+                          complete: all.complete, note: all.note });
         } catch (e) {
           return T.emit({ event: "error", job_id: job.job_id, stage: "find", page: "unknown",
                           message: String(e && e.message ? e.message : e).slice(0, 200) });

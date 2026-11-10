@@ -295,7 +295,9 @@ def test_an_item_whose_brand_couldnt_be_read_goes_up_on_all_three_sites(tmp_path
 # What may still prompt a reply or ask a question, by category. WAITS are what waits for a person — the owner's four:
 # the price, a size no photo shows, a password / sign-in code, a real CAPTCHA (the last two are the sites' own pages:
 # the group's plain lines, crosslist.ALERTS — no reply, only her hands on the Mac). Everything else never waits.
-WAITS = {"price", "size", "sign-in", "captcha"}
+# WO56 §6 adds one more human step that no code can take: a share whose upload didn't finish ("share again") — only
+# her phone has the photos; ONE plain group line asks her to share them again (no reply: the new share replaces it).
+WAITS = {"price", "size", "sign-in", "captcha", "share again"}
 NEVER_WAITS = {
     "correction": "a reply changes a decision already made — the item goes up without it",
     "answer": "the answer to a message of hers (what a reply must look like, why it couldn't be taken)",
@@ -316,6 +318,9 @@ ALLOWED = [
     ("approve.py", "No price yet: type one", "price"),
     ("approve.py", "is under the ${…} floor — reply to the card with", "price"),
     ("approve.py", "Reply to this message with the price (or just type it).", "price"),
+    # WO56 §6: an upload that didn't finish — only her phone has the photos (uploads.HELD_LINE, said once, 15 minutes
+    # after its last photo; her new share replaces the held one, no reply)
+    ("uploads.py", "didn't finish uploading — please share them again", "share again"),
     # a size no photo shows — the card's size buttons and the one line about them
     ("approve.py", "tap a size to list it", "size"),
     ("approve.py", "Waiting for a size: {title} — tap one on its card", "size"),
@@ -416,7 +421,8 @@ ALLOWED = [
 
 def test_only_the_four_waits_remain_in_the_agents_own_words():
     """Every string in thrift_agent/ that asks a question or prompts a reply / a tap is one of ALLOWED — and of those
-    only the price and a size no photo shows wait (the sign-in and CAPTCHA lines are the sites' pages, no reply)."""
+    only the price and a size no photo shows wait (the sign-in and CAPTCHA lines are the sites' pages, no reply; WO56
+    §6's "share them again" asks for her phone's photos, no reply)."""
     unlisted = []
     for rel, line, text in wo54_prompts.flagged():
         if not any(f == rel and piece in text for f, piece, _ in ALLOWED):
@@ -424,7 +430,9 @@ def test_only_the_four_waits_remain_in_the_agents_own_words():
     assert not unlisted, ("a question or a reply prompt that isn't one of the four waits (WO54 §2 — decide, post, one "
                           "check line; or add it to ALLOWED with why it never waits):\n" + "\n".join(unlisted))
     assert {c for _, _, c in ALLOWED} <= WAITS | set(NEVER_WAITS)
-    assert {c for _, _, c in ALLOWED if c in WAITS} == {"price", "size"}
+    assert {c for _, _, c in ALLOWED if c in WAITS} == {"price", "size", "share again"}     # WO56 §6: + the re-share
+    from thrift_agent import uploads
+    assert "didn't finish uploading — please share them again" in uploads.HELD_LINE      # the one line, as listed
 
 
 def test_the_scan_finds_a_question_or_a_reply_prompt_wherever_it_is_written():

@@ -1581,6 +1581,225 @@ test("Depop: the shop read in bulk from its products JSON with the page's token;
                                   url: "https://www.depop.com/products/example-shirt-24cb/" }]);
 });
 
+// ---------------------------------------------------------------- WO56 §0.3: a whole shop; a missing listing's own data
+// Live 2026-10-20 → 11-09 (the Mac's photocheck_bulk events): every Depop bulk read was the shop page's first 25 tiles
+// (its products JSON never answered), so ~80 older listings — the Tory Burch loafers among them — were "not in bulk"
+// while live; Vinted's wardrobe was read 5 pages of 96 at most. Now both read to the shop's end, and a listing the bulk
+// data lacks is read by its own page / item JSON — a 404 believed only when a listing known live answers.
+
+const answer = (status, data) => ({ ok: status >= 200 && status < 300, status, json: async () => data,
+                                    text: async () => (typeof data === "string" ? data : JSON.stringify(data)) });
+const shopPage = (slugs, extra = "") => `<html><head><title>Depop</title></head><body><main id="grid">${
+  slugs.map((s) => `<a href="/products/${s}/">${s}</a>`).join("")}</main>${extra}</body></html>`;
+
+test("Vinted: the wardrobe read to its end — 250 listings over Vinted's own 3 pages; a short page ends it too; a repeated page and the cap stop it (WO56 §0.3)", async () => {
+  const all = Array.from({ length: 250 }, (_, i) => ({ id: 20000 + i, title: `Item ${i}`, price: { amount: "20.0" },
+                                                        photos: [{}, {}] }));
+  const slice = (url) => {
+    const n = Number(url.searchParams.get("page")), per = Number(url.searchParams.get("per_page"));
+    return all.slice((n - 1) * per, n * per);
+  };
+  const read = async (pager) => {
+    const p = page("vinted", "<html><body><main></main></body></html>", "https://www.vinted.com/member/12345");
+    const asked = [];
+    p.w.fetch = async (u) => {
+      const url = new URL(String(u));
+      asked.push(url.searchParams.get("page"));
+      return answer(200, pager(url));
+    };
+    await p.w.Thrift.run({ job: { job_id: "v-all", site: "vinted", mode: "find", shop: "12345", wardrobe: true, all: true },
+                           selectors: SELECTORS, photos: [], pace: "fast" });
+    return { r: plain(p.last()), asked };
+  };
+  let { r, asked } = await read((url) => ({ items: slice(url), pagination: {
+    current_page: Number(url.searchParams.get("page")), total_pages: 3, total_entries: 250, per_page: 96 } }));
+  assert.equal(r.event, "result", JSON.stringify(r).slice(0, 300));
+  assert.equal(r.listings.length, 250);
+  assert.equal(new Set(r.listings.map((x) => x.id)).size, 250);                    // every listing, once
+  assert.deepEqual(asked, ["1", "2", "3"]);
+  assert.equal(r.complete, true);
+  assert.equal(r.total, 250);
+  assert.equal(r.pages, 3);
+  assert.equal(r.listings[249].photos, 2);
+  ({ r, asked } = await read((url) => ({ items: slice(url) })));                     // no pagination: the short page
+  assert.equal(r.listings.length, 250);
+  assert.deepEqual(asked, ["1", "2", "3"]);
+  assert.equal(r.complete, true);
+  ({ r, asked } = await read(() => ({ items: all.slice(0, 96) })));                  // Vinted ignoring `page`
+  assert.equal(r.listings.length, 96);
+  assert.deepEqual(asked, ["1", "2"]);
+  assert.equal(r.complete, false);
+  assert.match(r.note, /repeated a page/);
+  ({ r, asked } = await read((url) => ({ items: Array.from({ length: 96 }, (_, i) => ({
+    id: Number(url.searchParams.get("page")) * 1000 + i, title: "x" })) })));        // a shop with no end: the cap
+  assert.equal(asked.length, 60);
+  assert.equal(r.complete, false);
+  assert.match(r.note, /cap of 60 pages/);
+});
+
+test("Vinted: a listing missing from the wardrobe is read by its own item JSON — 404 gone, sold, hidden, live with its photos; a 404 believed only when the listing known live answers (WO56 §0.3)", async () => {
+  const items = { 999: { id: 999 }, 222: { id: 222, is_closed: true, item_closing_action: "sold" },
+                  333: { id: 333, is_hidden: true }, 444: { id: 444, photos: [{}, {}], price: { amount: "25.0" } },
+                  555: { id: 555, is_closed: true, item_closing_action: "deleted" } };
+  const read = async (controlDown) => {
+    const p = page("vinted", "<html><body><main></main></body></html>", "https://www.vinted.com/member/12345");
+    const asked = [];
+    p.w.fetch = async (u) => {
+      const id = (String(u).match(/\/api\/v2\/items\/(\d+)\/details/) || [])[1];
+      asked.push(id);
+      const x = items[id];
+      return x && !(controlDown && id === "999") ? answer(200, { item: x })
+        : answer(404, { code: 104, message: "Content not found" });
+    };
+    const states = ["111", "222", "333", "444", "555"].map((key) => ({ key, url: `https://www.vinted.com/items/${key}` }));
+    await p.w.Thrift.run({ job: { job_id: "v-own", site: "vinted", mode: "find", shop: "12345", wardrobe: true, states,
+                                  control: { key: "999" } }, selectors: SELECTORS, photos: [], pace: "fast" });
+    return { r: plain(p.last()), asked };
+  };
+  let { r, asked } = await read(false);
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(asked[0], "999");                                                     // the known-live one first
+  assert.equal(r.trusted, true);
+  assert.deepEqual(Object.fromEntries(Object.entries(r.states).map(([k, v]) => [k, v.state])),
+                   { 111: "gone", 222: "sold", 333: "hidden", 444: "live", 555: "gone" });   // closed, no sale: gone
+  assert.equal(r.states["111"].http, 404);
+  assert.equal(r.states["444"].photos, 2);
+  assert.equal(r.states["444"].price, "25.0");
+  ({ r } = await read(true));                                                         // it answers 404 too
+  assert.equal(r.trusted, false);
+  assert.equal(r.states["111"].state, "unknown");
+  assert.match(r.states["111"].detail, /known live \(999\)/);
+  assert.equal(r.states["222"].state, "sold");
+});
+
+test("Depop: the products JSON found and read to its end — the shop's number from the page's data, 9 pages by its own cursor, 210 listings (WO56 §0.3)", async () => {
+  const all = Array.from({ length: 210 }, (_, i) => ({ id: 5000 + i, slug: `exampleshopname-item-${i}`,
+                                                        price: { priceAmount: "30.00" }, pictures: [{}, {}, {}],
+                                                        sold: i === 7 }));
+  const data = `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify(
+    { props: { pageProps: { shop: { id: 4242, username: "exampleshopname" } } } })}</script>`;
+  const p = page("depop", shopPage(["exampleshopname-item-0"], data), "https://www.depop.com/exampleshopname/");
+  p.d.cookie = "access_token=tok123";
+  const asked = [];
+  p.w.fetch = async (u, opts) => {
+    const url = new URL(String(u));
+    asked.push([url.pathname + url.search, opts?.headers?.Authorization]);
+    if (!/^\/api\/v3\/shop\/4242\/products\/$/.test(url.pathname)) return answer(404, { error: "not found" });
+    const at = Number(url.searchParams.get("cursor") || 0);
+    const list = all.slice(at, at + 24);
+    return answer(200, { products: list,
+                         meta: { cursor: String(at + 24), end: at + 24 >= all.length, result_count: list.length } });
+  };
+  await p.w.Thrift.run({ job: { job_id: "d-all", site: "depop", mode: "find", shop: "exampleshopname", all: true },
+                         selectors: SELECTORS, photos: [], pace: "fast" });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r).slice(0, 400));
+  assert.equal(r.source, "json");
+  assert.equal(r.listings.length, 210);
+  assert.equal(new Set(r.listings.map((x) => x.slug)).size, 210);                  // every listing, once
+  assert.equal(r.pages, 9);
+  assert.equal(r.complete, true);
+  assert.equal(r.base, "/api/v3/shop/4242/products/");                              // logged, to be recorded
+  assert.ok(r.tried.some((t) => /presentation\/api\/v1\/shop\/exampleshopname\/products\/: HTTP 404/.test(t)), r.tried);
+  assert.equal(r.listings[7].sold, true);
+  assert.equal(r.listings[0].photos, 3);
+  assert.ok(asked.every(([, auth]) => auth === "Bearer tok123"), asked);
+  assert.ok(!asked.some(([a]) => a.startsWith("/api/v1/shop/exampleshopname/")), "the shop's number came from the page");
+});
+
+test("Depop: the address the shop page itself fetched comes first; a cursor that never moves on ends the read (WO56 §0.3)", async () => {
+  const p = page("depop", shopPage(["exampleshopname-a-1"]), "https://www.depop.com/exampleshopname/");
+  p.w.performance.getEntriesByType = (kind) => (kind === "resource" ? [{
+    name: "https://webapi.depop.com/api/v2/shop/777/products/?limit=24&cursor=abc&force_fee_calculation=false" }] : []);
+  const asked = [];
+  p.w.fetch = async (u) => {
+    asked.push(String(u));
+    return answer(200, { products: [{ id: 1, slug: "exampleshopname-a-1" }, { id: 2, slug: "exampleshopname-b-2" }],
+                         meta: { cursor: "same", end: false } });
+  };
+  await p.w.Thrift.run({ job: { job_id: "d-own-url", site: "depop", mode: "find", shop: "exampleshopname", all: true },
+                         selectors: SELECTORS, photos: [], pace: "fast" });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r));
+  const first = new URL(asked[0]);
+  assert.equal(first.pathname, "/api/v2/shop/777/products/");
+  assert.equal(first.searchParams.get("cursor"), null);                            // its own paging taken off
+  assert.equal(first.searchParams.get("force_fee_calculation"), "false");
+  assert.equal(asked.length, 2);
+  assert.equal(r.listings.length, 2);
+  assert.equal(r.complete, false);
+  assert.match(r.note, /no product not seen before/);
+});
+
+test("Depop: with no products JSON the shop page's tiles are read to its end, scrolled — nothing clicked (WO56 §0.3)", async () => {
+  const html = `<html><head><title>Depop</title></head><body><main id="grid"></main><script>
+    let n = 0;
+    const grid = document.getElementById("grid");
+    const more = () => {
+      for (let i = 0; i < 24 && n < 130; i++, n++) {
+        const a = document.createElement("a");
+        a.href = "/products/exampleshopname-t-" + n + "/";
+        a.textContent = "t" + n;
+        grid.appendChild(a);
+      }
+    };
+    more();
+    window.addEventListener("scroll", () => setTimeout(more, 5));
+    window.__clicks = 0;
+    document.addEventListener("click", () => window.__clicks++, true);
+  </script></body></html>`;
+  const p = page("depop", html, "https://www.depop.com/exampleshopname/");
+  p.w.fetch = async () => answer(404, {});
+  await p.w.Thrift.run({ job: { job_id: "d-tiles", site: "depop", mode: "find", shop: "exampleshopname", all: true },
+                         selectors: SELECTORS, photos: [], pace: "fast" });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r).slice(0, 400));
+  assert.equal(r.source, "page");
+  assert.equal(r.listings.length, 130);
+  assert.equal(new Set(r.listings.map((x) => x.url)).size, 130);
+  assert.equal(r.complete, true);
+  assert.match(r.note, /didn't answer .*HTTP 404.*scrolled/);
+  assert.equal(p.w.__clicks, 0);
+});
+
+test("Depop: a listing missing from the shop's data is read by its own page — 404 gone, SoldOut sold, live with its photos, a challenge page unknown; a 404 believed only when the shop's first tile answers (WO56 §0.3)", async () => {
+  const ld = (availability, images) => `<html><head><script type="application/ld+json" data-testid="meta__jsonLd">${
+    JSON.stringify({ "@type": "Product", offers: { availability: `https://schema.org/${availability}`, price: "30.00" },
+                     image: images })}</script></head><body></body></html>`;
+  const pages = { "control-1111": [200, ld("InStock", ["a"])], "gone-2222": [404, "<html>Sorry, that page doesn't exist</html>"],
+                  "sold-3333": [200, ld("SoldOut", ["a", "b"])], "live-4444": [200, ld("InStock", ["a", "b", "c"])],
+                  "challenge-5555": [403, "<html>Just a moment...</html>"],
+                  "plain-6666": [200, "<html><body>no data</body></html>"] };
+  const read = async (controlDown) => {
+    const p = page("depop", shopPage(["control-1111"]), "https://www.depop.com/exampleshopname/");
+    const asked = [];
+    p.w.fetch = async (u) => {
+      const slug = (String(u).match(/\/products\/([^/]+)\//) || [])[1];
+      asked.push(slug);
+      const [status, body] = controlDown && slug === "control-1111" ? [404, ""] : pages[slug] || [404, ""];
+      return answer(status, body);
+    };
+    await p.w.Thrift.run({ job: { job_id: "d-own", site: "depop", mode: "find", shop: "exampleshopname",
+                                  states: ["gone-2222", "sold-3333", "live-4444", "challenge-5555", "plain-6666"]
+                                    .map((key) => ({ key, url: `https://www.depop.com/products/${key}/` })) },
+                           selectors: SELECTORS, photos: [], pace: "fast" });
+    return { r: plain(p.last()), asked };
+  };
+  let { r, asked } = await read(false);
+  assert.equal(r.event, "result", JSON.stringify(r));
+  assert.equal(asked[0], "control-1111");                                           // the shop page's first tile
+  assert.equal(r.trusted, true);
+  assert.deepEqual(Object.fromEntries(Object.entries(r.states).map(([k, v]) => [k, v.state])),
+                   { "gone-2222": "gone", "sold-3333": "sold", "live-4444": "live", "challenge-5555": "unknown",
+                     "plain-6666": "unknown" });
+  assert.equal(r.states["live-4444"].photos, 3);
+  assert.equal(r.states["live-4444"].price, "30.00");
+  ({ r } = await read(true));                                                         // the tile answers 404 too
+  assert.equal(r.trusted, false);
+  assert.equal(r.states["gone-2222"].state, "unknown");
+  assert.equal(r.states["sold-3333"].state, "sold");
+});
+
 // ---------------------------------------------------------------- the Vinted incident of 2026-10-20
 
 test("Vinted: its system-error dialog during the photo upload ends the step with its words once no fresh page is left (live 2026-10-20: 0 of 8)", async () => {

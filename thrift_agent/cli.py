@@ -94,6 +94,7 @@ def _scan_inbox(s, db) -> int:
     try:
         if uploads.due(db):                                   # WO45 §2: the shares the iPhone sent straight to the API
             uploads.fetch_new(s, db)                          # (never raises; WO49: into the local intake folder)
+        uploads.held_tick(s, db)                              # WO56 §6: uploads that didn't finish (their one line)
     except Exception as e:  # noqa: BLE001 — the uploads never stop the look
         db.log(None, "error", traceback.format_exc())
         print(f"[uploads] {type(e).__name__}: {e}")
@@ -931,6 +932,34 @@ def vinted_repost_cmd(item_id: str,
         raise typer.BadParameter("one of --check, --practice, --probe-delete, --go")
     vinted_repost.ask(_db(), item_id, steps[0])
     print(f"asked the running poster: {steps[0]} for {item_id} on Vinted (its lines go to the private chat)")
+
+
+@app.command("photocheck")
+def photocheck_cmd(recheck_not_in_bulk: bool = typer.Option(
+                       False, "--recheck-not-in-bulk",
+                       help="read every listing flagged 'not in bulk' again, by its own page / data"),
+                   since: str = typer.Option("2026-11-01", "--since", help="flags since this day (YYYY-MM-DD)"),
+                   dry_run: bool = typer.Option(False, "--dry-run", help="read and report only; nothing recorded")) -> None:
+    """WO56 §0.3: the photo check's one-time re-check — each Depop / Vinted listing the old bulk read flagged "not in
+    bulk" since --since (and still posted here) read by its OWN data (Depop its listing page, Vinted its item JSON):
+    live → the flag cleared; sold → the sale net; 404 → recorded gone from that site once a second read 10 minutes
+    later agrees (nothing else taken down, never relisted). The running poster reads them (the extension is its) and
+    sends ONE private line with what it found."""
+    from thrift_agent import photocheck
+    if not recheck_not_in_bulk:
+        raise typer.BadParameter("--recheck-not-in-bulk")
+    try:
+        datetime.fromisoformat(since)
+    except ValueError:
+        raise typer.BadParameter("--since is a day: YYYY-MM-DD") from None
+    by_site = photocheck.ask_recheck(_db(), since, dry=dry_run)
+    n = sum(by_site.values())
+    if not n:
+        print(f"nothing to re-check: no listing still posted was flagged 'not in bulk' since {since}")
+        return
+    print(f"asked the running poster to read {n} listing(s) by their own data "
+          f"({', '.join(f'{k} {v}' for k, v in sorted(by_site.items()))}){' — a dry run' if dry_run else ''}; "
+          "the result comes to the private chat at its next photo check (within 5 minutes)")
 
 
 @app.command("brand-fix")
