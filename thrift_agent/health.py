@@ -58,7 +58,7 @@ SET_ASIDE = "set aside: "     # the row's error while it waits (status 'failed',
 BRAKE = "site_brake"          # kv: {mp: [{"item", "sig", "at"}]} — the site's failures since a listing last went through
 BRAKE_ITEMS = 3               # this many DIFFERENT items failing in a row pause the site
 LABEL = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted"}
-ACCOUNT_PAGES = ("login", "captcha", "block", "verify")
+ACCOUNT_PAGES = ("login", "captcha", "block", "verify", "challenge")   # WO56: a "Just a moment" that didn't pass
 
 # What a failure is about — read from its words (the extension also names a code error and a page it doesn't know).
 INFRA_RE = re.compile(
@@ -299,6 +299,10 @@ def resume(db: DB, mp: str, why: str = "test passed", say: bool = True, force: b
     streak.pop(mp, None)
     db.kv_set(STREAK, json.dumps(streak))
     db.log(None, "site_resumed", {"mp": mp, "why": why, "kind": was.get("kind"), "tests": was.get("tests")})
+    # WO56: a human step on the site ends with its own one line ("✅ Vinted back — posting resumed"), never this too
+    from thrift_agent import humansteps
+    if humansteps.ended(db, mp, why, page=was.get("page")):
+        return True
     if say and (was.get("said") or force):
         notify.say(f"✅ {LABEL.get(mp, mp)} back to normal — posting resumed{going_text(db, mp, hours_open)}.")
     return True

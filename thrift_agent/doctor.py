@@ -156,8 +156,12 @@ def report(s: Settings, db: DB, now: datetime | None = None, api=None,
         parts = [f"{st_} {n}" for st_, n in sorted(c.items()) if st_ in ("posted", "queued", "posting", "failed")]
         out.append(f"{crosslist.LABEL.get(mp, mp)}: " + (", ".join(parts) or "nothing")
                    + (f" · PAUSED: {why}" if why else ""))
-    from thrift_agent import health
+    from thrift_agent import health, humansteps
     out += [f"  {line}" for line in health.summary(db)]          # WO51: each pause and its next test
+    try:                                                           # WO56: a human step pending, the last day's steps
+        out += humansteps.doctor_lines(db, now)
+    except Exception as e:  # noqa: BLE001 — a part it can't read says so
+        out.append(f"Human steps: unreadable now ({type(e).__name__})")
     from thrift_agent import jobs
     from thrift_agent import memory as mem
     if tops := mem.top_lines():                                    # WO52 §7: who holds the memory

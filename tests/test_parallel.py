@@ -191,7 +191,9 @@ def test_one_site_turned_away_never_stops_the_others(tmp_path, quick):
     assert all(db.listing(i, "poshmark")["status"] == "posted" for i in items)
     assert all(db.listing(i, "vinted")["status"] == "posted" for i in items)
     assert crosslist.blocked(db, "depop") and len(ps["depop"].calls) == 1
-    assert quick.group.count("Depop needs you to log in on the Mac.") == 1
+    # WO56: a sign-in is a human step — ONE private message ("reply show"), never the group's line
+    assert sum(m.startswith("🔐 Depop wants you to sign in") for m in quick.ops) == 1
+    assert not any("needs you to log in" in g for g in quick.group)
     # each item's card, as it ends: on the dev machine an edit prints again (WO34: the card that carried the 💤 line is
     # edited without it when a later card takes it — whether that happens depends on the workers' timing)
     cards = {i: [g for g in quick.group if g.startswith("✅") and f"/listing/{i}" in g] for i in items}
@@ -214,7 +216,8 @@ def test_a_poshmark_failure_stops_poshmark_alone(tmp_path, quick):
     assert all(db.listing(i, mp)["status"] == "posted" for i in items for mp in ("depop", "vinted"))
     assert db.listing(items[0], "poshmark")["status"] == "queued"     # put back: nothing reached Poshmark
     assert db.listing(items[1], "poshmark") is None                    # stopped for the window: never taken
-    assert quick.group.count("Poshmark needs you to log in on the Mac.") == 1
+    assert sum(m.startswith("🔐 Poshmark wants you to sign in") for m in quick.ops) == 1     # WO56: privately, once
+    assert not any("needs you to log in" in g for g in quick.group)
 
 
 def test_the_extension_sites_run_side_by_side_one_click_each_posting_at_the_go_ahead(tmp_path, quick,

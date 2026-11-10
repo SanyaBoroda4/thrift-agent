@@ -159,6 +159,10 @@ quiet:                     # WO54 §3 (the owner, 2026-11-09: the Mac is her wor
   days: all
   allow_takedowns: false   # take-downs wait too (the owner can turn this on)
 
+human_steps:               # WO56: a sign-in, a one-time code, a real CAPTCHA — the owner does it on the Mac's screen over
+  vnc_address: "100.109.116.57"   # Screen Sharing / Remote Management (the Mac's Tailscale address); "show" in the
+                                  # private chat brings that window to the front (thrift_agent/humansteps.py)
+
 schedule:                  # WO54 §3: no posting hours — every hour outside the owner's quiet hours (`quiet` above)
   timezone: America/New_York
   per_hour_max: 60         # WO37: a site goes straight on — 10 an hour made it wait out the hour

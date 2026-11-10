@@ -278,6 +278,10 @@ class FakeExtension:
         self.record(site, (item_of(job), mode == "dry_run"))
         res = self.next_result(site)
         if isinstance(res, AccountBlocked):
+            # the content script pictures a stop page before it ends the job (WO56: the human step's one message)
+            self.event(writer, event="screenshot", job_id=jid, label=res.page or "login",
+                       png_b64=base64.b64encode(PNG).decode(), html="<html><body>stop</body></html>",
+                       url="https://example.invalid/stop")
             self.event(writer, event="error", job_id=jid, stage="open", page=res.page or "login", message=str(res))
             await writer.drain()
             return

@@ -86,7 +86,7 @@ def describe_diff(diff: dict) -> str:
     return "; ".join(parts) or "the form read back other than planned"
 # WO33: Vinted's Hide; Depop's DELETE (the owner's decision, 2026-10-08: its page offers no Mark as sold)
 DELIST_NEEDS = {"vinted": frozenset({"hide"}), "depop": frozenset({"delete_button", "delete_dialog", "delete_confirm"})}
-STOP_PAGES = ("login", "block", "captcha", "verify")
+STOP_PAGES = ("login", "block", "captcha", "verify", "challenge")   # WO56: a "Just a moment" that stayed 2 minutes
 
 
 def money(value) -> float | None:
@@ -98,7 +98,8 @@ def money(value) -> float | None:
     m = re.search(r"\d+(?:\.\d+)?", str(value or "").replace(",", ""))
     return float(m[0]) if m else None
 WHAT = {"login": "not logged in in the Thrift Chrome", "block": "the site turned the Thrift Chrome away (block page)",
-        "captcha": "a CAPTCHA is shown in the Thrift Chrome", "verify": "the site asks for a check (verification)"}
+        "captcha": "a CAPTCHA is shown in the Thrift Chrome", "verify": "the site asks for a check (verification)",
+        "challenge": "a security check (\"Just a moment…\") that didn't pass by itself in 2 minutes"}
 AFTER_CLICK_MIN = 200.0     # after the go-ahead the job gets at least this long to land (the extension waits 3 min)
 CONNECT_WAIT = 90.0         # the shop check waits this long for the extension to (re)connect
 CONFIRM_FOR = 300.0         # WO35: a new listing is looked for by its address this long after the click …
@@ -465,7 +466,7 @@ class ExtensionPoster(Poster):
         given up on (nothing was opened)."""
         while True:
             now = time.monotonic()
-            limit = deadline - now
+            limit = deadline + getattr(job, "extra", 0.0) - now     # WO56: + the 2 minutes a "Just a moment" waited
             if job.handed is None:
                 limit = min(limit, job.created + bridge_mod.PICKUP_TIMEOUT - now)
             if limit <= 0:
@@ -521,9 +522,14 @@ class ExtensionPoster(Poster):
             return self._say(f"photos {str(ev['detail']).split(' ')[0]}")
         return self._say(f"{label} ✓" if ev.get("ok") else f"{label} ✗ {ev.get('detail') or ''}".rstrip())
 
-    def _stop(self, ev: dict) -> AccountBlocked:
+    def _stop(self, ev: dict, job: bridge_mod.Job | None = None) -> AccountBlocked:
+        """WO56: with the stop page's own screenshot when the job kept one (the human step's message carries it)."""
         page = ev.get("page")
-        return AccountBlocked(f"{self.site}: {WHAT.get(page, page)} — {ev.get('message') or ''}".strip(" —"), page=page)
+        job = job or getattr(self, "_last_job", None)          # the other jobs (`_job`): one at a time per site
+        shot = next((x["png"] for x in (getattr(job, "shots", None) or []) if x.get("png") and x.get("label") == page),
+                    None)
+        return AccountBlocked(f"{self.site}: {WHAT.get(page, page)} — {ev.get('message') or ''}".strip(" —"), page=page,
+                              shot=shot)
 
     # ------------------------------------------------------------ post
 
@@ -567,7 +573,7 @@ class ExtensionPoster(Poster):
         if ev.get("event") == "error":
             self._record(job, {"item": r.sku, "error": ev})
             if ev.get("page") in STOP_PAGES:
-                raise self._stop(ev)
+                raise self._stop(ev, job)
             self.error_kind = ev.get("kind")              # WO51: "code" (our script threw) / "site" (the page changed)
             return Outcome("failed", screenshot=self._kept(job, "form"),
                            error=f"{self.site} {ev.get('stage') or 'form'}: {ev.get('message')}", note=_joined(self.notes))
@@ -732,6 +738,7 @@ class ExtensionPoster(Poster):
         bridge = self._bridge()
         job = bridge.submit(self.name, mode, {"fields": {}, "copy": {}, "price": None, "photos": [],
                                                "listing_url": None, **payload}, shot=shot)
+        self._last_job = job                      # WO56: a stop page's screenshot for the human step (`_stop`)
         try:
             return await self._await(job, ("result", "error"), time.monotonic() + timeout)
         except TimeoutError:

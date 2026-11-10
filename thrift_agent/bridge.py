@@ -32,6 +32,14 @@ no DevTools connection, no automation flags.
   True while it is connected or can be woken.
 - The watch, for work that waits (WO49's lid-open clock): no extension WAKE_AGAIN (2 min) after the Chrome was asked
   for → asked again; after 5 → restarted; after 10 → one ops line per window.
+- WO56, human steps (thrift_agent.humansteps): the pending ones (`steps_source`) go to the extension as {"type":
+  "steps", "steps": {site: {label, kind, since}}} — on a change, after each hello, every STEPS_RESEND — and it holds
+  each one's page (its own window, titled "<Site> — human step", never tidied) and reads it every 10 s ("step_page"
+  events, job-less: `on_ext_event`). While one is pending the Thrift Chrome is never quit. The owner's "show"
+  (`shows_source`) → {"type": "show", "site", "ms"}: that window to the front for 5 minutes (no extension: the Chrome
+  is asked for and the show waits for its hello). A job whose page waits out a "Just a moment" (its progress event
+  `challenge: "waiting"`) gets CHALLENGE_EXTRA more time. A stop page's screenshot of a job with no evidence path of
+  its own is kept in `shots_dir` (the human step's one message carries it).
 
 Python's standard library only (asyncio streams, an RFC 6455 handshake and frames)."""
 from __future__ import annotations
@@ -74,7 +82,14 @@ DRAIN = 90.0                 # a job called off: the next one waits this long at
 RELOAD_HOLD = 2.0            # an extension told of new files reloads at once: no job for its socket meanwhile
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 FINAL = ("result", "error")
-EXT_EVENTS = ("tidied",)     # WO54: the extension's own events (no job) the poster records — background.js tidyTabs
+# WO54: the extension's own events (no job) the poster records — background.js tidyTabs; WO56: a human step's held page
+# read every 10 s (step_page), its window shown (step_shown), a "Just a moment" that passed by itself (challenge)
+EXT_EVENTS = ("tidied", "step_page", "step_shown", "challenge")
+STEPS_RESEND = 300.0         # WO56: the pending human steps told again this often (a restarted worker, a lost message)
+SHOW_FOR = 300.0             # ... "show": the step's window in front this long at most (then minimized)
+SHOW_KEEP = 600.0            # ... a show asked while no extension was there waits this long for its hello
+CHALLENGE_EXTRA = 130.0      # ... a job whose page waits out a "Just a moment" (2 min at most) gets this much more time
+STOP_LABELS = ("login", "block", "captcha", "verify", "challenge")    # stop pages' screenshots (kept for every job)
 MISSING_LINE = ("🧩 The Thrift Chrome extension hasn't checked in for 10 minutes since the agent opened the Thrift Chrome "
                 "for work (it was restarted once), so Depop and Vinted are waiting. On the Mac: is the extension "
                 "loaded at chrome://extensions in the Thrift Chrome, its token saved in its options? "
@@ -104,7 +119,7 @@ def new_token() -> str:
     return secrets.token_urlsafe(32)
 
 
-HASH_SALT = b"wo54-reload-1\n"     # WO54 §4: background.js changed (the tidy, the pings): every loaded copy reloads
+HASH_SALT = b"wo56-reload-1\n"     # WO56: background.js changed (the human steps, the "show"): every loaded copy reloads
 
 
 def files_hash(ext_dir: Path = EXT_DIR) -> str:
@@ -166,6 +181,7 @@ class Job:
     dropped: float | None = None          # when the driver gave up on it
     clicked: bool = False                 # the go-ahead was sent: from here on the listing may be live
     cancelled: bool = False               # its cancel was sent (once is enough)
+    extra: float = 0.0                    # WO56: more time — its page waited out a "Just a moment" (CHALLENGE_EXTRA)
     sock: object | None = None            # the socket it was pushed to: its go-ahead goes there first
     steps: list[dict] = field(default_factory=list)
     shots: list[dict] = field(default_factory=list)
@@ -239,6 +255,14 @@ class Bridge:
         # `on_ext_event` (the poster: an events row, `ext_event_logger`)
         self.ext_events: deque[dict] = deque(maxlen=50)
         self.on_ext_event = None                # (event) -> None
+        # WO56: human steps — the pending ones (from the poster: humansteps.for_bridge) the extension holds, the owner's
+        # "show" asks (humansteps.take_show), a show waiting for an extension, where a stop page's picture is kept
+        self.steps: dict[str, dict] = {}
+        self.steps_source = None                # () -> {site: {"label", "kind", "since"}}
+        self.shows_source = None                # () -> [site]
+        self.steps_sent_at: float | None = None
+        self.pending_shows: dict[str, float] = {}
+        self.shots_dir: Path | None = None
 
     # ------------------------------------------------------------ lifecycle
 
@@ -341,6 +365,8 @@ class Bridge:
             return None
         if self.owner_using(now):
             return None
+        if self.steps:                            # WO56: a human step pending — its page held there, whatever the wait
+            return None
         if any(now - since < LEFT_KEEP for _page, since in self.left_for_owner.values()):
             return None
         tight = None
@@ -392,6 +418,70 @@ class Bridge:
         fut = loop.run_in_executor(None, safe, arg)
         if then is not None:
             fut.add_done_callback(lambda f: then(f.result() if not f.cancelled() else "cancelled"))
+
+    # ------------------------------------------------------------ WO56: human steps
+
+    def _broadcast(self, msg: dict) -> bool:
+        """`msg` to every ready extension socket. True when one took it."""
+        sent = False
+        for sock in self.sockets:
+            if sock.ready and sock.send(msg):
+                sent = True
+        return sent
+
+    def sync_steps(self, now: float | None = None) -> bool:
+        """The pending human steps to the extension — on a change, and every STEPS_RESEND — and the owner's "show" asks
+        delivered. True when the steps went out now."""
+        now = time.monotonic() if now is None else now
+        steps = self.steps
+        if self.steps_source is not None:
+            try:
+                steps = dict(self.steps_source() or {})
+            except Exception as e:  # noqa: BLE001 — a store that can't be read: the steps as they were
+                self.log.append(f"steps: {type(e).__name__}: {e}")
+        changed = steps != self.steps
+        self.steps = steps
+        went = False
+        if changed or self.steps_sent_at is None or now - self.steps_sent_at >= STEPS_RESEND:
+            if self._broadcast({"type": "steps", "steps": steps}):
+                self.steps_sent_at, went = now, True
+        if self.shows_source is not None:
+            try:
+                sites = list(self.shows_source() or [])
+            except Exception as e:  # noqa: BLE001
+                self.log.append(f"shows: {type(e).__name__}: {e}")
+                sites = []
+            for site in sites:
+                self.show(site)
+        return went
+
+    def show(self, site: str) -> bool:
+        """The owner's "show": that step's window to the front on the Mac for SHOW_FOR (the extension minimizes it after,
+        or closes it once the step cleared). With no extension there the Thrift Chrome is asked for and the show waits
+        for its hello (SHOW_KEEP). True when it went to the extension now."""
+        msg = {"type": "show", "site": site, "ms": int(SHOW_FOR * 1000)}
+        if self.steps and self._broadcast({"type": "steps", "steps": self.steps}) and self._broadcast(msg):
+            self.pending_shows.pop(site, None)
+            return True
+        self.pending_shows[site] = time.monotonic()
+        self.want(f"the owner's show ({site})")
+        return False
+
+    def _hello_steps(self, sock) -> None:
+        """A new extension link: the pending steps at once, then any show that waited for it."""
+        if self.steps_source is not None:
+            try:
+                self.steps = dict(self.steps_source() or {})
+            except Exception as e:  # noqa: BLE001 — the steps as they were
+                self.log.append(f"steps: {type(e).__name__}: {e}")
+        if self.steps or self.steps_source is not None:
+            if sock.send({"type": "steps", "steps": self.steps}):
+                self.steps_sent_at = time.monotonic()
+        now = time.monotonic()
+        for site, at in list(self.pending_shows.items()):
+            self.pending_shows.pop(site, None)
+            if now - at < SHOW_KEEP and site in self.steps:
+                sock.send({"type": "show", "site": site, "ms": int(SHOW_FOR * 1000)})
 
     def _note(self, kind: str, detail: dict) -> None:
         if self.on_change is None:
@@ -555,6 +645,8 @@ class Bridge:
             self._keep_shot(job, ev)
         elif kind == "step":
             job.steps.append({k: ev.get(k) for k in ("name", "ok", "detail", "clicked", "ms")})
+        elif kind == "progress" and ev.get("challenge") == "waiting":
+            job.extra = max(job.extra, CHALLENGE_EXTRA)  # WO56: the page waits out a "Just a moment" (2 min at most)
         if kind == "ask":                        # WO52 §2: a field the page couldn't find — the driver answers
             self._ask(job, ev)
         elif kind == "learned" and self.on_learned is not None:
@@ -615,9 +707,16 @@ class Bridge:
     def _keep_shot(self, job: Job, ev: dict) -> None:
         label = "".join(c for c in str(ev.get("label") or "page") if c.isalnum() or c in "-_")[:40] or "page"
         record = {"label": label, "url": ev.get("url"), "error": ev.get("error"), "png": None, "html": None}
+        base = None
         if job.shot is not None:      # the filled form is the job's own evidence path; the others are named after it
             base = job.shot if label == "form" else job.shot.with_name(f"{job.shot.stem}-{label}")
+        elif self.shots_dir is not None and label in STOP_LABELS:
+            # WO56: a stop page met by a job with no evidence path of its own (a check, a take-down, an order sweep): its
+            # picture kept all the same — a human step's one message carries it
+            base = Path(self.shots_dir) / f"{job.site}-{job.mode}-{time.strftime('%Y%m%d-%H%M%S')}-{label}"
+        if base is not None:
             try:
+                base.parent.mkdir(parents=True, exist_ok=True)
                 if ev.get("png_b64"):
                     path = base.with_suffix(".png")
                     path.write_bytes(base64.b64decode(ev["png_b64"]))
@@ -640,7 +739,9 @@ class Bridge:
         (`say`; the caller keeps it to once a window). No work waiting → nothing: a Chrome quit on purpose, or not
         started yet, is no missing extension. WO49 (live 2026-10-24: the night's maintenance wakes added up to
         "5 minutes" and the line came the moment the lid opened): only lid-open time counts — the clock starts again
-        when the window opens. Returns what it did."""
+        when the window opens. WO56: first the pending human steps and the owner's "show" asks (`sync_steps`). Returns
+        what it did."""
+        self.sync_steps(now)
         if self.connected():
             self.wanted_at = self.woke_at = None
             self.chrome_started, self.chrome_restarted, self.said_missing = None, None, False
@@ -810,6 +911,7 @@ class Bridge:
             self.last_seen = self.connected_at = time.monotonic()
             self.wanted_at = self.woke_at = None    # WO54 §4: whatever was asked for has come
             sock.send({"type": "welcome", "ext_hash": self.ext_hash})
+            self._hello_steps(sock)                 # WO56: the human steps it holds, and a show that waited for it
             if hello.get("loaded") != self.ext_hash:    # it loaded other files than ours: it reloads now (a deploy)
                 self._hold(sock)
             for job in self.jobs.values():          # a go-ahead its old socket never delivered (it reconnected)

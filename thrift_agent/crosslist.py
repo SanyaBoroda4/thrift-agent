@@ -286,20 +286,30 @@ def account_blocked(db: DB, mp: str) -> str | None:
 
 
 def block(db: DB, mp: str, reason: str, page: str | None = None, shot=None) -> None:
-    """Pause `mp` (logged out, CAPTCHA, a verification wall, a block page, item failures in a row): ONE plain line in
-    the group for an account problem — what to do, by what the site showed (`page`) — and one private line; Poshmark
-    and the other marketplace go on. WO51: it comes back by itself — a test run after the cool-down (health)."""
-    from thrift_agent import health
+    """Pause `mp` (logged out, CAPTCHA, a verification wall, a block page, item failures in a row); Poshmark and the
+    other marketplace go on. WO51: it comes back by itself — a test run after the cool-down (health).
+    WO56: a page only a person settles — a sign-in, a one-time code / "confirm it's you", a real CAPTCHA, a "verify you
+    are human" page that stayed — is a HUMAN STEP (thrift_agent.humansteps): its page held in the Thrift Chrome and ONE
+    private message with its screenshot ("🔐 Vinted wants a person — a CAPTCHA … reply show"), never the group's plain
+    line nor a 🚨; the first "Just a moment" that didn't pass in 2 minutes is no step yet — the site waits quietly and
+    tries again 15 minutes later. A block page ("turned the Mac away") passes by itself: the group's plain line, then
+    the 20-minute 🚨, as before (nobody can type or click it away)."""
+    from thrift_agent import health, humansteps
     account = not reason.startswith("failures:")
-    new = health.pause(db, mp, reason, "account" if account else "items", error=reason, page=page, shot=shot)
+    if account and humansteps.quiet_challenge(db, mp, reason, page):
+        return                                       # WO56: a first "Just a moment" — tried again quietly in 15 min
+    human = account and humansteps.kind_of(page, reason) is not None
+    new = health.pause(db, mp, reason, "account" if account else "items", error=reason, page=page, shot=shot,
+                       say=not human)
     if new:
-        db.log(None, "crosslist_blocked", {"mp": mp, "reason": reason, "page": page})
-        if account:                                  # WO53 §3: said again (at most every 12 h) while items wait
-            from thrift_agent import alarm
-            alarm.account_line(db, mp, page, force=True, reason=reason)
-            # WO54 §2: a sign-out / CAPTCHA / check page — the 🚨 at once, whatever the hour (only her hands settle it);
-            # the other sites go on posting
-            alarm.account_alarm(db, mp, health.state(db, mp) or {})
+        db.log(None, "crosslist_blocked", {"mp": mp, "reason": reason, "page": page, "human": human or None})
+    if human:                                        # WO56: held, and the one private message (once per step)
+        humansteps.begin(db, mp, page, reason, shot)
+        return
+    if new and account:                              # WO53 §3: said again (at most every 12 h) while items wait
+        from thrift_agent import alarm
+        alarm.account_line(db, mp, page, force=True, reason=reason)
+        alarm.account_alarm(db, mp, health.state(db, mp) or {})
 
 
 def failure(db: DB, mp: str, failed: bool, limit: int = 3) -> None:
@@ -953,7 +963,8 @@ def card_text(s: Settings, db: DB, iid: str, last: str | None = None) -> str:
 
 
 ACCOUNT_WHY = {"login": "it needs a login on the Mac", "captcha": "it shows a CAPTCHA on the Mac",
-               "verify": "it asks for a check on the Mac", "block": "it turned the Mac away for now"}
+               "verify": "it asks for a check on the Mac", "block": "it turned the Mac away for now",
+               "challenge": "its security check runs again"}       # WO56: a first "Just a moment", retried quietly
 
 
 def _clock(t) -> str:

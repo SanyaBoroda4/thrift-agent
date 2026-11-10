@@ -14,6 +14,21 @@
         "text": "access denied|you have been blocked|unusual (activity|traffic)|403 forbidden",
         "verified": false
       },
+      "challenge": {
+        "title": "^\\s*just a moment",
+        "selectors": [
+          "#challenge-running",
+          "#challenge-stage",
+          "#challenge-form",
+          "#cf-challenge-running",
+          ".cf-browser-verification",
+          "form[action*='__cf_chl']"
+        ],
+        "text": "verifying you are human|verify you are human by completing the action below|needs to review the security of your connection|performing security verification|checking if the site connection is secure|checking your browser before accessing|verification successful\\. waiting for",
+        "verified": false,
+        "seen": "WO56 (the architect, 2026-11-09): Cloudflare's \"Just a moment… verifying you are human\" page on Vinted, which cleared by itself on the second load",
+        "how": "WO56: checked before the CAPTCHA (its own page says \"Verify you are human\"); waited out on the page, 2 minutes at most (common.js T.challengeWait) — one that passes by itself is no human step; still there after 2 minutes and again on one retry 15 minutes later, it is"
+      },
       "captcha": {
         "selectors": [
           "iframe[title*='captcha' i]",
@@ -33,8 +48,9 @@
         "seen": "2026-10-06, WO30: /items/new logged out (\"Join and sell pre-loved clothes with no fees\")"
       },
       "verify": {
-        "text": "verify (your|this) (account|phone|email)|confirm your (phone|email)|before you (list|upload)",
-        "verified": false
+        "text": "verify (your|this) (account|phone|email)|confirm your (phone|email)|before you (list|upload)|enter the (\\d+[- ]digit )?code (we|that we) sent|we('ve| have)? (just )?sent (you )?a (\\d+[- ]digit )?(verification )?code|confirm it'?s (really )?you|two-step verification",
+        "verified": false,
+        "how": "WO56: also a one-time code (SMS, email, app) and the site's own \"confirm it's you\" — a human step: the owner types the code himself on the Mac's screen"
       },
       "form": {
         "selectors": [
@@ -345,6 +361,20 @@
         "verified": true,
         "seen": "2026-10-06, WO30: the Playwright-driven profile got Depop's 403 page (\"Sorry, not authorized\")"
       },
+      "challenge": {
+        "title": "^\\s*just a moment",
+        "selectors": [
+          "#challenge-running",
+          "#challenge-stage",
+          "#challenge-form",
+          "#cf-challenge-running",
+          ".cf-browser-verification",
+          "form[action*='__cf_chl']"
+        ],
+        "text": "verifying you are human|verify you are human by completing the action below|needs to review the security of your connection|performing security verification|checking if the site connection is secure|checking your browser before accessing|verification successful\\. waiting for",
+        "verified": false,
+        "how": "WO56: the same security-check interstitial as Vinted's (Cloudflare's), waited out on the page, 2 minutes at most"
+      },
       "captcha": {
         "selectors": [
           "iframe[src*='captcha']",
@@ -362,6 +392,11 @@
         "text": "^\\s*log in\\s*$|sign up or log in|continue with email",
         "verified": true,
         "seen": "2026-10-06, WO30: /products/create/ logged out (title \"Log in\", \"Sign up or log in\")"
+      },
+      "verify": {
+        "text": "enter the (\\d+[- ]digit )?code (we|that we) sent|we('ve| have)? (just )?sent (you )?a (\\d+[- ]digit )?(verification )?code|confirm it'?s (really )?you|two-step verification|verify your identity",
+        "verified": false,
+        "how": "WO56: a one-time code (SMS, email, app) or Depop's own \"confirm it's you\" — a human step: the owner types it himself on the Mac's screen (never a banner's \"verify your email\": the sell form may carry one)"
       },
       "form": {
         "selectors": [

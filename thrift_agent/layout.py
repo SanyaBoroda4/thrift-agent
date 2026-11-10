@@ -28,7 +28,7 @@ COMMAND = re.compile(
     r"^(?:no\s*brand|unbranded|brand\b|size\b|price\b|list\b|\$?\d|nwt\b|nwot\b|new\b|like\s*new|good\b|excellent\b|"
     r"condition\b|boys?\b|girls?\b|men\b|women\b|kids?\b|category\b|cover\b|later\b|same\s+item|different\s+item|"
     r"no\s+drop|post\s+now|quiet\s+now|doctor\b|go\s+titles|retry\b|posted\b|shipped\b|ok\b|yes\b|no\b|split\b|merge\b|"
-    r"drop\b|skip\b)", re.I)
+    r"drop\b|skip\b|show\b|done\b)", re.I)                 # WO56: a human step's "show" / "later" / "done"
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 

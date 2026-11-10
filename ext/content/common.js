@@ -545,7 +545,13 @@
   T.spellings = (name) => [...new Set([name, String(name).replace(/\.\s+/g, "."), String(name).replace(/\.(?=[A-Za-z])/g, ". "),
                                        String(name).replace(/\s*&\s*/g, " and ")].map((v) => v.trim()).filter(Boolean))];
 
-  // ---- what kind of page this is: block, captcha, login, verify (a check the site asks for), the form, or a listing
+  // ---- what kind of page this is: block, challenge (WO56: a "Just a moment… verifying you are human" interstitial that
+  // may pass by itself), captcha, login, verify (a check the site asks for: a code, "confirm it's you"), the form, or a
+  // listing. The challenge comes before the CAPTCHA: Cloudflare's own page says "Verify you are human".
+  T.PAGE_KINDS = ["block", "challenge", "captcha", "login", "verify"];
+  // WO56: the page's OWN title — a human step's page carries ours in front of it (T.stepTitle), never read as the page's
+  T.ownTitle = T.ownTitle ?? null;
+  T.pageTitle = () => (T.ownTitle != null ? T.ownTitle : document.title);
   T.textOf = () => {
     const body = document.body;
     let text = body ? body.innerText : "";
@@ -554,17 +560,18 @@
       copy.querySelectorAll("script, style, noscript, template").forEach((n) => n.remove());
       text = copy.textContent;
     }
-    return `${document.title}\n${(text || "").slice(0, 4000)}`;
+    return `${T.pageTitle()}\n${(text || "").slice(0, 4000)}`;
   };
   T.classify = (site) => {
     const conf = T.selectors?.[site] || {};
     const pages = conf.pages || {};
     const text = T.textOf();
-    for (const name of ["block", "captcha", "login", "verify"]) {
+    for (const name of T.PAGE_KINDS) {
       const p = pages[name];
       if (!p) continue;
       // WO53 §3: an element counts only when the page shows it (a hidden helper frame is no CAPTCHA)
-      if ((p.selectors && T.$$(p.selectors).some(T.shown)) || (p.text && new RegExp(p.text, "im").test(text))) return name;
+      if ((p.selectors && T.$$(p.selectors).some(T.shown)) || (p.text && new RegExp(p.text, "im").test(text))
+          || (p.title && new RegExp(p.title, "i").test(T.pageTitle()))) return name;
     }
     if (conf.listing_url && new RegExp(conf.listing_url).test(location.href)) return "listing";
     if (conf.landing_url && new RegExp(conf.landing_url).test(location.href)) return "landing";   // WO33: after Upload
@@ -576,6 +583,54 @@
   T.settled = async (site, timeout = 15000) => {
     const page = await T.until(() => { const p = T.classify(site); return p === "unknown" ? null : p; }, timeout);
     return page || "unknown";
+  };
+  // WO56 §1 (the architect, 2026-11-09: Cloudflare's "Just a moment… verifying you are human" on Vinted cleared by
+  // itself on the second load): a challenge page is waited out where it is — CHALLENGE_MS at most — and the job goes on
+  // with the page it turns into (one that moves on by itself loads the site's page: the worker hands the job to it, no
+  // reload counted). Still there: the job ends with that kind (its item is tried again quietly 15 minutes later; there
+  // again, it is a human step). Never a click on it: the agent never solves a check.
+  T.CHALLENGE_MS = 120000;
+  T.challengeWait = async (job) => {
+    const t0 = performance.now();
+    T.emit({ event: "progress", job_id: job.job_id, challenge: "waiting",
+             what: "a security check (\"Just a moment…\") — waiting for it to pass by itself, 2 minutes at most" });
+    const next = await T.until(() => { const p = T.classify(job.site); return p !== "challenge" && p !== "unknown" ? p : null; },
+                               T.CHALLENGE_MS);
+    const seconds = Math.round((performance.now() - t0) / 1000);
+    if (!next) {
+      const now = T.classify(job.site);
+      return now === "unknown" ? "challenge" : now;
+    }
+    T.emit({ event: "progress", job_id: job.job_id, challenge: "cleared", seconds,
+             what: `the security check passed by itself in ${seconds} s` });
+    return next;
+  };
+  // WO56: a human step's page carries its window's title, "<Site> — human step" (Chrome's window title is the active
+  // tab's), in front of the page's own — re-applied when the page sets its own again. null: the page's own title back.
+  let titleWatch = null;
+  T.stepLabel = T.stepLabel ?? null;
+  T.stepTitle = (label) => {
+    if (!label) {
+      if (T.ownTitle != null) document.title = T.ownTitle;
+      T.ownTitle = null;
+      T.stepLabel = null;
+      titleWatch?.disconnect();
+      titleWatch = null;
+      return;
+    }
+    if (T.ownTitle == null) T.ownTitle = document.title;
+    T.stepLabel = label;
+    const ours = () => (T.ownTitle ? `${T.stepLabel} · ${T.ownTitle}` : T.stepLabel);
+    const apply = () => {
+      if (!T.stepLabel || document.title === ours()) return;
+      if (!document.title.startsWith(T.stepLabel)) T.ownTitle = document.title;    // the page's own new title
+      document.title = ours();
+    };
+    apply();
+    if (!titleWatch && typeof MutationObserver !== "undefined") {
+      titleWatch = new MutationObserver(apply);
+      titleWatch.observe(document.head || document.documentElement, { childList: true, subtree: true, characterData: true });
+    }
   };
 
   // ---- reporting to the bridge (through the background worker)
@@ -840,7 +895,7 @@
   };
 
   // ---- one job on this page (the background worker sends it once the page is up)
-  const STOP = ["login", "block", "captcha", "verify"];
+  const STOP = ["login", "block", "captcha", "verify", "challenge"];   // WO56: a "Just a moment" that stayed 2 minutes
   let go = null;
   T.run = async ({ job, selectors, photos, pace }) => {
     T.selectors = selectors;
@@ -858,6 +913,7 @@
     const fail = (stage, kind, message) => T.emit({ event: "error", job_id: job.job_id, stage, page: kind, message });
     if (T.off.has(job.job_id)) return fail("cancelled", "unknown", "called off by the bridge");
     let page = await T.settled(job.site, job.mode === "find" || job.mode === "orders" ? 4000 : 15000);
+    if (page === "challenge") page = await T.challengeWait(job);      // WO56: waited out here, 2 minutes at most
     if (job.mode === "check_login") {
       return page === "form" ? T.emit({ event: "result", job_id: job.job_id, page }) : fail("check_login", kindOf(page), `${page} page`);
     }
@@ -1258,7 +1314,8 @@
         sendResponse({ ok: true });
       } else if (msg.type === "classify") {
         T.selectors = msg.selectors;
-        sendResponse({ page: T.classify(msg.site), url: location.href });
+        if ("title" in msg) T.stepTitle(msg.title);       // WO56: a human step's page: "<Site> — human step"
+        sendResponse({ page: T.classify(msg.site), url: location.href, title: T.pageTitle() });
       }
       return false;
     });

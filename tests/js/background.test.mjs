@@ -48,10 +48,17 @@ function load({ tabs = [], windows = [], token = "tok-" + "x".repeat(30) } = {})
     windows: {
       WINDOW_ID_NONE: -1,
       create: async (o) => {
-        const id = st.next++, tabId = st.next++;
+        const id = st.next++;
         st.windows.set(id, { id, type: "normal", focused: !!o.focused, state: o.state || "normal" });
-        st.tabs.set(tabId, { id: tabId, windowId: id, url: o.url, active: true, status: "complete" });
         calls.push(["windows.create", o]);
+        if (o.tabId != null) {                         // WO56: an existing tab moved into a new window of its own
+          const t = st.tabs.get(o.tabId);
+          t.windowId = id;
+          t.active = true;
+          return { id, tabs: [{ id: o.tabId }] };
+        }
+        const tabId = st.next++;
+        st.tabs.set(tabId, { id: tabId, windowId: id, url: o.url, active: true, status: "complete" });
         return { id, tabs: [{ id: tabId }] };
       },
       get: async (id) => { if (!st.windows.has(id)) throw new Error("No window with id"); return st.windows.get(id); },
@@ -62,7 +69,13 @@ function load({ tabs = [], windows = [], token = "tok-" + "x".repeat(30) } = {})
         if (!w) throw new Error("No last-focused window");
         return { ...w, tabs: [...st.tabs.values()].filter((t) => t.windowId === w.id) };
       },
-      update: async (id, o) => { calls.push(["windows.update", id, o]); return st.windows.get(id); },
+      update: async (id, o) => {
+        calls.push(["windows.update", id, o]);
+        const w = st.windows.get(id);
+        if (w && o.focused) for (const other of st.windows.values()) other.focused = other.id === id;
+        if (w) Object.assign(w, o.state ? { state: o.state } : {}, o.focused != null ? { focused: !!o.focused } : {});
+        return w;
+      },
       onFocusChanged: event(),
     },
     tabs: {
@@ -74,7 +87,7 @@ function load({ tabs = [], windows = [], token = "tok-" + "x".repeat(30) } = {})
         return t;
       },
       get: async (id) => { if (!st.tabs.has(id)) throw new Error("No tab with id"); return st.tabs.get(id); },
-      query: async () => [...st.tabs.values()],
+      query: async (q = {}) => [...st.tabs.values()].filter((t) => q.windowId == null || t.windowId === q.windowId),
       remove: async (ids) => {
         for (const id of [].concat(ids)) st.tabs.delete(id);
         calls.push(["tabs.remove", [].concat(ids)]);
@@ -118,6 +131,7 @@ function load({ tabs = [], windows = [], token = "tok-" + "x".repeat(30) } = {})
   return { chrome, calls, stores, st, sockets, posted, ev, stop: () => timers.forEach((t) => clearTimeout(t)) };
 }
 
+const plain = (v) => JSON.parse(JSON.stringify(v));     // values from the worker's realm, as data
 const flush = async (n = 20) => { for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r)); };
 
 async function connected(x) {
@@ -173,10 +187,16 @@ test("a job opens its site's window unfocused, its tab active in that window, an
   } finally { x.stop(); }
 });
 
-test("nothing in the worker ever focuses a window or opens a tab of its own accord", () => {
-  assert.doesNotMatch(SOURCE, /focused:\s*true/);
-  assert.doesNotMatch(SOURCE, /windows\.update\(/);
-  assert.doesNotMatch(SOURCE, /state:\s*"minimized"/);
+test("nothing in the worker ever focuses a window or opens a tab of its own accord — but the owner's \"show\"", () => {
+  // WO56: the one window ever focused is a human step's own, on the owner's "show" (showStep), and the one ever
+  // minimized is that same window when its 5 minutes are over (hideStep) — never a site's window, never a job's tab
+  const fn = (name) => SOURCE.match(new RegExp(`async function ${name}\\([\\s\\S]*?\\r?\\n}\\r?\\n`))[0];
+  const rest = SOURCE.replace(fn("showStep"), "").replace(fn("hideStep"), "");
+  assert.doesNotMatch(rest, /focused:\s*true/);
+  assert.doesNotMatch(rest, /windows\.update\(/);
+  assert.doesNotMatch(rest, /state:\s*"minimized"/);
+  assert.match(fn("showStep"), /windows\.update\(tab\.windowId, \{ focused: true, state: "normal" \}\)/);
+  assert.match(fn("hideStep"), /windows\.update\(tab\.windowId, \{ state: "minimized" \}\)/);
   assert.match(SOURCE, /windows\.create\(\{ url: idle, focused: false, state: "normal" \}\)/);
 });
 
@@ -279,5 +299,123 @@ test("each ping says whether a Thrift Chrome window has her focus, and its tabs 
     await x.ev("ping")();
     p = sock.sent.filter((m) => m.type === "ping").at(-1);
     assert.equal(p.using, true);
+  } finally { x.stop(); }
+});
+
+// ---------------------------------------------------------------- WO56: human steps
+
+// A Vinted job's page met a CAPTCHA: the job ends there (its page left for the owner), then the bridge names the step.
+async function heldCaptcha() {
+  const now = Date.now();
+  const x = load({ tabs: [{ id: 1, windowId: 1, url: `${EXT}idle.html?site=vinted` },
+                          { id: 2, windowId: 1, url: "https://www.vinted.com/items/new", active: true }],
+                   windows: [{ id: 1 }] });
+  const asked = [];
+  x.page = "captcha";
+  x.chrome.tabs.sendMessage = async (id, msg) => {
+    asked.push([id, msg]);
+    return msg.type === "classify" ? { page: x.page, url: "https://www.vinted.com/items/new", title: "Vinted" } : { ok: true };
+  };
+  x.asked = asked;
+  const sock = await connected(x);
+  x.sock = sock;
+  x.stores.session.windows = { vinted: { windowId: 1, idleTabId: 1 } };
+  x.ev("jobs").vinted = { job_id: "vinted-7", site: "vinted", mode: "publish", tabId: 2, windowId: 1, clicked: false,
+                          delivered: true, started: now - MIN, job: {} };
+  await x.chrome.runtime.onMessage.fire({ type: "event", event: "error", job_id: "vinted-7", stage: "open",
+                                          page: "captcha", message: "captcha page" }, { tab: { id: 2 } }, () => {});
+  await flush(80);
+  await sock.onmessage({ data: JSON.stringify({ type: "steps", steps: { vinted: { label: "Vinted — human step",
+                                                                                  kind: "captcha" } } }) });
+  await flush(80);
+  return x;
+}
+
+test("WO56: a CAPTCHA page is held — its own window, titled, read every 10 s, never tidied while the step waits",
+     async () => {
+  const x = await heldCaptcha();
+  try {
+    assert.ok(x.st.tabs.has(2), "the job's CAPTCHA page was left open (never closed after its job)");
+    const moved = x.calls.filter(([what, o]) => what === "windows.create" && o.tabId === 2).map(([, o]) => o);
+    assert.deepEqual(plain(moved), [{ tabId: 2, focused: false, state: "normal" }], "into a window of its own, unfocused");
+    const stepWin = x.st.tabs.get(2).windowId;
+    assert.notEqual(stepWin, 1, "never the site's window (a job's tab never opens beside it)");
+    const reads = x.asked.filter(([id, m]) => id === 2 && m.type === "classify");
+    assert.ok(reads.length >= 1 && reads[0][1].title === "Vinted — human step", "the window's title rides each read");
+    const pages = x.sock.sent.filter((m) => m.type === "event" && m.event === "step_page");
+    assert.ok(pages.length >= 1);
+    assert.equal(pages.at(-1).page, "captcha");
+    assert.equal(pages.at(-1).held, true);
+    assert.equal(pages.at(-1).site, "vinted");
+    await x.ev("tidyTabs")(Date.now() + 7 * 60 * MIN, true);      // past the 6 h a plain left page gets
+    assert.ok(x.st.tabs.has(2), "a pending step's page is never tidied");
+    assert.ok(x.st.tabs.has(1), "the site's idle page stays");
+  } finally { x.stop(); }
+});
+
+test("WO56: \"show\" brings THAT window to the front, only it; minimized after 5 minutes; closed once it cleared",
+     async () => {
+  const x = await heldCaptcha();
+  try {
+    const stepWin = x.st.tabs.get(2).windowId;
+    await x.sock.onmessage({ data: JSON.stringify({ type: "show", site: "vinted", ms: 5 * MIN }) });
+    await flush(40);
+    const focus = x.calls.filter(([what, , o]) => what === "windows.update" && o.focused);
+    assert.deepEqual(plain(focus.map(([, id, o]) => [id, o])), [[stepWin, { focused: true, state: "normal" }]]);
+    assert.equal(x.st.windows.get(1).focused, false, "the site's own window stays where it was");
+    assert.ok(x.sock.sent.some((m) => m.type === "event" && m.event === "step_shown" && m.site === "vinted"));
+    // a job meanwhile opens its tab in the site's own window — never in the step's
+    await x.sock.onmessage({ data: JSON.stringify({ type: "job", job: { job_id: "depop-2", site: "depop",
+                                                                        mode: "verify", listing_url: "https://www.depop.com/products/x-1/" } }) });
+    await flush(60);
+    const opened = x.calls.filter(([what]) => what === "tabs.create").map(([, o]) => o);
+    assert.ok(opened.length && opened.every((o) => o.windowId !== stepWin));
+    await x.ev("checkSteps")(Date.now() + 5 * MIN + 1000, true);   // its 5 minutes are over: back to hidden
+    await flush(20);
+    assert.ok(x.calls.some(([what, id, o]) => what === "windows.update" && id === stepWin && o.state === "minimized"));
+    x.page = "form";                                               // the owner solved it: the bridge says it cleared
+    await x.sock.onmessage({ data: JSON.stringify({ type: "steps", steps: {} }) });
+    await flush(40);
+    assert.ok(!x.st.tabs.has(2), "its page is closed, window and all");
+    assert.ok(x.st.tabs.has(1), "the site's own window and its idle page stay for the next job");
+  } finally { x.stop(); }
+});
+
+test("WO56: \"show\" for a step whose page is gone opens the site's page again, in front, for the person there",
+     async () => {
+  const x = load({ tabs: [], windows: [] });
+  try {
+    const sock = await connected(x);
+    await sock.onmessage({ data: JSON.stringify({ type: "steps", steps: { vinted: { label: "Vinted — human step" } } }) });
+    await flush(40);
+    const gone = sock.sent.filter((m) => m.type === "event" && m.event === "step_page").at(-1);
+    assert.equal(gone.page, "gone");                               // the Python side opens it again by its self-test
+    assert.equal(gone.held, false);
+    await sock.onmessage({ data: JSON.stringify({ type: "show", site: "vinted", ms: 5 * MIN }) });
+    await flush(40);
+    const made = x.calls.filter(([what]) => what === "windows.create").map(([, o]) => o);
+    assert.deepEqual(plain(made), [{ url: "https://www.vinted.com/items/new", focused: true, state: "normal" }]);
+  } finally { x.stop(); }
+});
+
+test("WO56: a \"Just a moment\" that passes moves the page on by itself — no reload counted, the job goes on",
+     async () => {
+  const x = load({ tabs: [{ id: 2, windowId: 1, url: "https://www.vinted.com/items/new", active: true }],
+                   windows: [{ id: 1 }] });
+  try {
+    const sock = await connected(x);
+    x.ev("jobs").vinted = { job_id: "vinted-8", site: "vinted", mode: "dry_run", tabId: 2, windowId: 1, clicked: false,
+                            delivered: true, decided: false, started: Date.now(), job: { mode: "dry_run", photos: [] } };
+    await x.chrome.runtime.onMessage.fire({ type: "event", event: "progress", job_id: "vinted-8", challenge: "waiting",
+                                            what: "a security check" }, { tab: { id: 2 } }, () => {});
+    await flush(20);
+    assert.equal(x.ev("jobs").vinted.extraMs, 120000, "the job gets the 2 minutes it waits");
+    await x.chrome.tabs.onUpdated.fire(2, { status: "loading" }, x.st.tabs.get(2));
+    await flush(80);
+    const j = x.ev("jobs").vinted;
+    assert.ok(j && !j.reloads, "a passing check is no reload");
+    assert.ok(sock.sent.some((m) => m.type === "event" && m.event === "challenge" && m.state === "cleared"
+                              && m.site === "vinted"));
+    assert.ok(sock.sent.some((m) => m.type === "event" && m.event === "progress" && m.challenge === "cleared"));
   } finally { x.stop(); }
 });

@@ -586,22 +586,35 @@ def test_the_owner_declining_cancels_without_a_click(tmp_path, selectors):
     assert out.status == "cancelled" and fake.clicks == 0 and "confirmation wasn't typed" in out.note
 
 
-@pytest.mark.parametrize("page,line", [("login", "Vinted needs you to log in on the Mac."),
-                                       ("captcha", "Vinted shows a CAPTCHA — solve it in its Chrome window on the Mac."),
+@pytest.mark.parametrize("page,line", [("login", "🔐 Vinted wants you to sign in (screenshot), since "),
+                                       ("captcha", "🔐 Vinted wants a person — a CAPTCHA (screenshot), since "),
                                        ("block", "Vinted turned the Mac away for now — I'll try again by myself "
                                                  "later."),
-                                       ("verify", "Vinted asks for a check — open it on the Mac.")])
+                                       ("verify", "🔐 Vinted wants a person — a check that it's you"),
+                                       ("challenge", None)])
 def test_a_stop_page_stops_the_site_with_its_own_line(tmp_path, selectors, page, line, monkeypatch):
+    """WO56: a sign-in, a CAPTCHA, a code / check page is a human step — ONE private message carrying the stop page's
+    own screenshot (the stand-in pictures it, as the content script does), never the group's line; a block page keeps
+    its group line and the ⛔; a first "Just a moment" that didn't pass says nothing (it is tried again quietly)."""
     with pytest.raises(AccountBlocked) as e:
         run(_with_fake([AccountBlocked("the page", page=page)], selectors_path=selectors(), tmp=tmp_path))
     assert e.value.page == page
+    assert e.value.shot and Path(e.value.shot).read_bytes() == PNG and Path(e.value.shot).stem.endswith(f"-{page}")
     s = Settings({"machine_role": "prod", "paths": {"db": str(tmp_path / "state.db")}})
     db = DB(s.path("db"))
-    group, ops = [], []
+    group, ops, photos = [], [], []
     monkeypatch.setattr(notify, "group", group.append)
     monkeypatch.setattr(notify, "say", ops.append)
-    crosslist.block(db, "vinted", str(e.value), e.value.page)
-    assert group == [line] and ops[0].startswith("⛔ Vinted paused")   # WO51
+    monkeypatch.setattr(notify, "ops_photo", lambda path, caption: photos.append((path, caption)))
+    crosslist.block(db, "vinted", str(e.value), e.value.page, e.value.shot)
+    if page == "block":
+        assert group == [line] and photos[0][1].startswith("⛔ Vinted paused")   # WO51 (with the page's picture now)
+    elif page == "challenge":
+        assert group == [] and ops == [] and photos == [] and crosslist.blocked(db, "vinted")
+    else:
+        assert group == [] and ops == []
+        (path, caption), = photos
+        assert caption.startswith(line) and "reply show" in caption and Path(path) == Path(e.value.shot)
 
 
 @pytest.fixture

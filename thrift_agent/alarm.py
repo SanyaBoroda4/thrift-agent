@@ -13,6 +13,10 @@ or check page is its own alarm — at once, whatever the hour and whether or not
 lasts, with the group's plain line (`account_alarm`); the other sites keep posting. Never a password typed, never a
 CAPTCHA solved.
 
+WO56: those pages are HUMAN STEPS (thrift_agent.humansteps) — one private message with the screenshot and "reply
+show", its reminders every 12 h and once after the quiet hours — never a 🚨 nor the group's line any more; a pause from
+before WO56 with such a page is adopted by humansteps here (its one message). Only a block page keeps this path.
+
 kv `alarms`: {site: {"since", "said": [iso…], "problem"}}."""
 from __future__ import annotations
 
@@ -204,11 +208,15 @@ def tick(db: DB, at: datetime | None = None, hours_open: bool = True) -> list[st
         if not health.state(db, key.split(":", 1)[0]) and ":verify:" not in key:
             data.pop(key)
             db.kv_set(KEY, json.dumps(data))
+    from thrift_agent import humansteps
     for mp, p in (loads(db.kv_get(health.HEALTH)) or {}).items():
         if p.get("owner"):
             continue
-        if p.get("kind") == "account" and crosslist_kind(p) in ACCOUNT_PAGES:
-            if account_alarm(db, mp, p, t):
+        if p.get("kind") == "account" and (p.get("page") == "challenge"
+                                           or humansteps.kind_of(p.get("page"), p.get("reason") or "")):
+            # WO56: a human step — its one message and its reminders are humansteps' (never a 🚨, never the group);
+            # a pause with no step record yet (before WO56) begins it now; a first "Just a moment" retries quietly
+            if humansteps.adopt(db, mp, p, t):
                 out.append(mp)
             continue
         since = _when(p.get("since"))
