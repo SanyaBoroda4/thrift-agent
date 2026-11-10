@@ -66,7 +66,8 @@ TABLES = (
         content_type TEXT, received_at TEXT NOT NULL, test INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (share_id, name))""",
     # WO45 §3: the Mac's share ledger, mirrored by /sync — one row per share id with the time of each step and its
-    # outcome (carded | repeat | empty | same_share | failed | joined); the watchdog (watch.shares_watch) and the
+    # outcome (carded | repeat | empty | same_share | failed | joined | held | replaced — WO56 §6); the watchdog
+    # (watch.shares_watch: a held share has no complete_at — never "stuck") and the
     # dashboard's Shares panel read it
     """CREATE TABLE IF NOT EXISTS shares (
         id TEXT PRIMARY KEY, source TEXT, expected INTEGER, received INTEGER, received_at TEXT, complete_at TEXT,

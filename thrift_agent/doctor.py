@@ -91,7 +91,7 @@ def _seconds(ts: str | None, now: datetime) -> float | None:
 def _count_dirs(path) -> str:
     try:
         return str(sum(1 for p in path.iterdir() if p.is_dir() and not p.name.startswith(".")
-                       and p.name != pipeline.UPLOADS_ARCHIVE))
+                       and p.name not in (pipeline.UPLOADS_ARCHIVE, pipeline.UPLOADS_HELD)))   # WO56 §6: told apart
     except FileNotFoundError:
         return "0"
     except OSError as e:
@@ -147,7 +147,10 @@ def report(s: Settings, db: DB, now: datetime | None = None, api=None,
     # what waits
     azure = _azure_pending(api)
     out.append(f"Waiting: iCloud inbox {_count_dirs(s.path('inbox'))} folder(s) · local upload intake "
-               f"{_count_dirs(pipeline.uploads_dir(s))} · Azure not fetched {azure}")
+               f"{_count_dirs(pipeline.uploads_dir(s))} · Azure not fetched {azure}"
+               + (f" · held (didn't finish uploading) {held}" if (held := _count_dirs(pipeline.uploads_dir(s)
+                                                                                       / pipeline.UPLOADS_HELD)) != "0"
+                  else ""))
     # each site
     counts = db.counts_by_marketplace()
     for mp in SITES:

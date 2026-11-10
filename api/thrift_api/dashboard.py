@@ -344,7 +344,10 @@ def _cards(items: list[dict], unmatched: int, zone: tzinfo, now: datetime) -> st
 SHARE_STEPS = (("received", "received"), ("complete", "complete"), ("grouped", "grouped"), ("carded", "carded"))
 OUTCOME_WORDS = {"carded": ("cards sent", "ok"), "repeat": ("repeat — skipped", "dim"), "empty": ("no photos came", "warn"),
                  "same_share": ("same share — skipped", "dim"), "failed": ("failed", "bad"),
-                 "joined": ("joined its item", "ok")}
+                 "joined": ("joined its item", "ok"),
+                 # WO56 §6: an upload that didn't finish (held, never posted) · shared again
+                 "held": ("didn't finish uploading — to share again", "warn"),
+                 "replaced": ("shared again — replaced", "dim")}
 
 
 def _shares_panel(raw, zone: tzinfo) -> str:
@@ -372,7 +375,8 @@ def _shares_panel(raw, zone: tzinfo) -> str:
             words, cls = "in progress", "wait"
         else:
             words, cls = "photos still coming", "wait"
-        reason = f" — {_esc(r['reason'])}" if r.get("reason") and outcome in ("failed", "repeat", "empty") else ""
+        reason = (f" — {_esc(r['reason'])}" if r.get("reason") and outcome in ("failed", "repeat", "empty", "held", "replaced")
+                  else "")
         test = ' <span class="dim">test</span>' if r.get("test") else ""
         parts.append(f'<li><b>{_esc(when)}</b> · {photos} photos · <span class="st {cls}">{_esc(words)}</span>{reason}'
                      f'{test}<br><span class="sub">{_esc(" → ".join(steps) or "nothing yet")}</span></li>')

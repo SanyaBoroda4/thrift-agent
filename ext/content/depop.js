@@ -181,41 +181,292 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
   // WO45 follow-up: the shop's products from Depop's own JSON (its API host, with the page's sign-in token — the
   // receipts' way, WO38), each with its address, price, sold state and photo count when the data carries the pictures
   // (a list) — the bulk read behind the photo check, so no listing page is opened unless something looks wrong. The
-  // first product's keys are reported once (`shape`). null when the JSON can't be read (the shop page's tiles then).
-  async function shopAll(job) {
-    const token = (document.cookie.match(/(?:^|;\s*)access_token=([^;]+)/) || [])[1];
-    const shop = job.shop || (location.pathname.match(/^\/([^/]+)\/?$/) || [])[1];
-    if (!shop) return null;
-    const base = T.selectors.depop.shop_products?.json
-      || `https://webapi.depop.com/api/v2/shop/${encodeURIComponent(shop)}/products/?limit=200`;
-    const headers = { Accept: "application/json" };
-    if (token) headers.Authorization = `Bearer ${decodeURIComponent(token)}`;
-    const listings = [];
-    let shape = null, note = null, url = base;
-    try {
-      for (let page = 0; page < 10 && url; page++) {
-        const r = await fetch(url, { credentials: "omit", headers });
-        note = `products JSON ${r.status}`;
-        if (!r.ok) return null;
-        const data = await r.json();
-        const list = [data?.objects, data?.products, data?.items, data?.data].find(Array.isArray) || [];
-        if (!shape && list[0]) shape = Object.keys(list[0]).slice(0, 40);
-        for (const p of list) {
-          if (!p || typeof p !== "object") continue;
-          const slug = p.slug || (String(p.url || p.href || "").match(/\/products\/([^/?#]+)/) || [])[1] || null;
-          const price = p.price?.priceAmount ?? p.price?.amount ?? p.priceAmount ?? p.price ?? null;
-          const pics = Array.isArray(p.pictures) ? p.pictures.length : Array.isArray(p.photos) ? p.photos.length : null;
-          listings.push({ id: p.id != null ? String(p.id) : null, slug, price: price != null ? String(price) : null,
-                          sold: !!(p.sold || p.isSold || p.status === "SOLD"), photos: pics,
-                          url: slug ? `${location.origin}/products/${slug}/` : null });
-        }
-        const next = data?.meta?.last_offset_id ?? data?.meta?.next ?? null;
-        url = next && data?.meta?.end === false ? `${base}&offset_id=${encodeURIComponent(next)}` : null;
+  // first product's keys are reported once (`shape`).
+  //
+  // WO56 §0.3 (the Mac's events, 2026-10-20 → 11-09: every Depop bulk read was "source: page" with 25 listings — the
+  // products JSON never answered, and the shop page's first screen of tiles was all that was read; ~80 older listings,
+  // the Tory Burch loafers among them, were "not in bulk" for three weeks while live): the JSON's address is found
+  // rather than assumed, and its pages are followed to the end.
+  // - The address: the one the shop page itself fetched (its performance entries — what Depop's web app uses today),
+  //   then ext/selectors.json's depop.shop_products.json (a list, "{shop}" the username, "{user_id}" the shop's
+  //   number — read from the page's own data, else Depop's shop JSON). Each refusal is kept in `tried`; the first
+  //   address that answers with a product list is the one (`base`, reported: the Mac logs it to be recorded).
+  // - The pages: its own cursor (meta.cursor / next_cursor, else last_offset_id → offset_id, else meta.next) until
+  //   meta.end, an empty page or no cursor (`complete`); a cursor seen before or a page with no new product ends it as a
+  //   loop, PAGE_CAP pages or PAGE_BUDGET_MS at most (said in `note`).
+  // Returns {listings, …} — or {failed: true, tried} when no address answered (the scrolled tiles then).
+  const PAGE_CAP = 120;                        // 120 pages of 24 (Depop's usual page): 2,880 listings
+  const PAGE_BUDGET_MS = 120000;               // the whole read, inside the job's three minutes
+  const PAGING = ["offset_id", "cursor", "after", "page", "offset"];
+  const shopOf = (job) => job.shop || (location.pathname.match(/^\/([^/]+)\/?$/) || [])[1] || null;
+  const productsIn = (data) => [data?.products, data?.objects, data?.items, data?.data, data?.results]
+    .find(Array.isArray) || null;
+  // The shop's own number: in the page's data (an object with its username and a numeric id), the addresses the page
+  // fetched (/shop/<number>/), else Depop's shop JSON (/api/v1/shop/<username>/ → id).
+  function userIdOnPage(shop) {
+    const want = String(shop || "").toLowerCase();
+    for (const e of (performance.getEntriesByType?.("resource") || [])) {
+      const m = String(e.name || "").match(/webapi\.depop\.com\/(?:presentation\/)?api\/v\d+\/shop\/(\d+)\//);
+      if (m) return m[1];
+    }
+    const walk = (x, depth) => {
+      if (!x || typeof x !== "object" || depth > 12) return null;
+      if (!Array.isArray(x) && String(x.username || "").toLowerCase() === want && /^\d+$/.test(String(x.id ?? ""))) {
+        return String(x.id);
       }
+      for (const v of Object.values(x)) {
+        const found = walk(v, depth + 1);
+        if (found) return found;
+      }
+      return null;
+    };
+    for (const s of T.$$(["script#__NEXT_DATA__", "script[type='application/json']"])) {
+      let data = null;
+      try { data = JSON.parse(s.textContent || "null"); } catch (e) { continue; }
+      const id = walk(data, 0);
+      if (id) return id;
+    }
+    return null;
+  }
+  async function userIdOf(shop, headers, tried) {
+    const onPage = userIdOnPage(shop);
+    if (onPage) return onPage;
+    const url = `https://webapi.depop.com/api/v1/shop/${encodeURIComponent(shop)}/`;
+    try {
+      const r = await fetch(url, { credentials: "omit", headers });
+      if (!r.ok) {
+        tried.push(`shop JSON: HTTP ${r.status}`);
+        return null;
+      }
+      const data = await r.json();
+      const id = data?.id ?? data?.user?.id ?? data?.shop?.id;
+      return /^\d+$/.test(String(id ?? "")) ? String(id) : (tried.push("shop JSON: no id in it"), null);
     } catch (e) {
+      tried.push(`shop JSON: ${String(e && e.message ? e.message : e).slice(0, 60)}`);
       return null;
     }
-    return { listings, shape, source: "json", note };
+  }
+  const pathOf = (url) => { try { return new URL(url).pathname; } catch (e) { return String(url).slice(0, 80); } };
+  // The address of the next page from a page's answer (null: the end).
+  function nextPage(url, data) {
+    const meta = data?.meta && typeof data.meta === "object" ? data.meta : {};
+    if (meta.end === true || data?.end === true) return null;
+    const u = new URL(url);
+    const cursor = meta.cursor ?? meta.next_cursor ?? meta.nextCursor ?? data?.cursor ?? data?.next_cursor;
+    if (cursor != null && cursor !== "" && cursor !== false) {
+      u.searchParams.set("cursor", String(cursor));
+      return u.href;
+    }
+    const offset = meta.last_offset_id ?? meta.next_offset_id ?? meta.offset_id;
+    if (offset != null && offset !== "") {
+      u.searchParams.set("offset_id", String(offset));
+      return u.href;
+    }
+    const link = meta.next ?? data?.next;
+    if (typeof link === "string" && link) return new URL(link, url).href;
+    return null;
+  }
+  const productOf = (p) => {
+    const slug = p.slug || (String(p.url || p.href || "").match(/\/products\/([^/?#]+)/) || [])[1] || null;
+    const price = p.price?.priceAmount ?? p.price?.amount ?? p.priceAmount ?? p.price ?? null;
+    const pics = Array.isArray(p.pictures) ? p.pictures.length : Array.isArray(p.photos) ? p.photos.length
+      : Array.isArray(p.pictures_data) ? p.pictures_data.length : null;
+    return { id: p.id != null ? String(p.id) : null, slug,
+             price: price != null && typeof price !== "object" ? String(price) : null,
+             sold: !!(p.sold || p.isSold || p.status === "SOLD"), photos: pics,
+             url: slug ? `${location.origin}/products/${slug}/` : null };
+  };
+  async function shopAll(job) {
+    const token = (document.cookie.match(/(?:^|;\s*)access_token=([^;]+)/) || [])[1];
+    const shop = shopOf(job);
+    const tried = [];
+    if (!shop) return { failed: true, tried: ["no shop name"] };
+    const headers = { Accept: "application/json" };
+    if (token) headers.Authorization = `Bearer ${decodeURIComponent(token)}`;
+    const own = (performance.getEntriesByType?.("resource") || []).map((e) => String(e.name || ""))
+      .find((n) => /webapi\.depop\.com\/(?:presentation\/)?api\/v\d+\/shop\/[^/]+\/(?:filteredProducts\/selling|products)\b/
+        .test(n));
+    const recorded = [].concat(T.selectors.depop.shop_products?.json
+      || "https://webapi.depop.com/api/v2/shop/{shop}/products/?limit=200").filter(Boolean).map(String);
+    const templates = [];
+    if (own) {
+      const u = new URL(own);
+      for (const k of PAGING) u.searchParams.delete(k);
+      templates.push(u.href);
+    }
+    templates.push(...recorded);
+    let userId = null;                                // looked up only when a "{user_id}" address is reached
+    const asked = new Set();
+    const t0 = Date.now();
+    for (const tpl of templates) {
+      if (tpl.includes("{user_id}")) {
+        if (userId === null) userId = (await userIdOf(shop, headers, tried)) || "";
+        if (!userId) continue;
+      }
+      const base = tpl.replace("{shop}", encodeURIComponent(shop)).replace("{user_id}", userId || "");
+      if (asked.has(base)) continue;
+      asked.add(base);
+      let first;
+      try {
+        const r = await fetch(base, { credentials: "omit", headers });
+        if (!r.ok) {
+          tried.push(`${pathOf(base)}: HTTP ${r.status}`);
+          continue;
+        }
+        first = await r.json();
+      } catch (e) {
+        tried.push(`${pathOf(base)}: ${String(e && e.message ? e.message : e).slice(0, 60)}`);
+        continue;
+      }
+      if (!productsIn(first)) {
+        tried.push(`${pathOf(base)}: no product list in the answer`);
+        continue;
+      }
+      // the address answers: every page of it
+      const listings = [];
+      const seenIds = new Set(), cursors = new Set();
+      let data = first, url = base, pages = 0, complete = false, note = null, shape = null;
+      for (;;) {
+        pages++;
+        const list = productsIn(data) || [];
+        if (!shape && list[0] && typeof list[0] === "object") shape = Object.keys(list[0]).slice(0, 40);
+        let fresh = 0;
+        for (const p of list) {
+          if (!p || typeof p !== "object") continue;
+          const rec = productOf(p);
+          const key = rec.id || rec.slug;
+          if (!key || seenIds.has(key)) continue;
+          seenIds.add(key);
+          listings.push(rec);
+          fresh++;
+        }
+        const next = list.length ? nextPage(url, data) : null;
+        if (!next) {
+          complete = true;
+          break;
+        }
+        if (!fresh || cursors.has(next)) {
+          note = `page ${pages} ${fresh ? "pointed back to a page read already" : "brought no product not seen before"} — `
+            + "stopped there";
+          break;
+        }
+        if (pages >= PAGE_CAP || Date.now() - t0 > PAGE_BUDGET_MS * T.timeoutScale) {
+          note = `stopped after ${pages} pages (${listings.length} listings): the `
+            + `${pages >= PAGE_CAP ? "page cap" : "time budget"}`;
+          break;
+        }
+        cursors.add(next);
+        if (pages % 5 === 0) {
+          T.emit({ event: "progress", job_id: job.job_id, what: `products page ${pages} (${listings.length})` });
+        }
+        try {
+          const r = await fetch(next, { credentials: "omit", headers });
+          if (!r.ok) {
+            note = `page ${pages + 1} answered HTTP ${r.status} — ${listings.length} listings read`;
+            break;
+          }
+          data = await r.json();
+          url = next;
+        } catch (e) {
+          note = `page ${pages + 1}: ${String(e && e.message ? e.message : e).slice(0, 60)} — ${listings.length} read`;
+          break;
+        }
+      }
+      return { listings, shape, source: "json", note, pages, complete, base: pathOf(base), tried };
+    }
+    return { failed: true, tried };
+  }
+
+  // WO56 §0.3: the shop page's tiles, ALL of them — Depop draws more as the page scrolls: the last tile scrolled into
+  // view and the page to its foot until three turns bring no new tile (`complete`), TILE_TURNS or TILE_BUDGET_MS at
+  // most. Only scrolling: nothing on the page is clicked.
+  const TILE_TURNS = 80;
+  const TILE_BUDGET_MS = 90000;
+  async function allTiles() {
+    const hrefs = () => new Set(T.$$(S().shop_links.selectors).map((a) => a.getAttribute("href")).filter(Boolean));
+    let have = hrefs().size, still = 0, turns = 0;
+    const end = Date.now() + TILE_BUDGET_MS * T.timeoutScale;
+    while (still < 3 && turns < TILE_TURNS && Date.now() < end) {
+      turns++;
+      const tiles = T.$$(S().shop_links.selectors);
+      try { tiles.at(-1)?.scrollIntoView?.({ block: "end" }); } catch (e) { /* a detached tile */ }
+      try { window.scrollTo(0, document.documentElement.scrollHeight || document.body.scrollHeight); } catch (e) { /* */ }
+      window.dispatchEvent(new Event("scroll"));
+      await T.until(() => hrefs().size > have || null, 3000);
+      const now = hrefs().size;
+      if (now > have) {
+        have = now;
+        still = 0;
+      } else {
+        still++;
+      }
+    }
+    return { complete: still >= 3, turns };
+  }
+
+  // WO56 §0.3: ONE listing's own state from its own page — never from its absence in the shop's data: fetched (the
+  // seller's cookies, no tab opened), a 404 / 410 → "gone" (Depop's "Sorry, that page doesn't exist"); its schema.org
+  // Product (the JSON-LD the listing check reads) → "sold" (SoldOut) or "live", with its photo count and price; any
+  // other answer (a challenge page, no product data) → "unknown", never gone.
+  const politely = (ms) => new Promise((resolve) => setTimeout(resolve, ms * T.timeoutScale));
+  const productLdIn = (html) => {
+    let doc;
+    try { doc = new DOMParser().parseFromString(html, "text/html"); } catch (e) { return null; }
+    const scripts = [...T.$$(S().listing_title.selectors, doc), ...doc.querySelectorAll("script[type='application/ld+json']")];
+    for (const s of scripts) {
+      let data = null;
+      try { data = JSON.parse(s.textContent || "null"); } catch (e) { continue; }
+      for (const x of [data, ...(Array.isArray(data) ? data : []), ...(Array.isArray(data?.["@graph"]) ? data["@graph"] : [])]) {
+        if (x && typeof x === "object" && !Array.isArray(x) && /\bProduct\b/.test(String(x["@type"] || ""))) return x;
+      }
+    }
+    return null;
+  };
+  async function productState(slug) {
+    let r;
+    try {
+      r = await fetch(`${location.origin}/products/${encodeURIComponent(slug)}/`,
+                      { credentials: "include", cache: "no-store", headers: { Accept: "text/html" } });
+    } catch (e) {
+      return { state: "unknown", detail: String(e && e.message ? e.message : e).slice(0, 80) };
+    }
+    if (r.status === 404 || r.status === 410) return { state: "gone", http: r.status, how: "its Depop page" };
+    if (!r.ok) return { state: "unknown", http: r.status };
+    const ld = productLdIn(await r.text());
+    if (!ld) return { state: "unknown", http: r.status, detail: "no product data on its page" };
+    const offers = Array.isArray(ld.offers) ? ld.offers[0] || {} : ld.offers || {};
+    const sold = /SoldOut/i.test(String(offers.availability || ""));
+    const photos = Array.isArray(ld.image) ? ld.image.length : null;
+    return { state: sold ? "sold" : "live", http: r.status, how: "its Depop page", photos,
+             price: offers.price != null ? String(offers.price) : null };
+  }
+
+  // WO56 §0.3: the listings the bulk read lacked, each by its own page, in ONE job on the shop page. A listing known
+  // live is read first (`job.control`, else the shop page's first tile): a 404 is believed only when that one answers
+  // 200 — a wrong address would answer 404 for every listing.
+  async function statesOf(job) {
+    let control = job.control && job.control.key ? job.control : null;
+    if (!control) {
+      const href = T.$$(S().shop_links.selectors).map((a) => a.getAttribute("href") || "")
+        .find((h) => /\/products\/[^/]+/.test(h));
+      const slug = href ? (href.match(/\/products\/([^/?#]+)/) || [])[1] : null;
+      if (slug) control = { key: slug, url: `${location.origin}/products/${slug}/` };
+    }
+    const checked = control ? await productState(control.key) : { state: "unknown", detail: "no listing known live" };
+    const trusted = checked.http === 200;
+    const states = {};
+    const want = (job.states || []).filter((x) => x && x.key);
+    for (const [i, x] of want.entries()) {
+      if (i) await politely(400);                     // one page at a time, a breath between (a person's pace)
+      let st = await productState(x.key);
+      if (st.state === "gone" && !trusted) {
+        st = { ...st, state: "unknown", detail: `${st.http}, but the listing known live (${control?.key || "none"}) `
+          + `didn't answer either (${checked.http || checked.detail || checked.state})` };
+      }
+      states[x.key] = st;
+      if (i % 10 === 9) T.emit({ event: "progress", job_id: job.job_id, what: `own pages: ${i + 1} of ${want.length}` });
+    }
+    return { states, control: control ? { ...control, ...checked } : null, trusted, source: "own" };
   }
 
   // WO45 (live 2026-10-17/18, the Polo tee, three times): Depop's package menu for this seller offered Medium, Large
@@ -1062,17 +1313,32 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
     },
 
     async find(job, st) {
+      if (Array.isArray(job.states)) {                  // WO56 §0.3: listings the bulk read lacked, by their own pages
+        await T.waitFor(S().shop_links.selectors, { timeout: 8000, visible: false });   // a tile: the control
+        return T.emit({ event: "result", job_id: job.job_id, ...(await statesOf(job)), url: location.href });
+      }
+      let bulk = null;
       if (job.all) {                                    // WO45 follow-up: every product's price, state, photo count
-        const bulk = await shopAll(job);                // from Depop's own products JSON, never a listing page each
-        if (bulk) return T.emit({ event: "result", job_id: job.job_id, ...bulk });
+        bulk = await shopAll(job);                      // from Depop's own products JSON, never a listing page each
+        if (bulk && !bulk.failed) return T.emit({ event: "result", job_id: job.job_id, ...bulk });
       }
       await T.waitFor(S().shop_links.selectors, { timeout: 8000, visible: false });   // the shop's tiles
       await T.quiet(600, 3000);
       await T.sleep(150);
-      const listings = T.$$(S().shop_links.selectors).map((a) => ({
-        url: a.href, text: (a.getAttribute("title") || a.textContent || "").replace(/\s+/g, " ").trim(),
-      }));
-      T.emit({ event: "result", job_id: job.job_id, listings, source: "page" });
+      const scrolled = job.all ? await allTiles() : null;   // WO56 §0.3: the bulk read's fallback reads every tile
+      const listings = [];
+      const seen = new Set();
+      for (const a of T.$$(S().shop_links.selectors)) {
+        if (seen.has(a.href)) continue;
+        seen.add(a.href);
+        listings.push({ url: a.href, text: (a.getAttribute("title") || a.textContent || "").replace(/\s+/g, " ").trim() });
+      }
+      T.emit({ event: "result", job_id: job.job_id, listings, source: "page",
+               ...(scrolled ? { complete: scrolled.complete, pages: scrolled.turns,
+                                note: `the products JSON didn't answer (${(bulk?.tried || []).join("; ").slice(0, 300)
+                                  || "no address"}): the shop page's tiles, scrolled ${scrolled.turns} times`
+                                  + (scrolled.complete ? "" : " — not to its end"),
+                                tried: bulk?.tried || [] } : {}) });
     },
   };
 })();

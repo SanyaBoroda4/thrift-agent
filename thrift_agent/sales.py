@@ -515,20 +515,33 @@ def listing_gone(db: DB, iid: str, site: str, why: str, sold: bool, url: str | N
                  price=None) -> str:
     """WO49, the sale safety net that needs no email: a listing this Mac has 'posted' that the site itself now shows
     sold (or no longer for sale) — the photo check reads every live listing. A take-down of ours for the item on any
-    site means we did it (or are doing it): the row only follows. Otherwise thrift-api is told — `sold_found` (a sale on
-    that site: its take-downs everywhere else, as for a sale email) or, not for sale by hand, `not_for_sale` (take-downs
-    elsewhere, no sale; WO33's go-live rule) — and the row follows. Returns what was done."""
+    site means we did it (or are doing it): the row only follows. Otherwise, for a SALE, thrift-api is told
+    `sold_found` (a sale on that site: its take-downs everywhere else, as for a sale email) and the row is `sold`.
+
+    WO56 §0.3 (the Tory Burch loafers, 2026-11-09: gone from Vinted — deleted by her or removed by Vinted — while live on
+    Poshmark and Depop): only a sale acts on the other sites. A listing merely gone from its site (its page or data
+    answers 404, it was removed or closed without a sale, Poshmark shows it Not for Sale) is that row only: `delisted`
+    with "gone from <Site> (<why>) — not relisted" — the queue never posts a delisted row again — and nothing else is
+    taken down (until WO56 this told thrift-api `not_for_sale`, WO33's go-live rule, and every other site's listing
+    came down: a 404 on Vinted would have deleted the Depop listing). Returns "sold" | "gone" | "ours"."""
     ours = db.conn.execute("SELECT 1 FROM takedowns WHERE item_id=? LIMIT 1", (iid,)).fetchone()
-    db.upsert_listing(iid, site, status="sold" if sold else "delisted")
-    if ours:
-        db.log(iid, "listing_gone_ours", {"site": site, "why": why})
-        return "ours"
-    body = ({"kind": "sold_found", "marketplace": site, "listing_url": url, "item_id": iid, "title": title,
-             "price": price} if sold else
-            {"kind": "not_for_sale", "item_id": iid, "marketplace": site, "url": url})
+    if ours or not sold:
+        from thrift_agent import crosslist, photocheck
+        gone = f"{photocheck.GONE_PREFIX}{crosslist.LABEL.get(site, site)} ({why}) — not relisted"
+        db.upsert_listing(iid, site, status="sold" if sold else "delisted",
+                          **({} if ours or sold else {"error": gone[:300]}))
+        if ours:
+            db.log(iid, "listing_gone_ours", {"site": site, "why": why})
+            return "ours"
+        db.log(iid, "listing_gone", {"site": site, "why": why, "sold": False, "told_api": False,
+                                     "others": "left as they are (only a sale takes them down)"})
+        return "gone"
+    db.upsert_listing(iid, site, status="sold")
+    body = {"kind": "sold_found", "marketplace": site, "listing_url": url, "item_id": iid, "title": title,
+            "price": price}
     sent = call(db, "/mac-event", body)
     db.log(iid, "listing_gone", {"site": site, "why": why, "sold": sold, "told_api": sent})
-    return "sold" if sold else "not_for_sale"
+    return "sold"
 
 
 def pending_count(db: DB) -> int:

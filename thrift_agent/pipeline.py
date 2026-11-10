@@ -78,6 +78,7 @@ def ready_folders(s: Settings, db: DB | None = None) -> list[Path]:
 
 UPLOADS = "_uploads"              # WO49: the direct uploads' intake, under paths.work — the Mac's own disk, never iCloud
 UPLOADS_ARCHIVE = "archive"       # … and their archive inside it (WO47's 7 days, as the iCloud archive)
+UPLOADS_HELD = "held"             # … and (WO56 §6) the uploads that didn't finish: held, never taken (uploads.hold)
 
 
 def uploads_dir(s: Settings) -> Path:
@@ -89,7 +90,8 @@ def upload_folders(s: Settings) -> list[Path]:
     them over ended or quiet) — taken before the iCloud inbox is even listed, so iCloud can never hold them up."""
     base = uploads_dir(s)
     try:
-        return sorted(p for p in base.iterdir() if p.is_dir() and not p.name.startswith(".") and p.name != UPLOADS_ARCHIVE)
+        return sorted(p for p in base.iterdir() if p.is_dir() and not p.name.startswith(".")
+                      and p.name not in (UPLOADS_ARCHIVE, UPLOADS_HELD))       # WO56 §6: a held upload is never taken
     except OSError:
         return []
 
@@ -152,7 +154,9 @@ EMPTY_SHARE_WAIT = 30 * 60        # WO42/WO43: a share with no camera photo this
 PARTIAL_AFTER = 30 * 60           # WO45 §6 (was WO42's 15 min — live 2026-10-18: a 20-photo share taken with ONE photo
 #                                   at minute 17, the other 19 came at minute 22): a share short of its count, or
 #                                   without its end mark, is taken with the camera photos that came only after this
-#                                   long (iCloud only: the direct upload arrives whole); the card says "3 of 4 photos"
+#                                   long (iCloud only: the direct upload arrives whole); the card says "3 of 4 photos".
+#                                   WO56 §6: kept for iCloud copies (their missing photos do come, late, and join the
+#                                   item); an upload with no iCloud copy is never taken short — held (uploads.hold)
 LATE_SHARE_PHOTOS = 3             # WO45 §5: a share of at most this many photos within FOLLOW_UP of the previous share
 FOLLOW_UP = 15 * 60               # is first compared with that share's items — a forgotten shot joins its item
 SOURCE_FILE = "_source.txt"       # WO45 §2: "azure" in a folder the direct upload made (else the iCloud copy)
@@ -283,6 +287,10 @@ def take_share(s: Settings, db: DB, folder: Path) -> tuple[str, float] | None:
     if state in ("empty", "stale") and not_on_the_phone(s, db, folder):
         return None
     if state == "empty":
+        from thrift_agent import shares, uploads
+        if uploads.held_copy(s, shares.share_id_of(folder)) is not None:
+            return None               # WO56 §6: its upload is held and its line asks her to share again — no 📭 "no
+        #                               need to share again" beside it; the copy is taken by its rules if photos come
         return state, when
     if state == "stale":
         return (state, when) if lose_share(s, db, folder) else None

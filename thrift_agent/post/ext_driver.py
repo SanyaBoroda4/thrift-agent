@@ -1260,13 +1260,35 @@ class ExtensionPoster(Poster):
         if not await self.wait_connected():
             raise PosterError(f"{self.site}: the Thrift Chrome extension isn't connected")
         shop = self.shop or self.learned_shop or ""
-        ev = await self._job("find", {"shop": shop, "wardrobe": self.name == "vinted", "all": True}, 180)
+        # WO56 §0.3: every page of the shop now (Vinted's wardrobe to its last page, Depop's products JSON by its own
+        # cursor, else every tile of the shop page scrolled) — longer than one page's read
+        ev = await self._job("find", {"shop": shop, "wardrobe": self.name == "vinted", "all": True}, 240)
         if ev.get("event") == "error":
             if ev.get("page") in STOP_PAGES:
                 raise self._stop(ev)
             return {"error": f"{ev.get('stage') or 'find'}: {ev.get('message')}"}
         return {"listings": ev.get("listings") or [], "shape": ev.get("shape"), "source": ev.get("source"),
-                "note": ev.get("note")}
+                "note": ev.get("note"), "pages": ev.get("pages"), "complete": ev.get("complete"),
+                "total": ev.get("total"), "base": ev.get("base"), "tried": ev.get("tried")}
+
+    async def listing_states(self, keys: list[dict], control: dict | None = None) -> dict:
+        """WO56 §0.3: listings the shop's bulk data lacked, each read from the site's OWN data in ONE job on the shop
+        page — Depop: its listing page fetched (404 / 410 → "gone"; its schema.org Product: SoldOut → "sold", else
+        "live" with its photo count and price); Vinted: its item JSON (404 → "gone"; closed by a sale → "sold";
+        hidden; a draft; else "live"). A listing known live (`control`, else the page's own pick) is read first: a 404
+        counts only when it answers. `keys`: [{"key": Vinted id / Depop slug, "url"}]. {"states": {key: {"state",
+        "http", "how", "photos", "price", "detail"}}, "control", "trusted"} | {"error"}; a login / CAPTCHA page stops
+        the site."""
+        if not await self.wait_connected():
+            raise PosterError(f"{self.site}: the Thrift Chrome extension isn't connected")
+        shop = self.shop or self.learned_shop or ""
+        ev = await self._job("find", {"shop": shop, "wardrobe": self.name == "vinted", "states": keys,
+                                      "control": control}, 240)
+        if ev.get("event") == "error":
+            if ev.get("page") in STOP_PAGES:
+                raise self._stop(ev)
+            return {"error": f"{ev.get('stage') or 'find'}: {ev.get('message')}"}
+        return {"states": ev.get("states") or {}, "control": ev.get("control"), "trusted": bool(ev.get("trusted"))}
 
     async def read_listing(self, url: str) -> dict:
         """WO45 §6/§7: what the listing page shows — the photo count and the price — from the extension's "verify" job

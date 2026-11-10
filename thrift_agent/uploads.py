@@ -26,10 +26,28 @@ photos in hand is taken (the upload on a tie: the Mac's own disk), else the Mac 
 (`choose`). The last answer's shares are kept (kv `uploads_pending`): no "📭 still on the iPhone" for a share Azure
 holds photos of (`holds`, pipeline.take_share).
 
+WO56 §6 (the owner's new Shortcut: the upload FIRST; the iCloud save only when the phone has no internet; a short
+upload says "Only X of N photos went through — please share them again." on the phone — docs/SHORTCUT_UPLOAD.md):
+- a share whose upload is WHOLE (every photo its count names — the end call's count or the photos' own `of=`; the end
+  itself may not have come) is taken at once and never waits for, or mentions, an iCloud copy;
+- a share that ended SHORT, or never ended (the Shortcut stopped mid-upload), with NO iCloud copy is never taken short:
+  once quiet (the same moment it was taken before — Azure's copy goes, the API's "hasn't taken it" watch stays quiet)
+  its photos are downloaded into the held folder (`held_dir`, never the intake: never posted with missing photos), and
+  HOLD_AFTER after its last photo — no iCloud copy by then, not shared again — the group hears ONE plain line, "📸 The
+  photos shared at 7:42 PM didn't finish uploading — please share them again." (a human step: only her phone has the
+  photos), and the ledger says `held`;
+- when she shares again, the new share REPLACES the held one: a newer share carrying any of its photos (their SHA-256
+  in Azure's listing, kv `uploads_shas`; or the photo memory knowing one with an item) drops it — ledger `replaced`
+  (an older share's photos: `repeat`) — and the photo memory never skipped the new share's photos, since a held
+  share's photos are never remembered (never grouped);
+- an iCloud copy of it (the no-internet branch, or the old Shortcut's copy) is the share by its own rules, as before
+  (whole, or partial after 30 minutes, `pipeline.take_share`); the held copy is then that share's other copy and goes.
+
 How it is called (the worker's inbox scan — not wired here):
 
     if uploads.due(db):               # every POLL_EVERY seconds at most (a kv stamp, one for every caller)
         uploads.fetch_new(s, db)      # the new shares into the inbox; never raises (the API down: one `api_down`)
+    uploads.held_tick(s, db)          # WO56 §6: each held share — replaced, its other copy taken, or its one line
 """
 from __future__ import annotations
 
@@ -54,6 +72,19 @@ STALE_AFTER = 600                        # a share never ended: taken this long 
 STALE_QUIET = 300                        # … and only once no photo came for this long (WO54: a 127-photo upload was
 #                                          taken at minute 10 with 104 photos while the rest were still coming in)
 PENDING = "uploads_pending"              # kv: {share id: {"received", "count", "ended", "at"}} — the last answer's shares
+HOLD_AFTER = 15 * 60                     # WO56 §6: a short / stopped upload with no iCloud copy, quiet this long since
+#                                          its last photo: its one "share them again" line (it was held from the start)
+HELD_KEEP = 7 * 24 * 3600                # … a held share never shared again: its folder goes after this (the ledger
+#                                          keeps `held`; cleanup's KEEP_DAYS)
+HELD_FILE = "_held.json"                 # held/<share id>/_held.json: what the upload was (count, received, its photos'
+#                                          SHA-256 and memory keys, when it last moved, the line said or not)
+HELD_LOOK = "uploads_held_look"          # kv: the last look at the held shares (every HELD_EVERY seconds at most)
+HELD_EVERY = 30
+SHAS = "uploads_shas"                    # kv: {share id: {"at", "started", "shas": [first 16 hex of each SHA-256]}} —
+#                                          the photos of the shares Azure listed in the last SHAS_KEEP: a held share's
+#                                          photos found in a newer share is that share replacing it
+SHAS_KEEP = 2 * 24 * 3600
+HELD_LINE = "📸 The photos shared at {when} didn't finish uploading — please share them again."
 DOWNLOAD_TIMEOUT = 60.0                  # a 30 MB photo over the owner's Wi-Fi
 STAGING = "uploads"                      # work/uploads/<share id>: the download, moved whole into the inbox
 SOURCE_FILE, TEST_FILE, DONE_FILE = "_source.txt", "_test", "_done.txt"
@@ -81,6 +112,7 @@ def fetch_new(s: Settings, db: DB, client=None, now: datetime | None = None) -> 
     done = []
     listed = [x for x in (answer.get("shares") or []) if isinstance(x, dict)] if isinstance(answer, dict) else []
     remember(db, listed, now)
+    remember_shas(db, listed, now)                     # WO56 §6: a held share's photos in a newer share replace it
     for share in listed:
         sid = str(share.get("share_id") or "")
         if not SHARE_ID.fullmatch(sid):
@@ -126,24 +158,65 @@ def holds(db: DB, sid: str, more_than: int = 0) -> bool:
     return isinstance(row, dict) and int(row.get("received") or 0) > max(0, int(more_than))
 
 
+def remember_shas(db: DB, shares: list[dict], now: datetime) -> None:
+    """WO56 §6: the photos (SHA-256, its first 16 hex) of every share Azure lists, kept SHAS_KEEP — a held share whose
+    photos show up in a newer share was shared again (`held_tick`), even when that share is taken before any look."""
+    try:
+        known = json.loads(db.kv_get(SHAS) or "{}")
+    except ValueError:
+        known = {}
+    if not isinstance(known, dict):
+        known = {}
+    stamp = now.isoformat(timespec="seconds")
+    changed = False
+    for share in shares:
+        sid = str(share.get("share_id") or "")
+        shas = sorted({str(p.get("sha256") or "")[:16] for p in share.get("photos") or []
+                       if isinstance(p, dict) and p.get("sha256")})
+        if SHARE_ID.fullmatch(sid) and shas and (known.get(sid) or {}).get("shas") != shas:
+            known[sid] = {"at": stamp, "started": share.get("started_at"), "shas": shas}
+            changed = True
+    cutoff = now.timestamp() - SHAS_KEEP
+    old = [k for k, v in known.items() if (t := _time((v or {}).get("at"))) is None or t.timestamp() < cutoff]
+    for k in old:
+        known.pop(k, None)
+    if changed or old:
+        try:
+            db.kv_set(SHAS, json.dumps(known))
+        except Exception as e:  # noqa: BLE001 — a record: never the reason a share isn't fetched
+            db.log(None, "uploads_shas_unsaved", f"{type(e).__name__}: {e}"[:200])
+
+
 def whole(share: dict) -> bool:
-    """The upload is whole: ended, with every photo the Shortcut counted."""
+    """The upload is whole: every photo the Shortcut counted is in — its count from the end call or, WO56, from the
+    photos' own `of=` (a share whose every photo came is whole even if its end call never did)."""
     count, received = share.get("count"), int(share.get("received") or 0)
-    return bool(share.get("ended")) and isinstance(count, int) and count > 0 and received >= count
+    return isinstance(count, int) and count > 0 and received >= count
+
+
+def short(share: dict) -> bool:
+    """WO56 §6: short of its count — ended with fewer photos than it named, or never ended (the Shortcut stopped
+    mid-upload). An ended share with no count is taken with what came, as before."""
+    if whole(share):
+        return False
+    return not share.get("ended") or isinstance(share.get("count"), int)
 
 
 def takeable(share: dict, now: datetime) -> bool:
-    """Whole (ended, every photo in); ended and short but quiet QUIET_AFTER; never ended but STALE_AFTER old and quiet
-    STALE_QUIET (WO54: a share still receiving photos is not one the Shortcut gave up on) — with at least one photo in
-    every case."""
+    """Something to do with the share now: whole (every photo in) — at once; ended and short but quiet QUIET_AFTER;
+    never ended but STALE_AFTER old and quiet STALE_QUIET (WO54: a share still receiving photos is not one the Shortcut
+    gave up on) — with at least one photo in every case. WO56 §6: a short or stopped one is then taken beside an iCloud
+    copy by `choose`'s rules, or held (`take`)."""
     photos = share.get("photos") or []
     received = int(share.get("received") or 0)
     if not photos or received <= 0:
         return False
+    if whole(share):
+        return True
     count = share.get("count")
     last = _time(share.get("last_received_at"))
     if share.get("ended"):
-        if not isinstance(count, int) or received >= count:
+        if not isinstance(count, int):
             return True
         return last is not None and (now - last).total_seconds() >= QUIET_AFTER
     started = _time(share.get("started_at"))
@@ -163,6 +236,8 @@ def take(s: Settings, db: DB, client, share: dict, sid: str) -> bool:
     names = [n for n in (safe_name(p.get("name")) for p in share.get("photos") or [] if isinstance(p, dict)) if n]
     test = bool(share.get("test"))
     found = known_folder(s, sid)
+    if found is None and short(share):
+        return hold(s, db, client, share, sid, names)  # WO56 §6: no iCloud copy — never taken short: held
     pick = choose(s, db, found, share) if found is not None else UPLOAD
     if pick == WAIT:
         return False
@@ -203,6 +278,191 @@ def take(s: Settings, db: DB, client, share: dict, sid: str) -> bool:
     alerts.progress(db, f"upload {sid} fetched")
     client.post(f"/shares/{sid}/fetched", {"names": names})
     return True
+
+
+def held_dir(s: Settings) -> Path:
+    """WO56 §6: where a share that didn't finish uploading waits — beside the uploads' intake on the Mac's own disk,
+    never in it (`pipeline.upload_folders` leaves it out): nothing here is ever grouped, carded or posted."""
+    from thrift_agent import pipeline
+    return pipeline.uploads_dir(s) / pipeline.UPLOADS_HELD
+
+
+def held_copy(s: Settings, sid: str) -> Path | None:
+    """The held folder of this share, if it is held."""
+    folder = held_dir(s) / sid
+    return folder if (folder / HELD_FILE).is_file() else None
+
+
+def held_meta(folder: Path) -> dict | None:
+    try:
+        meta = json.loads((folder / HELD_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return meta if isinstance(meta, dict) else None
+
+
+def _save_meta(folder: Path, meta: dict) -> None:
+    part = folder / f".{HELD_FILE}.part"
+    part.write_text(json.dumps(meta), encoding="utf-8")
+    os.replace(part, folder / HELD_FILE)
+
+
+def hold(s: Settings, db: DB, client, share: dict, sid: str, names: list[str]) -> bool:
+    """WO56 §6: a share that ended short or never ended, with no iCloud copy — never taken short (a card from 7 of 12
+    photos would list an item with photos missing, and they never come later: the Shortcut is done). Its photos are
+    downloaded (checked, as any upload) into held/<share id> with `_held.json` (what the upload was: count, received,
+    its photos' SHA-256 and memory keys, when it last moved), the API told "fetched" — Azure's copy deleted, its
+    "hasn't taken it" watch quiet, at the moment it was taken before — and the ledger knows it. Its one line comes
+    from `held_tick` HOLD_AFTER after its last photo. Idempotent: a share held already is only told fetched again.
+    False when it must be fetched again (a photo's download failed)."""
+    from thrift_agent import shares
+    target = held_dir(s) / sid
+    count = share.get("count") if isinstance(share.get("count"), int) else None
+    received = int(share.get("received") or 0)
+    if held_meta(target) is None:
+        staging = s.path("work") / STAGING / sid
+        if not download(db, client, sid, share, staging):
+            return False
+        write_marks(staging, share)
+        from thrift_agent import photomem
+        from thrift_agent.ingest import prep  # HEIC opens once prep has registered its opener
+        keys = {}
+        for p in sorted(staging.iterdir()):
+            if prep.is_photo(p):
+                k = photomem.keys_of(p)
+                keys[p.name] = {x: k.get(x) for x in ("sha", "capture", "phash", "colors")}
+        last = max((t for t in (_time(share.get("last_received_at")), _time(share.get("ended_at")),
+                                _time(share.get("started_at"))) if t is not None), default=None)
+        _save_meta(staging, {"share_id": sid, "count": count, "received": received, "ended": bool(share.get("ended")),
+                             "test": bool(share.get("test")), "started_at": share.get("started_at"),
+                             "last_at": (last or datetime.now(timezone.utc)).isoformat(timespec="seconds"),
+                             "held_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                             "shas": sorted({str(p.get("sha256") or "")[:16] for p in share.get("photos") or []
+                                             if isinstance(p, dict) and p.get("sha256")}),
+                             "keys": keys, "names": names, "said": None})
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            shutil.rmtree(target, ignore_errors=True)               # a half-made held folder of a crash before
+        shutil.move(str(staging), str(target))
+        db.log(sid, "share_held_fetched", {"share_id": sid, "count": count, "received": received,
+                                           "ended": bool(share.get("ended")), "photos": names})
+    try:
+        shares.seen(db, sid, "azure", count, received, test=bool(share.get("test")) or None)
+    except Exception as e:  # noqa: BLE001 — the ledger is a record
+        db.log(sid, "share_ledger_failed", f"{type(e).__name__}: {e}")
+    client.post(f"/shares/{sid}/fetched", {"names": names})
+    return True
+
+
+def _replaced_by(s: Settings, db: DB, sid: str, meta: dict) -> tuple[str, str] | None:
+    """A share carrying any of this held share's photos: ("replaced" | "repeat", what it was), else None.
+    - a NEWER share in Azure's listings (kv `uploads_shas`; share ids sort by their time) — she shared again; an older
+      one there doesn't count (it may be a held share itself: the newest held one stays held);
+    - the photo memory: a photo known with an item — made into it after this share started (shared again:
+      "replaced") or before (these photos had their item already: "repeat")."""
+    from thrift_agent import photomem, pipeline
+    mine = set(meta.get("shas") or [])
+    try:
+        listed = json.loads(db.kv_get(SHAS) or "{}")
+    except ValueError:
+        listed = {}
+    for other, row in sorted(listed.items() if isinstance(listed, dict) else []):
+        if other > sid and isinstance(row, dict) and mine & set(row.get("shas") or []):
+            return "replaced", f"shared again at {pipeline.share_time(Path(other))}"
+    started = _time(meta.get("started_at"))
+    for keys in (meta.get("keys") or {}).values():
+        row = photomem.known(db, keys or {})
+        if row is None:
+            continue
+        seen = _time(row["seen_at"])
+        name = photomem.title_of(db, row["item_id"]) if row["item_id"] else "a newer share"
+        if started is not None and seen is not None and seen < started:
+            return "repeat", f"same photos as {name}"
+        return "replaced", f"shared again ({name})"
+    return None
+
+
+def held_tick(s: Settings, db: DB, now: datetime | None = None, force: bool = False) -> list[str]:
+    """WO56 §6, from the worker's look (every HELD_EVERY seconds at most): each held share —
+    - taken from its other copy since (the iCloud copy, by its own rules): this copy goes (`share_held_dropped`);
+    - shared again (`_replaced_by`): it goes, the ledger `replaced` (or `repeat`) — the new share is the item's;
+    - an iCloud copy of it waiting in the inbox: that copy's rules decide (whole, or partial after 30 minutes), nothing
+      said;
+    - else HOLD_AFTER after its last photo: ONE plain line, "📸 The photos shared at 7:42 PM didn't finish uploading —
+      please share them again." (a test share's to the private chat, 🧪), the ledger `held` with how many came;
+    - HELD_KEEP after it was held: its folder goes (the ledger keeps `held`).
+    Returns the lines said. Never raises (a held share that can't be read is left for the next look)."""
+    now = now or datetime.now(timezone.utc)
+    base = held_dir(s)
+    try:
+        folders = sorted(p for p in base.iterdir() if p.is_dir() and not p.name.startswith("."))
+    except OSError:
+        return []
+    if not folders:
+        return []
+    if not force and now.timestamp() - float(db.kv_get(HELD_LOOK) or 0) < HELD_EVERY:
+        return []
+    db.kv_set(HELD_LOOK, str(now.timestamp()))
+    from thrift_agent import pipeline, shares
+    said = []
+    for folder in folders:
+        sid = folder.name
+        meta = held_meta(folder)
+        if meta is None:
+            continue
+        try:
+            other = pipeline._taken_as(db, sid, folder)
+            if other is not None:
+                shutil.rmtree(folder, ignore_errors=True)
+                db.log(sid, "share_held_dropped", {"share_id": sid, "why": "the share was taken from its other copy",
+                                                   "batch": other})
+                continue
+            replaced = _replaced_by(s, db, sid, meta)
+            if replaced is not None:
+                outcome, why = replaced
+                shutil.rmtree(folder, ignore_errors=True)
+                shares.outcome(db, sid, outcome, f"{meta.get('received')} of {meta.get('count') or '?'} photos came; "
+                                                 f"{why}")
+                db.log(sid, "share_replaced", {"share_id": sid, "outcome": outcome, "why": why})
+                continue
+            if _icloud_copy_waits(s, sid):
+                continue                                          # its own rules (pipeline.take_share)
+            last = _time(meta.get("last_at")) or now
+            if not meta.get("said") and (now - last).total_seconds() >= HOLD_AFTER:
+                text = HELD_LINE.format(when=pipeline.share_time(folder))
+                meta["said"] = now.isoformat(timespec="seconds")
+                _save_meta(folder, meta)
+                if meta.get("test"):
+                    notify.say(f"🧪 {text}")
+                else:
+                    notify.group(text)
+                have, want = meta.get("received"), meta.get("count")
+                shares.outcome(db, sid, "held", f"{have} of {want or '?'} photos came — the upload stopped; held, "
+                                               "never posted, until she shares them again")
+                db.log(sid, "share_held", {"share_id": sid, "received": have, "count": want,
+                                           "ended": meta.get("ended"), "said": "group" if not meta.get("test") else "ops"})
+                said.append(text)
+                continue
+            held = _time(meta.get("held_at")) or now
+            if (now - held).total_seconds() >= HELD_KEEP:
+                shutil.rmtree(folder, ignore_errors=True)
+                db.log(sid, "share_held_expired", {"share_id": sid, "held_at": meta.get("held_at")})
+        except Exception as e:  # noqa: BLE001 — never the look's end
+            db.log(sid, "share_held_failed", f"{type(e).__name__}: {e}"[:300])
+    return said
+
+
+def _icloud_copy_waits(s: Settings, sid: str) -> bool:
+    """An iCloud copy of this share in the inbox (not taken yet): its own rules take it."""
+    try:
+        return any(p.is_dir() and shares_id(p.name) == sid for p in s.path("inbox").iterdir())
+    except OSError:
+        return True                                               # the inbox unreadable now: say nothing yet
+
+
+def shares_id(name: str) -> str:
+    from thrift_agent import shares
+    return shares.share_id_of(name)
 
 
 ASIDE = "-icloud"                       # WO46's archive name of an iCloud copy set aside (WO47 deletes it instead)

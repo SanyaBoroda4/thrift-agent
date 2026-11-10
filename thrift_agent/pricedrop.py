@@ -109,7 +109,10 @@ def why_not(db: DB, it, rows=None) -> str | None:
         return f"the item is {it['status']}"
     if it["no_drop"]:
         return "the owner said no drop"
-    if [r for r in rows if r["status"] in ("sold", "delisted")]:
+    # WO56 §0.3: a listing merely gone from one site (its own data: 404, removed — "gone from …") is no sale and no
+    # take-down: the item is still for sale on its other sites, and drops there
+    if [r for r in rows if r["status"] == "sold" or (r["status"] == "delisted"
+                                                     and not str(r["error"] or "").startswith("gone from "))]:
         return "sold or taken down on a site"
     if db.conn.execute("SELECT 1 FROM takedowns WHERE item_id=?", (it["id"],)).fetchone():
         return "sold (a take-down was made)"
