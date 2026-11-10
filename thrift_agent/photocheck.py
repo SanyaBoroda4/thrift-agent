@@ -318,7 +318,8 @@ async def run(s: Settings, db: DB, ps: dict, limit: int = PER_RUN) -> list[str]:
                     status = live.get("status") or "not for sale"
                     why = ("its own data: its listing page answers 404" if status == "gone"   # WO56: deleted / removed
                            else f"Poshmark shows it {status}")
-                    _gone(db, row, mp, why, bool(live.get("sold")), live.get("price"))
+                    _gone(db, row, mp, why, bool(live.get("sold")), live.get("price"),
+                          not_for_sale=status != "gone")        # her Not for Sale: down elsewhere too (a 404: not)
                     continue
                 _back(db, row, mp)                             # for sale: a first 'gone' reading forgotten
                 done.append(apply(s, db, row, live))
@@ -569,7 +570,7 @@ def _back(db: DB, row, mp: str) -> None:
         db.kv_set(GONE_SEEN, json.dumps(seen))
 
 
-def _gone(db: DB, row, mp: str, why: str, sold: bool, price=None) -> bool:
+def _gone(db: DB, row, mp: str, why: str, sold: bool, price=None, not_for_sale: bool = False) -> bool:
     """WO49: a listing we hold 'posted' that its site shows sold or no longer for sale. The site saying SOLD acts at
     once — `sales.listing_gone` tells thrift-api (the sale: take-downs everywhere else) unless the take-down is ours;
     "not for sale" or a page that answers 404 only when seen again GONE_AGAIN later (one odd answer never takes
@@ -592,7 +593,7 @@ def _gone(db: DB, row, mp: str, why: str, sold: bool, price=None) -> bool:
         db.kv_set(GONE_SEEN, json.dumps(seen))
     try:
         title = ((loads((db.item(row["item_id"]) or {"renders": None})["renders"]) or {}).get("poshmark") or {}).get("title")
-        did = sales.listing_gone(db, row["item_id"], mp, why, sold, row["url"], title, price)
+        did = sales.listing_gone(db, row["item_id"], mp, why, sold, row["url"], title, price, not_for_sale=not_for_sale)
     except Exception as e:  # noqa: BLE001 — the check goes on
         db.log(row["item_id"], "listing_gone_failed", {"site": mp, "error": f"{type(e).__name__}: {e}"[:200]})
         return False

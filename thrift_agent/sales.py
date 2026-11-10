@@ -512,7 +512,7 @@ def repair_gone(db: DB) -> list[tuple[str, str]]:
 
 
 def listing_gone(db: DB, iid: str, site: str, why: str, sold: bool, url: str | None, title: str | None = None,
-                 price=None) -> str:
+                 price=None, not_for_sale: bool = False) -> str:
     """WO49, the sale safety net that needs no email: a listing this Mac has 'posted' that the site itself now shows
     sold (or no longer for sale) — the photo check reads every live listing. A take-down of ours for the item on any
     site means we did it (or are doing it): the row only follows. Otherwise, for a SALE, thrift-api is told
@@ -525,6 +525,15 @@ def listing_gone(db: DB, iid: str, site: str, why: str, sold: bool, url: str | N
     taken down (until WO56 this told thrift-api `not_for_sale`, WO33's go-live rule, and every other site's listing
     came down: a 404 on Vinted would have deleted the Depop listing). Returns "sold" | "gone" | "ours"."""
     ours = db.conn.execute("SELECT 1 FROM takedowns WHERE item_id=? LIMIT 1", (iid,)).fetchone()
+    if not_for_sale and not sold and not ours:
+        # WO56 review (the lead): Poshmark's own Not for Sale is HER signal — an item sold off the sites, or put away —
+        # and keeps WO49's rule: thrift-api is told `not_for_sale`, the item comes down on every other site (else a
+        # buyer could buy on Depop / Vinted what she no longer has). Only a 404 / removal / a close without a sale is
+        # that row alone (below).
+        db.upsert_listing(iid, site, status="delisted")
+        sent = call(db, "/mac-event", {"kind": "not_for_sale", "item_id": iid, "marketplace": site, "url": url})
+        db.log(iid, "listing_gone", {"site": site, "why": why, "sold": False, "not_for_sale": True, "told_api": sent})
+        return "not_for_sale"
     if ours or not sold:
         from thrift_agent import crosslist, photocheck
         gone = f"{photocheck.GONE_PREFIX}{crosslist.LABEL.get(site, site)} ({why}) — not relisted"

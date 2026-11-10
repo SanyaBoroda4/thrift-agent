@@ -498,3 +498,17 @@ def test_the_icloud_copy_still_decides_when_there_is_one(env, monkeypatch):
     assert bid is not None
     assert uploads.held_tick(s, db, now=now + timedelta(minutes=32), force=True) == []
     assert uploads.held_copy(s, s2) is None and events(db, "share_held_dropped")[-1]["batch"] == bid
+
+
+def test_poshmarks_own_not_for_sale_still_takes_the_item_down_elsewhere(env):
+    """The lead's review of WO56: her Not for Sale on Poshmark is HER signal (sold off the sites, or put away) — WO49's
+    rule stays: seen twice, thrift-api is told `not_for_sale` and the other sites come down. Only a 404 / a removal /
+    a close without a sale is that row alone (above)."""
+    s, db, said, group, api_calls = env
+    iid = _item(db, 4, sites=("poshmark", "depop", "vinted"))
+    row = db.listing(iid, "poshmark")
+    assert photocheck._gone(db, row, "poshmark", "Poshmark shows it not_for_sale", False, not_for_sale=True) is False
+    _age(db, f"{iid}|poshmark", 11)
+    assert photocheck._gone(db, row, "poshmark", "Poshmark shows it not_for_sale", False, not_for_sale=True) is True
+    assert [b["kind"] for _, b in api_calls] == ["not_for_sale"]
+    assert db.listing(iid, "poshmark")["status"] == "delisted"
