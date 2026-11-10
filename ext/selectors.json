@@ -50,7 +50,7 @@
       "verify": {
         "text": "verify (your|this) (account|phone|email)|confirm your (phone|email)|before you (list|upload)|enter the (\\d+[- ]digit )?code (we|that we) sent|we('ve| have)? (just )?sent (you )?a (\\d+[- ]digit )?(verification )?code|confirm it'?s (really )?you|two-step verification",
         "verified": false,
-        "how": "WO56: also a one-time code (SMS, email, app) and the site's own \"confirm it's you\" — a human step: the owner types the code himself on the Mac's screen"
+        "how": "WO56: also a one-time code (SMS, email, app) and the site's own \"confirm it's you\" — a human step: the owner types the code on the Mac's screen"
       },
       "form": {
         "selectors": [
@@ -402,7 +402,7 @@
       "verify": {
         "text": "enter the (\\d+[- ]digit )?code (we|that we) sent|we('ve| have)? (just )?sent (you )?a (\\d+[- ]digit )?(verification )?code|confirm it'?s (really )?you|two-step verification|verify your identity",
         "verified": false,
-        "how": "WO56: a one-time code (SMS, email, app) or Depop's own \"confirm it's you\" — a human step: the owner types it himself on the Mac's screen (never a banner's \"verify your email\": the sell form may carry one)"
+        "how": "WO56: a one-time code (SMS, email, app) or Depop's own \"confirm it's you\" — a human step: the owner types it on the Mac's screen (never a banner's \"verify your email\": the sell form may carry one)"
       },
       "form": {
         "selectors": [

@@ -2,7 +2,7 @@
 in one minute. Since WO54 only four things wait for a person — the price, a size no photo shows, a password or sign-in
 code, a real CAPTCHA — and WO54 §4 hid the agent's browser (the Thrift Chrome opens only for work, quits after 10 idle
 minutes, its tidy closes every page no job holds), a 🚨 "Vinted shows a CAPTCHA" pointed to a window nobody could find.
-The owner does the step from his PC or phone on the Mac's screen (Remote Management / VNC over Tailscale).
+The owner does the step from a PC or phone on the Mac's screen (Remote Management / VNC over Tailscale).
 
 What a human step is (`kind_of`): a sign-in that needs a password ("login"); a one-time code or the site's own "confirm
 it's you" ("verify"); a real CAPTCHA ("captcha"); a "verify you are human" page that does not clear by itself within 2

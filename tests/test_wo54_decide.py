@@ -331,7 +331,7 @@ ALLOWED = [
     ("pipeline.py", "which size? Reply 'size S'", "size"),
     ("crosslist.py", "— it goes up once you reply 'size …' to its card", "size"),
     # WO56: a password / sign-in code and a real CAPTCHA — the owner's private chat (never the group): "show" brings the
-    # site's own page to the front on the Mac's screen; his hands do it, the agent never types or solves it
+    # site's own page to the front on the Mac's screen; a person's hands do it, the agent never types or solves it
     ("humansteps.py", "wants you to sign in{…}, since {…}. Connect to the Mac's screen (Screen Sharing, {…}), reply "
                       "show and type the password or code yourself", "sign-in"),
     ("humansteps.py", "wants a person — {…}{…}, since {…}. 1 minute: connect to the Mac's screen (Screen Sharing, "
@@ -433,7 +433,7 @@ ALLOWED = [
 def test_only_the_four_waits_remain_in_the_agents_own_words():
     """Every string in thrift_agent/ that asks a question or prompts a reply / a tap is one of ALLOWED — and of those
     only the five waits wait: the price and a size no photo shows (her card), a sign-in / code and a real CAPTCHA
-    (WO56: the owner's private chat — "reply show", his hands on the Mac's screen; the group never hears them), and
+    (WO56: the owner's private chat — "reply show", a person's hands on the Mac's screen; the group never hears them), and
     WO56 §6's "share them again" (her phone's photos, no reply)."""
     unlisted = []
     for rel, line, text in wo54_prompts.flagged():
