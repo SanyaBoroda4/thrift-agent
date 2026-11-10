@@ -27,8 +27,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from thrift_agent import (alerts, catalogs, crosslist, daily, formcheck, health, memory, notify, orders, photocheck,
-                          power, pricedrop, sales)
+from thrift_agent import (alerts, catalogs, crosslist, daily, formcheck, health, humansteps, memory, notify, orders,
+                          photocheck, power, pricedrop, sales)
 from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads
 from thrift_agent.post import runner
@@ -110,7 +110,7 @@ async def listing_edit(s: Settings, db: DB, site: str, poster, ctx, sites: list[
     try:
         return await edits.run_one(s, db, site, poster, ctx, sites, dry_poster=dry)
     except AccountBlocked as e:
-        crosslist.block(db, site, str(e), e.page)
+        crosslist.block(db, site, str(e), e.page, getattr(e, "shot", None))
         return True
     except Exception as e:  # noqa: BLE001 — never the worker's end
         notify.say(f"❌ {crosslist.LABEL.get(site, site)} listing edit: {type(e).__name__}: {e}")
@@ -125,7 +125,7 @@ async def price_drop(s: Settings, db: DB, site: str, poster, ctx, sites: list[st
     try:
         return await pricedrop.run_one(s, db, site, poster, ctx, sites, dry=dry)
     except AccountBlocked as e:
-        crosslist.block(db, site, str(e), e.page)
+        crosslist.block(db, site, str(e), e.page, getattr(e, "shot", None))
         return True
 
 
@@ -313,6 +313,8 @@ class Browser:
         self.pages = 0                # our pages open in it now (the persistent context's own first tab aside)
         self.used = time.monotonic()  # the last page of ours opened or closed
         self._asleep = _Asleep(self)
+        self.step_page = None         # WO56: Poshmark's sign-in page opened for the owner's "show" (a human step)
+        self.step_until = 0.0
 
     @property
     def ctx(self):
@@ -563,10 +565,57 @@ async def _poshmark_test(s, db, ps, ctx, test: str) -> bool:
     return True
 
 
+STEP_SHOW_FOR = 300.0         # WO56: Poshmark's human-step page in front this long at most (the owner's "show")
+
+
+async def _poshmark_step(s, db, ps, browser) -> None:
+    """WO56: a human step on Poshmark — its sign-in page or a CAPTCHA, in Poshmark's own browser (the agent never types
+    a password and never solves a CAPTCHA). The owner's "show" opens Poshmark's sign-in page (a CAPTCHA: the closet page,
+    where the poster met it) in that browser and brings it to the front, titled "Poshmark — human step", for
+    STEP_SHOW_FOR; once it shows neither the sign-in nor a CAPTCHA the site's self-test runs at once — passing: "✅
+    Poshmark back — posting resumed". The page is closed after the 5 minutes, or as soon as it is clear. Never raises."""
+    from thrift_agent.post import poshmark as posh
+    page = browser.step_page
+    try:
+        if humansteps.take_show(db, ["poshmark"]):
+            if page is None or page.is_closed():
+                poster = ps.get("poshmark")
+                base = getattr(poster, "base_url", None) or "https://poshmark.com"
+                user = getattr(poster, "username", "")
+                login = humansteps.pending(db, "poshmark").get("kind") == "login" or not user
+                page = await browser.ctx.new_page()          # a sign-in: its page; a CAPTCHA: where the poster met it
+                await page.goto(f"{base}/login" if login else f"{base}/closet/{user}")
+            try:
+                await page.evaluate("document.title = 'Poshmark — human step · ' + document.title")
+            except Exception:  # noqa: BLE001 — the title is a help, not a need
+                pass
+            await page.bring_to_front()
+            browser.step_page, browser.step_until = page, time.monotonic() + STEP_SHOW_FOR
+            humansteps.shown(db, "poshmark")
+            db.log(None, "human_step_shown", {"site": "poshmark"})
+        if page is None:
+            return
+        if page.is_closed():
+            browser.step_page = None
+            return
+        clear = "/login" not in (page.url or "") and not await posh.SEL["captcha"](page).count()
+        if clear and humansteps.pending(db, "poshmark"):
+            humansteps.recheck(db, "poshmark")         # signed in: the self-test now (it says the one ✅ line)
+        if clear or not humansteps.pending(db, "poshmark") or time.monotonic() >= browser.step_until:
+            browser.step_page = None
+            await page.close()
+    except Exception as e:  # noqa: BLE001 — the step waits; the turn goes on
+        db.log(None, "human_step_show_failed", {"site": "poshmark", "error": f"{type(e).__name__}: {e}"[:300]})
+        if browser_closed(e):
+            browser.lost(f"{type(e).__name__}: {e}")
+
+
 async def _poshmark_turn(s, db, ps, ctx, dry, stage, state, awake, failures, marketplaces, takedowns,
                          browser=None) -> bool:
     """One Poshmark turn: requests, take-downs, a listing being verified, then one listing. True when it listed (or
-    tried to)."""
+    tried to). WO56: first a human step's page for the owner's "show" (`_poshmark_step`)."""
+    if browser is not None and (browser.step_page is not None or humansteps.pending(db, "poshmark")):
+        await _poshmark_step(s, db, ps, browser)
     if not quiet_hold(s, db):                          # WO54 §3: no request starts in the quiet hours (from 8:20)
         await runner.serve_requests(s, db, ps, ctx)
     if takedowns is not None and may_take_down(s, db, "poshmark") and await takedowns("poshmark", ps["poshmark"], db, ctx):
@@ -628,7 +677,7 @@ async def _poshmark_turn(s, db, ps, ctx, dry, stage, state, awake, failures, mar
     except AccountBlocked as e:                       # this site alone pauses; the others go on
         row = db.listing(iid, mp)
         db.upsert_listing(iid, mp, status="queued", error=str(e), attempts=max(0, ((row["attempts"] if row else 1) or 1) - 1))
-        crosslist.block(db, mp, str(e), e.page)
+        crosslist.block(db, mp, str(e), e.page, getattr(e, "shot", None))
         state.set("poshmark", None)
         return True
     except Exception as e:  # noqa: BLE001 — before the form: nothing submitted; never about the item (WO51)
@@ -769,7 +818,8 @@ async def _cross_turn(s, db, ps, mp, dry, state, awake, takedowns) -> bool:
             state.set(mp, None)
         return True
     if (crosslist.blocked(db, mp) and reachable and not dry and not runner._paused(db) and not s.flag_set("PAUSE")
-            and not quiet_hold(s, db) and (test := health.test_due(db, mp))):
+            and not quiet_hold(s, db) and (test := health.test_due(db, mp)) and not humansteps.watching(db, mp)):
+        # (WO56: a human step's page held and read every 10 s decides by itself — no test run opens another page)
         state.set(mp, "test")                     # WO51: a paused site's test run — its next item, never published
         try:
             return await _cross_test(s, db, ps, mp, test)
@@ -881,6 +931,7 @@ async def _housekeeping(s, db, ps, cross, dry, stop, state, sites, until_idle) -
                 from thrift_agent import alarm, jobs, memory
                 jobs.check(db)
                 alarm.tick(db, hours_open=can_post(s, 0, 0)[0])
+                humansteps.tick(db, s=s)                      # WO56: "later" / "done", the reminders (12 h, 2:05 PM)
                 if not quiet_hold(s, db):                     # WO54 §3: no Chrome restart from 8:20
                     memory.tick(s, db, idle=state.all_idle(sites) and not runner._paused(db))   # WO52 §7
             if until_idle and state.all_idle(sites) and _nothing_left(s, db, sites, dry):

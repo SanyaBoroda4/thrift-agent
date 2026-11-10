@@ -29,11 +29,13 @@ class PosterError(Exception):
 
 class AccountBlocked(PosterError):
     """Logged out, restricted, or a CAPTCHA — stop the whole poster, not just this item. `page`: what the site showed
-    (login | captcha | block | verify) when the poster knows it: the owner's one line says what to do (WO32)."""
+    (login | captcha | block | verify | challenge) when the poster knows it: the owner's one line says what to do (WO32).
+    WO56: `shot` — the page's screenshot when the poster kept one (the human step's one message carries it)."""
 
-    def __init__(self, message: str = "", page: str | None = None):
+    def __init__(self, message: str = "", page: str | None = None, shot: str | None = None):
         super().__init__(message)
         self.page = page
+        self.shot = shot
 
 
 class Skipped(PosterError):

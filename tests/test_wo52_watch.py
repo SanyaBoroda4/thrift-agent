@@ -76,29 +76,34 @@ def test_blocked_20_minutes_with_items_waiting_is_one_alarm_with_the_request(db,
 
 def test_the_owners_pause_never_alarms_a_login_page_does_at_once_whatever_the_hour(db, said):
     """WO53 §3 (live 11-07/08: Depop and Vinted logged out for 31 hours, one group line and silence): a login page
-    raises its own alarm — WO54 §2: at once and whatever the hour, with or without items waiting (only her hands settle
-    it), again every 12 hours while it lasts — the owner's own pause never does."""
+    is said at once and whatever the hour, with or without items waiting (only a person settles it), again every 12
+    hours while it lasts — the owner's own pause never is. WO56: as a human step — ONE private message ("reply show"),
+    never the group's line nor a 🚨; its reminders are humansteps'."""
+    from thrift_agent import humansteps
     iid = db.add_item("b1", 1, ".")
     db.upsert_listing(iid, "depop", status="queued")
     health.owner_pause(db, "depop")
     health.pause(db, "vinted", "Vinted: not logged in", "account", at=T0)
     assert alarm.tick(db, at=T0 + timedelta(minutes=1), hours_open=False) == ["vinted"]   # no item waits even
-    assert any("Only you can act on it, on the Mac" in m for m in said)
-    assert said[-1] == "GROUP Vinted needs you to log in on the Mac."             # and the group's plain line again
+    assert said[-1].startswith("🔐 Vinted wants you to sign in") and "reply show" in said[-1]
+    assert not any(m.startswith("GROUP") or m.startswith("🚨") for m in said)
     db.upsert_listing(iid, "vinted", status="queued")
-    assert alarm.tick(db, at=T0 + timedelta(hours=1)) == []                       # once — again only 12 h later
-    assert alarm.tick(db, at=T0 + timedelta(hours=12, minutes=2)) == ["vinted"]
+    assert alarm.tick(db, at=T0 + timedelta(hours=1)) == []                       # once
+    step = humansteps.pending(db, "vinted")
+    assert humansteps.tick(db, at=datetime.fromisoformat(step["since"]) + timedelta(hours=12, minutes=2)) == ["vinted"]
+    assert not humansteps.pending(db, "depop")                                    # her own pause: never a step
 
 
 def test_a_sign_out_raises_the_alarm_the_moment_the_site_pauses(db, said):
-    """WO54 §2: crosslist.block (the poster met the login page) says the group's line AND the 🚨 at once; a CAPTCHA and
-    a check page alike; a block page ("turned the Mac away") only after the usual 20 minutes — it passes by itself."""
+    """WO54 §2 / WO56: crosslist.block (the poster met the login page) says it at once — the human step's one private
+    message, never the group's line nor a 🚨; a CAPTCHA and a check page alike; a block page ("turned the Mac away")
+    keeps the group's line and its 🚨 only after the usual 20 minutes — it passes by itself."""
     from thrift_agent import crosslist
     crosslist.block(db, "depop", "Depop: not logged in in the Thrift Chrome — login page", "login")
-    assert "GROUP Depop needs you to log in on the Mac." in said
-    assert any(m.startswith("🚨 Depop has shown a login page since") for m in said)
+    assert any(m.startswith("🔐 Depop wants you to sign in") for m in said)
     crosslist.block(db, "vinted", "Vinted shows a CAPTCHA", "captcha")
-    assert any(m.startswith("🚨 Vinted has shown a captcha page since") for m in said)
+    assert any(m.startswith("🔐 Vinted wants a person — a CAPTCHA") for m in said)
+    assert not any(m.startswith("GROUP") or m.startswith("🚨") for m in said)
     said.clear()
     crosslist.block(db, "poshmark", "Poshmark: 403 Forbidden", "block")
     assert "GROUP Poshmark turned the Mac away for now — I'll try again by myself later." in said

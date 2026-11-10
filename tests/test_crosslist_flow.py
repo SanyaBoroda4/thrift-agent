@@ -296,7 +296,9 @@ def test_a_logged_out_marketplace_stops_for_the_window_with_one_plain_line(tmp_p
     a, b = _item(db, 1), _item(db, 2)
     ps = _posters(depop=Stub("depop", AccountBlocked("Depop: not logged in in the poster profile")))
     run(s, db, ps)
-    assert said.group.count("Depop needs you to log in on the Mac.") == 1
+    # WO56: a sign-in is a human step — ONE private message ("reply show"), never the group's line
+    assert sum(m.startswith("🔐 Depop wants you to sign in") for m in said.ops) == 1
+    assert not any("needs you to log in" in m for m in said.group)
     assert len(ps["depop"].calls) == 1                                     # not tried again this window
     assert [db.listing(i, "depop")["status"] for i in (a, b)] == ["queued", "queued"]
     cards = [m for m in said.group if m.startswith("✅")]                     # WO34: Depop waits, said plainly
@@ -633,7 +635,8 @@ def test_an_asked_for_dry_run_never_stops_the_poster(tmp_path, loop, monkeypatch
     ps = _posters(depop=Stub("depop", AccountBlocked("Depop: not logged in in the poster profile")),
                   vinted=Stub("vinted", Outcome("dryrun")))
     run(s, db, ps)
-    assert said.group == ["Depop needs you to log in on the Mac."]
+    assert said.group == []                                                # WO56: never the group's line …
+    assert sum(m.startswith("🔐 Depop wants you to sign in") for m in said.ops) == 1     # … one private message
     assert ps["vinted"].calls == [(iid, True)] and any(m.startswith("🧪 dry-run Vinted") for m in said.ops)
     assert db.listing(iid, "depop") is None and db.listing(iid, "vinted") is None      # no row taken or changed
     kinds = [json.loads(d)["status"] for (d,) in db.conn.execute(

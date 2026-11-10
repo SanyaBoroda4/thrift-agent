@@ -497,7 +497,7 @@ def test_mac_setup_makes_the_local_archive_and_marks_the_agents_folders_for_spot
 def test_the_extension_and_the_bridge_share_one_hash_salt():
     background = (bm.EXT_DIR / "background.js").read_text(encoding="utf-8")
     salt = re.search(r'const HASH_SALT = "([^"]+)\\n";', background).group(1)
-    assert bm.HASH_SALT == f"{salt}\n".encode() == b"wo54-reload-1\n"
+    assert bm.HASH_SALT == f"{salt}\n".encode() == b"wo56-reload-1\n"     # WO56: bumped with the human steps
 
 
 def test_a_big_share_is_decoded_one_core_at_a_time():

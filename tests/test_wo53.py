@@ -460,6 +460,10 @@ def test_owner_waits_never_name_a_retry(tmp_path, clock, said):
 
 
 def test_an_account_page_with_items_waiting_raises_the_alarm_and_the_group_line_again(tmp_path, said):
+    """WO56: a sign-out is a human step — said at once, whatever the hour (only a person settles it), in ONE private
+    message ("reply show"), then reminded every 12 hours; never the group's line, never a 🚨 (live 11-07/08: one group
+    line, then 31 hours of silence while three items waited)."""
+    from thrift_agent import humansteps
     s = _settings(tmp_path)
     db = DB(s.path("db"))
     iid, _ = _posh_item(db, tmp_path)
@@ -467,16 +471,13 @@ def test_an_account_page_with_items_waiting_raises_the_alarm_and_the_group_line_
     t0 = datetime(2026, 11, 7, 21, 4, 56, tzinfo=timezone.utc)
     health.pause(db, "depop", "Depop: not logged in in the Thrift Chrome — login page", "account", page="login",
                  at=t0)
-    alarm.account_line(db, "depop", "login", t0, force=True)
-    assert said.group == ["Depop needs you to log in on the Mac."]
-    # WO54 §2: a sign-out is its 🚨 at once, whatever the hour (only her hands settle it), then every 12 hours
     assert alarm.tick(db, t0 + timedelta(minutes=1), hours_open=False) == ["depop"]
-    assert said.ops[-1].startswith("🚨 Depop has shown a login page since") and "Only you can act" in said.ops[-1]
-    assert said.group == ["Depop needs you to log in on the Mac."]               # said a minute ago: not again yet
-    assert alarm.tick(db, t0 + timedelta(minutes=25)) == []                      # not again within 12 hours
-    assert alarm.tick(db, t0 + timedelta(hours=11)) == []
-    assert alarm.tick(db, t0 + timedelta(hours=13)) == ["depop"]                 # 12 h later: again, with the line
-    assert said.group[-1] == "Depop needs you to log in on the Mac." and len(said.group) == 2
+    assert said.ops[-1].startswith("🔐 Depop wants you to sign in") and "reply show" in said.ops[-1]
+    assert said.group == [] and not any(m.startswith("🚨") for m in said.ops)
+    assert alarm.tick(db, t0 + timedelta(minutes=25)) == []                      # not again
+    assert humansteps.tick(db, t0 + timedelta(hours=11)) == []                   # not again within 12 hours
+    assert humansteps.tick(db, t0 + timedelta(hours=13)) == ["depop"]            # 12 h later: once more, privately
+    assert said.ops[-1].startswith("🔐 Reminder (") and said.group == []
 
 
 def test_a_test_run_that_meets_the_login_page_waits_its_cool_down(tmp_path, monkeypatch, said):

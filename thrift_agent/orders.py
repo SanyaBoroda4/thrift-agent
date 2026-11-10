@@ -291,7 +291,7 @@ RECENT = timedelta(days=60)             # older orders are not sent
 DETAILS = 4                             # Poshmark: the open orders' own pages read, at most (a handful of loads)
 KV_SWEPT, KV_STOPPED, KV_FAILED = "orders_swept", "orders_stopped", "orders_failed"
 SWEEP_LOCK = threading.Lock()           # one site at a time: the Poshmark thread and the extension sites alike
-STOP_PAGES = ("login", "captcha", "block", "verify")
+STOP_PAGES = ("login", "captcha", "block", "verify", "challenge")   # WO56: a "Just a moment" that stayed 2 minutes
 LABEL = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted"}
 SEND = ("order_id", "status", "status_text", "title", "price", "sold_at", "listing_id", "listing_url", "sku",
         "shipped_at", "delivered_at", "completed_at")         # what leaves the Mac for the API: never a buyer field
@@ -436,11 +436,18 @@ async def sweep(s: Settings, db, site: str, read, now: datetime | None = None) -
 def stop_today(db, site: str, page: str, tz: str = "America/New_York") -> None:
     """A login / CAPTCHA / block / check page: this site's sweep stops for the day, and ONE line says so in the
     private chat (posting follows its own rules)."""
-    from thrift_agent import notify
+    from thrift_agent import humansteps, notify
     today = datetime.now(timezone.utc).astimezone(ZoneInfo(tz)).date().isoformat()
     if _kv(db, KV_STOPPED).get(site) == today:
         return
     _put(db, KV_STOPPED, site, today)
+    if page in humansteps.HUMAN:
+        # WO56: a sign-in, a code, a CAPTCHA or a "Just a moment" that stayed is the site's human step — ONE private
+        # message for it (its page held, "reply show"), never a second line about the orders
+        from thrift_agent import crosslist
+        crosslist.block(db, site, f"{LABEL[site]}'s orders page: a {page} page", page)
+        db.log(None, "orders_stopped", {"site": site, "page": page, "human_step": True})
+        return
     what = {"login": "its login page", "captcha": "a CAPTCHA", "block": "a page that turns the Mac away",
             "verify": "a check page"}.get(page, f"a {page} page")
     notify.say(f"⏸ Can't read {LABEL[site]}'s orders today — it shows {what}. I'll try again tomorrow.")

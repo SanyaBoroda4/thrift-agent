@@ -2201,3 +2201,87 @@ test("vinted (WO52): a conversation is matched by the listing's photos (inbox en
   assert.equal((await v.conversationsAbout("123", ["aaa.jpeg"])).count, 1);     // by its file name
   assert.equal((await v.conversationsAbout("123", ["999"])).count, 0);
 });
+
+// ---------------------------------------------------------------- WO56: a "Just a moment", a code page, the step title
+
+const JUST_A_MOMENT = `<html><head><title>Just a moment...</title></head><body><div class="main-wrapper">
+  <h1>www.vinted.com</h1><div id="challenge-running">Verifying you are human. This may take a few seconds.</div>
+  <p>www.vinted.com needs to review the security of your connection before proceeding.</p></div></body></html>`;
+
+const classifyOf = (site, html, url) => {
+  const q = page(site, html, url);
+  q.w.Thrift.selectors = SELECTORS;
+  return q.w.Thrift.classify(site);
+};
+
+test("WO56: Cloudflare's interstitial is a challenge — never a CAPTCHA, though its page says \"Verify you are human\"", () => {
+  assert.equal(classifyOf("vinted", JUST_A_MOMENT), "challenge");
+  const interactive = `<html><head><title>Just a moment...</title></head><body>
+    <p>Verify you are human by completing the action below.</p>
+    <iframe src="https://challenges.cloudflare.com/cdn-cgi/challenge-platform/turnstile" width="300" height="65"></iframe>
+    </body></html>`;
+  assert.equal(classifyOf("vinted", interactive), "challenge");
+  assert.equal(classifyOf("depop", JUST_A_MOMENT.replaceAll("vinted", "depop"), "https://www.depop.com/products/create/"),
+               "challenge");
+  const real = `<html><head><title>Vinted</title></head><body>
+    <iframe title="reCAPTCHA challenge" src="https://www.google.com/recaptcha/api2/bframe" width="400" height="580"></iframe>
+    </body></html>`;
+  assert.equal(classifyOf("vinted", real), "captcha");                       // a real CAPTCHA stays one
+});
+
+test("WO56: a one-time code page and \"confirm it's you\" are a check (a human step), the sell form isn't", () => {
+  const code = `<html><head><title>Vinted</title></head><body><h1>Enter the 6-digit code we sent to your email</h1>
+    <input name="code"></body></html>`;
+  assert.equal(classifyOf("vinted", code), "verify");
+  const depop = `<html><head><title>Depop</title></head><body><h1>Confirm it's you</h1>
+    <p>We've sent a code to your email.</p></body></html>`;
+  assert.equal(classifyOf("depop", depop, "https://www.depop.com/login/"), "verify");
+  assert.equal(classifyOf("vinted", read(FIXTURES.vinted)), "form");
+  assert.equal(classifyOf("depop", read(FIXTURES.depop), URLS.depop), "form");
+});
+
+test("WO56: a \"Just a moment\" that passes by itself is waited out and the job goes on — nothing stops", async () => {
+  const html = read(FIXTURES.vinted)
+    .replace(/<title>[^<]*<\/title>/, "<title>Just a moment...</title>")
+    .replace('<body><main id="main">',
+             '<body><div id="challenge-running">Verifying you are human. This may take a few seconds.</div><main id="main">');
+  const p = page("vinted", html);
+  assert.equal(p.d.title, "Just a moment...");
+  p.w.setTimeout(() => { p.d.getElementById("challenge-running").remove(); p.d.title = "Sell an item | Vinted"; }, 300);
+  await run(p, VINTED_JOB);
+  const r = p.last();
+  assert.equal(r.event, "result", JSON.stringify(r).slice(0, 400));
+  assert.equal(r.dry_run, true);
+  const checks = p.events().filter((e) => e.event === "progress" && e.challenge).map((e) => e.challenge);
+  assert.deepEqual(plain(checks), ["waiting", "cleared"]);
+  assert.ok(!p.events().some((e) => e.event === "error"));
+});
+
+test("WO56: a \"Just a moment\" still there after its 2 minutes ends the job with that page, its picture kept", async () => {
+  const p = page("vinted", JUST_A_MOMENT);
+  p.w.Thrift.CHALLENGE_MS = 4000;                                    // × the tests' 0.05: 0.2 s
+  await run(p, VINTED_JOB);
+  const r = p.last();
+  assert.equal(r.event, "error");
+  assert.equal(r.page, "challenge");
+  assert.ok(p.sent.some((m) => m.type === "screenshot" && m.label === "challenge"));
+  assert.ok(!p.events().some((e) => e.event === "step"));            // nothing filled, nothing clicked
+});
+
+test("WO56: a held page carries \"<Site> — human step\" in front of its own title, again when the page sets its own",
+     async () => {
+  const p = page("vinted", JUST_A_MOMENT);
+  let answer = null;
+  const ask = (msg) => p.listeners.forEach((fn) => fn(msg, {}, (r) => { answer = r; }));
+  ask({ type: "classify", site: "vinted", selectors: SELECTORS, title: "Vinted — human step" });
+  assert.equal(p.d.title, "Vinted — human step · Just a moment...");
+  assert.equal(answer.page, "challenge", "classified by the page's own title, never ours");
+  assert.equal(answer.title, "Just a moment...");
+  p.d.title = "Vinted";                                              // the page moves on and sets its own
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(p.d.title, "Vinted — human step · Vinted");
+  ask({ type: "classify", site: "vinted", selectors: SELECTORS, title: "Vinted — human step" });
+  assert.equal(p.d.title, "Vinted — human step · Vinted", "applied once, never twice");
+  p.w.Thrift.stepTitle(null);
+  assert.equal(p.d.title, "Vinted");
+});

@@ -24,6 +24,19 @@
 //   she looked at in the last 15 minutes (the active tab of a focused Thrift Chrome window).
 // - Each ping says whether a Thrift Chrome window has her focus (the poster never quits it under her hands) and how
 //   many tabs and windows it holds (thrift doctor).
+//
+// WO56, human steps (a sign-in, a one-time code, a real CAPTCHA, a "verify you are human" page that stayed — the agent
+// never types a password and never solves a CAPTCHA): the bridge says which sites have one pending ({type: "steps"}).
+// Each one's page — the page left for the owner when its job met it — is HELD: moved into a window of its own (never a
+// site's window, so no job's tab ever opens in it), titled "<Site> — human step" (the page's title prefixed, re-applied
+// by the content script), never tidied, read every 10 s ({event: "step_page", site, page} to the bridge, which decides
+// when it cleared). The owner's "show" ({type: "show"}) brings THAT window to the front — the only window this worker
+// ever focuses — for 5 minutes, then it is minimized (a window can't be sent behind others from here: focused: false
+// raises the next Chrome window instead); once the step cleared its tab is closed, window and all, and the next job
+// opens its tab in the site's own unfocused window as before. A minimized window is never a job's: its page would be a
+// hidden one (throttled timers, nothing to capture — the WO32b stall), and siteWindow() only ever reuses a window by
+// its idle page, which a step's window never has. A job's page that meets a "Just a moment" waits it out there (2 min
+// at most, the content script); it gets that much more time, and a navigation as it passes is no reload.
 const BRIDGE = "http://127.0.0.1:8765";
 const WS_URL = "ws://127.0.0.1:8765/ext";
 const PING_MS = 20000;
@@ -38,7 +51,10 @@ const CAPTURE_MS = 10000;            // a capture that doesn't come back (a mini
 const ANSWER_MS = 3000;              // one message to the page: answered (or refused) within 3 s, else asked again
 const REACH_MS = 20000;              // ... for 20 s in all: a page that never answers ends the job, with what it shows
 const QUIET_MS = 30000;              // a page filling a form, silent this long, is asked if it is still there (3 s)
-const STOP_PAGES = ["login", "block", "captcha", "verify"];
+const STOP_PAGES = ["login", "block", "captcha", "verify", "challenge"];   // WO56: a "Just a moment" that stayed
+const CHALLENGE_MS = 120000;         // WO56: a job's page waits out a "Just a moment" this long: the job gets as much more
+const STEP_EVERY = 10000;            // WO56: a human step's held page is read this often
+const SHOW_MS = 5 * 60000;           // WO56: "show": the step's window in front this long at most, then minimized
 // The files whose hash tells the bridge's copy (git pull on deploy) from the loaded one: a difference reloads us.
 const FILES = ["manifest.json", "background.js", "content/common.js", "content/vinted.js", "content/depop.js",
                "selectors.json", "options.html", "options.js", "idle.html", "idle.js"];
@@ -96,7 +112,7 @@ const byId = (id) => Object.values(jobs).find((j) => j && j.job_id === id) || nu
 const byTab = (tabId) => Object.values(jobs).find((j) => j && j.tabId === tabId) || null;
 const anyJob = () => Object.values(jobs).some(Boolean);
 
-const HASH_SALT = "wo54-reload-1\n";      // WO54 §4: changed with bridge.HASH_SALT — every loaded copy reloads once
+const HASH_SALT = "wo56-reload-1\n";      // WO56: changed with bridge.HASH_SALT — every loaded copy reloads once
 async function filesHash() {
   const enc = new TextEncoder();
   const parts = [enc.encode(HASH_SALT)];      // WO52: the same salt as bridge.files_hash
@@ -225,6 +241,12 @@ async function onBridge(msg) {
     if (j && j.tabId) {
       try { await toTab(j.tabId, msg, 6000); } catch (e) { /* the page asks again or its step fails as before */ }
     }
+  } else if (msg.type === "steps") {                 // WO56: the human steps pending now — their pages held
+    await setSteps(msg.steps || {});
+  } else if (msg.type === "show") {                  // WO56: the owner's "show" — that step's window to the front
+    await showStep(msg.site, msg.ms || SHOW_MS);
+  } else if (msg.type === "check_steps") {
+    await checkSteps(Date.now(), true);
   }
 }
 
@@ -555,7 +577,12 @@ async function afterClickTimeout(jobId) {
 // Vinted take-down's (WO40 — the UGG's died on Vinted's /session-refresh; Depop's delete never) is handed again, with
 // `pressed` when its Hide was already clicked: then the new page only says whether it took (a click never repeated).
 async function onNavigatedMidJob(j) {
-  if (j.readyAt || (j.mode === "delist" && j.site !== "vinted") || j.mode === "delete" || (j.reloads || 0) >= 2) {
+  // WO56: a "Just a moment" that passed moves its page on by itself (the site's own page now): no reload counted,
+  // nothing was pressed yet — the job is handed to it
+  const passed = !!j.challengeAt && !j.readyAt;
+  if (passed) await challengePassed(j);
+  if (!passed && (j.readyAt || (j.mode === "delist" && j.site !== "vinted") || j.mode === "delete"
+                  || (j.reloads || 0) >= 2)) {
     // WO52 follow-up: a delete is never handed again (no second press) — the driver reads the listing's address
     const why = j.readyAt ? "the page reloaded while it waited for POST — nothing was published"
       : j.mode === "delete" ? "the page reloaded during the delete"
@@ -563,7 +590,7 @@ async function onNavigatedMidJob(j) {
     return finish({ event: "error", job_id: j.job_id, stage: "reloaded", page: "unknown", message: why });
   }
   j.delivered = false;
-  j.reloads = (j.reloads || 0) + 1;
+  if (!passed) j.reloads = (j.reloads || 0) + 1;
   await remember();
   try {
     const sel = await selectors();
@@ -651,6 +678,171 @@ async function leaveForOwner(site, tabId) {
   await chrome.storage.session.set({ left_open: left });
 }
 
+// ---------------------------------------------------------------- WO56: human steps
+
+async function challengePassed(j) {
+  const seconds = Math.round((Date.now() - (j.challengeAt || Date.now())) / 1000);
+  j.challengeAt = null;
+  await remember();
+  await send({ event: "progress", job_id: j.job_id, what: `the security check passed by itself in ${seconds} s`,
+               challenge: "cleared", seconds });
+  await send({ event: "challenge", site: j.site, state: "cleared", seconds, mode: j.mode });
+}
+
+async function stepState() {
+  const { steps = {}, step_tabs: tabs = {}, left_open: left = {} } =
+    await chrome.storage.session.get(["steps", "step_tabs", "left_open"]);
+  return { steps, tabs, left };
+}
+
+// The bridge's word on the pending steps: a site no longer listed has cleared — its page goes (window and all).
+async function setSteps(steps) {
+  await chrome.storage.session.set({ steps });
+  const { tabs } = await stepState();
+  for (const site of Object.keys(tabs)) {
+    if (!steps[site]) await releaseStep(site);
+  }
+  await adoptSteps();
+  await checkSteps(Date.now(), true);
+}
+
+// Each pending step's page: the page left for the owner on that site, moved into a window of its own — never a site's
+// window (one with an idle page, or recorded as one), so no job's tab ever opens beside it, even while it is minimized.
+async function adoptSteps() {
+  const { steps, tabs, left } = await stepState();
+  const { windows: saved = {} } = await chrome.storage.session.get("windows");
+  let changed = false;
+  for (const site of Object.keys(steps)) {
+    const tabId = leftTab(left[site]);
+    if (tabId == null || (tabs[site] && tabs[site].tab === tabId)) continue;
+    let tab = null;
+    try { tab = await chrome.tabs.get(tabId); } catch (e) { continue; }       // gone: reported as such
+    if (tabs[site] && tabs[site].tab !== tabId) {
+      // a newer page of the same step (another job met it) replaces the older one — never the one in front of the
+      // owner now (shown, or its window focused): then the newer one goes
+      let shownNow = tabs[site].shown_until > Date.now();
+      try {
+        const old = await chrome.tabs.get(tabs[site].tab);
+        const w = await chrome.windows.get(old.windowId).catch(() => null);
+        shownNow = shownNow || !!(w && w.focused);
+      } catch (e) { shownNow = false; }                                       // the older one is gone
+      if (shownNow) {
+        try { await chrome.tabs.remove(tabId); } catch (e) { /* gone already */ }
+        left[site] = { tab: tabs[site].tab, at: Date.now(), step: true };
+        changed = true;
+        continue;
+      }
+      try { await chrome.tabs.remove(tabs[site].tab); } catch (e) { /* gone already */ }
+    }
+    let windowId = tab.windowId;
+    const beside = (await chrome.tabs.query({ windowId })).filter((t) => t.id !== tabId);
+    const siteWin = Object.values(saved).some((e) => e && e.windowId === windowId);
+    if (beside.length || siteWin) {
+      const w = await chrome.windows.create({ tabId, focused: false, state: "normal" });
+      windowId = w.id;
+    }
+    tabs[site] = { tab: tabId, window: windowId, shown_until: 0, at: Date.now() };
+    left[site] = { tab: tabId, at: Date.now(), step: true };
+    changed = true;
+  }
+  if (changed) await chrome.storage.session.set({ step_tabs: tabs, left_open: left });
+}
+
+// Every STEP_EVERY: each held page read (its kind, by the page's own classifier; the window's title re-applied) and
+// reported — the bridge decides when it cleared. A shown window past its 5 minutes is minimized again.
+let lastStepCheck = 0;
+async function checkSteps(now = Date.now(), force = false) {
+  if (!force && now - lastStepCheck < STEP_EVERY - 500) return;
+  lastStepCheck = now;
+  const { steps } = await stepState();
+  if (!Object.keys(steps).length) return;
+  await adoptSteps();
+  const { tabs } = await stepState();
+  const sel = await selectors();
+  for (const site of Object.keys(steps)) {
+    const mine = tabs[site];
+    const report = { event: "step_page", site, page: "gone", url: null, held: false, shown: false, window: null };
+    let tab = null;
+    if (mine) {
+      try { tab = await chrome.tabs.get(mine.tab); } catch (e) { tab = null; }
+    }
+    if (tab) {
+      const w = await chrome.windows.get(tab.windowId).catch(() => null);
+      Object.assign(report, { held: true, window: w ? w.state : null, shown: !!(w && w.focused) });
+      try {
+        const r = await withTimeout(chrome.tabs.sendMessage(tab.id, { type: "classify", site, selectors: sel,
+                                                                      title: steps[site].label }),
+                                    ANSWER_MS, "no answer in 3 s");
+        report.page = (r && r.page) || "unreadable";
+        report.url = pathOf(r && r.url);
+      } catch (e) {
+        report.page = tab.status === "loading" ? "loading" : "unreadable";
+        if (tab.status !== "loading" && SCRIPTS[site]) {         // a page with no script of ours yet: given one
+          try { await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: SCRIPTS[site] }); } catch (e2) {}
+        }
+      }
+      if (mine.shown_until && now > mine.shown_until) await hideStep(site);
+    } else if (mine) {
+      delete tabs[site];
+      await chrome.storage.session.set({ step_tabs: tabs });
+    }
+    await send(report);
+  }
+}
+
+// The owner's "show": THAT step's window to the front on the Mac (the only window this worker ever focuses), for `ms`.
+// Its page gone (the Chrome restarted, the tab closed): the site's page opened again for the person at the screen.
+async function showStep(site, ms = SHOW_MS) {
+  await adoptSteps();
+  const { steps, tabs, left } = await stepState();
+  if (!site || !steps[site]) return;
+  let mine = tabs[site];
+  let tab = null;
+  if (mine) {
+    try { tab = await chrome.tabs.get(mine.tab); } catch (e) { tab = null; }
+  }
+  if (!tab) {
+    const sel = await selectors();
+    const w = await chrome.windows.create({ url: sel[site].sell_url, focused: true, state: "normal" });
+    mine = { tab: w.tabs[0].id, window: w.id, at: Date.now() };
+    left[site] = { tab: mine.tab, at: Date.now(), step: true };
+  } else {
+    await chrome.windows.update(tab.windowId, { focused: true, state: "normal" });
+    if (!tab.active) await chrome.tabs.update(tab.id, { active: true });
+    mine.window = tab.windowId;
+  }
+  mine.shown_until = Date.now() + ms;
+  tabs[site] = mine;
+  await chrome.storage.session.set({ step_tabs: tabs, left_open: left });
+  await send({ event: "step_shown", site, until: mine.shown_until });
+}
+
+// Back to hidden after "show": minimized (its own window — never a job's).
+async function hideStep(site) {
+  const { tabs } = await stepState();
+  const mine = tabs[site];
+  if (!mine) return;
+  mine.shown_until = 0;
+  await chrome.storage.session.set({ step_tabs: tabs });
+  try {
+    const tab = await chrome.tabs.get(mine.tab);
+    await chrome.windows.update(tab.windowId, { state: "minimized" });
+  } catch (e) { /* gone already */ }
+}
+
+// The step cleared: its page goes, window and all (the next job opens its tab in the site's own unfocused window).
+async function releaseStep(site) {
+  const { tabs, left } = await stepState();
+  const mine = tabs[site];
+  delete tabs[site];
+  if (mine && leftTab(left[site]) === mine.tab) delete left[site];
+  await chrome.storage.session.set({ step_tabs: tabs, left_open: left });
+  if (mine) {
+    try { await chrome.tabs.remove(mine.tab); } catch (e) { /* closed already */ }
+  }
+}
+setInterval(() => { checkSteps().catch(() => {}); }, STEP_EVERY);
+
 // Chrome allows captureVisibleTab twice a second (MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND): captures are spaced, and
 // one refused for it is tried again. Each job's window is captured on its own (WO33: two jobs, two pictures).
 let lastCapture = 0;
@@ -710,6 +902,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const ev = { ...msg };
       delete ev.type;
       if (ev.event === "result" || ev.event === "error") return finish(ev);
+      if (ev.event === "progress" && ev.challenge) {      // WO56: the page waits out a "Just a moment" (2 min at most)
+        await restore();
+        const j = byId(ev.job_id);
+        if (j && ev.challenge === "waiting") {
+          j.challengeAt = Date.now();
+          j.extraMs = CHALLENGE_MS;                       // the job's 4 minutes to fill, plus the wait
+          await remember();
+        } else if (j && ev.challenge === "cleared" && j.challengeAt) {
+          j.challengeAt = null;
+          await remember();
+          await send({ event: "challenge", site: j.site, state: "cleared", seconds: ev.seconds, mode: j.mode });
+        }
+      }
       if (ev.event === "step" && ev.clicked) {             // WO40: a take-down's click, never repeated after a reload
         await restore();
         const j = byId(ev.job_id);
@@ -764,7 +969,7 @@ async function ensureAlarm() {
 function overdue(c, now) {
   if (c.clicked) return now - (c.clickedAt || c.started || 0) > CLICKED_MS ? "5 minutes after the click" : null;
   if (c.readyAt) return now - c.readyAt > READY_MS ? "no go-ahead in 15 minutes" : null;
-  return now - (c.started || 0) > FILL_MS ? "the form wasn't filled in 4 minutes" : null;
+  return now - (c.started || 0) > FILL_MS + (c.extraMs || 0) ? "the form wasn't filled in 4 minutes" : null;
 }
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
@@ -778,6 +983,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   await connect();
   await poll();
   await tidyTabs(now);
+  await checkSteps(now);                           // WO56: also when this worker was asleep between the alarm's ticks
 });
 
 // The tidy. WO52 §7 (live 2026-11-01: ~27 old pages, 8.4 GB) and WO53 closed old pages of the three sites, every
@@ -787,7 +993,8 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 // its site, unless it is
 // - a running job's tab, or a page that tab opened (a site's popup), until the job ends;
 // - the idle page of a site window (one per site; a second one goes);
-// - the page left for the owner on a site (a login / CAPTCHA / check page, one per site), for LEFT_FOR at most;
+// - the page left for the owner on a site (a login / CAPTCHA / check page, one per site), for LEFT_FOR at most —
+//   WO56: a human step's page for as long as the step is pending;
 // - a page born in the last BORN_GRACE (a job's tab between its creation and its job);
 // - a page the owner looked at in the last UNSEEN — the active tab of a focused Thrift Chrome window (she may be
 //   logging in there, or fetching a code from her mail).
@@ -823,9 +1030,11 @@ async function tidyTabs(now, force = false) {
   await chrome.storage.local.set({ tidied_at: now });
   await lookedAt(now);
   const { seen, born } = await marks();
-  const { left_open: left = {} } = await chrome.storage.session.get("left_open");
+  const { left_open: left = {}, step_tabs: stepTabs = {} } = await chrome.storage.session.get(["left_open", "step_tabs"]);
   const jobTabs = new Set(held.map((j) => j.tabId));
-  const leftTabs = new Set(Object.values(left).filter((e) => now - leftAt(e) < LEFT_FOR).map(leftTab));
+  // WO56: a human step's page is kept while the step is pending — no 6-hour cap
+  const leftTabs = new Set([...Object.values(left).filter((e) => (e && e.step) || now - leftAt(e) < LEFT_FOR).map(leftTab),
+                            ...Object.values(stepTabs).map((e) => e && e.tab)]);
   const tabs = await chrome.tabs.query({});
   const idleSeen = new Set(), close = [];
   for (const tab of tabs) {

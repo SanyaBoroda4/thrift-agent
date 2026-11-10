@@ -293,8 +293,9 @@ def test_an_item_whose_brand_couldnt_be_read_goes_up_on_all_three_sites(tmp_path
 # ---------------------------------------------------------------- the waits that remain: four, and only four
 
 # What may still prompt a reply or ask a question, by category. WAITS are what waits for a person — the owner's four:
-# the price, a size no photo shows, a password / sign-in code, a real CAPTCHA (the last two are the sites' own pages:
-# the group's plain lines, crosslist.ALERTS — no reply, only her hands on the Mac). Everything else never waits.
+# the price, a size no photo shows, a password / sign-in code, a real CAPTCHA (the last two are the sites' own pages —
+# WO56: one private message, "reply show", the owner's hands on the Mac's screen; never the group). Everything else
+# never waits.
 WAITS = {"price", "size", "sign-in", "captcha"}
 NEVER_WAITS = {
     "correction": "a reply changes a decision already made — the item goes up without it",
@@ -324,6 +325,16 @@ ALLOWED = [
     ("approve.py", "Which item? Reply 'size …' to its card", "size"),
     ("pipeline.py", "which size? Reply 'size S'", "size"),
     ("crosslist.py", "— it goes up once you reply 'size …' to its card", "size"),
+    # WO56: a password / sign-in code and a real CAPTCHA — the owner's private chat (never the group): "show" brings the
+    # site's own page to the front on the Mac's screen; his hands do it, the agent never types or solves it
+    ("humansteps.py", "wants you to sign in{…}, since {…}. Connect to the Mac's screen (Screen Sharing, {…}), reply "
+                      "show and type the password or code yourself", "sign-in"),
+    ("humansteps.py", "wants a person — {…}{…}, since {…}. 1 minute: connect to the Mac's screen (Screen Sharing, "
+                      "{…}), reply show,", "captcha"),
+    ("humansteps.py", "still wants a person — {…}, since {…}. Connect to the Mac's screen (Screen Sharing, {…}) and "
+                      "reply show — or later", "captcha"),
+    ("humansteps.py", "for 12 hours — it still waits; reply show when you're at a screen.", "captcha"),
+    ("humansteps.py", " · reply show in the private chat", "record"),
     # corrections — shown with a decision made, never awaited
     ("approve.py", "To change: reply size … · brand …", "correction"),
     ("approve.py", " — my best reading; reply 'size …' to change it", "correction"),
@@ -416,7 +427,8 @@ ALLOWED = [
 
 def test_only_the_four_waits_remain_in_the_agents_own_words():
     """Every string in thrift_agent/ that asks a question or prompts a reply / a tap is one of ALLOWED — and of those
-    only the price and a size no photo shows wait (the sign-in and CAPTCHA lines are the sites' pages, no reply)."""
+    only the four waits wait: the price and a size no photo shows (her card), a sign-in / code and a real CAPTCHA
+    (WO56: the owner's private chat — "reply show", his hands on the Mac's screen; the group never hears them)."""
     unlisted = []
     for rel, line, text in wo54_prompts.flagged():
         if not any(f == rel and piece in text for f, piece, _ in ALLOWED):
@@ -424,7 +436,8 @@ def test_only_the_four_waits_remain_in_the_agents_own_words():
     assert not unlisted, ("a question or a reply prompt that isn't one of the four waits (WO54 §2 — decide, post, one "
                           "check line; or add it to ALLOWED with why it never waits):\n" + "\n".join(unlisted))
     assert {c for _, _, c in ALLOWED} <= WAITS | set(NEVER_WAITS)
-    assert {c for _, _, c in ALLOWED if c in WAITS} == {"price", "size"}
+    assert {c for _, _, c in ALLOWED if c in WAITS} == WAITS
+    assert {f for f, _, c in ALLOWED if c in ("sign-in", "captcha")} == {"humansteps.py"}   # WO56: one place says them
 
 
 def test_the_scan_finds_a_question_or_a_reply_prompt_wherever_it_is_written():

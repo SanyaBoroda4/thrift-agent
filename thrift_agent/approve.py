@@ -1179,9 +1179,13 @@ def _route_ops(s: Settings, db: DB, update: dict) -> str:
     quoted = ((msg.get("reply_to_message") or {}).get("text") or "")
     if bot is None:
         return "ignored: no ops chat"
-    from thrift_agent import quietctl
+    from thrift_agent import humansteps, quietctl
     if word := quietctl.command(text):               # WO54 §3: the owner's "post now" / "quiet now"
         return _quiet_word(s, db, bot, word, mid)
+    if (step := humansteps.command(text)) is not None:
+        # WO56: a human step — "show" (its window to the front on the Mac), "later" (no reminder for 12 h), "done"
+        bot.send_message(humansteps.reply(db, step[0], step[1], s=s), reply_to=mid)
+        return f"ops: {step[0]}" + (f" {step[1]}" if step[1] else "")
     reply = msg.get("reply_to_message")
     if isinstance(reply, dict) and reply.get("message_id") is not None:   # WO35: "⚠️ … can't confirm" lives here now
         row = db.outbox_lookup(msg["chat"]["id"], reply["message_id"])

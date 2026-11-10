@@ -222,7 +222,19 @@ async def open_bridge(s: Settings, db: DB | None, ps: dict, watch: bool = True, 
     b.waker = chrome_waker(s)                    # WO54 §4: the Thrift Chrome on demand (the Mac only)
     if db is not None:
         b.on_change = lambda kind, detail: chrome_changed(db, b, list(ext), kind, detail)
-        b.on_ext_event = bridge_mod.ext_event_logger(db)      # WO54: the extension's own events (the tidy) recorded
+        from thrift_agent import humansteps
+        logged = bridge_mod.ext_event_logger(db)               # WO54: the extension's own events (the tidy) recorded
+
+        def on_ext_event(ev: dict) -> None:      # WO56: a human step's held page, read every 10 s; a check that passed
+            logged(ev)
+            humansteps.on_ext_event(db, ev)
+        b.on_ext_event = on_ext_event
+        b.steps_source = lambda: humansteps.for_bridge(db)                    # WO56: the steps its Chrome holds
+        b.shows_source = lambda: humansteps.take_show(db, list(ext))          # ... and the owner's "show"
+        try:
+            b.shots_dir = s.path("failed") / "shots"                          # ... a stop page's picture, for its message
+        except KeyError:                                                      # (settings without one: a test's, the CLI's)
+            b.shots_dir = None
     if not watch or db is None:
         return b, None
     shown = {"seen": None, "at": 0.0}
@@ -693,7 +705,7 @@ async def last_look(s: Settings | None, db: DB, ps: dict, ctx, iid: str, mp: str
         url, looked = await ps[mp].find_live(ctx, render, since=postcheck.clicked_of(st, db.listing(iid, mp)).timestamp(),
                                              created=st.get("created"))
     except AccountBlocked as e:
-        crosslist.block(db, mp, str(e), e.page)
+        crosslist.block(db, mp, str(e), e.page, getattr(e, "shot", None))
         return False
     except Exception as e:  # noqa: BLE001 — can't look: never "absent"
         url, looked = None, {"error": f"{type(e).__name__}: {e}"}
@@ -754,7 +766,7 @@ async def recheck_unconfirmed(s: Settings | None, db: DB, ps: dict, mp: str, ctx
     try:
         url, looked = await poster.find_live(ctx, render, since=clicked.timestamp(), created=state.get("created"))
     except AccountBlocked as e:
-        crosslist.block(db, mp, str(e), e.page)
+        crosslist.block(db, mp, str(e), e.page, getattr(e, "shot", None))
         return True
     except Exception as e:  # noqa: BLE001 — not readable now: looked at again later, never "absent"
         url, looked = None, {"error": f"{type(e).__name__}: {e}"}
@@ -1163,7 +1175,7 @@ async def _run_cross(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, *, d
             out = await poster.post(ctx, render, "publish", True, shots)
         except AccountBlocked as e:              # logged out / CAPTCHA / verification: the owner must act on the Mac
             db.log(iid, "crosslist_dry_run", {"mp": mp, "status": "blocked", "error": str(e)})
-            crosslist.block(db, mp, str(e), e.page)
+            crosslist.block(db, mp, str(e), e.page, getattr(e, "shot", None))
             # WO53 §3: a verdict, so a paused site's test run waits its doubled cool-down — live 2026-11-08 a test that
             # met the login page returned nothing and ran again every ~5 s (500+ screenshots in 9 minutes)
             return Outcome("failed", error=str(e))
@@ -1190,7 +1202,7 @@ async def _run_cross(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, *, d
         try:
             url, looked = await poster.find_live(ctx, render, since=0)
         except AccountBlocked as e:
-            crosslist.block(db, mp, str(e), e.page)
+            crosslist.block(db, mp, str(e), e.page, getattr(e, "shot", None))
             return None
         except Exception as e:  # noqa: BLE001 — can't look: not posted now (retried next window)
             url, looked = None, {"error": f"{type(e).__name__}: {e}"}
@@ -1223,7 +1235,7 @@ async def _run_cross(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, *, d
     except AccountBlocked as e:
         row = db.listing(iid, mp)
         db.upsert_listing(iid, mp, status="queued", error=str(e), attempts=max(0, (row["attempts"] or 1) - 1))
-        crosslist.block(db, mp, str(e), e.page)
+        crosslist.block(db, mp, str(e), e.page, getattr(e, "shot", None))
         return None
     except Exception as e:  # noqa: BLE001 — before the form: nothing submitted; never about the item (WO51)
         err = f"{type(e).__name__}: {e}"
@@ -1380,7 +1392,7 @@ async def check_logins(db: DB, ps: dict, mps: list[str]) -> list[str]:
             said.append(f"✓ {crosslist.LABEL[mp]}: logged in — its sell form opens in the Thrift Chrome")
             notify.say(said[-1])
         except AccountBlocked as e:
-            crosslist.block(db, mp, str(e), e.page)
+            crosslist.block(db, mp, str(e), e.page, getattr(e, "shot", None))
             said.append(f"⛔ {crosslist.LABEL[mp]}: {e}")
         except Exception as e:  # noqa: BLE001 — a check never stops the poster
             said.append(f"❌ {crosslist.LABEL[mp]} login check: {type(e).__name__}: {e}")

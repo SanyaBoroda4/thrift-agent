@@ -472,8 +472,9 @@ async def run_takedown(site: str, poster, db: DB, ctx, ready=None, shots: Path |
             if shots is not None:                   # the job's pictures next to the poster's evidence (WO40)
                 poster.shot = shots / f"{iid}-{site}-{stamp}-takedown.png"
             ok = await poster.delist(url)
-    except AccountBlocked as e:                 # a login / CAPTCHA / block page: the site stops for the window (one
-        crosslist.block(db, site, str(e), e.page)   # plain group line); the take-down waits — not an attempt
+    except AccountBlocked as e:                 # a login / CAPTCHA / block page: the site stops (WO56: a human step's
+        crosslist.block(db, site, str(e), e.page, getattr(e, "shot", None))   # one private message); the take-down
+        #                                         waits — not an attempt
         db.conn.execute("UPDATE takedowns SET status=?, error=? WHERE id=?", (WAITING, str(e)[:300], t["id"]))
         return True
     except Exception as e:  # noqa: BLE001 — a take-down never stops the worker; tried again (3 attempts in all)
