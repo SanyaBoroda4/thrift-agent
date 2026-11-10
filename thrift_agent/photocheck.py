@@ -56,6 +56,8 @@ ABSENT_PER_RUN = 20               # … this many a site in one run (ONE job, on
 CONTROL = "photocheck_control"    # kv (WO56): {site: {"key", "url"}} — a listing the last bulk read showed (known live)
 RECHECK = "photocheck_recheck"    # kv (WO56): the one re-check `thrift photocheck --recheck-not-in-bulk` asked for
 RECHECK_CAP = 60                  # the re-check's listings a site in one job
+BULK_NOW = "photocheck_bulk_now"  # kv (WO56b): {site: when asked} — `thrift photocheck --read-shop <site>`: that shop
+#                                   read in bulk at the next run, whatever its 6-hour clock says (once)
 GONE_PREFIX = "gone from "        # (WO56) the error of a row its site no longer has: "gone from Vinted (…) — not relisted"
 
 
@@ -111,6 +113,7 @@ async def bulk_reads(s: Settings, db: DB, ps: dict, sites: list[str], now: datet
     JSON's keys are logged once per site (`photocheck_shape`), so the live names are known."""
     stamps = loads(db.kv_get(BULK_AT)) or {}
     said = loads(db.kv_get(SHAPE_SAID)) or {}
+    asked = loads(db.kv_get(BULK_NOW)) or {}         # WO56b: `thrift photocheck --read-shop <site>`
     out: dict[str, dict[str, dict]] = {}
     for mp in sites:
         poster = ps.get(mp)
@@ -119,8 +122,10 @@ async def bulk_reads(s: Settings, db: DB, ps: dict, sites: list[str], now: datet
         if crosslist.blocked(db, mp):
             continue
         last = _when(stamps.get(mp))
-        if last is not None and now - last < timedelta(seconds=BULK_EVERY):
+        if mp not in asked and last is not None and now - last < timedelta(seconds=BULK_EVERY):
             continue
+        if asked.pop(mp, None) is not None:           # asked for once: this read is it, whatever comes of it
+            db.kv_set(BULK_NOW, json.dumps(asked))
         try:
             bulk = await poster.read_shop()
         except Exception as e:  # noqa: BLE001
@@ -298,7 +303,8 @@ async def run(s: Settings, db: DB, ps: dict, limit: int = PER_RUN) -> list[str]:
     except Exception as e:  # noqa: BLE001 — a reading never ends the poster
         db.log(None, "photocheck_recheck_failed", f"{type(e).__name__}: {e}"[:200])
     due = candidates(db, now)
-    bulk = await bulk_reads(s, db, ps, sorted({r["marketplace"] for r in due if r["marketplace"] != "poshmark"}), now)
+    sites = {r["marketplace"] for r in due if r["marketplace"] != "poshmark"} | set(loads(db.kv_get(BULK_NOW)) or {})
+    bulk = await bulk_reads(s, db, ps, sorted(sites), now)
     absent = loads(db.kv_get(ABSENT)) or {}
     stamp = now.isoformat(timespec="seconds")
     check: dict[str, list] = {}
@@ -488,6 +494,17 @@ def flagged_since(db: DB, since: str) -> list:
         if row is not None and row["status"] == "posted" and row["url"]:
             rows.append(row)
     return rows
+
+
+def ask_bulk(db: DB, site: str) -> None:
+    """WO56b: `thrift photocheck --read-shop depop|vinted` — that shop read in bulk by the running poster at its next
+    photo check (within 5 minutes), whatever its 6-hour clock says: one read, read only (the site's own products /
+    wardrobe JSON from the shop page; nothing clicked), logged as every bulk read is (`photocheck_bulk`: listings,
+    pages, complete, base, tried, note) — e.g. once after a change to the bulk read."""
+    asked = loads(db.kv_get(BULK_NOW)) or {}
+    asked[site] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    db.kv_set(BULK_NOW, json.dumps(asked))
+    db.log(None, "photocheck_bulk_asked", {"site": site})
 
 
 def ask_recheck(db: DB, since: str, dry: bool = False) -> dict[str, int]:

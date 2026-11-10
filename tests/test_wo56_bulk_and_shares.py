@@ -292,6 +292,41 @@ def test_the_recheck_command_asks_the_running_poster_and_an_unservable_request_e
     assert lines and "couldn't read 1 of them within a day" in lines[0] and db.kv_get(photocheck.RECHECK) == ""
 
 
+def test_read_shop_asks_the_running_poster_for_one_bulk_read_now_whatever_its_six_hour_clock_says(env, monkeypatch):
+    """WO56b (live 2026-11-10: the Depop bulk read had been fixed; the next one by its clock was 6 hours away): `thrift
+    photocheck --read-shop depop` — the Depop shop read in bulk at the poster's next photo check although its last bulk
+    read was minutes ago and none of its listings is due; once (the run after reads nothing more); Vinted's clock
+    untouched; a site the poster can't read now keeps the request for the next run."""
+    from typer.testing import CliRunner
+    s, db, said, group, api_calls = env
+    monkeypatch.setattr(cli, "settings", lambda: s)
+    items = [_item(db, n) for n in range(3)]
+    depop = Shop("depop", [_record(db, i, "depop") for i in items])
+    vinted = Shop("vinted", [_record(db, i, "vinted") for i in items])
+    asyncio.run(photocheck.run(s, db, {"depop": depop, "vinted": vinted}))   # the regular reads: both shops
+    assert [e["site"] for e in events(db, "photocheck_bulk")] == ["depop", "vinted"]
+    asyncio.run(photocheck.run(s, db, {"depop": depop, "vinted": vinted}))   # minutes later: nothing due, no read
+    assert len(events(db, "photocheck_bulk")) == 2
+    r = CliRunner().invoke(cli.app, ["photocheck", "--read-shop", "Depop"])
+    assert r.exit_code == 0, r.output
+    assert "asked the running poster to read the Depop shop in bulk" in r.output
+    assert CliRunner().invoke(cli.app, ["photocheck", "--read-shop", "poshmark"]).exit_code != 0
+    assert CliRunner().invoke(cli.app, ["photocheck", "--read-shop", "depop", "--recheck-not-in-bulk"]).exit_code != 0
+    assert CliRunner().invoke(cli.app, ["photocheck"]).exit_code != 0
+    away = Shop("depop", [])
+    away.available = lambda: False                                              # the Thrift Chrome away: kept
+    asyncio.run(photocheck.run(s, db, {"depop": away, "vinted": vinted}))
+    assert len(events(db, "photocheck_bulk")) == 2 and "depop" in loads(db.kv_get(photocheck.BULK_NOW))
+    asyncio.run(photocheck.run(s, db, {"depop": depop, "vinted": vinted}))
+    assert [e["site"] for e in events(db, "photocheck_bulk")] == ["depop", "vinted", "depop"]
+    assert events(db, "photocheck_bulk")[-1]["complete"] is True
+    assert loads(db.kv_get(photocheck.BULK_NOW)) == {}
+    asyncio.run(photocheck.run(s, db, {"depop": depop, "vinted": vinted}))   # once: nothing more
+    assert len(events(db, "photocheck_bulk")) == 3
+    assert events(db, "photocheck_bulk_asked") == [{"site": "depop"}]
+    assert events(db, "photocheck_not_in_bulk") == [] and said == [] and api_calls == []
+
+
 # ======================================================================== §6 the Shortcut's new order
 
 SID = "2026-11-09_194212_3141"                       # shared at 7:42 PM

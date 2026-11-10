@@ -1576,7 +1576,9 @@ test("Depop: the shop read in bulk from its products JSON with the page's token;
   const r = plain(p.last());
   assert.equal(r.event, "result", JSON.stringify(r));
   assert.equal(r.source, "json");
-  assert.ok(asked[0][0].includes("/shop/exampleshopname/products/") && asked[0][1] === "Bearer tok123", asked);
+  // WO56b: the selling hub's own list of the signed-in seller's listings is asked first
+  assert.ok(asked[0][0].startsWith("https://webapi.depop.com/api/v1/shop/products/?") && asked[0][1] === "Bearer tok123",
+            asked);
   assert.deepEqual(r.listings, [{ id: "7", slug: "example-shirt-24cb", price: "40.0", sold: false, photos: 2,
                                   url: "https://www.depop.com/products/example-shirt-24cb/" }]);
 });
@@ -1707,13 +1709,14 @@ test("Depop: the products JSON found and read to its end — the shop's number f
   assert.ok(!asked.some(([a]) => a.startsWith("/api/v1/shop/exampleshopname/")), "the shop's number came from the page");
 });
 
-test("Depop: the address the shop page itself fetched comes first; a cursor that never moves on ends the read (WO56 §0.3)", async () => {
+test("Depop: the address the shop page itself fetched comes next after the selling list; a cursor that never moves on ends that address's read (WO56 §0.3)", async () => {
   const p = page("depop", shopPage(["exampleshopname-a-1"]), "https://www.depop.com/exampleshopname/");
   p.w.performance.getEntriesByType = (kind) => (kind === "resource" ? [{
     name: "https://webapi.depop.com/api/v2/shop/777/products/?limit=24&cursor=abc&force_fee_calculation=false" }] : []);
   const asked = [];
   p.w.fetch = async (u) => {
     asked.push(String(u));
+    if (new URL(String(u)).pathname !== "/api/v2/shop/777/products/") return answer(404, { error: "not found" });
     return answer(200, { products: [{ id: 1, slug: "exampleshopname-a-1" }, { id: 2, slug: "exampleshopname-b-2" }],
                          meta: { cursor: "same", end: false } });
   };
@@ -1721,14 +1724,100 @@ test("Depop: the address the shop page itself fetched comes first; a cursor that
                          selectors: SELECTORS, photos: [], pace: "fast" });
   const r = plain(p.last());
   assert.equal(r.event, "result", JSON.stringify(r));
-  const first = new URL(asked[0]);
-  assert.equal(first.pathname, "/api/v2/shop/777/products/");
-  assert.equal(first.searchParams.get("cursor"), null);                            // its own paging taken off
-  assert.equal(first.searchParams.get("force_fee_calculation"), "false");
-  assert.equal(asked.length, 2);
+  assert.equal(new URL(asked[0]).pathname, "/api/v1/shop/products/");               // WO56b: the selling list first
+  const own = new URL(asked[1]);
+  assert.equal(own.pathname, "/api/v2/shop/777/products/");
+  assert.equal(own.searchParams.get("cursor"), null);                              // its own paging taken off
+  assert.equal(own.searchParams.get("force_fee_calculation"), "false");
+  assert.equal(new URL(asked[2]).searchParams.get("cursor"), "same");
+  // the path that looped isn't asked again (the recorded /api/v2/shop/{user_id}/products/ is that path)
+  assert.equal(asked.filter((a) => new URL(a).pathname === "/api/v2/shop/777/products/").length, 2, asked.join("\n"));
   assert.equal(r.listings.length, 2);
   assert.equal(r.complete, false);
-  assert.match(r.note, /no product not seen before/);
+  assert.equal(r.base, "/api/v2/shop/777/products/");
+  assert.match(r.note, /^\/api\/v2\/shop\/777\/products\/ page 2 brought no product not seen before/);
+});
+
+test("Depop: the selling hub's own list read first — the signed-in seller's listings, 24 a page by its cursor to meta.end, nothing else asked (WO56b)", async () => {
+  // live 2026-11-10 7:18 AM: the shop page's own address (v3 by shop id) answered page 1 and refused page 2
+  const all = Array.from({ length: 110 }, (_, i) => ({ id: 9000 + i, slug: `exampleshopname-sell-${i}`,
+                                                        price: { priceAmount: "25.00", currencyName: "USD" },
+                                                        pictures: [{}, {}], status: "ONSALE" }));
+  const p = page("depop", shopPage(["exampleshopname-sell-0"]), "https://www.depop.com/exampleshopname/");
+  p.d.cookie = "access_token=tok123";
+  p.w.performance.getEntriesByType = (kind) => (kind === "resource" ? [{
+    name: "https://webapi.depop.com/api/v3/shop/4242/products/?limit=24&force_fee_calculation=false" }] : []);
+  const asked = [];
+  p.w.fetch = async (u, opts) => {
+    const url = new URL(String(u));
+    asked.push([url, opts?.headers?.Authorization]);
+    if (url.pathname !== "/api/v1/shop/products/") return answer(404, { error: "not found" });
+    const at = Number(url.searchParams.get("cursor") || 0);
+    return answer(200, { products: all.slice(at, at + 24),
+                         meta: { cursor: at + 24 < all.length ? String(at + 24) : null, end: at + 24 >= all.length } });
+  };
+  await p.w.Thrift.run({ job: { job_id: "d-selling", site: "depop", mode: "find", shop: "exampleshopname", all: true },
+                         selectors: SELECTORS, photos: [], pace: "fast" });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r).slice(0, 400));
+  assert.equal(r.source, "json");
+  assert.equal(r.complete, true);
+  assert.equal(r.base, "/api/v1/shop/products/");
+  assert.equal(r.pages, 5);
+  assert.equal(r.listings.length, 110);
+  assert.equal(new Set(r.listings.map((x) => x.slug)).size, 110);                   // every listing, once
+  assert.equal(r.listings[109].price, "25.00");
+  assert.equal(r.listings[109].photos, 2);
+  assert.equal(r.note, null);
+  assert.deepEqual(r.tried, []);
+  assert.equal(asked.length, 5, asked.map(([u]) => u.href).join("\n"));            // nothing else asked
+  const first = asked[0][0];
+  assert.equal(first.searchParams.get("statusFilter"), "selling");
+  assert.equal(first.searchParams.get("limit"), "24");
+  assert.equal(first.searchParams.get("cursor"), null);
+  assert.deepEqual(asked.slice(1).map(([u]) => u.searchParams.get("cursor")), ["24", "48", "72", "96"]);
+  assert.ok(asked.every(([, auth]) => auth === "Bearer tok123"), "the page's token on every page");
+});
+
+test("Depop: an address that doesn't reach its end hands over to the next — the listings read kept once each, the refusals said, complete when one reaches the end (WO56b)", async () => {
+  const all = Array.from({ length: 60 }, (_, i) => ({ id: 6000 + i, slug: `exampleshopname-h-${i}`, pictures: [{}] }));
+  const data = `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify(
+    { props: { pageProps: { shop: { id: 4242, username: "exampleshopname" } } } })}</script>`;
+  const p = page("depop", shopPage(["exampleshopname-h-0"], data), "https://www.depop.com/exampleshopname/");
+  p.d.cookie = "access_token=tok123";
+  p.w.performance.getEntriesByType = (kind) => (kind === "resource" ? [{
+    name: "https://webapi.depop.com/api/v3/shop/4242/products/?limit=24&force_fee_calculation=false" }] : []);
+  const asked = [];
+  p.w.fetch = async (u) => {
+    const url = new URL(String(u));
+    asked.push(url);
+    const later = url.searchParams.get("cursor") || url.searchParams.get("offset_id");
+    if (url.pathname === "/api/v1/shop/products/" || url.pathname === "/api/v3/shop/4242/products/") {
+      if (later) return answer(400, { errors: [{ code: "invalid_request", message: "Invalid cursor" }] });
+      return answer(200, { products: all.slice(0, 24), meta: { cursor: "c-24", end: false } });
+    }
+    if (url.pathname === "/api/v1/shop/4242/products/") {           // pages by offset_id = meta.last_offset_id
+      const at = Number(url.searchParams.get("offset_id") || 0);
+      return answer(200, { products: all.slice(at, at + 24),
+                           meta: { last_offset_id: String(at + 24), end: at + 24 >= all.length } });
+    }
+    return answer(404, { error: "not found" });
+  };
+  await p.w.Thrift.run({ job: { job_id: "d-handover", site: "depop", mode: "find", shop: "exampleshopname", all: true },
+                         selectors: SELECTORS, photos: [], pace: "fast" });
+  const r = plain(p.last());
+  assert.equal(r.event, "result", JSON.stringify(r).slice(0, 600));
+  assert.equal(r.complete, true);
+  assert.equal(r.base, "/api/v1/shop/4242/products/");
+  assert.equal(r.listings.length, 60);
+  assert.equal(new Set(r.listings.map((x) => x.slug)).size, 60);                     // each once, across addresses
+  assert.ok(r.tried.some((t) => /^\/api\/v1\/shop\/products\/: page 2 answered HTTP 400 — 24 listings read \(asked with: [^;]*cursor/.test(t)), r.tried);
+  assert.ok(r.tried.some((t) => /^\/api\/v3\/shop\/4242\/products\/: page 2 answered HTTP 400 .*Invalid cursor/.test(t)), r.tried);
+  assert.match(r.note, /then read to its end from \/api\/v1\/shop\/4242\/products\/$/);
+  // a path that refused a next page isn't asked again (the recorded v3 address by the shop's number is that path)
+  assert.equal(asked.filter((u) => u.pathname === "/api/v3/shop/4242/products/").length, 2);
+  assert.deepEqual(asked.filter((u) => u.pathname === "/api/v1/shop/4242/products/")
+    .map((u) => u.searchParams.get("offset_id")), [null, "24", "48"]);
 });
 
 test("Depop: a next page refused — the note says what it was asked with, the last page's meta keys and the refusal, never the token (WO56b)", async () => {
@@ -1752,9 +1841,11 @@ test("Depop: a next page refused — the note says what it was asked with, the l
   assert.equal(r.event, "result", JSON.stringify(r).slice(0, 400));
   assert.equal(r.listings.length, 24);
   assert.equal(r.complete, false);
-  assert.match(r.note, /^page 2 answered HTTP 400 — 24 listings read \(asked with: [^;]*cursor[^;]*; page 1's meta: cursor,end,result_count; it said: /);
+  assert.equal(r.base, "/api/v3/shop/4242/products/");
+  assert.match(r.note, /^\/api\/v3\/shop\/4242\/products\/ page 2 answered HTTP 400 — 24 listings read \(asked with: [^;]*cursor[^;]*; page 1's meta: cursor,end,result_count; it said: /);
   assert.match(r.note, /invalid parameter cursor/);
   assert.doesNotMatch(r.note, /tok123secret/, "never the token");
+  assert.ok(!r.tried.some((t) => /tok123secret/.test(t)), "never the token");
 });
 
 test("Depop: with no products JSON the shop page's tiles are read to its end, scrolled — nothing clicked (WO56 §0.3)", async () => {

@@ -1098,14 +1098,19 @@ Both sites turn away any browser driven over DevTools; the extension runs in the
   sold, autopublish off, unconfirmed, mismatch, refused the form, waiting for the brand, not the item's family, held) →
   still not live an hour later → ONE "⚠️ <title> isn't on Poshmark: <reason>"; `watch.not_live` (the 2-hour 🚨).
 - **WO56 §0.3 — the bulk read reaches every listing:** Vinted's wardrobe to its last page (`vinted.js wardrobePages`,
-  96 a page), Depop's products JSON by its own cursor (`depop.js shopAll`: the address the shop page fetched, else
-  `selectors.json depop.shop_products`, unverified; else the tiles scrolled to the end); `photocheck_bulk` logs pages,
-  complete, `base` (record it in selectors.json); a refused next page's note names the parameters it was asked with, the
-  last page's meta keys and the refusal's words (WO56b — live 11-10: v3 by shop id answered page 1, refused page 2;
-  Depop's paging still open). A listing the bulk data lacks is flagged ONCE and read by its OWN
+  96 a page), Depop's products JSON by its own cursor (`depop.js shopAll`, WO56b — live 11-10 7:18 AM the shop page's
+  own address, v3 by shop id, answered page 1 and refused page 2 with HTTP 400): first the selling hub's own list
+  (`selectors.json depop.shop_products.selling`: the signed-in seller's listings for sale, 24 a page by `cursor` to
+  `meta.end`, the requests Depop's selling-hub page makes), then the address the shop page fetched, then the recorded
+  ones (unverified); an address that doesn't reach its end hands over to the next — the listings read kept once each,
+  its path not asked again, its refusal in `tried` / `note` (the parameters it was asked with, the last page's meta
+  keys, the refusal's words, never the token); else the tiles scrolled to the end. `photocheck_bulk` logs pages,
+  complete, `base` (record it in selectors.json). A listing the bulk data lacks is flagged ONCE and read by its OWN
   data (`photocheck.confirm_absent` → `ExtensionPoster.listing_states`; a listing known live read first — a 404
   counts only when it answers): live → cleared; sold → the sale net; 404 → gone when seen again 10+ min later.
-  `thrift photocheck --recheck-not-in-bulk [--since …] [--dry-run]`.
+  `thrift photocheck --recheck-not-in-bulk [--since …] [--dry-run]`; `--read-shop depop|vinted` (WO56b): that shop
+  read in bulk at the running poster's next photo check whatever its 6-hour clock says (once, read only; kv
+  `photocheck_bulk_now`).
 - **Gone vs sold (WO56):** only a SALE acts on the other sites (`sold_found`); Poshmark's own Not for Sale keeps WO49's
   rule (her signal: `not_for_sale`, the other sites come down). A listing merely GONE — its own page / data 404,
   removed, closed without a sale — is that row only: `delisted` "gone from <Site> (its own data: …) — not

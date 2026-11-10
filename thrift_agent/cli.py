@@ -939,15 +939,30 @@ def photocheck_cmd(recheck_not_in_bulk: bool = typer.Option(
                        False, "--recheck-not-in-bulk",
                        help="read every listing flagged 'not in bulk' again, by its own page / data"),
                    since: str = typer.Option("2026-11-01", "--since", help="flags since this day (YYYY-MM-DD)"),
-                   dry_run: bool = typer.Option(False, "--dry-run", help="read and report only; nothing recorded")) -> None:
+                   dry_run: bool = typer.Option(False, "--dry-run", help="read and report only; nothing recorded"),
+                   read_shop: str = typer.Option(None, "--read-shop",
+                                                 help="depop | vinted: that shop read in bulk at the running poster's "
+                                                      "next photo check (once; read only)")) -> None:
     """WO56 §0.3: the photo check's one-time re-check — each Depop / Vinted listing the old bulk read flagged "not in
     bulk" since --since (and still posted here) read by its OWN data (Depop its listing page, Vinted its item JSON):
     live → the flag cleared; sold → the sale net; 404 → recorded gone from that site once a second read 10 minutes
     later agrees (nothing else taken down, never relisted). The running poster reads them (the extension is its) and
-    sends ONE private line with what it found."""
+    sends ONE private line with what it found. WO56b: `--read-shop depop|vinted` — that shop read in bulk at the
+    running poster's next photo check whatever its 6-hour clock says (one read, read only; the `photocheck_bulk`
+    event says how far it went)."""
     from thrift_agent import photocheck
+    if read_shop is not None:
+        if recheck_not_in_bulk:
+            raise typer.BadParameter("one of --recheck-not-in-bulk, --read-shop")
+        site = read_shop.strip().lower()
+        if site not in ("depop", "vinted"):
+            raise typer.BadParameter("--read-shop depop | vinted")
+        photocheck.ask_bulk(_db(), site)
+        print(f"asked the running poster to read the {site.title()} shop in bulk at its next photo check (within 5 "
+              "minutes; read only) — its photocheck_bulk event says how far it went")
+        return
     if not recheck_not_in_bulk:
-        raise typer.BadParameter("--recheck-not-in-bulk")
+        raise typer.BadParameter("--recheck-not-in-bulk or --read-shop depop|vinted")
     try:
         datetime.fromisoformat(since)
     except ValueError:

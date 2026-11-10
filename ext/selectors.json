@@ -648,6 +648,7 @@
     },
     "edit_url": "https://www.depop.com/products/edit/{slug}/",
     "shop_products": {
+      "selling": "https://webapi.depop.com/api/v1/shop/products/?lang=en&limit=24&statusFilter=selling",
       "json": [
         "https://webapi.depop.com/presentation/api/v1/shop/{shop}/products/?limit=24",
         "https://webapi.depop.com/api/v3/shop/{user_id}/products/?limit=24",
@@ -656,9 +657,9 @@
         "https://webapi.depop.com/api/v1/shop/{user_id}/filteredProducts/selling?limit=24",
         "https://webapi.depop.com/api/v2/shop/{shop}/products/?limit=200"
       ],
-      "how": "WO56 §0.3: the shop's products JSON (the page's sign-in token, no cookies — the receipts' way): the address the shop page itself fetched comes first (its performance entries), then these in order ({shop} the username, {user_id} the shop's number from the page's data or /api/v1/shop/<username>/); the first that answers with a product list is followed page by page (meta.cursor / last_offset_id) to meta.end; the bulk read logs the one that answered (photocheck_bulk 'base') — record it here first",
+      "how": "WO56 §0.3 / WO56b: the shop's products JSON (the page's sign-in token, no cookies — the receipts' way): first 'selling' — the selling hub's own list of the signed-in seller's listings for sale (24 a page, cursor = meta.cursor to meta.end: the requests Depop's selling-hub page makes as it scrolls; the Thrift Chrome is signed in as the shop's owner) — then the address the shop page itself fetched (its performance entries), then these in order ({shop} the username, {user_id} the shop's number from the page's data or /api/v1/shop/<username>/); each that answers with a product list is followed page by page (meta.cursor / last_offset_id) to meta.end; one that doesn't reach its end hands over to the next, the listings read kept and its path not asked again; the bulk read logs the one that reached the end (photocheck_bulk 'base') — record it here first",
       "verified": false,
-      "seen": "2026-10-20 → 2026-11-09 (the Mac's photocheck_bulk events): the old single address (api/v2/shop/<username>/products/?limit=200) never answered — every read fell back to the shop page's first 25 tiles"
+      "seen": "2026-10-20 → 2026-11-09 (the Mac's photocheck_bulk events): the old single address (api/v2/shop/<username>/products/?limit=200) never answered — every read fell back to the shop page's first 25 tiles. 2026-11-10 7:18 AM (WO56): the shop page's own address, /api/v3/shop/<shop id>/products/, answered page 1 (24 listings) and refused page 2 with HTTP 400. The selling list ('selling') is what Depop's selling-hub page reads, page by page by meta.cursor to meta.end; another seller tool's live read of a real shop with it on 2026-11-01 matched Depop's own count (91 for sale) — not yet read by us"
     },
     "orders": {
       "url": "https://www.depop.com/sellinghub/sold-items/",

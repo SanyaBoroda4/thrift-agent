@@ -194,6 +194,13 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
   // - The pages: its own cursor (meta.cursor / next_cursor, else last_offset_id → offset_id, else meta.next) until
   //   meta.end, an empty page or no cursor (`complete`); a cursor seen before or a page with no new product ends it as a
   //   loop, PAGE_CAP pages or PAGE_BUDGET_MS at most (said in `note`).
+  // WO56b (live 2026-11-10 7:18 AM: the shop page's own address, v3 by shop id, answered page 1 — 24 listings of ~110
+  // — and refused page 2 with HTTP 400): first the selling hub's own list (selectors.json `shop_products.selling`: the
+  // signed-in seller's listings for sale, 24 a page by `cursor` to meta.end — the requests Depop's selling-hub page
+  // makes as it scrolls; the Thrift Chrome is signed in as the shop's owner), then the page's own address, then the
+  // recorded ones. An address that doesn't reach its end (a next page refused, a page with nothing new) hands over to
+  // the next one: the listings read so far are kept (each once), its path isn't asked again, its refusal is in `tried`
+  // and `note` (what the page was asked with, the last page's meta keys, the refusal's words — never the token).
   // Returns {listings, …} — or {failed: true, tried} when no address answered (the scrolled tiles then).
   const PAGE_CAP = 120;                        // 120 pages of 24 (Depop's usual page): 2,880 listings
   const PAGE_BUDGET_MS = 120000;               // the whole read, inside the job's three minutes
@@ -286,9 +293,11 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
     const own = (performance.getEntriesByType?.("resource") || []).map((e) => String(e.name || ""))
       .find((n) => /webapi\.depop\.com\/(?:presentation\/)?api\/v\d+\/shop\/[^/]+\/(?:filteredProducts\/selling|products)\b/
         .test(n));
-    const recorded = [].concat(T.selectors.depop.shop_products?.json
-      || "https://webapi.depop.com/api/v2/shop/{shop}/products/?limit=200").filter(Boolean).map(String);
+    const conf = T.selectors.depop.shop_products || {};
+    const recorded = [].concat(conf.json || "https://webapi.depop.com/api/v2/shop/{shop}/products/?limit=200")
+      .filter(Boolean).map(String);
     const templates = [];
+    if (conf.selling) templates.push(String(conf.selling));    // WO56b: the selling hub's own list first
     if (own) {
       const u = new URL(own);
       for (const k of PAGING) u.searchParams.delete(k);
@@ -296,15 +305,26 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
     }
     templates.push(...recorded);
     let userId = null;                                // looked up only when a "{user_id}" address is reached
-    const asked = new Set();
+    const asked = new Set(), stuck = new Set();       // stuck: the paths that didn't reach their end — not asked again
     const t0 = Date.now();
+    // WO56b: every address read adds to ONE list — each listing once, known by its id or its slug
+    const listings = [], kept = new Set();
+    const isNew = (rec) => !((rec.id && kept.has(`i:${rec.id}`)) || (rec.slug && kept.has(`s:${rec.slug}`)));
+    const keep = (rec) => {
+      if (rec.id) kept.add(`i:${rec.id}`);
+      if (rec.slug) kept.add(`s:${rec.slug}`);
+    };
+    const notes = [];
+    let pages = 0, shape = null, answered = null;
+    const spent = () => pages >= PAGE_CAP || Date.now() - t0 > PAGE_BUDGET_MS * T.timeoutScale;
     for (const tpl of templates) {
+      if (spent()) break;
       if (tpl.includes("{user_id}")) {
         if (userId === null) userId = (await userIdOf(shop, headers, tried)) || "";
         if (!userId) continue;
       }
       const base = tpl.replace("{shop}", encodeURIComponent(shop)).replace("{user_id}", userId || "");
-      if (asked.has(base)) continue;
+      if (asked.has(base) || stuck.has(pathOf(base))) continue;
       asked.add(base);
       let first;
       try {
@@ -323,10 +343,11 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
         continue;
       }
       // the address answers: every page of it
-      const listings = [];
-      const seenIds = new Set(), cursors = new Set();
-      let data = first, url = base, pages = 0, complete = false, note = null, shape = null;
+      answered = answered || pathOf(base);
+      const mine = new Set(), cursors = new Set();     // this address's own: a page with nothing new to IT is a loop
+      let data = first, url = base, n = 0, note = null;
       for (;;) {
+        n++;
         pages++;
         const list = productsIn(data) || [];
         if (!shape && list[0] && typeof list[0] === "object") shape = Object.keys(list[0]).slice(0, 40);
@@ -335,22 +356,25 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
           if (!p || typeof p !== "object") continue;
           const rec = productOf(p);
           const key = rec.id || rec.slug;
-          if (!key || seenIds.has(key)) continue;
-          seenIds.add(key);
-          listings.push(rec);
+          if (!key || mine.has(key)) continue;
+          mine.add(key);
           fresh++;
+          if (isNew(rec)) {
+            keep(rec);
+            listings.push(rec);
+          }
         }
         const next = list.length ? nextPage(url, data) : null;
-        if (!next) {
-          complete = true;
-          break;
+        if (!next) {                                   // its end: the whole shop
+          return { listings, shape, source: "json", pages, complete: true, base: pathOf(base), tried,
+                   note: notes.length ? `${notes.join("; ")} — then read to its end from ${pathOf(base)}` : null };
         }
         if (!fresh || cursors.has(next)) {
-          note = `page ${pages} ${fresh ? "pointed back to a page read already" : "brought no product not seen before"} — `
+          note = `page ${n} ${fresh ? "pointed back to a page read already" : "brought no product not seen before"} — `
             + "stopped there";
           break;
         }
-        if (pages >= PAGE_CAP || Date.now() - t0 > PAGE_BUDGET_MS * T.timeoutScale) {
+        if (spent()) {
           note = `stopped after ${pages} pages (${listings.length} listings): the `
             + `${pages >= PAGE_CAP ? "page cap" : "time budget"}`;
           break;
@@ -359,6 +383,7 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
         if (pages % 5 === 0) {
           T.emit({ event: "progress", job_id: job.job_id, what: `products page ${pages} (${listings.length})` });
         }
+        await T.sleep(250);                             // a breath between pages: about the pace of scrolling
         try {
           const r = await fetch(next, { credentials: "omit", headers });
           if (!r.ok) {
@@ -368,20 +393,27 @@ ${body.textContent || ""}` : "";   // jsdom: no innerText
             let said = "";
             try { said = (await r.text()).replace(/\s+/g, " ").replace(/[A-Za-z0-9._~+/=-]{24,}/g, "…").slice(0, 120); }
             catch (e) { /* no body */ }
-            const asked = [...new URL(next).searchParams.keys()].join(",") || "none";
+            const keys = [...new URL(next).searchParams.keys()].join(",") || "none";
             const meta = data?.meta && typeof data.meta === "object" ? Object.keys(data.meta).join(",") : "";
-            note = `page ${pages + 1} answered HTTP ${r.status} — ${listings.length} listings read (asked with: ${asked}; `
-              + `page ${pages}'s meta: ${meta || "none"}; it said: ${said || "nothing"})`;
+            note = `page ${n + 1} answered HTTP ${r.status} — ${listings.length} listings read (asked with: ${keys}; `
+              + `page ${n}'s meta: ${meta || "none"}; it said: ${said || "nothing"})`;
             break;
           }
           data = await r.json();
           url = next;
         } catch (e) {
-          note = `page ${pages + 1}: ${String(e && e.message ? e.message : e).slice(0, 60)} — ${listings.length} read`;
+          note = `page ${n + 1}: ${String(e && e.message ? e.message : e).slice(0, 60)} — ${listings.length} read`;
           break;
         }
       }
-      return { listings, shape, source: "json", note, pages, complete, base: pathOf(base), tried };
+      // WO56b: not to its end — the next address carries on, with what this one read
+      stuck.add(pathOf(base));
+      notes.push(`${pathOf(base)} ${note}`);
+      tried.push(`${pathOf(base)}: ${note}`);
+    }
+    if (answered) {
+      return { listings, shape, source: "json", note: notes.join("; ") || null, pages, complete: false,
+               base: answered, tried };
     }
     return { failed: true, tried };
   }
