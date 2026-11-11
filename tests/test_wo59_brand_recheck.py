@@ -18,8 +18,14 @@ NOW = datetime(2026, 11, 11, 3, 0, tzinfo=timezone.utc)
 URL = "https://poshmark.com/listing/Mango-Linen-Wrap-Dress-Beige-size-M-6ae7a55198bbf3ba57153844"
 
 
+LIVE = {"brand": None}                       # the listing's public page, as the look reads it first
+
+
 def _db(tmp_path, said, monkeypatch):
     monkeypatch.setattr(notify, "say", said.append)
+    from thrift_agent import crosslist
+    LIVE["brand"] = None
+    monkeypatch.setattr(crosslist, "poshmark_listing", lambda url: dict(LIVE))
     db = DB(tmp_path / "state.db")
     iid = db.add_item("b1", 1, str(tmp_path))
     db.set_item(iid, status="posted", facts={"brand": {"value": "Mango"}},
@@ -110,3 +116,26 @@ def test_the_poster_records_a_post_with_an_empty_brand_field(tmp_path, monkeypat
     assert brandcheck.empty_by_us(["Poshmark: 'Mango' isn't in Poshmark's brand list — posted with the brand in the "
                                    "title and description"])
     assert not brandcheck.empty_by_us(["brand set to 'J. Crew' (from 'J.Crew')"])
+
+
+def test_a_listing_that_shows_a_brand_now_is_retired_without_a_look(tmp_path, monkeypatch):
+    """Live 2026-11-11 12:19 AM: three listings seeded from their empty posts had their brand set since (WO52's
+    corrections: Astr, Zara) — a look there would spend a brand edit re-setting it. The listing is read first; a
+    brand showing → never looked at, never edited. One look an hour at most."""
+    said = []
+    db, iid = _db(tmp_path, said, monkeypatch)
+    s = Settings({"machine_role": "dev"})
+    brandcheck.add(db, iid, "Mango", now=NOW)
+    LIVE["brand"] = "Mango"
+    probe = Probe(found="Mango")
+    assert _run(s, db, probe, NOW) and probe.looks == 0
+    assert brandcheck.due(db, NOW + timedelta(days=60)) == []
+    assert db.conn.execute("SELECT COUNT(*) FROM listing_edits").fetchone()[0] == 0
+    other = db.add_item("b1", 3, str(tmp_path / "o"))
+    full = {**json.loads(db.item(iid)["renders"])["poshmark"], "brand": "TOPTEN", "title": "Topten Vest", "sku": other}
+    db.set_item(other, status="posted", renders={"poshmark": full})
+    db.upsert_listing(other, "poshmark", status="posted", url=URL + "x")
+    brandcheck.add(db, other, "TOPTEN", now=NOW)
+    LIVE["brand"] = None
+    assert not _run(s, db, probe, NOW + timedelta(minutes=30))         # within the hour: no second look
+    assert _run(s, db, probe, NOW + timedelta(minutes=61)) and probe.looks == 1

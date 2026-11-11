@@ -25,6 +25,8 @@ KEY = "posh_brand_recheck"
 EVERY = timedelta(days=7)
 SEEDED = "posh_brand_recheck_seeded"
 NOTES = ("isn't in Poshmark's brand list", "Poshmark's list has no")
+LAST = "posh_brand_recheck_last"   # kv: when the last look was made (one an hour at most)
+SPACING = timedelta(hours=1)
 
 
 def _now() -> datetime:
@@ -105,12 +107,21 @@ def due(db: DB, now: datetime | None = None) -> list[str]:
 async def run_one(s: Settings, db: DB, poster, ctx, dry: bool = False, now: datetime | None = None) -> bool:
     """The next due listing (see the module): the brand looked for on a create-listing form left through Discard;
     found → ONE "brand" edit queued (Poshmark only), never looked at again. True when one was looked at."""
-    from thrift_agent import edits
+    import asyncio
+    from thrift_agent import crosslist, edits
     from thrift_agent.schema import Render
     now = now or _now()
     todo = due(db, now)
     if not todo or dry or not hasattr(poster, "brand_known"):
         return False
+    last = db.kv_get(LAST)
+    if last:
+        try:
+            if now - datetime.fromisoformat(last) < SPACING:
+                return False                                  # one look an hour at most (her laptop, her account)
+        except ValueError:
+            pass
+    db.kv_set(LAST, _iso(now))
     iid = todo[0]
     it = db.item(iid)
     data = entries(db)
@@ -120,6 +131,19 @@ async def run_one(s: Settings, db: DB, poster, ctx, dry: bool = False, now: date
         entry.update(checked_at=_iso(now), edits=1, found=None)       # no brand any more (hers): never looked again
         data[iid] = entry
         _save(db, data)
+        return True
+    # the listing itself first (its public page, as the photo check reads it): a brand showing there — set by a later
+    # correction, or by her — is never touched again (live 2026-11-11 12:19 AM: two ASTR listings and the Zara one
+    # had theirs set by WO52's corrections)
+    url = (db.listing(iid, "poshmark") or {"url": None})["url"]
+    live = await asyncio.to_thread(crosslist.poshmark_listing, url) if url else None
+    if live is None:
+        return True                                           # unreadable now: looked at on a later turn
+    if live.get("brand"):
+        entry.update(checked_at=_iso(now), edits=1, found=None, retired=f"the listing shows '{live['brand']}'")
+        data[iid] = entry
+        _save(db, data)
+        db.log(iid, "brand_recheck_retired", {"live_brand": live.get("brand")})
         return True
     try:
         found, left = await poster.brand_known(ctx, Render.model_validate(posh))
