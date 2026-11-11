@@ -84,7 +84,8 @@ def evening(db: Database, now: datetime | None = None, mode: str | None = None) 
 
 
 def night_list(db: Database, now: datetime | None = None, mode: str | None = None) -> dict:
-    """WO60: the shipping list in the 22:00 hour, once a day (the hourly timer; shiplist.py)."""
+    """WO60: the shipping list once a day — WO63: in the 21:00 hour (`shipping.night_list.at`), the hourly timer's
+    LAST job, after the 9 PM line, so it sits at the bottom of the chat (shiplist.py)."""
     return shiplist.night_list(db, now, mode)
 
 

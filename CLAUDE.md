@@ -614,7 +614,7 @@ edit_save; UNVERIFIED: block, captcha, verify, skirt_length, promo_close, listin
   "⚠️ Can't read the iCloud inbox …"; 🔋 battery low; 📭 photos still on the iPhone; "⏸ Not published automatically:
   <title> — <site> publishes by itself only once its autopublish is on." (WO53: no "⏭ … Reply 'retry'" line any more —
   a listing the poster couldn't make is ONE private 🚨, `runner.ask_skipped`); 🔻 the day's drops; 💰 sales, ⚠️ sold twice,
-  📦 overdue, the 10 PM shipping list (WO60), "Couldn't take … down on <Site> — please mark it sold there.", "⚠️ <title> sold on <Site> but is still
+  📦 overdue, the 9 PM shipping list (WO60, WO63), "Couldn't take … down on <Site> — please mark it sold there.", "⚠️ <title> sold on <Site> but is still
   listed on <Sites> …"; replies to her own messages. Never ids, errno or tracebacks. No "safe to close" / "close the Mac"
   wording anywhere (a grep test).
 - **Everything else is private** (`notify.ops` / `notify.say`): the status message, "Back online", "Poster started
@@ -1270,11 +1270,12 @@ backfill waits for its plan (`--not-before`).**
   sale its site shows shipped / delivered / completed / cancelled. Overdue → "📦 Overdue: <title> (<Site>) — ship today"
   in the group once (kind `overdue_site`) only when the site, read after the day ended, still shows it to ship; else the
   old private line. Her `shipped <title words>` marks it.
-- **The 10 PM shipping list** (WO60, the owner 2026-11-11; WO62's layout: "with links to each item so she can click";
-  `api/thrift_api/shiplist.py`, the hourly timer's `timers.night_list`): once a local day in the 22:00 hour
-  (`settings.ship_list_sent_on`, claimed in one conditional write before the send), the group, Telegram HTML (titles
-  escaped, addresses only in quoted href, link previews off), with sound (`settings` `shipping.night_list.silent` =
-  true: silent). Every sale not yet shipped on all four sites — not cancelled / double_sale / done / merged, not shown
+- **The 9 PM shipping list** (WO60, the owner 2026-11-11; WO62's layout: "with links to each item so she can click";
+  WO63: "lets send this list at 9pm actually"; `api/thrift_api/shiplist.py`, the hourly timer's LAST job
+  `timers.night_list`, below the 9 PM line): once a local day in the hour of `settings` `shipping.night_list.at`
+  ("21:00" by default; `settings.ship_list_sent_on`, claimed in one conditional write before the send), the group,
+  Telegram HTML (titles escaped, addresses only in quoted href, link previews off), with sound (`settings`
+  `shipping.night_list.silent` = true: silent). Every sale not yet shipped on all four sites — not cancelled / double_sale / done / merged, not shown
   on its way by the order sweep (`LEFT_ON_SITE`) — her own eBay sales too ("· your listing"), unmatched ones by
   `title_seen`. "📦 SHIPPING LIST", the full date, the non-zero counts ("4 packages · 🔴 1 late · 🟠 2 tomorrow · 🟢 1
   later"); groups 🔴 LATE — SHIP FIRST / 🟠 SHIP TODAY / 🟠 SHIP TOMORROW · <day> / 🟢 LATER, each ONE <blockquote>,

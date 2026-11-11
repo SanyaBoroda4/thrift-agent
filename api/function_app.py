@@ -198,7 +198,7 @@ def every_5_min(timer: func.TimerRequest) -> None:
 @app.timer_trigger(schedule="0 0 * * * *", arg_name="timer", run_on_startup=False, use_monitor=True)
 def hourly(timer: func.TimerRequest) -> None:
     """The daily cleanup, done in the 3 AM hour New York time (the schedule itself is UTC); WO45 §9: the day's one
-    line in the 21:00 hour; WO60: the shipping list in the 22:00 hour."""
+    line in the 21:00 hour; WO60 / WO63: the shipping list in the 21:00 hour, LAST (below the day's line)."""
     _timer(lambda: timers.daily(http.get_db(), datetime.now(timezone.utc)))
     _timer(lambda: timers.evening(http.get_db(), datetime.now(timezone.utc)))
-    _timer(lambda: timers.night_list(http.get_db(), datetime.now(timezone.utc)))     # WO60: the 10 PM shipping list
+    _timer(lambda: timers.night_list(http.get_db(), datetime.now(timezone.utc)))     # WO63: the 9 PM list, last

@@ -13,7 +13,8 @@ import pytest
 
 from thrift_api import core, http, shiplist, telegram, timers
 
-TEN_PM = datetime(2026, 11, 12, 3, 0, tzinfo=timezone.utc)          # Wed Nov 11, 10:00 PM New York (EST)
+NINE_PM = datetime(2026, 11, 12, 2, 0, tzinfo=timezone.utc)         # Wed Nov 11, 9:00 PM New York (EST) — WO63
+TEN_PM = NINE_PM + timedelta(hours=1)                                 # the night hours begin
 CREATED = "2026-11-01T12:00:00+00:00"
 POSH_ORDER = "6a3f00aa11bb22cc33dd44ee"
 
@@ -48,7 +49,7 @@ def order(db, mp, oid, sid, status):
                (mp, oid, sid, status, CREATED, CREATED))
 
 
-def run(db, now=TEN_PM, mode="live"):
+def run(db, now=NINE_PM, mode="live"):
     return timers.night_list(db, now, mode)
 
 
@@ -88,7 +89,7 @@ def test_the_shipping_list_as_the_owner_sees_it(db, out):
     got = run(db)
     assert got["sent"] == 1 and got["packages"] == 4
     [(chat, text, silent, as_html)] = out
-    assert chat == "group" and as_html and silent is False             # 10 PM is night, but this one has sound
+    assert chat == "group" and as_html and silent is False             # 9 PM: with sound
     assert plain(text) == """📦  SHIPPING LIST
 Wednesday, November 11
 4 packages  ·  🔴 1 late  ·  🟠 2 tomorrow  ·  🟢 1 later
@@ -307,7 +308,7 @@ def test_a_sale_with_no_sale_day_counts_from_its_record_and_is_said_privately_on
     assert "⏰ Ship by ≈ Tue Nov 17" in plain(group[0])                  # Poshmark 7 days from Tue Nov 10
     assert len(ops) == 1 and "no sale day" in ops[0] and "s1" in ops[0]
     db.execute("DELETE FROM settings WHERE key = ?", (shiplist.SENT_ON,))
-    run(db, TEN_PM + timedelta(days=1))
+    run(db, NINE_PM + timedelta(days=1))
     assert len([t for c, t, _, _ in out if c == "ops"]) == 1            # the private line once
 
 
@@ -336,33 +337,53 @@ def test_sent_once_however_often_the_timer_runs_in_the_hour(db, out):
     sale(db, "s1", "poshmark", title="Tory Burch Croc Loafers", ship_by="2026-11-12")
     assert run(db)["sent"] == 1
     assert run(db)["sent"] == 0                                          # a second run, the same hour
-    assert run(db, TEN_PM + timedelta(minutes=40))["sent"] == 0           # a retry later in the hour
+    assert run(db, NINE_PM + timedelta(minutes=40))["sent"] == 0          # a retry later in the hour
+    assert run(db, TEN_PM)["sent"] == 0                                   # nothing at 10 any more
     assert len(out) == 1
     assert core.setting(db, shiplist.SENT_ON) == "2026-11-11"
-    assert run(db, TEN_PM + timedelta(days=1))["sent"] == 1               # the next evening
-
-
-@pytest.mark.parametrize("hour_utc,sent", [(2, 0), (3, 1), (4, 0)])
-def test_ten_pm_local_on_the_day_the_clocks_go_back(db, out, hour_utc, sent):
-    sale(db, "s1", "depop", title="Something", ship_by="2026-11-03")
-    # Sun Nov 1 2026: EDT ends at 2 AM — 10 PM that evening is EST, 03:00 UTC on Nov 2
-    assert run(db, datetime(2026, 11, 2, hour_utc, 5, tzinfo=timezone.utc))["sent"] == sent
+    assert run(db, NINE_PM + timedelta(days=1))["sent"] == 1              # the next evening
 
 
 @pytest.mark.parametrize("hour_utc,sent", [(1, 0), (2, 1), (3, 0)])
-def test_ten_pm_local_on_the_day_the_clocks_go_forward(db, out, hour_utc, sent):
+def test_nine_pm_local_on_the_day_the_clocks_go_back(db, out, hour_utc, sent):
+    sale(db, "s1", "depop", title="Something", ship_by="2026-11-03")
+    # Sun Nov 1 2026: EDT ends at 2 AM — 9 PM that evening is EST, 02:00 UTC on Nov 2
+    assert run(db, datetime(2026, 11, 2, hour_utc, 5, tzinfo=timezone.utc))["sent"] == sent
+
+
+@pytest.mark.parametrize("hour_utc,sent", [(0, 0), (1, 1), (2, 0)])
+def test_nine_pm_local_on_the_day_the_clocks_go_forward(db, out, hour_utc, sent):
     sale(db, "s1", "depop", title="Something", ship_by="2027-03-16")
-    # Sun Mar 14 2027: EDT from 2 AM — 10 PM that evening is EDT, 02:00 UTC on Mar 15
+    # Sun Mar 14 2027: EDT from 2 AM — 9 PM that evening is EDT, 01:00 UTC on Mar 15
     assert run(db, datetime(2027, 3, 15, hour_utc, 5, tzinfo=timezone.utc))["sent"] == sent
 
 
-def test_not_outside_the_ten_pm_hour(db, out):
+def test_not_outside_the_nine_pm_hour(db, out):
     sale(db, "s1", "depop", title="Something", ship_by="2026-11-12")
-    assert run(db, TEN_PM - timedelta(minutes=1))["sent"] == 0 and out == []      # 9:59 PM
+    assert run(db, NINE_PM - timedelta(minutes=1))["sent"] == 0 and out == []     # 8:59 PM
+    assert run(db, NINE_PM + timedelta(minutes=59))["sent"] == 1                   # 9:59 PM: still its hour
+
+
+@pytest.mark.parametrize("value,hour_utc", [("22:00", 3), ("20:00", 1), ("21:00", 2), ("not a time", 2), ("25:00", 2)])
+def test_the_setting_moves_the_hour(db, out, value, hour_utc):
+    core.put_setting(db, shiplist.AT, value)
+    sale(db, "s1", "depop", title="Something", ship_by="2026-11-13")
+    hits = [h for h in (0, 1, 2, 3, 4) if run(db, datetime(2026, 11, 12, h, 0, tzinfo=timezone.utc))["sent"]]
+    assert hits == [hour_utc]                                                      # once, in that hour only
+
+
+def test_it_is_the_hourly_timers_last_job_below_the_9_pm_line():
+    from thrift_agent.config import ROOT
+    src = (ROOT / "api" / "function_app.py").read_text(encoding="utf-8")
+    body = src[src.index("def hourly("):]
+    body = body[:body.index("\n\n\n") if "\n\n\n" in body else len(body)]
+    jobs = re.findall(r"timers\.(\w+)\(", body)
+    assert jobs[-1] == "night_list" and jobs.index("evening") < jobs.index("night_list")
 
 
 @pytest.mark.parametrize("value,silent", [(None, False), ("false", False), ("true", True)])
 def test_sound_on_by_default_and_the_setting_makes_it_silent(db, out, value, silent):
+    """9 PM is no night hour: sound like any message; `true` makes it silent; at 10 PM (the setting moved) still sound."""
     if value is not None:
         core.put_setting(db, shiplist.SILENT, value)
     sale(db, "s1", "depop", title="Something", ship_by="2026-11-12")
@@ -408,9 +429,9 @@ def test_a_preview_with_nothing_open_shows_the_sample_marked(db, out):
 def test_the_preview_route_takes_only_a_preview(db, out, monkeypatch):
     monkeypatch.setenv("SALES_MODE", "live")
     sale(db, "s1", "depop", title="Something", ship_by="2026-11-12")
-    code, _, _ = http.handle("POST", "/ship-list", body=b'{"preview": true}', now=TEN_PM - timedelta(hours=2), db=db)
+    code, _, _ = http.handle("POST", "/ship-list", body=b'{"preview": true}', now=NINE_PM - timedelta(hours=2), db=db)
     assert code == 200 and out[0][0] == "ops"
-    code, _, _ = http.handle("POST", "/ship-list", body=b"{}", now=TEN_PM - timedelta(hours=2), db=db)
+    code, _, _ = http.handle("POST", "/ship-list", body=b"{}", now=NINE_PM - timedelta(hours=2), db=db)
     assert code == 400 and len(out) == 1
 
 
@@ -418,7 +439,13 @@ def test_health_shows_the_last_list_and_the_packages_open_now(db, out):
     sale(db, "s1", "depop", title="Something", ship_by="2026-11-12")
     run(db)
     sale(db, "s2", "vinted", title="Sold after ten", ship_by="2026-11-18")
-    code, _, body = http.handle("GET", "/health", db=db, now=TEN_PM + timedelta(minutes=5))
+    code, _, body = http.handle("GET", "/health", db=db, now=NINE_PM + timedelta(minutes=5))
     got = json.loads(body)["ship_list"]
     assert code == 200 and got["sent_on"] == "2026-11-11" and got["open_packages"] == 2
     assert got["last"]["packages"] == 1 and got["last"]["sent"] == 1 and got["last"]["groups"]["tomorrow"] == 1
+
+
+def test_moved_to_ten_it_still_has_sound_the_night_hours_exception(db, out):
+    core.put_setting(db, shiplist.AT, "22:00")
+    sale(db, "s1", "depop", title="Something", ship_by="2026-11-13")
+    assert run(db, TEN_PM)["sent"] == 1 and out[0][2] is False

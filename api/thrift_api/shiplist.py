@@ -3,7 +3,9 @@ formatted message (a list) of all items that needs to be sent (either are due or
 list must have a deadline shipping date."); WO62 — its layout, take two ("It should be with links to each item so she
 can click. And I want even more clear and nicer formatting.").
 
-Once a local day in the 22:00 hour New York time (the hourly timer, DST-safe through zoneinfo), ONE message to the
+Once a local day in the 21:00 hour New York time (WO63, the owner: "lets send this list at 9pm actually"; the hour of
+`settings` `shipping.night_list.at`, "21:00" by default — the hourly timer, its last job, after the 9 PM line;
+DST-safe through zoneinfo), ONE message to the
 group — Tetiana packs — of every sale not yet shipped on all four sites, oldest ship-by first. Every package has a
 ship-by day: the sale's own (`sales.ship_by`: the email's or eBay's date, else the site's rule), else worked out from
 the sale's day by the site's rule and marked "≈"; a sale with no sale day at all counts from the day it was recorded
@@ -22,8 +24,9 @@ packages or near Telegram's 4,096 characters the next message goes on "📦 SHIP
 package. The footer: a thin line and "✓ Shipped ones drop off by themselves once the site shows them on the way."
 
 The day is claimed in `settings` (`ship_list_sent_on`, one conditional write) before anything is sent: a second run or
-a retry in the hour sends nothing. The list goes with sound — the night hours' one exception, asked for at 10 PM —
-unless `settings` holds `shipping.night_list.silent` = true. Azure's job: the Mac's quiet hours don't touch it.
+a retry in the hour sends nothing. The list goes with sound (9 PM is before the night hours; at 10 PM or later it
+would be their one exception) unless `settings` holds `shipping.night_list.silent` = true. Azure's job: the Mac's
+quiet hours don't touch it.
 Nothing of a buyer is read: only what `sales`, `items`, `listings`, `orders` and the sale email's parsed links hold."""
 from __future__ import annotations
 
@@ -40,7 +43,8 @@ from .util import EBAY, iso, parse_time, site_name
 
 log = logging.getLogger(__name__)
 
-HOUR = 22                                    # 10 PM New York
+AT = "shipping.night_list.at"                # settings: "21:00" — the hour the list goes (WO63)
+DEFAULT_AT = "21:00"
 SENT_ON = "ship_list_sent_on"                # settings: the local day the list went out
 LAST = "ship_list_last"                      # settings: what the last list said (GET /health shows it)
 SILENT = "shipping.night_list.silent"        # settings: "true" sends it silently; sound by default
@@ -382,6 +386,17 @@ def render(pkgs: list[Package], today: date) -> list[str]:
     return ["\n".join(p) for p in pages]
 
 
+def send_hour(db: Database) -> int:
+    """WO63: the local hour the list goes — the hour of `shipping.night_list.at` ("21:00"; the hourly timer runs on
+    the hour, so the minutes don't count); a value that isn't a time of day keeps 21."""
+    raw = str(core.setting(db, AT) or DEFAULT_AT).strip()
+    try:
+        hour = int(raw.split(":", 1)[0])
+    except ValueError:
+        return int(DEFAULT_AT[:2])
+    return hour if 0 <= hour <= 23 else int(DEFAULT_AT[:2])
+
+
 def silent(db: Database) -> bool:
     return str(core.setting(db, SILENT) or "").strip().lower() in ("true", "1", "yes", "on")
 
@@ -393,7 +408,7 @@ def _claim(db: Database, day: str) -> bool:
                            (SENT_ON, day)))
 
 
-PREVIEW = "🔎 <b>Preview</b> — tonight's 10 PM list as the group will see it:\n\n"
+PREVIEW = "🔎 <b>Preview</b> — tonight's list as the group will see it:\n\n"
 SAMPLE = "🔎 <b>Preview (sample)</b> — nothing is open now; the look, with made-up sales:\n\n"
 
 
@@ -409,15 +424,16 @@ def sample(today: date) -> list[Package]:
 
 
 def night_list(db: Database, now: datetime | None = None, mode: str | None = None, preview: bool = False) -> dict:
-    """The timer's job (see the module): in the 22:00 hour, once a day, the list to the group. `preview` (WO60, the
-    owner sees the look first): the same list now, to the private chat, marked — the day is not taken; with nothing
+    """The timer's job (see the module): in the hour of `send_hour` (21:00), once a day, the list to the group.
+    `preview` (WO60, the owner sees the look first): the same list now, to the private chat, marked — the day is not taken; with nothing
     open, WO62's made-up sales marked "(sample)"."""
     now, mode = (util.aware(now) if now else util.utcnow()), mode or util.mode()
     local = deadlines.local(now)
     if mode == "off":
         return {"sent": 0, "why": "off"}
-    if not preview and local.hour != HOUR:
-        return {"sent": 0, "why": f"sent in the {HOUR}:00 hour New York time"}
+    hour = send_hour(db)
+    if not preview and local.hour != hour:
+        return {"sent": 0, "why": f"sent in the {hour}:00 hour New York time"}
     sales, no_day = open_sales(db, now)
     pkgs = packages(sales)
     mark = PREVIEW
