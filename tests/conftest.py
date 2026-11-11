@@ -128,6 +128,11 @@ def no_thrift_chrome(monkeypatch):
     monkeypatch.setattr("thrift_agent.post.runner.quit_thrift_chrome", lambda s, wait=0: "not in a test")
     from thrift_agent import memory
     memory.reset()                         # WO54 §4: the shared memory reading of one test never reaches the next
+    # WO58 (live 2026-11-10 21:37: the deploy's test run on the Mac hung 80 minutes in test_ebay_flow — the poster loop
+    # under test read her laptop's REAL memory pressure through `top` / `sysctl`, a busy 8 GB Mac said "warning", no
+    # listing started and the loop never went idle; on the PC there is no `top`, so it never showed): no test reads
+    # the machine's memory — every reading is the PC's "none" (a test that wants one passes `level=` / `top_out=`)
+    monkeypatch.setattr(memory, "_run", lambda args, timeout=15: "")
     yield
     memory.reset()
 
