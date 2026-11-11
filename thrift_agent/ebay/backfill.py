@@ -7,10 +7,20 @@ of the clock).
 `thrift ebay backfill` makes the plan (kv `ebay_backfill`); the running poster's housekeeping lets the day's items into
 the queue one at a time (`tick`), each at its price on Poshmark that day — the base its eBay price is worked out from
 (a price she changed there by hand, or one after a drop, counts); an item not on Poshmark any more takes the lowest
-price its live sites show."""
+price its live sites show.
+
+WO61 (the owner, 2026-11-11: "whenever agent will post previous listings i want it to send links for each one"): the
+old ✅ card is still edited with its 🔵 eBay line, but that card is days up the chat — so each backfilled item whose
+eBay listing is live (posted: read back) gets ONE new group message, silent, "🔵 Now on eBay: <title> — $161" and its
+address (`send_links`, the housekeeping's turn; never twice: the event `backfill_link_sent` taken in one statement
+before the send; the items already live when this began are recorded without a message, `seed_links`); a failed one
+gets none (its private line as before). A new share gets none: its own card is fresh. Once the day's batch is done, or
+at 9 PM, ONE line: "🔵 eBay today: 25 more items up · 64 to go · about 3 more days." (`day_line`)."""
 from __future__ import annotations
 
+import html
 import json
+import math
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -198,3 +208,145 @@ def status(db: DB) -> dict:
             "left": sum(1 for e in planned.values() if e.get("left")),
             "waiting": sum(1 for e in planned.values() if not e.get("queued_at") and not e.get("left")),
             "since": _load(db).get("since"), "not_before": _load(db).get("not_before")}
+
+
+# --- WO61: a link for every backfilled item, and the day's line -----------------------------------------------------
+
+LINK_EVENT = "backfill_link_sent"          # events: the item's link message, taken before it goes (never twice)
+LINK_FAILED = "backfill_link_failed"
+LINKS_SEEDED = "ebay_backfill_links_seeded"   # kv: the items live before WO61 recorded without a message, once
+DAY_SAID = "ebay_backfill_day_said"        # kv: the local day the day's line went
+DAY_LINE_HOUR = 21                         # 9 PM: the line goes then if the day's batch isn't done by itself
+LINKS_PER_TURN = 5
+LINK_TRIES = 3                             # a message Telegram refused this often is left (one private line)
+SETTLED = ("posted", "failed", "skipped", "delisted", "sold")
+
+
+def link_text(title: str, price: float | None, url: str) -> str:
+    """"🔵 Now on eBay: Zara TRF Collection 100% Genuine Leather Moto Jacket Black size S — $161" and the address on
+    its own line (HTML: the title escaped)."""
+    money = f" — ${float(price):,.0f}" if price else ""
+    return f"🔵 Now on eBay: {html.escape(' '.join(str(title or 'an item').split()), quote=False)}{money}\n{url}"
+
+
+def _linked(db: DB) -> set[str]:
+    return {r[0] for r in db.conn.execute("SELECT DISTINCT ref FROM events WHERE kind=?", (LINK_EVENT,))}
+
+
+def links_due(db: DB) -> list[tuple[str, object]]:
+    """(item, its eBay row) for each backfilled item live on eBay whose link message hasn't gone — in plan order."""
+    done = _linked(db)
+    out = []
+    for iid, entry in sorted(_load(db)["items"].items(), key=lambda kv: kv[1].get("n", 0)):
+        if not entry.get("queued_at") or iid in done:
+            continue
+        row = db.listing(iid, SITE)
+        if row is not None and row["status"] == "posted" and row["url"]:
+            out.append((iid, row))
+    return out
+
+
+def seed_links(db: DB) -> int:
+    """Once: the backfilled items already live on eBay when the links began (the owner's first five, 2026-11-11 — she
+    has their links) are recorded as linked, without a message."""
+    if db.kv_get(LINKS_SEEDED):
+        return 0
+    due = links_due(db)
+    for iid, row in due:
+        db.log(iid, LINK_EVENT, {"url": row["url"], "seeded": True})
+    db.kv_set(LINKS_SEEDED, datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    return len(due)
+
+
+def _title(db: DB, iid: str, row) -> str:
+    fields = loads(row["fields_json"]) if row["fields_json"] else {}
+    if fields.get("title"):
+        return str(fields["title"])
+    it = db.item(iid)
+    renders = (loads(it["renders"]) or {}) if it is not None else {}
+    return str((renders.get("poshmark") or {}).get("title") or iid)
+
+
+def _to_group(s: Settings, text: str, silent: bool) -> None:
+    """The group, HTML; printed on the dev machine (no bot). Raises when it never left (the caller takes it back)."""
+    from thrift_agent import approve, notify
+    bot = approve.bot_for(s) if s is not None else None
+    if bot is None:
+        notify.group(text)
+        return
+    bot.send_message(text, parse_mode="HTML", silent=silent)
+
+
+def send_links(s: Settings, db: DB, limit: int = LINKS_PER_TURN) -> list[str]:
+    """WO61: the link messages due (at most `limit` a turn), each taken in ONE statement before it goes; a send that
+    never left is taken back for the next turn; one that may have arrived counts as sent. Returns the items sent."""
+    from thrift_agent import notify, telegram
+    seed_links(db)
+    sent = []
+    for iid, row in links_due(db)[:limit]:
+        tries = db.conn.execute("SELECT COUNT(*) FROM events WHERE ref=? AND kind=?", (iid, LINK_FAILED)).fetchone()[0]
+        if tries >= LINK_TRIES:
+            continue
+        text = link_text(_title(db, iid, row), row["price"], row["url"])
+        stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        cur = db.conn.execute(
+            "INSERT INTO events (ts, ref, kind, detail) SELECT ?, ?, ?, ? WHERE NOT EXISTS "
+            "(SELECT 1 FROM events WHERE ref=? AND kind=?)",
+            (stamp, iid, LINK_EVENT, json.dumps({"url": row["url"], "price": row["price"]}), iid, LINK_EVENT))
+        if cur.rowcount != 1:
+            continue                                   # another process sent it a moment ago
+        claim = cur.lastrowid
+        try:
+            _to_group(s, text, silent=True)
+        except Exception as e:  # noqa: BLE001 — Telegram away or refusing: never sent twice, never a crash
+            if telegram.maybe_delivered(e):
+                db.log(iid, "telegram_maybe_sent", {"kind": LINK_EVENT, "error": str(e)[:200]})
+                sent.append(iid)
+                continue
+            db.conn.execute("DELETE FROM events WHERE rowid=?", (claim,))
+            db.log(iid, LINK_FAILED, {"error": str(e)[:200]})
+            if tries + 1 >= LINK_TRIES:
+                notify.ops(f"🔵 The eBay link message for {iid} was refused {LINK_TRIES} times — left: {row['url']}")
+            break                                      # Telegram away: the rest wait for the next turn
+        sent.append(iid)
+    return sent
+
+
+def day_line(s: Settings, db: DB, now: datetime | None = None) -> str | None:
+    """WO61: ONE group line a day once the day's batch is done — the day's `per_day` queued (or nothing left to queue)
+    and each of them settled on eBay — or at 9 PM, whichever is first: "🔵 eBay today: 25 more items up · 64 to go ·
+    about 3 more days." Only on a day something went up. Returns the line sent."""
+    now = now or datetime.now(timezone.utc)
+    local = now.astimezone(ZoneInfo(str((s.get("schedule.timezone") if s is not None else None)
+                                        or "America/New_York")))
+    today = local.date().isoformat()
+    if db.kv_get(DAY_SAID) == today:
+        return None
+    planned = _load(db)["items"]
+    todays = [iid for iid, e in planned.items() if str(e.get("queued_day") or "") == today]
+    rows = {iid: db.listing(iid, SITE) for iid in todays}
+    up = [iid for iid, r in rows.items() if r is not None and r["status"] == "posted"]
+    if not up:
+        return None
+    waiting = sum(1 for e in planned.values() if not e.get("queued_at") and not e.get("left"))
+    done = (len(todays) >= per_day(s) or waiting == 0) and all(r is not None and r["status"] in SETTLED
+                                                               for r in rows.values())
+    if not done and local.hour < DAY_LINE_HOUR:
+        return None
+    n = len(up)
+    if waiting:
+        days = math.ceil(waiting / max(1, per_day(s)))
+        text = (f"🔵 eBay today: {n} more item{'s' if n != 1 else ''} up · {waiting} to go · about {days} more "
+                f"day{'s' if days != 1 else ''}.")
+    else:
+        text = f"🔵 eBay today: {n} more item{'s' if n != 1 else ''} up — every planned item is on eBay now ✓"
+    db.kv_set(DAY_SAID, today)                         # taken before it goes: once a day
+    try:
+        _to_group(s, text, silent=False)
+    except Exception as e:  # noqa: BLE001
+        from thrift_agent import telegram
+        if not telegram.maybe_delivered(e):
+            db.kv_set(DAY_SAID, "")                    # never left: the next turn tries again
+            return None
+    db.log(None, "ebay_backfill_day_line", {"day": today, "up": n, "waiting": waiting})
+    return text

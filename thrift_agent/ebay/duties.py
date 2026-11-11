@@ -122,6 +122,9 @@ def tick(s: Settings, db: DB, ps: dict, dry: bool = False, now: datetime | None 
             from thrift_agent import crosslist
             read_poshmark = crosslist.poshmark_page
         done["backfilled"] = backfill.tick(s, db, now, read_poshmark)
+    if not dry:                                        # WO61: each backfilled item's link, and the day's line
+        done["links"] = backfill.send_links(s, db)
+        done["day_line"] = backfill.day_line(s, db, now)
     return done
 
 

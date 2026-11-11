@@ -239,13 +239,15 @@ class Bot:
         return body.get("result")
 
     def send_message(self, text: str, buttons: list[list[dict]] | None = None, reply_to: int | None = None,
-                     parse_mode: str | None = None) -> int:
+                     parse_mode: str | None = None, silent: bool = False) -> int:
         """Returns the sent message_id. `buttons` = rows of {"text": ..., "callback_data": ...}. `parse_mode` "HTML":
-        the group's "✅ …" card with its site links (WO34). Link previews are always off."""
+        the group's "✅ …" card with its site links (WO34). Link previews are always off. `silent`: no sound whatever
+        the hour (WO61: the eBay backfill's links, up to 25 a day); else the night hours decide (`post`)."""
         res = self.call("sendMessage", chat_id=self.chat_id, text=text[:MAX_TEXT],
                         reply_markup={"inline_keyboard": buttons} if buttons else None,
                         reply_to_message_id=reply_to, allow_sending_without_reply=True if reply_to else None,
-                        disable_web_page_preview=True, parse_mode=parse_mode)
+                        disable_web_page_preview=True, parse_mode=parse_mode,
+                        disable_notification="true" if silent else None)
         return int(res["message_id"])
 
     def edit_message(self, message_id: int, text: str, parse_mode: str | None = None) -> None:
