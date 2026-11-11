@@ -425,8 +425,8 @@ def sample(today: date) -> list[Package]:
 
 def night_list(db: Database, now: datetime | None = None, mode: str | None = None, preview: bool = False) -> dict:
     """The timer's job (see the module): in the hour of `send_hour` (21:00), once a day, the list to the group.
-    `preview` (WO60, the owner sees the look first): the same list now, to the private chat, marked — the day is not taken; with nothing
-    open, WO62's made-up sales marked "(sample)"."""
+    `preview` (WO60, the owner sees the look first): the same list now, to the private chat, marked — the day is not
+    taken; with nothing open, WO62's made-up sales marked "(sample)"."""
     now, mode = (util.aware(now) if now else util.utcnow()), mode or util.mode()
     local = deadlines.local(now)
     if mode == "off":
