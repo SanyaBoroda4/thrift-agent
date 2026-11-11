@@ -139,7 +139,9 @@ def test_validate_create_read_back_change_price_and_end():
         assert live.photos == URLS and live.aspects["Brand"] == ["J.Crew"] and live.aspects["Size"] == ["8"]
         assert (live.format, live.duration, live.available, live.best_offer) == ("FIXED_PRICE", "GTC", 1, True)
         assert (live.postal_code, live.country) == ("62701", "US")
-        assert (live.returns_accepted, live.returns_days, live.returns_payer) == (True, "DAYS_30", "BUYER")
+        assert (live.returns_accepted, live.returns_days, live.returns_payer) == (True, "DAYS_30", "Buyer")  # eBay's case
+        from thrift_agent.ebay.poster import differences
+        assert differences(f, live, len(URLS)) == []          # live 2026-11-11: "Buyer" read for BUYER is no difference
         assert (live.shipping_type, live.shipping_service, live.handling) == ("CALCULATED", "USPSParcel", "DAYS_3")
         assert await c.set_price(lid, 31) == []
         assert (await c.read_one(lid)).price == 31.0

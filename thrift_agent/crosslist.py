@@ -1200,28 +1200,52 @@ def item_checks(it) -> list[str]:
     return out
 
 
+SETTLED_AFTER = timedelta(hours=24)       # live elsewhere this long: the item's own doubts were decided back then
+
+
+def live_long_before(rows: dict, mps: list[str], now: datetime | None = None) -> bool:
+    """Another site of the item went live a day or more before these (`mps`) — an eBay backfill of an old item, live
+    2026-11-11: the Zara jacket's eBay line carried "title breaks the shop-window rules: repeated: Zara", a note of
+    Nov 1 about a title fixed long since, and the Moncler's its Poshmark doubts of Nov 9. Its doubts were decided when
+    it first went up; the new site's line names only that site's own notes."""
+    now = now or datetime.now(timezone.utc)
+    for mp, r in rows.items():
+        if mp in mps or not r["posted_at"]:
+            continue
+        try:
+            at = datetime.fromisoformat(str(r["posted_at"]))
+        except ValueError:
+            continue
+        if now - (at if at.tzinfo else at.replace(tzinfo=timezone.utc)) >= SETTLED_AFTER:
+            return True
+    return False
+
+
 def _say_checks(db: DB, iid: str, mps: list[str]) -> None:
     """The posters' notes (a brand left empty, a size taken as the nearest, …) to the ops chat, each once per item —
     never to the group (WO34, the owner: nothing technical in the group; the MNG card had a Depop note twice). WO54 §2:
     with them, every decision the agent made for the item under doubt (item_checks) — the ONE check line that replaces
-    the questions it no longer asks."""
+    the questions it no longer asks; for an item live elsewhere a day before (`live_long_before`) only the site's."""
     said = set()
     for (detail,) in db.conn.execute("SELECT detail FROM events WHERE ref=? AND kind='checks_said'", (iid,)):
         said |= set((loads(detail) or {}).get("notes") or [])
     rows = {r["marketplace"]: r for r in db.listings_for(iid)}
+    old = live_long_before(rows, mps)
     notes = []
     it = db.item(iid)
     gate = (loads(it["gate"]) or {}) if it is not None else {}
     said_by_gate = [*(gate.get("notes") or []), *(gate.get("info") or [])]   # the gate's notes are kept as its "info"
     decided_none = any(str(n).startswith("Brand: none") for n in gate.get("notes") or [])   # pipeline.BRAND_NONE
     no_brand = it is not None and not it["owner_brand"] and (NO_BRAND_NOTE in said_by_gate or decided_none)
-    if it is not None and not it["owner_brand"] and NO_BRAND_NOTE in said_by_gate and LISTED_NO_BRAND not in said:
+    if not old and it is not None and not it["owner_brand"] and NO_BRAND_NOTE in said_by_gate \
+            and LISTED_NO_BRAND not in said:
         notes.append(LISTED_NO_BRAND)                # 2026-10-27: no brand to be seen — said once, for the item
-    notes += [c for c in item_checks(it) if c not in said and c not in notes]
+    if not old:
+        notes += [c for c in item_checks(it) if c not in said and c not in notes]
     for mp in mps:
         f = loads((rows.get(mp) or {})["fields_json"]) if rows.get(mp) and rows[mp]["fields_json"] else {}
         for c in [*(f.get("guesses") or []), *(f"copy: {x}" for x in (f.get("checks") or []))]:
-            if no_brand and _SITE_NO_BRAND.search(c):
+            if no_brand and not old and _SITE_NO_BRAND.search(c):
                 continue                               # the item's one line says it
             note = f"{LABEL.get(mp, mp)}: {c}"
             if note not in said and note not in notes:

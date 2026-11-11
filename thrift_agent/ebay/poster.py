@@ -67,8 +67,11 @@ def differences(f: mapping.EbayFields, live: api.Live, photos: int) -> list[str]
     want_type = "CALCULATED" if f.shipping.get("type") == "calculated" else "FLAT"
     if live.shipping_type and live.shipping_type != want_type:
         out.append(f"shipping {live.shipping_type} (sent {want_type})")
+    # eBay takes the payer as BUYER and reads it back as "Buyer" (live 2026-11-11: every listing's read-back said
+    # "eBay shows it differently: returns True / DAYS_30 / Buyer")
     if f.returns.get("accepted") and (live.returns_accepted is False or
-                                      (live.returns_payer and live.returns_payer != f.returns.get("payer")) or
+                                      (live.returns_payer and str(live.returns_payer).upper()
+                                       != str(f.returns.get("payer") or "").upper()) or
                                       (live.returns_days and live.returns_days != f"DAYS_{f.returns.get('days')}")):
         out.append(f"returns {live.returns_accepted} / {live.returns_days} / {live.returns_payer}")
     if live.postal_code and str(live.postal_code) != str(f.location.get("postal_code")):

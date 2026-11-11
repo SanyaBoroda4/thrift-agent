@@ -509,7 +509,8 @@ class FakeEbay:
                 "bestOfferTerms": {"acceptBestOffer": bool((terms.get("bestOfferTerms") or {}).get("bestOfferEnabled"))},
                 "listingReturnTerms": {"domesticReturnTerms": {
                     "returnAccepted": ret.get("returnAccepted"), "returnDuration": ret.get("returnDuration"),
-                    "returnShipmentInvoicee": ret.get("returnShipmentInvoicee"),
+                    # eBay reads the payer back in its own case: BUYER sent, "Buyer" read (live 2026-11-11)
+                    "returnShipmentInvoicee": str(ret.get("returnShipmentInvoicee") or "").title() or None,
                     "listingRefundMethod": ret.get("refundMethod")}},
                 "listingFulfillmentTerms": {"shippingTerms": {
                     "handlingTimeDuration": ship.get("handlingTimeDuration"),

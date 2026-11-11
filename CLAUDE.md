@@ -2,8 +2,8 @@
 
 Photos shot on an iPhone become live Poshmark, Depop and Vinted listings with no typing. The seller shoots, taps Share
 → "New item"; the Mac groups the photos into items, writes the listings, asks her only for the price in Telegram, posts
-on all three sites at once, and takes an item down everywhere when it sells. **eBay is the fourth site (WO57): built,
-through eBay's official API with no browser, and OFF until its keys arrive** (the section "eBay — the fourth site").
+on all three sites at once, and takes an item down everywhere when it sells. **eBay is the fourth site (WO57): through eBay's
+official API with no browser, LIVE since 2026-11-11** (the section "eBay — the fourth site").
 **History and evidence (the per-WO sections, live incidents, superseded rules, the full verified-selector log):
 `docs/history.md`.** This file is the rules in force and what the code does now.
 
@@ -619,7 +619,8 @@ edit_save; UNVERIFIED: block, captcha, verify, skirt_length, promo_close, listin
   wording anywhere (a grep test).
 - **Everything else is private** (`notify.ops` / `notify.say`): the status message, "Back online", "Poster started
   (LIVE)", dry-run notes, CLI echoes (price / answer / confirm / condition / kids / category / redo), "Check — <title>:"
-  (ONE per item, each note once, event `checks_said`; routine notes filtered by `crosslist.noteworthy`), ❌ errors, ⛔
+  (ONE per item, each note once, event `checks_said`; routine notes filtered by `crosslist.noteworthy`; a site landing
+  on an item live elsewhere for a day — an eBay backfill — names only that site's notes, `crosslist.live_long_before`), ❌ errors, ⛔
   pauses, 🩹 learned selectors, 🔎 form changes, 🚨 alarms. The same text again: never (kv `ops_sent`), except the edited
   status message and CLI echoes. A failed private send → event `ops_chat_down`, not tried for 10 min (kv
   `ops_down_until`), **never sent to the group instead**. On dev both print (`[notify]` / `[ops]`).
@@ -1029,8 +1030,10 @@ creating nothing: her 10 listings read; the twenty test items planned on eBay's 
 `validated`; endListing / bulkUpdateInventory / updateListing (VALIDATE) answered "The listing identifier is invalid"
 for a made-up id (their shapes taken); every document and input checked against `listing.graphqls`. There is no
 sandbox spike: Alex chose the production checks on 2026-11-11 (the sandbox's category names are made up, it has no
-app, and thrift-api keeps one consent). Still OFF (`marketplaces.ebay.enabled: false`) until the ONE real listing
-(`thrift ebay first`, on the Mac) reads back right.**
+app, and thrift-api keeps one consent). **ON since 2026-11-11** (`marketplaces.ebay.enabled` + `autopublish` true in
+`config/settings.yaml`, the owner's go-live): the first five went up through the poster's own eBay worker as a
+backfill (`--items`), each read back right by API and on its public page; new shares go to eBay too; the rest of the
+backfill waits for its plan (`--not-before`).**
 - **The owner's rules (2026-11-10):** everything she shares goes to eBay too (designer brands included), on her own
   account; eBay's official API, **no browser** — every eBay action is an HTTPS call, nothing opens on the Mac; **the
   same profit as Poshmark**: the eBay price is computed from her price, never typed; the price stays adjustable (the
@@ -1057,8 +1060,10 @@ app, and thrift-api keeps one consent). Still OFF (`marketplaces.ebay.enabled: f
   reads it first, `data/ebay_shipping.json` holds it as the fallback); `Decimal` is string-encoded ("48.00", per the
   schema); the package type is **`PACKAGE_THICK_ENVELOPE`**, as on all of her listings (`client.PACKAGE_TYPE`), because
   `PARCEL_OR_PADDED_ENVELOPE` is refused (LSTNG_SHIPPING_PACKAGE_TYPE_INVALID); VALIDATE names the insertion fee
-  ($0.35) and warns LSTNG_PAYMENTS_ON_HOLD (a new seller). Still open until the first real listing: whether a listing
-  made this way can be edited by hand in eBay's app, and whether a create names $0.35 inside her free 250.
+  ($0.35) and warns LSTNG_PAYMENTS_ON_HOLD (a new seller) — **the real create names INSERTION $0.00** inside her free
+  250 (live 2026-11-11, all five). A listing made this way opens fully editable on eBay's own Revise page (photos,
+  title, specifics, condition, price, offers, shipping; seen 2026-11-11, nothing saved). eBay reads the returns payer
+  back as "Buyer" for the BUYER sent (`poster.differences` compares without case).
 - **The price** (`ebay/fees.py`, `data/ebay_fees.json` — dated `checked`; `thrift doctor` shows it; ONE private line
   at 90 days, `duties.note_stale`): base B = her price (the one she tapped; after a drop the old base less 10%; her
   "price 35"; a backfilled item: its Poshmark price that day). Target = Poshmark's payout (`B − 2.95` under $15, else
@@ -1432,8 +1437,8 @@ replay harness (keyed by model, prompt, tool, images' bytes; a replay never asks
   a new recording.
 - Eval (M0): `eval/fixtures/<case>/{photos,expected.yaml}`, `thrift eval`; targets segmentation ≥ 95%, brand / size ≥
   95%, condition ≥ 90%. Tune `segmentation.pause_*` / `visual_change_*` on real rolls.
-- Still open (WO57, eBay — production checks passed 2026-11-11, see the eBay section): the ONE real listing and its
-  read-back; whether a hand edit in eBay's app works on it; eBay's real category answers for the closet's real items
+- Still open (WO57, eBay — live since 2026-11-11, see the eBay section): a hand edit in eBay's phone app (the web's
+  Revise page opens them editable); eBay's real category answers for the closet's real items
   (`thrift ebay record` on the Mac); a real END is first met at the first sale (its shape is taken); the Inventory API
   fallback (not built); the fee table's rates above $2,000 / $7,500 (not in the file); the GraphQL sandbox address
   (never needed: no sandbox).

@@ -1727,6 +1727,32 @@ shipping choice were found only by her 12 items). `thrift_agent/formcheck.py`:
   Fixed before posting: `NEVER_FROM_WORDS`; materials by label part; colour / fill words never a material; the own
   part of an "A & B" name; an unsure kid is eBay's unisex. `thrift ebay backfill --items / --not-before` were added
   for the five and the start of the rest.
+- **Live, 2:55 PM:** `093a60c` deployed to the Mac (3057 tests passed), the poster restarted while idle ("Poster started
+  (LIVE) — poshmark, depop, vinted, ebay"). thrift-api's eBay orders read had answered `HTTP 404` since the consent:
+  the spec's host `apiz.ebay.com` answers every getOrders "404 Resource not found" (errorId 2002), `api.ebay.com`
+  answers 200 — fixed (`238e8c6`), deployed, the first read at 2:55 PM without an error. The five planned
+  (`--items`) at 2:54 PM went up between 2:55:30 and 2:56:36 PM, one per housekeeping turn:
+
+  | item | eBay | price |
+  |---|---|---|
+  | For Love & Lemons mini dress | 407356268345 · Dresses · Pre-owned Excellent · S | $81 (Poshmark $85) |
+  | Birkenstock Rio Kids | 407356268552 · Girls' Shoes · New with box · US 8 | $49 ($50) |
+  | Zara TRF leather moto jacket | 407356268788 · Coats, Jackets & Vests · Pre-owned Excellent · S | $161 ($170) |
+  | Zadig & Voltaire Tyler boots | 407356268956 · Women's Boots · New without box · US 7.5 | $209 ($220) |
+  | Moncler 12M snowsuit | 407356269506 · Baby Outerwear · Pre-owned Good · **9-12 Months** · Unisex Baby & Toddler | $76 ($80) |
+
+  Each read back by API from the PC (`sellerListings` by SKU: one listing per SKU, ACTIVE, every planned specific,
+  photo count, GTC, Best Offer, ZIP 29455, 30 days buyer pays, CALCULATED `USPSParcel`, DAYS_2) and on its public
+  page in a signed-in Chrome (a plain request gets eBay's 403 bot wall): title, price "or Best Offer", condition,
+  item specifics, USPS Ground Advantage at a calculated $7.33–$9.93, returns, Johns Island SC, the custom label =
+  our item id. The ✅ cards were edited with their 🔵 eBay line and price. **The fee:** each VALIDATE named INSERTION
+  $0.35, each real create INSERTION **$0.00** (inside the free 250). **Hand edits:** each page offers "Revise
+  listing"; the Moncler's opened eBay's Revise page fully editable (closed without saving). Found and fixed after:
+  the read-back called every listing's returns different (eBay reads "Buyer" back for BUYER); the backfilled jacket's
+  "Check —" line carried a Nov 1 note about a title fixed long since — a site landing on an item live elsewhere for
+  a day now names only its own notes (`crosslist.live_long_before`). Also seen: Poshmark's and Vinted's titles of the
+  dress start "for Love & Lemons" (Oct 18; eBay's is right), and an item `ready` since Oct 27 with no listing rows
+  (`i_261020_11037a`) — both older than eBay, left as they are.
 
 # Part 2 — the core sections as they stood on 2026-11-01
 

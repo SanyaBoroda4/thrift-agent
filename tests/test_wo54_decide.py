@@ -10,6 +10,7 @@ Sneakers got "тщ икфтв" ("no brand" on the Russian keyboard) — it went 
 Fakes only: no network, no browser, no model."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -148,6 +149,28 @@ def test_the_check_line_says_every_decision_once_and_asks_nothing(tmp_path, monk
     assert "reply" not in line.lower() and "check before approving" not in line and "?" not in line
     crosslist._say_checks(db, iid, ["poshmark"])
     assert len([m for m in said if m.startswith("Check — ")]) == 1                 # once
+
+
+@pytest.mark.parametrize("live_since,old_said", [(timedelta(days=21), False), (timedelta(hours=2), True)])
+def test_a_site_landing_on_an_item_live_long_before_says_only_its_own_notes(tmp_path, monkeypatch, facts, live_since,
+                                                                           old_said):
+    """Live 2026-11-11, the eBay backfill: the Zara jacket's eBay line carried a Nov 1 note about a title fixed long
+    since ("title breaks the shop-window rules: repeated: Zara"). An item live elsewhere for a day had its doubts
+    decided back then — the new site's line names only that site's notes; a site a few hours behind the first still
+    carries the item's."""
+    said = []
+    monkeypatch.setattr(crosslist.notify, "say", said.append)
+    s, db, iid = _processed(tmp_path, monkeypatch, facts)
+    db.set_item(iid, gate={**loads(db.item(iid)["gate"]), "checks": ["title breaks the shop-window rules: repeated: Zara"]})
+    pipeline.set_price(s, db, iid, 25)
+    first = (datetime.now(timezone.utc) - live_since).isoformat(timespec="seconds")
+    db.upsert_listing(iid, "poshmark", status="posted", posted_at=first, url="https://poshmark.com/listing/x-" + "a" * 24)
+    db.upsert_listing(iid, "ebay", status="posted", url="https://www.ebay.com/itm/407356268788",
+                      fields_json={"guesses": ["Style: eBay's list has no match — 'Leather Jackets' written"]})
+    crosslist._say_checks(db, iid, ["ebay"])
+    [line] = [m for m in said if m.startswith("Check — ")]
+    assert "- eBay: Style: eBay's list has no match — 'Leather Jackets' written" in line
+    assert ("repeated: Zara" in line) is old_said
 
 
 # ---------------------------------------------------------------- the category: the closest real path
