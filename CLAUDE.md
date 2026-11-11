@@ -1052,7 +1052,7 @@ app, and thrift-api keeps one consent). Still OFF (`marketplaces.ebay.enabled: f
   API `createImageFromFile` (host `apim.ebay.com`, multipart field `image`, scope `sell.inventory`) → EPS addresses.
   Categories / item specifics / conditions / shipping-service codes: Taxonomy and Metadata (`api.ebay.com`, an
   application token), kept 7 days beside the DB (`<var>/ebay/*.json`). Orders: Fulfillment `getOrders` (host
-  `apiz.ebay.com`, scope `sell.fulfillment.readonly`) — thrift-api only. Never the Trading API (retired call by call).
+  `api.ebay.com` — NOT the spec's `apiz.ebay.com`, which answers 404 "Resource not found" (live 2026-11-11) — scope `sell.fulfillment.readonly`) — thrift-api only. Never the Trading API (retired call by call).
   Verified on production 2026-11-11: USPS Ground Advantage is **`USPSParcel`** (eBay's Metadata list; `client.service_code`
   reads it first, `data/ebay_shipping.json` holds it as the fallback); `Decimal` is string-encoded ("48.00", per the
   schema); the package type is **`PACKAGE_THICK_ENVELOPE`**, as on all of her listings (`client.PACKAGE_TYPE`), because

@@ -83,7 +83,7 @@ def test_an_order_with_our_sku_is_the_sale(shop, db, sent):
     assert answer["sold"] == [ITEM] and answer["sold_on"] == [{"item": ITEM, "site": "ebay"}]  # … and its eBay row: sold
     assert answer["ended"] == [] and graphql(shop) == []                                       # nothing to end on eBay
     asked = shop.requests[-1]
-    assert asked["url"] == ("https://apiz.ebay.com/sell/fulfillment/v1/order?filter=lastmodifieddate:"
+    assert asked["url"] == ("https://api.ebay.com/sell/fulfillment/v1/order?filter=lastmodifieddate:"
                             "%5B2026-10-05T15:00:00.000Z..%5D&limit=200")                      # the first read: 3 days back
     assert asked["headers"]["Authorization"] == "Bearer user-access-token-1" and asked["method"] == "GET"
     kept = db.one("SELECT * FROM orders WHERE marketplace = 'ebay'")

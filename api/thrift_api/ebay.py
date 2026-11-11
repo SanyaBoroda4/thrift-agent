@@ -55,8 +55,10 @@ AUTH_URL = {"production": "https://auth.ebay.com/oauth2/authorize",
             "sandbox": "https://auth.sandbox.ebay.com/oauth2/authorize"}
 TOKEN_URL = {"production": "https://api.ebay.com/identity/v1/oauth2/token",
              "sandbox": "https://api.sandbox.ebay.com/identity/v1/oauth2/token"}
-ORDERS_URL = {"production": "https://apiz.ebay.com/sell/fulfillment/v1/order",
-              "sandbox": "https://apiz.sandbox.ebay.com/sell/fulfillment/v1/order"}
+# api.ebay.com, NOT the spec's apiz.ebay.com: live 2026-11-11 apiz answered every getOrders "404 Resource not found"
+# (errorId 2002) while api.ebay.com/sell/fulfillment/v1/order answered 200 with the shop's orders
+ORDERS_URL = {"production": "https://api.ebay.com/sell/fulfillment/v1/order",
+              "sandbox": "https://api.sandbox.ebay.com/sell/fulfillment/v1/order"}
 GRAPHQL_SANDBOX = "https://graphqlapi.sandbox.ebay.com/graphql"      # UNVERIFIED: eBay's guide prints no sandbox host
 GRAPHQL_URL = {"production": "https://graphqlapi.ebay.com/graphql", "sandbox": GRAPHQL_SANDBOX}
 MARKETPLACE = "EBAY_US"
