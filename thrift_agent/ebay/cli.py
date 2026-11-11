@@ -210,17 +210,39 @@ def hers() -> None:
 @app.command("backfill")
 def backfill_cmd(since: str = typer.Option(None, "--since", help="items first posted on or after this day (YYYY-MM-DD)"),
                  dry_run: bool = typer.Option(False, "--dry-run", help="only say what would be planned"),
-                 show: bool = typer.Option(False, "--status", help="where the backfill stands")) -> None:
+                 show: bool = typer.Option(False, "--status", help="where the backfill stands"),
+                 only: str = typer.Option(None, "--items", help="just these items, comma-separated, in this order"),
+                 not_before: str = typer.Option(None, "--not-before",
+                                                help="let nothing in before this local time, e.g. '2026-11-12 14:00'")
+                 ) -> None:
     """Every item posted since the day that is still live on at least one site and not sold goes to eBay too — planned
     here, let into eBay's queue by the running poster 25 a day, oldest first, each at its price that day. The
-    price-drop clocks aren't reset. New shares always go first."""
+    price-drop clocks aren't reset. New shares always go first. `--items`: only those (the first five);
+    `--not-before`: the poster starts on the plan only from then."""
+    from zoneinfo import ZoneInfo
+
     from thrift_agent import crosslist
     from thrift_agent.ebay import backfill
     s, db = _s(), _db()
     if show:
         print(backfill.status(db))
         return
-    todo = backfill.plan(s, db, since, dry=dry_run)
+    start = None
+    if not_before:
+        try:
+            start = datetime.fromisoformat(not_before.strip())
+        except ValueError:
+            raise typer.BadParameter(f"--not-before {not_before!r}: give 'YYYY-MM-DD HH:MM'") from None
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=ZoneInfo(str(s.get("schedule.timezone") or "America/New_York")))
+    items = [i.strip() for i in only.split(",") if i.strip()] if only else None
+    try:
+        todo = backfill.plan(s, db, since, dry=dry_run, only=items, not_before=start)
+    except ValueError as e:
+        print(f"[red]not planned[/] — {escape(str(e))}")
+        raise typer.Exit(1) from None
+    if start is not None:
+        print(f"{'would start' if dry_run else 'starts'}: {start.isoformat(timespec='minutes')} (nothing is let in before)")
     days = -(-len(todo) // max(1, backfill.per_day(s)))
     print(f"{'would plan' if dry_run else 'planned'}: {len(todo)} items still to go to eBay — {backfill.per_day(s)} a "
           f"day, about {days} day{'s' if days != 1 else ''}, the oldest first")

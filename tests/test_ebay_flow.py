@@ -535,6 +535,32 @@ def test_the_backfill_lets_25_a_day_in_oldest_first_behind_the_new_shares(env):
     assert db.listing(first, "ebay")["price"] == want(db, first, 40)
 
 
+def test_the_first_five_are_planned_alone_and_the_rest_waits_for_its_start(env):
+    """The owner's go-live (2026-11-11): five chosen items let in today by the poster itself; the rest planned with a
+    start tomorrow after the quiet hours — nothing of it is let in before."""
+    s, db, said = env
+    old = [item(s, db, n, posted=f"2026-10-{13 + n:02d}T12:00:00+00:00") for n in range(1, 12)]
+    sold = item(s, db, 41)
+    db.upsert_listing(sold, "depop", status="sold", url="https://www.depop.com/products/x/", posted_at=OLD)
+    five = [old[9], old[2], old[7], old[0], old[5]]
+    with pytest.raises(ValueError, match=f"{sold}: sold"):
+        backfill.plan(s, db, only=[*five[:2], sold])                                  # one not allowed: none planned
+    assert backfill.status(db)["planned"] == 0
+    assert backfill.plan(s, db, only=five) == five                                    # just these, in this order
+    today = datetime(2026, 11, 11, 18, 0, tzinfo=timezone.utc)
+    read = lambda url: (True, None)                                                    # noqa: E731
+    queued = [backfill.tick(s, db, today + timedelta(seconds=n), read) for n in range(10)]
+    assert [q for q in queued if q] == five and backfill.status(db)["waiting"] == 0  # the five, then nothing
+    start = datetime(2026, 11, 12, 19, 0, tzinfo=timezone.utc)                        # tomorrow 2:00 PM in New York
+    rest = backfill.plan(s, db, not_before=start)
+    assert set(rest) == set(old) - set(five) and backfill.status(db)["not_before"] == "2026-11-12T19:00:00+00:00"
+    night = [backfill.tick(s, db, datetime(2026, 11, 12, 5, 0, tzinfo=timezone.utc) + timedelta(seconds=n), read)
+             for n in range(10)]
+    assert night == [None] * 10                                                       # a new day, but not yet
+    after = [backfill.tick(s, db, start + timedelta(seconds=n), read) for n in range(10)]
+    assert [q for q in after if q] == rest                                            # from its start: oldest first
+
+
 def test_a_backfilled_listing_never_resets_the_price_drop_clock(env):
     s, db, said = env
     iid = item(s, db, posted="2026-10-15T12:00:00+00:00")

@@ -165,11 +165,26 @@ ALSO = {"mini": "short", "maxi": "long", "tee": "t shirt", "tshirt": "t shirt", 
         "pullover": "pullover", "moto": "moto", "kneelength": "knee length"}
 
 
+def _own_part(name: str | None, own: list[str]) -> list[str]:
+    """A Poshmark name of two alternatives ("Sandals & Flip Flops", "Ankle Boots & Booties") counts only by the part
+    the item's own words say — a Birkenstock Rio is a sandal, never "Flip Flops" (eBay's real kids' shoe list, read
+    2026-11-11); neither part said: the whole name. Each part a phrase of its own."""
+    name = str(name or "")
+    parts = [p.strip() for p in re.split(r"\s+&\s+", name) if p.strip()]
+    if len(parts) < 2:
+        return [name]
+    said = [p for p in parts if _phrase_at(own, _tokens(p)) is not None]
+    return said or [name]
+
+
 def item_words(view: ItemView) -> list[str]:
-    """The item's own words, the surest first: its type, Poshmark's subcategory and category, the title, the colour
-    words, the features the photos show — each a phrase of its own — then eBay's words for ours (ALSO)."""
+    """The item's own words, the surest first: its type, Poshmark's subcategory and category (of an "A & B" name the
+    part the item's words say), the title, the colour words, the features the photos show — each a phrase of its own —
+    then eBay's words for ours (ALSO)."""
     f, r = view.facts, view.render
-    parts = [f.item_type, r.subcategory or "", r.category, r.title, f.color_name or "", *(f.features or [])]
+    own = [*_tokens(f.item_type), BREAK, *_tokens(r.title), BREAK]
+    parts = [f.item_type, *_own_part(r.subcategory, own), *_own_part(r.category, own), r.title, f.color_name or "",
+             *(f.features or [])]
     out: list[str] = []
     for part in parts:
         out += [*_tokens(part), BREAK]
@@ -543,9 +558,14 @@ def _brand(view: ItemView, a: Aspect, aliases=None) -> Found:
     return Found(values=[names[0]])                      # eBay takes the brand as text: listed under its own name
 
 
+KIDS_SURE = 0.70                 # as pipeline.KIDS_SURE: her answer sets 1.0
+
+
 def _department(view: ItemView, a: Aspect) -> Found:
     r, f = view.render, view.facts
-    gender = str(r.kids_gender or f.kids_gender or "")
+    # Girls / Boys only when the reading is sure (or hers); an unsure one is the unisex value eBay has — Poshmark's
+    # "unsure → Girls" is its tab rule, it has no unisex kids (live 2026-11-11: a Moncler snowsuit read girls at 0.55)
+    gender = str(f.kids_gender or "") if (f.kids_gender_confidence or 0) >= KIDS_SURE else ""
     if r.department == "Kids":
         baby = (r.size_tab or "") == "Baby" or bool(_MONTHS.match(str(r.size_value or r.size or "")))
         # a unisex (or unread) kid is eBay's unisex value where the list has one — its baby list is "Unisex Baby &
@@ -606,15 +626,41 @@ def _color(view: ItemView, a: Aspect) -> Found:
     return Found(values=list(dict.fromkeys(out)))
 
 
+MAIN_MATERIAL = ("material", "outer shell material", "upper material", "exterior material", "fabric type")
+PART_MATERIAL = {"lining material": "lining"}     # a label part that names it; insole / outsole: none ever does
+FILL_WORDS = {"down", "feather"}                  # what a thing is filled with, never its shell (Insulation Material)
+
+
+def _part_fibers(view: ItemView, part: str) -> list[str]:
+    p = view.facts.premium
+    return [f.fiber.lower() for f in sorted(p.composition, key=lambda f: -f.pct) if f.part == part] \
+        if p and p.composition else []
+
+
 def _material(view: ItemView, a: Aspect) -> Found:
     """From a read label only (invariant 1) — else denim on an item that visibly is denim (jeans, a denim jacket), else
-    a material the approved TITLE itself names (the verifier let it stand: the listing says nothing new)."""
+    a material the approved TITLE itself names (the verifier let it stand: the listing says nothing new). The label's
+    MAIN fabric is the main material's only (a "100% leather" jacket's lining isn't leather); Lining Material only from
+    a lining the label prints; Insole / Outsole Material never (no label part names them). A word of the title that is
+    the item's colour ("Camel") or its fill ("Down") is never its material (live 2026-11-11: a Moncler down snowsuit
+    read "Outer Shell Material: Camel")."""
     from thrift_agent.brain import verify
-    fibers = common._fibers(view)                        # the label's fibers, the largest share first
+    name = a.name.strip().lower()
+    part = PART_MATERIAL.get(name)
+    if part is not None:
+        fibers = _part_fibers(view, part)
+        if not fibers:
+            return Found()
+    elif name not in MAIN_MATERIAL:
+        return Found()
+    else:
+        fibers = common._fibers(view)                    # the label's main fibers, the largest share first
     if not fibers and verify.denim_item(view.facts):
         fibers = ["denim"]
     if not fibers:
-        named = from_words(a.values, [*_tokens(view.render.title), BREAK], MULTI_MAX if a.multi else 1)
+        colours = set(_tokens(view.facts.color_name)) | {t for c in view.render.colors or [] for t in _tokens(c)}
+        values = [v for v in a.values if not set(_tokens(v)) & (colours | FILL_WORDS)]
+        named = from_words(values, [*_tokens(view.render.title), BREAK], MULTI_MAX if a.multi else 1)
         return Found(values=named)
     out = []
     for fiber in fibers:
@@ -630,6 +676,18 @@ def _premium(view: ItemView, field: str) -> str | None:
     p = view.facts.premium
     ev = getattr(p, field, None) if p is not None else None
     return (ev.value or None) if ev is not None else None
+
+
+# aspects the item's words never fill: another size system than ours, codes, and the LICENSED / themed ones — a word
+# of the item is no franchise (live 2026-11-11 on eBay's real lists: "Character: Flop, Silver" and "Character Family:
+# Rio" for Birkenstock Rio sandals, "Character Family: One Piece" for a snowsuit under Poshmark's "One Pieces",
+# "Theme: Love" for a For Love & Lemons dress)
+NEVER_FROM_WORDS = frozenset((
+    "eu shoe size", "uk shoe size", "au shoe size", "jp shoe size", "mpn", "upc", "ean", "isbn",
+    "california prop 65 warning", "personalize", "personalization instructions", "handmade", "signed", "signed by",
+    "unit quantity", "unit type", "item length", "item width", "item height", "character", "character family",
+    "theme", "franchise", "tv show", "movie", "team", "league", "sport", "player", "athlete", "artist", "designer",
+    "collection", "featured refinements"))
 
 
 def resolve(view: ItemView, a: Aspect, chosen: dict, aliases=None, closed: bool = True) -> Found:
@@ -660,8 +718,7 @@ def resolve(view: ItemView, a: Aspect, chosen: dict, aliases=None, closed: bool 
         line = _premium(view, "line")
         return Found(values=[exact(a.values, line) or line] if line and (exact(a.values, line) or
                                                                          a.mode != "SELECTION_ONLY") else [])
-    if name in ("eu shoe size", "uk shoe size", "mpn", "upc", "california prop 65 warning", "personalize",
-                "handmade", "signed", "unit quantity", "unit type", "item length", "item width", "item height"):
+    if name in NEVER_FROM_WORDS:
         return Found()                                    # never read from the photos: left out
     return Found(values=from_words(a.allowed(chosen), item_words(view), MULTI_MAX if a.multi else 1))
 
@@ -675,7 +732,8 @@ def _fallback(view: ItemView, a: Aspect, chosen: dict) -> Found:
     if len(offered) == 1:
         return Found(values=[offered[0]])                 # eBay's list has one value: the category's own
     if name in ("type", "style") and a.mode != "SELECTION_ONLY":
-        sub = (view.render.subcategory or "").strip()
+        own = [*_tokens(view.facts.item_type), BREAK, *_tokens(view.render.title), BREAK]
+        sub = " ".join(_own_part((view.render.subcategory or "").strip(), own)).strip()   # "Sandals", never "… & Flip Flops"
         text = sub if sub and sub.lower() not in ("none", "other") else view.facts.item_type.strip().title()
         return Found(values=[text[: a.max_length or 65]],
                      note=f"{a.name}: eBay's list has no match — '{text[: a.max_length or 65]}' written")

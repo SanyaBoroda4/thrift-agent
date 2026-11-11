@@ -1079,7 +1079,12 @@ app, and thrift-api keeps one consent). Still OFF (`marketplaces.ebay.enabled: f
   in the line) — never new ones, never swimwear or a bra; **item specifics**
   from the facts in eBay's own spelling (Brand — eBay's spelling, else the name as text, "Unbranded" when none; Size
   Type from Poshmark's size tab; Department; Color; Type / Style and the like by the item's own words as whole
-  phrases; a material only from a read label, the approved title, or visible denim); a REQUIRED specific the photos
+  phrases — of a Poshmark "A & B" name only the part the item's words say ("Sandals & Flip Flops" → Sandal); a
+  material only from a read label, the approved title, or visible denim: the label's MAIN fabric for the main
+  material only, Lining Material only from a lining the label prints, Insole / Outsole never, a title word that is
+  the colour ("Camel") or the fill ("Down") never; NEVER from words: Character, Character Family, Theme, Franchise,
+  Team, other size systems (AU / EU / UK / JP) — `mapping.NEVER_FROM_WORDS`, live 2026-11-11 "Character: Flop,
+  Silver" for Birkenstock Rio sandals); a REQUIRED specific the photos
   don't show is never invented — eBay's own neutral value ("Unknown", "Other") or "Unknown" as text, said in the
   check line; an optional one we don't know is left out. **Sizes: eBay's list is CLOSED since 2026-08-26** (a
   non-standard size blocks the listing whatever the metadata says about free text): the exact value in eBay's
@@ -1098,8 +1103,8 @@ app, and thrift-api keeps one consent). Still OFF (`marketplaces.ebay.enabled: f
   calculated `USPSParcel`, `PACKAGE_THICK_ENVELOPE`, handling **2** business days, Best Offer, GTC. Her own listings
   take NO returns, but the owner's rule for the agent's listings is still 30 days, buyer pays. Returns and location come
   from settings; the location is the seller's own data (`private/settings.yaml`; eBay stays off without its ZIP code,
-  `ebay.ready`). Department for a unisex / unread kid: eBay's unisex value where the list has one ("Unisex Baby &
-  Toddler", "Unisex Kids"), Girls after it.
+  `ebay.ready`). Department for a kid: Girls / Boys only when the reading is sure (≥ 0.70, or her answer: 1.0), else
+  eBay's unisex value where the list has one ("Unisex Baby & Toddler", "Unisex Kids"), Girls after it.
 - **The poster** (`ebay/poster.py:EbayPoster`, `driver: api`; a fourth site worker beside Depop's and Vinted's —
   `catalogs.CROSS` holds `ebay`, so the queue, rule 4, the ✅ card, the verifying flow, the photo check, the alarms
   and the nets cover it): `plan` (eBay's answers) → the photos up (cover first, ≤ 24) → VALIDATE → a dry run ends
@@ -1143,7 +1148,9 @@ app, and thrift-api keeps one consent). Still OFF (`marketplaces.ebay.enabled: f
   `var/azure/secrets.json`; the keyset written only when all three are in `private/.env`; names printed, never
   values) · `ebay status` · `ebay show` (a real terminal only: the endpoint, the token, the three addresses, the link).
 - **The backfill** (`ebay/backfill.py`, kv `ebay_backfill`): `thrift ebay backfill [--since 2026-10-13] [--dry-run |
-  --status]` plans every item first posted since the day that is still live on a site and not sold; the running
+  --status] [--items a,b,c] [--not-before 'YYYY-MM-DD HH:MM']` plans every item first posted since the day that is
+  still live on a site and not sold (`--items`: just those, in that order — refused whole when one may not go;
+  `--not-before`: nothing let in before that local time); the running
   poster lets ONE in per housekeeping turn up to 25 a day, oldest first, each at its Poshmark price that day; new
   shares always go first (`crosslist.pending`); eBay's daily cap is 50 (25 + the day's new shares); a backfilled eBay
   listing never moves the price-drop clock (`pricedrop.plan`).

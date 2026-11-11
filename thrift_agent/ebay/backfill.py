@@ -83,14 +83,26 @@ def candidates(db: DB, since: str = SINCE) -> list[str]:
     return [r["item_id"] for r in rows if eligible(db, r["item_id"]) is None]
 
 
-def plan(s: Settings | None, db: DB, since: str | None = None, dry: bool = False) -> list[str]:
+def plan(s: Settings | None, db: DB, since: str | None = None, dry: bool = False, only: list[str] | None = None,
+         not_before: datetime | None = None) -> list[str]:
     """`thrift ebay backfill`: the plan — every candidate not yet in it, appended in order (an item already planned
-    keeps its place and its state). Returns the whole list still to queue, in order. `dry`: nothing is recorded."""
+    keeps its place and its state). Returns the whole list still to queue, in order. `dry`: nothing is recorded.
+    `only`: just these items, in this order (the owner's first five, 2026-11-11) — one that may not go to eBay raises
+    ValueError naming why, and nothing is planned. `not_before`: the poster lets nothing in before it (a start
+    tomorrow after the quiet hours); kept until a later plan names another."""
     since = (since or since_of(s))[:10]
     data = _load(db)
     planned = data["items"]
     n = max((e.get("n", 0) for e in planned.values()), default=0)
-    fresh = [iid for iid in candidates(db, since) if iid not in planned]
+    if only is not None:
+        refused = {iid: why for iid in only if (why := eligible(db, iid)) is not None and iid not in planned}
+        if refused:
+            raise ValueError("; ".join(f"{iid}: {why}" for iid, why in refused.items()))
+        fresh = [iid for iid in dict.fromkeys(only) if iid not in planned]
+    else:
+        fresh = [iid for iid in candidates(db, since) if iid not in planned]
+    if not_before is not None and not dry:
+        data["not_before"] = not_before.astimezone(timezone.utc).isoformat(timespec="seconds")
     waiting = [iid for iid, e in sorted(planned.items(), key=lambda kv: kv[1].get("n", 0))
                if not e.get("queued_at") and not e.get("left")]
     if dry:
@@ -142,6 +154,13 @@ def tick(s: Settings, db: DB, now: datetime | None = None, read_poshmark=None) -
     if not planned:
         return None
     now = now or datetime.now(timezone.utc)
+    start = data.get("not_before")
+    if start:
+        try:
+            if now < datetime.fromisoformat(str(start)):
+                return None                              # not yet: the plan starts later (`--not-before`)
+        except ValueError:
+            pass
     today = _today(s, now).isoformat()
     done_today = sum(1 for e in planned.values() if str(e.get("queued_day") or "") == today)
     if done_today >= per_day(s):
@@ -178,4 +197,4 @@ def status(db: DB) -> dict:
     return {"planned": len(planned), "queued": sum(1 for e in planned.values() if e.get("queued_at")), "live": live,
             "left": sum(1 for e in planned.values() if e.get("left")),
             "waiting": sum(1 for e in planned.values() if not e.get("queued_at") and not e.get("left")),
-            "since": _load(db).get("since")}
+            "since": _load(db).get("since"), "not_before": _load(db).get("not_before")}

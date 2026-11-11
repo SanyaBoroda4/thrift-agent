@@ -1713,6 +1713,20 @@ shipping choice were found only by her 12 items). `thrift_agent/formcheck.py`:
     identifier is invalid." (LSTNG_LISTING_INVALID), so the document, enums and scope were taken; sellerListings: null.
 - **Mirrored in settings:** `marketplaces.ebay.handling_days: 2`. The owner's returns rule (30 days, buyer pays)
   stays, although her own listings take none.
+- **The owner's go-live (her "post now", 12:20 PM):** eBay on, the backfill limited to five chosen items, posted by
+  the poster's own eBay worker. The five, planned from the PC on eBay's real categories BEFORE anything went up,
+  showed made-up item specifics from loose word matching:
+  - "Character: Flop, Silver", "Character Family: Rio", "Type: Flip Flops", "AU Shoe Size: 8" (Birkenstock Rio
+    sandals; the flip flops came from Poshmark's "Sandals & Flip Flops");
+  - "Outer Shell Material: Camel" (the colour) and "Character Family: One Piece" (Poshmark's "One Pieces") on a
+    Moncler down snowsuit;
+  - "Theme: Love" (the brand's own name) on a For Love & Lemons dress;
+  - "Lining / Insole / Outsole Material: Leather" on a "100% leather" jacket and boots (the label is the main
+    fabric's).
+
+  Fixed before posting: `NEVER_FROM_WORDS`; materials by label part; colour / fill words never a material; the own
+  part of an "A & B" name; an unsure kid is eBay's unisex. `thrift ebay backfill --items / --not-before` were added
+  for the five and the start of the rest.
 
 # Part 2 — the core sections as they stood on 2026-11-01
 

@@ -13,6 +13,7 @@ import ebay_fake as fake
 from ebay_items import IID, ITEMS, view
 from thrift_agent.catalogs.common import ItemView, MappingError
 from thrift_agent.ebay import fees, mapping, shipping
+from thrift_agent.schema import Fiber, Premium
 
 PRIVATE_ITEMS = Path(__file__).resolve().parents[1] / "private" / "tests" / "ebay" / "items.json"
 
@@ -193,6 +194,79 @@ def test_the_snowsuit_on_ebays_real_baby_lists_says_its_label_size_and_is_unisex
     assert any("'9-12 Months'" in g for g in f.guesses) and mapping.size_closeness(f) == 2
     girls = mapping.map_ebay(view(**{**ITEMS["12M snowsuit"][0], "kids": "girls"}), cat, mapping.Config(**HOME))
     assert girls.aspects["Department"] == ["Girls"]                      # her 'girls' (or a sure reading) wins
+
+
+def _real_kids_shoes() -> mapping.Category:
+    """eBay's real Girls' Shoes (57974), the parts that matter here (read 2026-11-11)."""
+    A = mapping.Aspect
+    return mapping.Category(id="57974", name="Girls' Shoes", path=["Clothing, Shoes & Accessories", "Kids", "Girls",
+                                                                   "Girls' Shoes"], ids=["11450", "171146", "57929", "57974"],
+                            conditions=[("1000", "New with box"), ("1500", "New without box"), ("3000", "Pre-owned")],
+                            aspects=[A(name="Brand", required=True, values=["Unbranded", "Birkenstock"]),
+                                     A(name="US Shoe Size", required=True, values=["7", "7.5", "8", "8.5"]),
+                                     A(name="Department", required=True, mode="SELECTION_ONLY",
+                                       values=["Girls", "Unisex Kids"]),
+                                     A(name="Type", required=True, values=["Boot", "Flat", "Flip Flops", "Sandal"]),
+                                     A(name="Style", required=True, values=["Ballet", "Flip Flop", "Slide"]),
+                                     A(name="AU Shoe Size", usage="RECOMMENDED", values=["7", "8", "9"]),
+                                     A(name="Character", usage="RECOMMENDED", multi=True,
+                                       values=["Aladdin", "Flop", "Silver"]),
+                                     A(name="Character Family", usage="RECOMMENDED", values=["Aladdin", "Rio"]),
+                                     A(name="Theme", usage="RECOMMENDED", values=["Love", "Leopard", "Floral"]),
+                                     A(name="Upper Material", usage="RECOMMENDED", values=["Leather", "Synthetic"]),
+                                     A(name="Lining Material", usage="RECOMMENDED", values=["Leather", "Fabric"]),
+                                     A(name="Insole Material", usage="RECOMMENDED", values=["Cork", "Leather"]),
+                                     A(name="Outsole Material", usage="OPTIONAL", values=["Leather", "Rubber"])])
+
+
+def rio(**over):
+    return view(**{**dict(dept="Kids", cat="Shoes", sub="Sandals & Flip Flops", item_type="Rio kids sandals",
+                          kids="girls", title="Birkenstock Rio Kids Sandals Silver & White, Toddler size 8, New with Tags",
+                          size_value="8 (Toddler Girl)", size_us="8C", printed="24", colors=("Silver", "White"),
+                          color_name="Iridescent Matcha", brand="Birkenstock", cond="NWT", price=50), **over})
+
+
+def test_no_franchise_theme_or_other_size_system_is_read_from_the_items_words():
+    """Live 2026-11-11 on eBay's real lists: Birkenstock Rio sandals read "Character: Flop, Silver", "Character
+    Family: Rio", "AU Shoe Size: 8" and "Type: Flip Flops" (Poshmark's "Sandals & Flip Flops")."""
+    f = mapping.map_ebay(rio(), _real_kids_shoes(), mapping.Config(**HOME))
+    for name in ("Character", "Character Family", "Theme", "AU Shoe Size"):
+        assert name not in f.aspects, f"{name}: {f.aspects.get(name)}"
+    assert f.aspects["Type"] == ["Sandal"]                                # the part of "Sandals & Flip Flops" it is
+    assert f.aspects["Style"] == ["Sandals"]                             # required, nothing on eBay's list: its own word
+    assert not any("Flip Flop" in v for vs in f.aspects.values() for v in vs)
+    assert f.aspects["Department"] == ["Girls"]                          # read girls at 0.85 (sure)
+
+
+def test_a_material_is_the_labels_main_fabric_only_and_never_a_colour_or_a_fill():
+    cat = _real_kids_shoes()
+    leather = Premium(composition=[Fiber(fiber="leather", pct=100, part="main")])
+    v = rio(cond="NWOT")
+    v.facts.premium = leather
+    f = mapping.map_ebay(v, cat, mapping.Config(**HOME))
+    assert f.aspects["Upper Material"] == ["Leather"]                    # the label's main fabric
+    for name in ("Lining Material", "Insole Material", "Outsole Material"):
+        assert name not in f.aspects                                     # the label says nothing of them
+    v.facts.premium = Premium(composition=[Fiber(fiber="leather", pct=100, part="main"),
+                                           Fiber(fiber="leather", pct=100, part="lining")])
+    assert mapping.map_ebay(v, cat, mapping.Config(**HOME)).aspects["Lining Material"] == ["Leather"]
+    # no label: a word of the title that is the item's colour or its fill is never its material
+    shell = mapping.Aspect(name="Outer Shell Material", required=True, values=["Camel", "Down", "Nylon", "Wool"])
+    snow = view(**{**ITEMS["12M snowsuit"][0], "title": "Moncler Down Hooded Snowsuit Camel Gold Zip Front size 12M",
+                   "color_name": "camel/gold", "colors": ("Tan",)})
+    assert mapping._material(snow, shell).values == []                  # not "Camel", not "Down"
+    wool = view(**{**ITEMS["12M snowsuit"][0], "title": "Wool Snowsuit Navy size 12M"})
+    assert mapping._material(wool, shell).values == ["Wool"]            # the approved title's own material word
+
+
+def test_an_unsure_kid_is_ebays_unisex_and_a_sure_or_her_reading_is_kept():
+    cat = _real_kids_shoes()
+    unsure = rio()
+    unsure.facts.kids_gender_confidence = 0.55
+    assert mapping.map_ebay(unsure, cat, mapping.Config(**HOME)).aspects["Department"] == ["Unisex Kids"]
+    hers = rio()
+    hers.facts.kids_gender_confidence = 1.0                               # her 'girls' (pipeline sets 1.0)
+    assert mapping.map_ebay(hers, cat, mapping.Config(**HOME)).aspects["Department"] == ["Girls"]
 
 
 def test_the_handbag_pays_the_15_percent_rule_and_has_no_size():

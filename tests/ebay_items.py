@@ -19,6 +19,7 @@ def view(dept="Women", cat="Dresses", sub="Midi", item_type="wrap midi dress", t
         premium = Premium(composition=[Fiber(fiber=f, pct=p) for f, p in comp], vintage=Ev(value=vintage),
                           made_in=Ev(value=made_in))
     f = Facts(item_type=item_type, department=dept, kids_gender=kids, category=cat, subcategory=sub,
+              kids_gender_confidence=0.9 if kids in ("girls", "boys") else 0.0,   # a sure reading (or hers)
               brand=Ev(value=brand), size_printed=Ev(value=printed, source="photo"),
               size_us=Ev(value=size_us, source="photo"), colors=list(colors), color_name=color_name, condition=cond,
               condition_evidence=Ev(), cover_photo=0, photo_order=list(range(n_photos)), premium=premium,
