@@ -2,7 +2,7 @@
   "_about": "WO57 §4: what an eBay listing says about its parcel — the buyer pays the shipping. Per item family (thrift_agent/families.py) a packed weight in ounces, ROUNDED UP (the garment plus its mailer or box), and a parcel size class; a coat, a boot or a kids' item moves it (`heavier`, `kids`). `rates`: what a buyer is typically charged for USPS Ground Advantage at that weight — an ESTIMATE for the price formula (thrift_agent/ebay/fees.py: eBay's fee is a share of item + shipping + tax) and the charge itself when the listings use flat shipping; with calculated shipping eBay works out the real charge from the weight, the size and the buyer's ZIP code. `checked`: the day the rates were last compared with USPS's price list.",
   "checked": "2026-11-10",
   "service": "USPS Ground Advantage",
-  "service_code": "USPSGroundAdvantage",
+  "service_code": "USPSParcel",
   "families": {
     "top": {"weight_oz": 8, "size": "small"},
     "intimates": {"weight_oz": 8, "size": "small"},

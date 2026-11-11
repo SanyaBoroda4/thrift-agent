@@ -160,6 +160,41 @@ def test_the_12_month_snowsuit_is_a_baby_size_in_ebays_spelling():
     assert not [g for g in f.guesses if "size" in g.lower()]
 
 
+# eBay's real lists for Baby > Baby & Toddler Clothing > Outerwear (category 260023), read 2026-11-11
+REAL_BABY_SIZES = ["Preemie", "Newborn", "0-3 Months", "3-6 Months", "6-9 Months", "9-12 Months", "12-18 Months",
+                   "18-24 Months", "2T", "3T", "4T", "5T", "One Size"]
+REAL_BABY_DEPARTMENTS = ["Unisex Baby & Toddler", "Boys", "Girls"]
+
+
+def test_a_baby_size_takes_the_range_it_is_the_top_of_on_ebays_real_baby_list():
+    value, note = mapping.size_value("12 Months", REAL_BABY_SIZES, "snowsuit")
+    assert value == "9-12 Months" and "nearest" in note                  # never "One Size" for a 12-month snowsuit
+    assert mapping.size_value("12M", REAL_BABY_SIZES, "snowsuit")[0] == "9-12 Months"
+    assert mapping.size_value("3 Months", REAL_BABY_SIZES, "onesie")[0] == "0-3 Months"
+    assert mapping.size_value("18M", REAL_BABY_SIZES, "onesie")[0] == "12-18 Months"
+    assert mapping.size_value("24 Months", REAL_BABY_SIZES, "onesie")[0] == "18-24 Months"
+    assert mapping.size_value("0-3 Months", REAL_BABY_SIZES, "onesie") == ("0-3 Months", None)   # as written
+    assert mapping.size_value("2T", REAL_BABY_SIZES, "onesie") == ("2T", None)
+    assert mapping.month_range(["12 Months"], ["12 Months", "9-12 Months"]) == "9-12 Months"    # only when asked
+    assert mapping.size_value("12 Months", ["12 Months", "9-12 Months"], "onesie") == ("12 Months", None)
+
+
+def test_the_snowsuit_on_ebays_real_baby_lists_says_its_label_size_and_is_unisex():
+    aspects = [mapping.Aspect(name="Size", required=True, mode="FREE_TEXT", values=REAL_BABY_SIZES),
+               mapping.Aspect(name="Department", required=True, mode="SELECTION_ONLY", values=REAL_BABY_DEPARTMENTS),
+               mapping.Aspect(name="Brand", required=True, mode="FREE_TEXT", values=["Unbranded", "Carter's"])]
+    cat = mapping.Category(id="260023", name="Outerwear", path=["Clothing, Shoes & Accessories", "Baby",
+                                                                "Baby & Toddler Clothing", "Outerwear"],
+                           ids=["11450", "260018", "260019", "260023"], aspects=aspects,
+                           conditions=[("1000", "New with tags"), ("3000", "Pre-owned - Good")])
+    f = mapping.map_ebay(view(**ITEMS["12M snowsuit"][0]), cat, mapping.Config(**HOME))
+    assert f.aspects["Size"] == ["9-12 Months"] and f.aspects["Department"] == ["Unisex Baby & Toddler"]
+    assert "Label size: 12M." in f.description                          # the label's own size stands in the text
+    assert any("'9-12 Months'" in g for g in f.guesses) and mapping.size_closeness(f) == 2
+    girls = mapping.map_ebay(view(**{**ITEMS["12M snowsuit"][0], "kids": "girls"}), cat, mapping.Config(**HOME))
+    assert girls.aspects["Department"] == ["Girls"]                      # her 'girls' (or a sure reading) wins
+
+
 def test_the_handbag_pays_the_15_percent_rule_and_has_no_size():
     v = view(**ITEMS["handbag"][0])
     f, cat = mapped(v)

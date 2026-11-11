@@ -465,6 +465,22 @@ def size_candidates(value: str | None, marked: bool = False) -> list[str]:
 
 
 NEUTRAL_SIZES = ("One Size", "One Size Fits All", "One Size Fits Most", "Other")
+_RANGE = re.compile(r"^\s*(\d{1,2})\s*-\s*(\d{1,2})\s*(?:months?|mos?|m)\s*$", re.I)
+
+
+def month_range(cands: list[str], offered: list[str]) -> str | None:
+    """A baby size of one month count ("12 Months", "12M") on a list that holds only ranges — eBay's baby list is
+    "0-3 Months … 9-12 Months, 12-18 Months, 18-24 Months" (read 2026-11-11, category 260023): the range ENDING at it,
+    as a baby size names the top of its range (12M fits up to 12 months: "9-12 Months"). None when the list has none."""
+    for c in cands:
+        m = _MONTHS.match(c)
+        if m is None or m.group(2):
+            continue
+        top = int(m.group(1))
+        for o in offered:
+            if (r := _RANGE.match(str(o))) is not None and int(r.group(2)) == top and int(r.group(1)) < top:
+                return o
+    return None
 
 
 def size_value(want: str | None, offered: list[str], item_type: str | None) -> tuple[str | None, str | None]:
@@ -481,6 +497,8 @@ def size_value(want: str | None, offered: list[str], item_type: str | None) -> t
         return cands[min(1, len(cands) - 1)], None
     if (hit := exact(offered, *cands)) is not None:
         return hit, None
+    if (hit := month_range(cands, offered)) is not None:
+        return hit, f"size {want}: eBay's list has '{hit}' (nearest: the range a baby size is the top of)"
     for c in cands:
         if (found := fallback.menu_size(c, offered, item_type)) is not None:
             value, how = found
@@ -530,8 +548,10 @@ def _department(view: ItemView, a: Aspect) -> Found:
     gender = str(r.kids_gender or f.kids_gender or "")
     if r.department == "Kids":
         baby = (r.size_tab or "") == "Baby" or bool(_MONTHS.match(str(r.size_value or r.size or "")))
+        # a unisex (or unread) kid is eBay's unisex value where the list has one — its baby list is "Unisex Baby &
+        # Toddler, Boys, Girls" (read 2026-11-11, category 260023) — Girls only after it (Poshmark's tab rule)
         want = (["Baby"] if baby else []) + {"girls": ["Girls"], "boys": ["Boys"]}.get(gender, []) + \
-            ["Unisex Kids", "Girls", "Boys", "Kids"]
+            (["Unisex Baby & Toddler", "Unisex Baby"] if baby else []) + ["Unisex Kids", "Girls", "Boys", "Kids"]
     elif r.department == "Men":
         want = ["Men", "Unisex Adults"]
     elif r.department == "Women":

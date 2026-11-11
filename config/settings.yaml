@@ -144,7 +144,7 @@ marketplaces:
     max_photos: 24
     tax_rate: 0.07         # the average sales tax in the price formula (eBay's fee is a share of item + shipping + tax)
     best_offer: true       # as on her own listings; an accepted offer is her decision
-    handling_days: 3       # business days (hers, read from her listings on the day the keys arrive)
+    handling_days: 2       # business days — hers: all 10 of her own eBay listings say DAYS_2 (read 2026-11-11)
     hand_listings: 10      # her own hand-made eBay listings: they use the month's free listings too (never touched)
     shipping:
       type: calculated     # calculated (eBay works it out from the parcel and the buyer's ZIP) | flat — her listings' own

@@ -22,6 +22,8 @@ What you need at hand:
 
 ---
 
+## Steps 1–4 ✅ done (Nov 11, 2026: keys in Azure, consent given — valid until May 12, 2028)
+
 ## Step 1 — the developer account ✅ done
 Created Nov 10, 11:00 AM. eBay approves it in about a day (an email comes).
 
@@ -100,8 +102,9 @@ another site can't end its eBay listing by itself** — so that one is worth a m
 
 ## What happens after that (nothing for you to do)
 
-- **A one-day test in eBay's sandbox** (not real listings): which of eBay's two APIs is used, and whether a listing
-  made this way can be edited by hand in eBay's app.
+- **Checks on eBay itself that create nothing** (done Nov 11, 2026): eBay's own "validate only" mode on test items
+  with eBay's real categories, and your listings read (never changed) so the agent's match them: calculated USPS
+  Ground Advantage, 2 business days handling, Best Offer. No sandbox day was needed.
 - **One real listing**: a low-priced, non-designer item. Its link comes to the private chat. If it reads back right,
   eBay goes on for new shares and the backfill starts: every item posted since Oct 13 that is still for sale, 25 a day.
 - **Prices**: you tap one price in Telegram as always. The eBay price is worked out from it so that a sale on eBay

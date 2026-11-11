@@ -131,7 +131,7 @@ def test_an_item_is_validated_created_once_read_back_and_the_card_gets_its_fourt
     assert row["price"] == f["price"] == 49 and f["base_price"] == 50                # the same profit as $50 on Poshmark
     assert f["price"] == fees.price_for(50, f["category_ids"], 8.25, 0.07) and f["shipping"]["buyer_pays"] == 8.25
     assert abs(f["quote"]["ebay_payout"] - f["quote"]["poshmark_payout"]) <= 0.5
-    assert f["category_id"] == "63861" and f["shipping"]["service_code"] == "USPSGroundAdvantage"
+    assert f["category_id"] == "63861" and f["shipping"]["service_code"] == "USPSParcel"
     assert out.note is None and "created" in poster.lines[-1]                        # read back: nothing differs
     text = crosslist.announce(s, db, iid)
     assert text.split("\n\n")[:3] == [f"✅ {pricedrop.short_name(db, iid)} · $50",  # each site's price: eBay's differs

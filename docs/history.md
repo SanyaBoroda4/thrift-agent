@@ -1684,6 +1684,36 @@ shipping choice were found only by her 12 items). `thrift_agent/formcheck.py`:
   times. Do you want to continue?" and WO52's edit answers it before its search — a weekly look there could spend an
   edit without saving one.
 
+## eBay meets the real eBay — the keys, the consent, the production checks (WO57 §7, 2026-11-11)
+- **The keys:** `private/.env` held the PRODUCTION keyset only (`EBAY_ENV=production`, a `-PRD-` client id). At
+  10:50 AM `provision.py ebay` wrote it to Azure. The API minted an application token at once, and the consent came
+  back by 11:03 AM (valid until 2028-05-12; the shop-account check passed). eBay's authorize page takes all four
+  scopes (`sell.listing` included): a made-up scope lands on `errorOauth` "invalid_scope", while ours go on to the
+  sign-in page.
+- **No sandbox (Alex's choice, 11:00 AM):** the sandbox names its categories at random (eBay's own words for
+  getCategorySuggestions), has no eBay app (so it can't answer "can a listing be edited by hand"), and thrift-api keeps
+  ONE consent (`ebay_consent`), so a sandbox consent would overwrite production's. `EBAY_SELLER` would also refuse a
+  sandbox test user. Production checks that create nothing replace it.
+- **The production checks, from the PC (nothing created or changed):**
+  - every GraphQL document and input of the Mac client and of thrift-api's take-down validated against
+    `listing.graphqls` (graphql-core in a throwaway venv): 16 of 16; the schema says `Decimal` is string-encoded;
+  - her 10 hand-made listings (read only): calculated shipping, `USPSParcel`, `PACKAGE_THICK_ENVELOPE`, handling
+    `DAYS_2`, NO returns, Best Offer, fixed price GTC, ZIP 27410;
+  - eBay's Metadata list: USPS Ground Advantage = **`USPSParcel`** (the file's guess `USPSGroundAdvantage` was wrong;
+    the client read the list first, so only the fallback was wrong);
+  - the twenty test items planned on the real Taxonomy: 18 of 20 in the stand-in's category; the snowsuit in 260023
+    (Baby > Baby & Toddler Clothing > Outerwear), the dog coat in 177796. On real data the 12M snowsuit came out
+    **"One Size"**: eBay's baby list holds only ranges. It also came out **Girls**, though the list has "Unisex Baby &
+    Toddler". Both are fixed (`mapping.month_range`; `_department`). Style is required and free text on dresses /
+    jeans / sweaters / coats, and the item's own words are written there;
+  - createListing VALIDATE: first refused "Invalid shipping package type." (LSTNG_SHIPPING_PACKAGE_TYPE_INVALID, for
+    `PARCEL_OR_PADDED_ENVELOPE`), then `validated` with `PACKAGE_THICK_ENVELOPE`; fees named INSERTION $0.35; warning
+    LSTNG_PAYMENTS_ON_HOLD;
+  - endListing, bulkUpdateInventory and updateListing (VALIDATE) on listing id 999999999999: each "The listing
+    identifier is invalid." (LSTNG_LISTING_INVALID), so the document, enums and scope were taken; sellerListings: null.
+- **Mirrored in settings:** `marketplaces.ebay.handling_days: 2`. The owner's returns rule (30 days, buyer pays)
+  stays, although her own listings take none.
+
 # Part 2 — the core sections as they stood on 2026-11-01
 
 ## (Preamble)

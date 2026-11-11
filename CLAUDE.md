@@ -1023,9 +1023,14 @@ Both sites turn away any browser driven over DevTools; the extension runs in the
   --site vinted|depop` says to log in there; `thrift status` "extension: connected / not connected".
 
 ## eBay — the fourth site (WO57, `thrift_agent/ebay/`; the owner's steps: `docs/EBAY_SETUP.md`)
-**State 2026-11-10: built against a fake eBay and recorded shapes, OFF (`marketplaces.ebay.enabled: false`) until the
-developer account is approved, the keys are in Azure and she clicked Agree. Nothing below has met the real eBay yet —
-the sandbox spike (`thrift ebay spike`) is the first thing on the day the keys arrive.**
+**State 2026-11-11: the production keyset is in Azure (`provision.py ebay`), the consent is given (valid until
+2028-05-12), and eBay accepts all four scopes, `sell.listing` included. The production checks passed from the PC,
+creating nothing: her 10 listings read; the twenty test items planned on eBay's real categories; createListing VALIDATE
+`validated`; endListing / bulkUpdateInventory / updateListing (VALIDATE) answered "The listing identifier is invalid"
+for a made-up id (their shapes taken); every document and input checked against `listing.graphqls`. There is no
+sandbox spike: Alex chose the production checks on 2026-11-11 (the sandbox's category names are made up, it has no
+app, and thrift-api keeps one consent). Still OFF (`marketplaces.ebay.enabled: false`) until the ONE real listing
+(`thrift ebay first`, on the Mac) reads back right.**
 - **The owner's rules (2026-11-10):** everything she shares goes to eBay too (designer brands included), on her own
   account; eBay's official API, **no browser** — every eBay action is an HTTPS call, nothing opens on the Mac; **the
   same profit as Poshmark**: the eBay price is computed from her price, never typed; the price stays adjustable (the
@@ -1035,7 +1040,7 @@ the sandbox spike (`thrift ebay spike`) is the first thing on the day the keys a
   listing whose SKU is one of our item ids (`EbayPoster.ours`, thrift-api the same); keys and tokens only in
   `private/.env` on the PC and Azure's app settings, never printed, committed or in a chat; no buyer name or address
   stored.
-- **Which API (decided by the spike; today's choice):** eBay's **Listing API** (GraphQL, `POST
+- **Which API (the Listing API, its scopes and calls taken on production 2026-11-11):** eBay's **Listing API** (GraphQL, `POST
   https://graphqlapi.ebay.com/graphql`, release 1.0.0 of 2026-10-26, scope `sell.listing`; inputs through variables
   only; HTTP 200 may carry `errors`; results are unions with `violations`): `createListing` (an `idempotencyKey` of 32
   hex — `client.idempotency_key(item id, generation)`; `options.operationMode: VALIDATE` checks everything and creates
@@ -1048,9 +1053,12 @@ the sandbox spike (`thrift ebay spike`) is the first thing on the day the keys a
   Categories / item specifics / conditions / shipping-service codes: Taxonomy and Metadata (`api.ebay.com`, an
   application token), kept 7 days beside the DB (`<var>/ebay/*.json`). Orders: Fulfillment `getOrders` (host
   `apiz.ebay.com`, scope `sell.fulfillment.readonly`) — thrift-api only. Never the Trading API (retired call by call).
-  NOT in eBay's docs, so unverified until the spike (`client.HOSTS`, `data/ebay_shipping.json`): the GraphQL sandbox
-  address, the USPS Ground Advantage service code (read from eBay's own list first: `client.service_code`), whether a
-  listing made this way can be edited by hand in eBay's app.
+  Verified on production 2026-11-11: USPS Ground Advantage is **`USPSParcel`** (eBay's Metadata list; `client.service_code`
+  reads it first, `data/ebay_shipping.json` holds it as the fallback); `Decimal` is string-encoded ("48.00", per the
+  schema); the package type is **`PACKAGE_THICK_ENVELOPE`**, as on all of her listings (`client.PACKAGE_TYPE`), because
+  `PARCEL_OR_PADDED_ENVELOPE` is refused (LSTNG_SHIPPING_PACKAGE_TYPE_INVALID); VALIDATE names the insertion fee
+  ($0.35) and warns LSTNG_PAYMENTS_ON_HOLD (a new seller). Still open until the first real listing: whether a listing
+  made this way can be edited by hand in eBay's app, and whether a create names $0.35 inside her free 250.
 - **The price** (`ebay/fees.py`, `data/ebay_fees.json` — dated `checked`; `thrift doctor` shows it; ONE private line
   at 90 days, `duties.note_stale`): base B = her price (the one she tapped; after a drop the old base less 10%; her
   "price 35"; a backfilled item: its Poshmark price that day). Target = Poshmark's payout (`B − 2.95` under $15, else
@@ -1075,8 +1083,10 @@ the sandbox spike (`thrift ebay spike`) is the first thing on the day the keys a
   don't show is never invented — eBay's own neutral value ("Unknown", "Other") or "Unknown" as text, said in the
   check line; an optional one we don't know is left out. **Sizes: eBay's list is CLOSED since 2026-08-26** (a
   non-standard size blocks the listing whatever the metadata says about free text): the exact value in eBay's
-  spelling ("12M" = "12 Months", "XXL" = "2XL"), under another Size Type when it stands there ("16W" → Plus), then
-  the other sites' order (the bigger of a dual label, the nearest one step, One Size for a one-size item, the list's
+  spelling ("12M" = "12 Months", "XXL" = "2XL"), under another Size Type when it stands there ("16W" → Plus), a baby
+  size of one month count → the range it is the top of when the list holds only ranges (`mapping.month_range`: eBay's
+  real baby list is "0-3 Months … 9-12 Months, 12-18 Months, 18-24 Months, 2T…" — 12M → "9-12 Months", said, the
+  label in the description; never "One Size"), then the other sites' order (the bigger of a dual label, the nearest one step, One Size for a one-size item, the list's
   neutral choice) — but first the item's OTHER own categories that eBay suggested (`mapping.ranked_categories`, ≤ 3:
   a 3T under "Baby & Toddler Clothing", a 10 under "Girls' Clothing (Sizes 4 & Up)"), the one holding the size as
   written winning (`size_as_written`), else the closest list (`size_closeness`) — a girls' "One Size" costume dress
@@ -1084,9 +1094,12 @@ the sandbox spike (`thrift ebay spike`) is the first thing on the day the keys a
   near in any → the first category's neutral value, else its middle (`map_ebay(…, last=True)`, `LAST_SIZE`, said) —
   never a skip; no size at all → the same (the agent's own size is set at the price, as on every site). The label's own size goes into the description when eBay's value differs. Shipping (`ebay/shipping.py`,
   `data/ebay_shipping.json`): the parcel per item family, rounded up; `marketplaces.ebay.shipping.type` calculated
-  (USPS Ground Advantage by weight and size) or flat — **her own listings' type is read on the spike day and
-  mirrored**; handling 3 business days; returns and location from settings — the location is the seller's own data
-  (`private/settings.yaml`; eBay stays off without its ZIP code, `ebay.ready`).
+  (USPS Ground Advantage by weight and size) or flat. Mirrored from her own 10 listings (read 2026-11-11):
+  calculated `USPSParcel`, `PACKAGE_THICK_ENVELOPE`, handling **2** business days, Best Offer, GTC. Her own listings
+  take NO returns, but the owner's rule for the agent's listings is still 30 days, buyer pays. Returns and location come
+  from settings; the location is the seller's own data (`private/settings.yaml`; eBay stays off without its ZIP code,
+  `ebay.ready`). Department for a unisex / unread kid: eBay's unisex value where the list has one ("Unisex Baby &
+  Toddler", "Unisex Kids"), Girls after it.
 - **The poster** (`ebay/poster.py:EbayPoster`, `driver: api`; a fourth site worker beside Depop's and Vinted's —
   `catalogs.CROSS` holds `ebay`, so the queue, rule 4, the ✅ card, the verifying flow, the photo check, the alarms
   and the nets cover it): `plan` (eBay's answers) → the photos up (cover first, ≤ 24) → VALIDATE → a dry run ends
@@ -1412,9 +1425,10 @@ replay harness (keyed by model, prompt, tool, images' bytes; a replay never asks
   a new recording.
 - Eval (M0): `eval/fixtures/<case>/{photos,expected.yaml}`, `thrift eval`; targets segmentation ≥ 95%, brand / size ≥
   95%, condition ≥ 90%. Tune `segmentation.pause_*` / `visual_change_*` on real rolls.
-- Still open (WO57, eBay — everything is built against a fake and nothing has met the real eBay): the sandbox spike
-  (which API; whether a hand edit in eBay's app works; the GraphQL sandbox address; the USPS Ground Advantage code;
-  her listings' shipping type and handling time), eBay's real category answers recorded for the tests (`thrift ebay
-  record`), the Inventory API fallback (not built), the fee table's rates above $2,000 / $7,500 (not in the file).
+- Still open (WO57, eBay — production checks passed 2026-11-11, see the eBay section): the ONE real listing and its
+  read-back; whether a hand edit in eBay's app works on it; eBay's real category answers for the closet's real items
+  (`thrift ebay record` on the Mac); a real END is first met at the first sale (its shape is taken); the Inventory API
+  fallback (not built); the fee table's rates above $2,000 / $7,500 (not in the file); the GraphQL sandbox address
+  (never needed: no sandbox).
 - Still open: Poshmark's `draft_saved`, the Promote toggle's markup, the CAPTCHA wording; Depop's API (`DEPOP_API_KEY`);
   M4 Airtable / n8n (not built); M6 sold-comps pricing (tune `private/brand_tiers.yaml` from sales).

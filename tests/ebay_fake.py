@@ -306,7 +306,7 @@ class FakeEbay:
         self.next_id = 256000000001
         self.tokens_seen: set[str] = set()
         self.insertion_fee = "0.00"
-        self.ground_code = "USPSGroundAdvantage"      # eBay's own code for it, as its service list gives it
+        self.ground_code = "USPSParcel"      # eBay's own code for it (its Metadata list, read 2026-11-11)
         for extra in seller_listings or []:           # listings made by hand, before the agent (no SKU of ours)
             self._store(extra)
 

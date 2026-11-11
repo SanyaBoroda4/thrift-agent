@@ -291,6 +291,7 @@ ENDED = f"""query EndedListings($search: SellerEndedListingSearchInput) {{ selle
   endedListings(searchInput: $search) {{ {_FOUND} }} }} }}"""
 PAGE = 100
 BY_ID_MAX = 20
+PACKAGE_TYPE = "PACKAGE_THICK_ENVELOPE"
 
 
 def _days(n: int) -> str:
@@ -311,7 +312,10 @@ def create_input(f: mapping.EbayFields, image_urls: list[str], key: str, validat
         "marketplaceShippingOptions": {"costType": "CALCULATED" if calculated else "FLAT"},
         "shippingServices": [service]}}
     fulfillment["packageSpecifications"] = {
-        "measurementSystem": "ENGLISH", "packageType": "PARCEL_OR_PADDED_ENVELOPE",
+        # eBay's "Package (or thick envelope)" — what all of her own listings carry; PARCEL_OR_PADDED_ENVELOPE is in
+        # the schema but createListing refuses it with USPS Ground Advantage (LSTNG_SHIPPING_PACKAGE_TYPE_INVALID,
+        # VALIDATE on production 2026-11-11)
+        "measurementSystem": "ENGLISH", "packageType": PACKAGE_TYPE,
         "packageWeight": {"majorUnit": int(ship.get("pounds") or 0), "minorUnit": int(ship.get("ounces") or 0)},
         "packageDimensions": {"length": float(ship.get("length") or 0), "width": float(ship.get("width") or 0),
                               "height": float(ship.get("height") or 0)}}

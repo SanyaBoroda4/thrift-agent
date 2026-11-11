@@ -140,7 +140,7 @@ def test_validate_create_read_back_change_price_and_end():
         assert (live.format, live.duration, live.available, live.best_offer) == ("FIXED_PRICE", "GTC", 1, True)
         assert (live.postal_code, live.country) == ("62701", "US")
         assert (live.returns_accepted, live.returns_days, live.returns_payer) == (True, "DAYS_30", "BUYER")
-        assert (live.shipping_type, live.shipping_service, live.handling) == ("CALCULATED", "USPSGroundAdvantage", "DAYS_3")
+        assert (live.shipping_type, live.shipping_service, live.handling) == ("CALCULATED", "USPSParcel", "DAYS_3")
         assert await c.set_price(lid, 31) == []
         assert (await c.read_one(lid)).price == 31.0
         ended = await c.end(lid)
@@ -171,7 +171,7 @@ def test_what_createlisting_carries():
                                                                 "returnShipmentInvoicee": "BUYER"}}
         ship = terms["fulfillmentTerms"]
         assert ship["shippingTerms"]["marketplaceShippingOptions"] == {"costType": "CALCULATED"}
-        assert ship["shippingTerms"]["shippingServices"] == [{"shippingServiceCode": "USPSGroundAdvantage", "rank": 1}]
+        assert ship["shippingTerms"]["shippingServices"] == [{"shippingServiceCode": "USPSParcel", "rank": 1}]
         assert ship["shippingTerms"]["handlingTimeDuration"] == "DAYS_3"
         assert ship["packageSpecifications"]["packageWeight"] == {"majorUnit": 1, "minorUnit": 0}
         assert "businessPolicyId" not in json.dumps(inp)                  # terms inline: no business policies
