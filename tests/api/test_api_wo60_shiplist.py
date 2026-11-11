@@ -271,3 +271,14 @@ def test_telegram_sends_html_with_parse_mode(monkeypatch):
     seen.clear()
     assert telegram.http_send("group", "plain", True)
     assert "parse_mode" not in seen
+
+
+def test_health_shows_the_last_list_and_the_packages_open_now(db, out):
+    sale(db, "s1", "depop", title="Something", ship_by="2026-11-12")
+    run(db)
+    sale(db, "s2", "vinted", title="Sold after ten", ship_by="2026-11-18")
+    code, _, body = http.handle("GET", "/health", db=db, now=TEN_PM + timedelta(minutes=5))
+    import json
+    got = json.loads(body)["ship_list"]
+    assert code == 200 and got["sent_on"] == "2026-11-11" and got["open_packages"] == 2
+    assert got["last"]["packages"] == 1 and got["last"]["sent"] == 1 and got["last"]["groups"]["tomorrow"] == 1

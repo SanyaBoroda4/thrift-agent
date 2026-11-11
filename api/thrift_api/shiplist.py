@@ -18,6 +18,8 @@ Nothing of a buyer is read: only what `sales`, `items` and `orders` hold. Telegr
 from __future__ import annotations
 
 import html
+import json
+import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
@@ -25,8 +27,11 @@ from . import core, deadlines, util
 from .db import Database
 from .util import EBAY, iso, parse_time, site_name
 
+log = logging.getLogger(__name__)
+
 HOUR = 22                                    # 10 PM New York
 SENT_ON = "ship_list_sent_on"                # settings: the local day the list went out
+LAST = "ship_list_last"                      # settings: what the last list said (GET /health shows it)
 SILENT = "shipping.night_list.silent"        # settings: "true" sends it silently; sound by default
 NO_DAY = "ship_list_no_day"                  # reminders' kind: the one private line about a sale with no sale day
 PER_MESSAGE = 25                             # packages in one message
@@ -269,4 +274,19 @@ def night_list(db: Database, now: datetime | None = None, mode: str | None = Non
            "groups": {g: sum(1 for p in pkgs if group_of(p.ship_by, local.date()) == g) for g, _, _ in GROUPS}}
     if preview:
         got["pages"] = pages                          # the preview's answer carries its text (titles and prices only)
+        return got
+    with db.tx():
+        core.put_setting(db, LAST, json.dumps({"at": iso(now), "day": today, **got}))
+    log.info("ship list %s: %d package(s) in %d message(s), %d sent", today, len(pkgs), len(pages), sent)
     return got
+
+
+def status(db: Database, now: datetime | None = None) -> dict:
+    """For GET /health: the day the list last went, what it said, and how many packages are open now."""
+    now = util.aware(now) if now else util.utcnow()
+    last = core.setting(db, LAST)
+    try:
+        last = json.loads(last) if last else None
+    except ValueError:
+        last = None
+    return {"sent_on": core.setting(db, SENT_ON), "last": last, "open_packages": len(packages(open_sales(db, now)[0]))}

@@ -186,7 +186,7 @@ def _dashboard(db, body, query, params, now):
 
 
 def _health(db, body, query, params, now):
-    return 200, core.health(db, now)
+    return 200, {**core.health(db, now), "ship_list": shiplist.status(db, now)}       # WO60: the 10 PM list
 
 
 # WO45 §2 — the upload routes answer a refusal as {"ok": false, "error": …} (the Shortcut shows "ok")
