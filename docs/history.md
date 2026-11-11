@@ -1642,6 +1642,34 @@ shipping choice were found only by her 12 items). `thrift_agent/formcheck.py`:
   `private/settings.yaml`; the fee file holds only the rates the fee page was checked for (not the lower rates on the
   part of a sale above $2,000 / $7,500).
 
+## Nothing is ever skipped (WO58, 2026-11-10)
+- **The owner's rule (Nov 10, 8:24 PM):** "Absolutely nothing should be skipped neither at ebay or any other
+  platforms. In case there is uncertainty then agent must use its brain and assign most suitable size based on the
+  label or [her] response in telegram chat. … Only if it is really unclear. Anyway agent must always post everywhere
+  with less questions and choose appropriate sizes / categories deciding by himself having all data in its brain."
+- **The skip paths removed:** Poshmark's form — "no '<dept>' department", "no category '…' under …", "no size on the
+  item", "size '…' isn't on … menu, nor one near it" (all four `raise Skipped`); Depop's / Vinted's mapping — "no size on
+  the item" and a size nothing on the menu is near (`depop_size` / `vinted_size` raised after the neutral choice),
+  a condition, a package, a skirt length, Depop's title + hashtags over 1000 characters; eBay's — a size its closed
+  list lacks ("isn't on eBay's size list", the 📏 line), no size at all, a used item in a new-only category
+  (underwear); the waiting itself — the item priced but not listed until a size was tapped ("✓ $25 — tap a size to
+  list it", "Waiting for a size: …", every site's "no size on the item" skip); `crosslist.skip_unmappable` (any other
+  mapping gap: the site skipped for good). Kept: twins, sold, test-run verdicts, eBay's own refusal / removal, a
+  person's step, and the one written ban below.
+- **eBay's written policy (rule 5), read Nov 10:** the Used clothing policy
+  (https://www.ebay.com/help/policies/prohibited-restricted-items/used-clothing-policy?id=4281): "Used underwear and
+  socks are not allowed. Other used clothing must follow our policy." · "Used underwear and socks are not allowed, even
+  if they are clean." · "Examples include boxer shorts, panties, briefs, diapers, and athletic supporters." · "Bras are
+  not considered underwear" · "Used clothing must be properly cleaned". The page names nothing else (no swimwear, no
+  vintage undergarments) and carries no date.
+- **On the Mac (read only, Nov 10 evening):** 32 skipped rows since Oct 1 — 30 for a size (13 items), 2 for the
+  family of a category (1 item); 22 of those rows are posted now (her size or a later fix), 1 delisted, 9 belong to
+  three items dropped as re-shares (their newer copy was priced). No item since Oct 1 was on fewer than all three
+  sites because of a size, category or brand skip, so nothing had to be posted. Before WO58: 4 "Waiting for a size"
+  messages and 12 sizes given by her since Oct 1.
+- **The 40-item check:** 40 of 40 of the closet's live items map to a valid eBay listing (the stand-in category
+  table); the girls' "One Size" costume dress goes to Kids' Costumes at One Size.
+
 # Part 2 — the core sections as they stood on 2026-11-01
 
 ## (Preamble)

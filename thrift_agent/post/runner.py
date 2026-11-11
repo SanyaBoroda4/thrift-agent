@@ -1176,7 +1176,7 @@ async def _run_cross(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, *, d
             if not quiet:
                 notify.say(f"⏭ {crosslist.LABEL[mp]} dry run ({iid}): {title}\ncan't map: {e}")
             return Outcome("skipped", error=f"can't map: {e}")   # a test run's: no verdict on the site (WO51)
-        crosslist.skip_unmappable(db, iid, mp, title, str(e))
+        crosslist.cant_map(db, iid, mp, title, e)       # WO58: a site's written ban, else a failure tried again
         return None
     except CatalogError as e:
         crosslist.block(db, mp, f"failures: catalog — {e}")

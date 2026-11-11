@@ -43,6 +43,8 @@ class VintedFields(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+VINTED_FAIR = 4                      # Vinted's "Satisfactory": never chosen (invariant 2: never Fair)
+
 _SKIRT = (("Mini", r"\bmini\b"), ("Midi", r"\bmidi\b"), ("Maxi", r"\bmaxi\b|\bfloor[- ]length\b"),
           ("Knee-length", r"\bknee[- ]length\b|\bknee\b"), ("Asymmetrical", r"\basymmetric|\bhigh[- ]low\b"))
 
@@ -99,8 +101,12 @@ def map_vinted(view: ItemView, ask=None, ask_length=None) -> VintedFields:
     cond_lib = leaf.fields["condition"].lib or "condition_0"
     cid = cat.condition_map_from_agent.get(condition_key(r.condition))
     cond = next((o for o in cat.library(cond_lib) if o.id == cid), None)
-    if cond is None:
-        raise MappingError(f"condition {r.condition} isn't offered for {leaf.path}")
+    if cond is None:                                # WO58: never skipped — the nearest this leaf offers, never Fair
+        offered = [o for o in cat.library(cond_lib) if o.id != VINTED_FAIR]
+        cond = next((o for want in (cid, 3, 2, 1, 6) for o in offered if o.id == want), offered[0] if offered else None)
+        if cond is None:
+            raise MappingError(f"condition {r.condition} isn't offered for {leaf.path}")
+        guesses.append(f"condition '{cond.title}' (this category has no {r.condition})")
     color_max = (leaf.fields.get("color").max if leaf.fields.get("color") else None) or 2
     colors = colors_for(view, "vinted", color_max) if "color" in leaf.fields else []
     color_ids = [cat.color(c) for c in colors]
@@ -115,12 +121,19 @@ def map_vinted(view: ItemView, ask=None, ask_length=None) -> VintedFields:
     if (s := leaf.fields.get("skirt_length")) is not None and s.lib:
         sl = skirt_length(view, ask_length)
         sl_id = cat.option(s.lib, sl)
+        if sl_id is None and (lengths := cat.library(s.lib)):       # WO58: never skipped — the middle length
+            pick_len = lengths[len(lengths) // 2]
+            guesses.append(f"skirt length '{pick_len.title}' (from {sl!r})")
+            sl, sl_id = pick_len.title, pick_len.id
         if sl_id is None:
             raise MappingError(f"skirt length {sl!r} isn't Vinted's")
     packages = VINTED_PACKAGES[package_class(view)]
     known = {p.code for p in cat.package_sizes}
-    if not set(packages) <= known:
-        raise MappingError(f"package sizes {packages} aren't Vinted's")
+    if not set(packages) <= known and known:        # WO58: never skipped — the ones Vinted has, else its medium
+        kept, was = [p for p in packages if p in known], packages
+        packages = kept or [next((p.code for p in cat.package_sizes if "medium" in str(p.code).lower()),
+                                 sorted(known)[0])]
+        guesses.append(f"package {', '.join(map(str, packages))} (Vinted has no {', '.join(map(str, was))})")
     brand = (view.facts.brand.value or "").strip() or None
     return VintedFields(category_id=int(pick.value), category_path=leaf.path,
                         title=vinted_title(r.title, brand, view.facts.condition),

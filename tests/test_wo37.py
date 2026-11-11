@@ -382,7 +382,9 @@ def test_a_title_never_carries_a_size_no_photo_shows(facts):
     assert copy.ensure_title_size("Clarks Ankle Boots size 7", facts()) == "Clarks Ankle Boots size 7.5"
 
 
-def test_no_size_is_one_line_for_the_item_and_a_size_puts_its_sites_back_in_line(env, tmp_path, facts, monkeypatch):
+def test_no_size_is_never_a_skip_and_a_size_puts_its_sites_back_in_line(env, tmp_path, facts, monkeypatch):
+    """WO58: a mapping that meets no size is a failure tried again by itself — never a skip; her size puts every site
+    back in line (WO37)."""
     from thrift_agent import crosslist
     s, db = env
     said = []
@@ -393,7 +395,8 @@ def test_no_size_is_one_line_for_the_item_and_a_size_puts_its_sites_back_in_line
              "price": 25} for mp in ("poshmark", "depop", "vinted")})
     for mp in ("depop", "vinted"):
         crosslist.skip_unmappable(db, iid, mp, "Clarks Ankle Boots", crosslist.NO_SIZE)
-    assert set(said) == {"⏭ Clarks Ankle Boots: no size on the item — it goes up once you reply 'size …' to its card"}
+        assert db.listing(iid, mp)["status"] == "failed" and db.listing(iid, mp)["attempts"] == 1
+    assert all("couldn't map" in line and "tried again" in line for line in said) and len(said) == 2
     db.upsert_listing(iid, "poshmark", status="failed", error="PosterError: the Share Listing panel did not show")
     pipeline.set_size(s, db, iid, "8")         # (an unconfirmed publish anywhere: refused before — _answerable)
     rows = {r["marketplace"]: (r["status"], r["error"]) for r in

@@ -190,8 +190,8 @@ def next_step(s: Settings, db: DB, iid: str) -> str:
     if live:
         return f"it's already live on {' and '.join(live)} — a change there is made in the app"
     status = it["status"]
-    if status == "ready" and it["owner_price"] and needs_size(it):     # WO39: nothing goes up without a size
-        return "it goes up once a size is tapped on its card"
+    if status == "ready" and it["owner_price"] and (mine := _agent_size(it)):   # WO58: never waits for a size
+        return f"it goes up {when_posting(s, db=db)} on {_sites(s)} in size {mine} — tap another on its card to change it"
     if status == "ready" and it["owner_price"]:                        # WO54 §2: never a brand to wait for
         return f"it goes up {when_posting(s, db=db)} on {_sites(s)}"
     if status == "new":
@@ -701,6 +701,7 @@ def _reply_brand(s: Settings, db: DB, bot: Bot, iid: str, text: str, mid: int | 
     db.outbox_resolve("brand", iid)
     return out
 SIZE_ASK = "Waiting for a size: {title} — tap one on its card (or reply 'size …' to this message)"
+ASK_SIZES = False          # WO58: never sent any more (nothing waits for a size); its replies are still answered
 
 
 def ask_sizes(s: Settings, db: DB) -> int:
@@ -709,6 +710,15 @@ def ask_sizes(s: Settings, db: DB) -> int:
     size replied to it is that item's size. Once per item, never repeated (outbox kind `size`, `once`). Returns the
     messages sent."""
     from thrift_agent import daily
+    # WO58 (the owner, 2026-11-10: nothing waits for a size): an item priced before the rule and listed nowhere for want
+    # of a size gets the agent's own size now (pipeline.settle_size) and goes back in line — nothing is asked
+    for iid in daily.size_waiting(db):
+        try:
+            pipeline.settle_size(s, db, iid)
+        except Exception as e:  # noqa: BLE001 — one item never stops the others
+            db.log(iid, "error", f"settle size: {type(e).__name__}: {e}")
+    if ASK_SIZES is False:
+        return 0
     bot = bot_for(s)
     if bot is None:
         return 0
@@ -757,8 +767,10 @@ def item_caption(iid: str, it) -> tuple[str, int | None]:
         from thrift_agent.post.fallback import dual_parts
         printed = str((facts.get("size_printed") or {}).get("value") or "").strip()
         label = f" (label {printed})" if dual_parts(printed) else ""       # WO50: "Size M (label S/M)"
-        if it["owner_size"] and (guessed or size_tapped(it)):      # WO43: her tap (or reply) on a card without a size
+        if it["owner_size"] and (guessed or size_tapped(it) or _agent_size(it)):   # WO43: her tap (or reply)
             lines.append(f"📏 Size {size} ✓{label}")
+        elif _agent_size(it) and not it["owner_size"]:             # WO58: the agent's own size — listed, changeable
+            lines.append(AGENT_SIZE_LINE.format(size=size))
         else:
             lines.append(f"Size {size}{label}" + (" — my best reading; reply 'size …' to change it" if guessed else ""))
     elif guessed:                                                   # WO37: no site lists it without one; WO43: tap it
@@ -925,7 +937,29 @@ def item_buttons(iid: str, price: int | None, no_brand: bool = False, sizes: lis
 
 
 NO_SIZE_LINE = "📏 No size on the photos — tap it below (⭐ = my guess)"
+# WO58 (the owner, 2026-11-10: nothing waits for a size): the agent's own size goes up at once; a tap changes it on
+# every site
+AGENT_SIZE_LINE = "📏 No size on the photos — listed as {size} (my pick); tap another to change it everywhere"
+
+
+def _agent_size(it) -> str | None:
+    """The agent's own size for the item (items.agent_size, WO58), while she hasn't given hers."""
+    if it is None or "agent_size" not in it.keys():
+        return None
+    return None if it["owner_size"] else (it["agent_size"] or None)
 SIZE_OFFERED = ("awaiting_price", "needs_info", "ready")   # the size rows show while the item hasn't started posting
+# WO58: while the size is the agent's own, the rows stay after it went up too — her tap edits every live listing
+SIZE_LIVE = (*SIZE_OFFERED, "posting", "posted")
+
+
+def size_rows(it) -> bool:
+    """Does the card show its size rows? An item without a size (WO39), one whose size she tapped (WO43, until it
+    started posting), one listed with the agent's own size (WO58, posted or not)."""
+    if it is None:
+        return False
+    if _agent_size(it) and it["status"] in SIZE_LIVE:
+        return True
+    return it["status"] in SIZE_OFFERED and (needs_size(it) or size_tapped(it))
 
 
 def size_tapped(it) -> bool:
@@ -949,9 +983,9 @@ def card_buttons(db: DB, iid: str, it, price: int | None) -> list[list[dict]]:
     gate = loads(it["gate"]) or {}
     rows = None
     wants = needs_size(it)
-    if it["status"] in SIZE_OFFERED and (wants or size_tapped(it)):
+    if size_rows(it):
         if (o := sizebuttons.offer(db, it)) is not None:
-            rows = sizebuttons.buttons(iid, o, it["owner_size"] if it["owner_size"] else None)
+            rows = sizebuttons.buttons(iid, o, it["owner_size"] or _agent_size(it) or None)
     return item_buttons(iid, price, offers_no_brand(it, gate), sizes=rows, priced=it["owner_price"] or None,
                         needs_size_tap=wants, shift=price_shift(db, iid))
 
@@ -1005,7 +1039,7 @@ def refresh_card(s: Settings, db: DB, iid: str, reopen: bool = False) -> bool:
         return False
     caption, price = item_caption(iid, it)
     waiting = reopen or row["resolved_at"] is None
-    sizing = it["status"] in SIZE_OFFERED and (size_tapped(it) or needs_size(it))   # WO43: the size rows stay
+    sizing = size_rows(it)                                          # WO43 / WO58: the size rows stay
     buttons = (card_buttons(db, iid, it, price) if waiting or sizing else
                [[{"text": f"\u2713 ${it['owner_price']}" if it["owner_price"] else "\u2713", "callback_data": NOOP}]])
     cover = Path(it["dir"]) / "cover.jpg"
@@ -1049,10 +1083,28 @@ def send_item(s: Settings, db: DB, iid: str) -> None:
         refresh_card(s, db, iid, reopen=True)
         shares.batch_carded(db, it["batch_id"])
         return
-    once(db, bot, "item", iid, caption,
-         lambda: bot.send_photo(cover, caption, buttons) if cover.is_file() and len(caption) <= MAX_CAPTION
-         else bot.send_message(caption, buttons))
+    sent = once(db, bot, "item", iid, caption,
+                lambda: bot.send_photo(cover, caption, buttons) if cover.is_file() and len(caption) <= MAX_CAPTION
+                else bot.send_message(caption, buttons))
+    if sent is not None and not test and needs_size(it):
+        db.log(iid, SIZE_ASKED, {"card": sent})        # WO58: a size question — counted in the 9 PM line
     shares.batch_carded(db, it["batch_id"])
+
+
+SIZE_ASKED = "size_asked"         # event: a card went out with size buttons (no photo shows a size) — WO58's count
+
+
+def questions_today(db: DB, now: datetime | None = None) -> dict:
+    """WO58: the questions the group's cards asked today (New York's day) — the size buttons on a card whose photos
+    show no size; every such item went up at once with the agent's own size — and the items that waited for one."""
+    from zoneinfo import ZoneInfo
+    zone = ZoneInfo("America/New_York")
+    now = now or datetime.now(timezone.utc)
+    day = now.astimezone(zone).date()
+    start = datetime(day.year, day.month, day.day, tzinfo=zone).astimezone(timezone.utc).isoformat(timespec="seconds")
+    asked = db.conn.execute("SELECT COUNT(DISTINCT ref) FROM events WHERE kind=? AND ts >= ?",
+                            (SIZE_ASKED, start)).fetchone()[0]
+    return {"sizes": int(asked or 0), "day": day.isoformat()}
 
 
 def _ask(s: Settings, db: DB, iid: str, kind: str, question: str, buttons: list[list[dict]], cli: str) -> None:
@@ -1560,7 +1612,7 @@ def _set_price(s: Settings, db: DB, bot: Bot, iid: str, amount: int, reply_to: i
     else:                                              # WO54 §2: never held for a brand (pipeline.settle_brand decided)
         db.outbox_resolve("item", iid)
         # WO29: no "✓ $X — N left" message: said on the button (the size rows stay when the size was tapped, WO43)
-        if not (size_tapped(db.item(iid)) and refresh_card(s, db, iid)):
+        if not (size_rows(db.item(iid)) and refresh_card(s, db, iid)):   # WO58: her tap may still change it
             _ack(db, bot, "item", iid, f"✓ ${amount} — queued")
     if not (status in OWNER_WAITING and (loads(db.item(iid)["gate"]) or {}).get("hold")):
         _confirm(s, db, bot, reply_to, iid, f"${amount}")          # WO33: a reply always gets its answer
@@ -1987,9 +2039,10 @@ def _tap_size(s: Settings, db: DB, bot: Bot, iid: str, size: str) -> str:
     (the line "📏 Size 8 ✓", the button ✓, the title's size, the rows kept so another tap changes it) — no new message.
     A second tap of the same size does nothing twice; an item that started posting, or is retired, changes nothing."""
     it = db.item(iid)
-    if it is None or it["status"] not in SIZE_OFFERED:
+    if it is None or not (it["status"] in SIZE_OFFERED or (_agent_size(it) and it["status"] in SIZE_LIVE)):
         return f"size {iid}: rejected: " + ("unknown item" if it is None else f"it is {it['status']}")
-    if it["owner_size"] == size:
+    if it["owner_size"] == size or (not it["owner_size"] and _agent_size(it) == size and it["status"] in
+                                    ("posting", "posted")):
         return f"size {iid}: {size!r} already"
     mark_size_tapped(db, iid)
     try:

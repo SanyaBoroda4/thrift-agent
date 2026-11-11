@@ -121,10 +121,21 @@ def size_label(facts: Facts) -> str | None:
     return f"EU {eu} / {label}" if eu else label
 
 
+GUESSED = 0.31          # WO58: the confidence that marks the agent's own size (items.agent_size) in the facts
+
+
+def guessed(ev) -> bool:
+    """Is this size the agent's own choice for an item no photo shows a size for (WO58)? Derived, no photo, the mark."""
+    return bool(ev and ev.value and ev.source == "derived" and not ev.photos and abs(ev.confidence - GUESSED) < 1e-6)
+
+
 def title_size(facts: Facts) -> str | None:
     """The size phrase for the TITLE: the US size only, never EU. Adults "size 7.5"; kids shoes in Poshmark's groups,
     "Toddler size 7.5" (up to 12C, 0-7C included) / "Little Kid size 13" (12.5-13.5C, 1-3Y) / "Big Kid size 4" (3.5Y
-    and up). The EU size belongs in the description (size_label)."""
+    and up). The EU size belongs in the description (size_label). A size no photo shows never goes in a title (WO37):
+    the agent's own size (WO58) fills the size field only."""
+    if guessed(facts.size_us):
+        return None
     parts = kids_parts(facts)
     if parts is None:
         return f"size {facts.size_us.value}" if facts.size_us.value else None

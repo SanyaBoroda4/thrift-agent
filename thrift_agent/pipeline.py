@@ -1847,7 +1847,51 @@ def apply_owner_answers(it, facts: Facts) -> Facts:
                                source="owner", confidence=1.0)
     if size := owner_size(it):                           # her size for the item (WO33: a reply 'size S'): it wins
         update["size_us"] = Ev(value=size, photos=facts.size_us.photos, source="owner", confidence=1.0)
+    elif (mine := agent_size(it)) and not pieces and not facts.size_us.value:
+        # WO58: the agent's own size for an item no photo shows one for — the size field only (never the title)
+        update["size_us"] = Ev(value=mine, photos=[], source="derived", confidence=sizes.GUESSED)
     return facts.model_copy(update=update) if update else facts
+
+
+def agent_size(it) -> str | None:
+    """The agent's own size for the item (items.agent_size, WO58), else None."""
+    return (it["agent_size"] if "agent_size" in it.keys() else None) or None
+
+
+SIZE_DECIDED = "size_decided"
+
+
+def settle_size(s: Settings, db: DB, iid: str) -> str | None:
+    """WO58 (the owner, 2026-11-10: "nothing should be skipped … the agent must use its brain and assign the most
+    suitable size … with less questions"): an item no photo shows a size for and she gave none — the card's ⭐
+    (sizebuttons.guess: her shop's history for the brand and category, the model's reading of the photos, the
+    category's usual size, the menu's middle) becomes its size NOW, so it goes up on every site at once; her tap or her
+    'size …' later replaces it everywhere (approve._tap_size → set_size / set_size_live). The size field only: the title
+    keeps no size (a size no photo shows never goes in a title). None when nothing was decided."""
+    from thrift_agent import sizebuttons
+    it = db.item(iid)
+    if it is None or owner_size(it) or owner_sizes(it) or agent_size(it) or not approve.needs_size(it):
+        return None
+    offer = sizebuttons.offer(db, it)
+    star = (offer or {}).get("star")
+    if not star:
+        return None
+    it2 = {**dict(it), "agent_size": star}
+    facts = apply_owner_answers(it2, Facts.model_validate(loads(it["facts"])))
+    tab, value = sizes.poshmark_size(facts) or (None, None)
+    # the size fields only — the title, the description, everything else as they were (a size no photo shows never
+    # goes in a title; nothing else of the listing is rewritten for it)
+    renders = {mp: {**r, "size": sizes.size_label(facts), "size_tab": tab, "size_value": value}
+               for mp, r in (loads(it["renders"]) or {}).items()}
+    with db.tx():
+        db.set_item(iid, agent_size=star, facts=facts.model_dump(), renders=renders)
+        db.log(iid, SIZE_DECIDED, {"size": star, "tab": (offer or {}).get("tab"), "asked": True})
+        # a row skipped or failed for want of a size before this rule goes back in line (never an unconfirmed one)
+        for row in db.conn.execute("SELECT marketplace FROM listings WHERE item_id=? AND status IN ('skipped', "
+                                   "'failed') AND COALESCE(error, '') LIKE ? AND COALESCE(url, '') = ''",
+                                   (iid, "%no size on the item%")).fetchall():
+            db.upsert_listing(iid, row["marketplace"], status="queued", error=None)
+    return star
 
 
 _PIECE_IN_VALUE = re.compile(r"([A-Za-z0-9./]+)\s*\(([A-Za-z][\w' -]{1,30})\)")
@@ -2780,6 +2824,9 @@ def set_size(s: Settings, db: DB, iid: str, size: str) -> str:
     size = re.sub(r"\s+", " ", size or "").strip()
     if not size:
         raise ValueError("which size? Reply 'size S'")
+    live = db.item(iid)
+    if live is not None and reached_site(db, live):     # WO58: on a site already — every live listing follows
+        return set_size_live(s, db, iid, size)
     it = _answerable(db, iid, "size")
     it2 = {**dict(it), "owner_size": size}
     facts = apply_owner_answers(it2, Facts.model_validate(loads(it["facts"])))
@@ -2799,6 +2846,28 @@ def set_size(s: Settings, db: DB, iid: str, size: str) -> str:
                                    "NOT LIKE ?", (iid, f"skipped: {TWIN_LIVE}%")).fetchall():   # WO39: its twin
             db.upsert_listing(iid, row["marketplace"], status="queued", error=None)
     return status
+
+
+def set_size_live(s: Settings, db: DB, iid: str, size: str) -> str:
+    """WO58: her size for an item already on a site (its size was the agent's own, or read wrong): the record follows
+    — her size kept, the size field on every render; the live titles left as they are (a text change is hers) — and
+    one "size" edit per live site (edits.queue_size); the sites not live yet list it as it is now. Returns the status."""
+    from thrift_agent import edits
+    it = db.item(iid)
+    if it is None:
+        raise ValueError(f"unknown item {iid}")
+    if it["status"] == "dropped":
+        raise ValueError(DROPPED_SAID)
+    it2 = {**dict(it), "owner_size": size}
+    facts = apply_owner_answers(it2, Facts.model_validate(loads(it["facts"])))
+    tab, value = sizes.poshmark_size(facts) or (None, None)
+    renders = {mp: {**r, "size": sizes.size_label(facts), "size_tab": tab, "size_value": value}
+               for mp, r in (loads(it["renders"]) or {}).items()}
+    with db.tx():
+        db.set_item(iid, owner_size=size, facts=facts.model_dump(), renders=renders)
+        db.log(iid, "size_set", {"size": size, "status": it["status"], "live": True})
+    edits.queue_size(s, db, iid)
+    return it["status"]
 
 
 def set_piece_sizes(s: Settings, db: DB, iid: str, pieces: list[tuple[str, str]]) -> str:
@@ -2977,6 +3046,8 @@ def set_price(s: Settings, db: DB, iid: str, amount: int) -> str:
     with db.tx():
         db.set_item(iid, owner_price=amount, price=pr, renders=renders, status=status)
         db.log(iid, "price_set", {"amount": amount, "status": status})
+    if status == "ready":
+        settle_size(s, db, iid)                          # WO58: never waits for a size — the agent's own, at once
     settle_twin(s, db, iid)
     return status
 

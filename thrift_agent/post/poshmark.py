@@ -64,7 +64,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeout
 from thrift_agent import brands, heal, postcheck
 from thrift_agent.post.base import (AccountBlocked, Cancelled, Contains, Mode, Poster, PosterError, Skipped, human_type,
                                     keep_evidence, settle)
-from thrift_agent.post.fallback import matching, menu_size
+from thrift_agent.post.fallback import closest_option, last_choice, matching, menu_size
 from thrift_agent.schema import Render
 
 # The condition menu's labels (verified). Poshmark has no "new without tags": unworn goes up as Like New. It has no
@@ -123,6 +123,24 @@ class SizeChoice:
 _KIDS_LABEL = re.compile(r"\bUS (Toddler|Little Kid|Big Kid) (\d{1,2}(?:\.5)?)$")
 _PLUS = re.compile(r"^[0-6]X$", re.I)
 _BABY = re.compile(r"\bMonths?\b|^(?:Newborn|Preemie)$", re.I)    # "6 Months", "0-3 Months": the Baby tab (WO23)
+
+
+NO_SUCH_SIZE = "no such size zq9"          # WO58: a value no option is — the size menu read without picking
+
+
+def department_for(r: Render) -> str:
+    """WO58: the Poshmark department for a render whose department Poshmark lacks ("Unisex", "Kids & Baby", "Dog"):
+    by its words — kids, men, home, pets — else Women, the shop's own."""
+    from thrift_agent import families
+    words = f"{r.department} {r.category} {r.subcategory or ''} {r.title}".lower()
+    if families.is_pet_item(f"{r.subcategory or ''} {r.title}".strip()):     # "dog coat", never "dog print dress"
+        return "pets"
+    for dept, pattern in (("kids", r"\b(kids?|girls?|boys?|baby|toddler|infant)\b"),
+                          ("men", r"\b(men|mens|men's|male)\b"),
+                          ("home", r"\b(home|kitchen|decor|bedding|bath)\b")):
+        if re.search(pattern, words):
+            return dept
+    return "women"
 
 
 def size_choice(r: Render) -> SizeChoice | None:
@@ -769,8 +787,9 @@ class PoshmarkPoster(Poster):
 
     async def _category(self, page: Page, r: Render, trigger: Locator | None = None) -> None:
         et = r.department.strip().lower()
-        if et not in DEPARTMENTS:
-            raise Skipped(f"Poshmark has no '{r.department}' department (the category is required)")
+        if et not in DEPARTMENTS:                      # WO58: never skipped — the closest department Poshmark has
+            et = department_for(r)
+            self.guesses.append(f"department set to '{et.title()}' (Poshmark has no '{r.department}')")
         trigger = SEL["category_open"](page) if trigger is None else trigger   # WO43: the edit page's own field
         await self._remember("category", trigger)
         await trigger.click()
@@ -786,11 +805,15 @@ class PoshmarkPoster(Poster):
             if not options:
                 raise PosterError(f"the {r.department} category list did not show")
             guess = matching(r.category, options)          # WO36: exact, else the one longer name — never similar
+            how = None
+            if guess is None:                              # WO58: never skipped — the closest the form has
+                guess, how = closest_option(r.category, options, f"{r.subcategory or ''} {r.title or ''}") \
+                    or (None, None)
             if guess is None or not (await self._choose(page, SEL["category_items"](page), guess))[0]:
-                raise Skipped(f"Poshmark has no category '{r.category}' under {r.department}"
-                              f"{_offer(options)} (the category is required)")
+                raise PosterError(f"Poshmark's {r.department} category '{guess or r.category}' couldn't be picked"
+                                  f"{_offer(options)}")
             self.chosen["category"] = guess
-            self.guesses.append(f"category set to '{guess}' (from '{r.category}')")
+            self.guesses.append(f"category set to '{guess}' (from '{r.category}'" + (f": {how})" if how else ")"))
         await settle(page, 0.3, 0.8)
         await self._subcategory(page, r)
 
@@ -851,8 +874,8 @@ class PoshmarkPoster(Poster):
 
     async def _size(self, page: Page, r: Render) -> None:
         choice = size_choice(r)
-        if choice is None:                             # WO37 (live: the Clarks): Poshmark's size is required — Next
-            raise Skipped("no size on the item")       # would only show "Required"; nothing is saved
+        if choice is None:                             # WO58: no size at all reached the form (the agent's own size
+            choice = SizeChoice(None, "", False)       # is set at the price — pipeline.settle_size): the menu decides
         where = f"{r.department}/{r.category}" + (f" ({choice.tab})" if choice.tab else "")
         await SEL["size_open"](page).click()
         await self._trace(page, "menu-opened")
@@ -868,7 +891,9 @@ class PoshmarkPoster(Poster):
         # toggles it OFF (the menu closes, the field says "Select Size"): three live failures. A size the form shows
         # already is kept: Done pressed when it is there, the tile never touched.
         shown = re.sub(r"\s+", " ", await SEL["size_open"](page).inner_text()).strip()
-        if SizeShown(choice.button).matches(shown):
+        if not choice.button and shown and not re.search(r"select|size\s*$|required", shown, re.I):
+            choice = SizeChoice(choice.tab, shown, choice.verified)      # WO58: the form's own preselected size kept
+        if choice.button and SizeShown(choice.button).matches(shown):
             self.notes.append(f"size '{choice.button}' was preselected by Poshmark (the field shows '{shown}')")
             await self._trace(page, "preselected")
             done = SEL["size_done"](page)
@@ -880,18 +905,22 @@ class PoshmarkPoster(Poster):
             self._state["size_menu"] = "preselected"
             await settle(page, 0.3, 0.8)
             return
-        picked, sizes = await self._choose(page, SEL["size_buttons"](page), choice.button, loose=choice.loose)
+        if choice.button:
+            picked, sizes = await self._choose(page, SEL["size_buttons"](page), choice.button, loose=choice.loose)
+        else:                                          # WO58: no size to look for — the menu's own values, read
+            picked, sizes = False, (await self._pick(page, SEL["size_buttons"](page), NO_SUCH_SIZE,
+                                                     timeout_ms=3_000))[1]
         await self._trace(page, "picked")
         if not picked:
             if not sizes:
                 raise PosterError(f"the size menu for {where} shows no sizes")
             found = menu_size(choice.button, sizes, f"{r.subcategory or ''} {r.category or ''} {r.title or ''}")   # WO50
-            guess = found[0] if found else None
+            guess, how = found if found else (last_choice(sizes), "nothing on the menu is near it")   # WO58
             if guess is None or not (await self._choose(page, SEL["size_buttons"](page), guess))[0]:
-                raise Skipped(f"size '{choice.button}' isn't on Poshmark's {where} menu, nor one near it"
-                              f"{_offer(sizes, 30)} (the size is required)")
+                raise PosterError(f"Poshmark's size '{guess or choice.button}' on the {where} menu couldn't be picked"
+                                  f"{_offer(sizes, 30)}")
             self.chosen["size"] = guess
-            self.guesses.append(f"size set to '{guess}' (from '{choice.button}')")
+            self.guesses.append(f"size set to '{guess}' (from '{choice.button or 'no size'}': {how})")
             choice = SizeChoice(choice.tab, guess, choice.verified)
         await self._confirm_size(page, choice)
         await settle(page, 0.3, 0.8)

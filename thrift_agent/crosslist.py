@@ -865,18 +865,41 @@ def family_check(db: DB, iid: str, mp: str, title: str, why: str) -> None:
     notify.say(f"Check — {title}: {LABEL[mp]}'s {why} and {LABEL[mp]} has no closer one — listed there anyway.")
 
 
+BANNED = "not allowed on "               # a row a site's own written rules keep off it (WO58 rule 5)
+BANNED_SAID = "banned_said"               # kv: [item|site]
+CANT_MAP = "can't map: "
+
+
+def cant_map(db: DB, iid: str, mp: str, title: str, error) -> None:
+    """WO58 (the owner, 2026-11-10: "absolutely nothing should be skipped"): a value the site's mapping couldn't take.
+    A site's own written ban (eBay's used underwear and socks — `ebay.mapping.PolicyBan`) is the one reason an item stays
+    off a site: skipped there, ONE private line naming the rule, the other sites go on. Anything else is a gap in the
+    code, never the item's end: an item failure (attempt counted), tried again by itself, set aside after two, the 🚨
+    on the third (rule 4) — never a skip."""
+    why = str(error)
+    if why.startswith(BANNED) or getattr(error, "rule", None):
+        db.upsert_listing(iid, mp, status="skipped", error=SKIPPED + why)
+        db.log(iid, "post_banned", {"mp": mp, "error": why})
+        said = set(loads(db.kv_get(BANNED_SAID)) or [])
+        if f"{iid}|{mp}" not in said:
+            said.add(f"{iid}|{mp}")
+            db.kv_set(BANNED_SAID, json.dumps(sorted(said)[-500:]))
+            notify.say(f"⏭ {title}: not listed on {LABEL[mp]} — {why[len(BANNED):] if why.startswith(BANNED) else why}. "
+                       "It goes up on the other sites.")
+        return
+    row = db.listing(iid, mp)
+    attempts = int((row["attempts"] if row else 0) or 0) + 1
+    db.upsert_listing(iid, mp, status="failed", error=CANT_MAP + why, attempts=attempts)
+    db.log(iid, "post_failed", {"mp": mp, "error": CANT_MAP + why, "mapping": True, "attempts": attempts})
+    from thrift_agent import health
+    again = (f"attempt {attempts} of {health.ASIDE_AFTER} — tried again in {RETRY_AFTER // 60} min"
+             if attempts < health.ASIDE_AFTER else "set aside; tried again by itself later")
+    notify.say(f"❌ {LABEL[mp]} couldn't map ({iid}): {title}\n{why}\n({again})")
+
+
 def skip_unmappable(db: DB, iid: str, mp: str, title: str, why: str) -> None:
-    """A required field the catalog can't take from the facts: this marketplace is skipped for this item (the others
-    go on), with the reason in the ops chat."""
-    db.upsert_listing(iid, mp, status="skipped", error=SKIPPED + why)
-    db.log(iid, "post_skipped", {"mp": mp, "error": why, "mapping": True})
-    if why == NO_SIZE:                                   # WO37: one line for the item, not one per site
-        say_no_size(title)
-        return
-    if size_skip(why):                                   # WO50: the size and the menu named, once
-        say_size_skip(db, iid, mp, title, why)
-        return
-    notify.say(f"⏭ {LABEL[mp]} skipped ({iid}): {title}\ncan't map: {why}")
+    """Before WO58 this skipped the site; now `cant_map` (kept for its callers)."""
+    cant_map(db, iid, mp, title, why)
 
 
 SIZE_SKIP = re.compile(r"size '?[^']*'? (?:isn't on|has no place on)|waist \S+ isn't on", re.I)

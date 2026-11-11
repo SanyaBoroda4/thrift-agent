@@ -56,9 +56,12 @@ through eBay's official API with no browser, and OFF until its keys arrive** (th
 8. **Shipping guard.** `HOLD_UNSHIPPED` blocks publishing (not drafts or dry runs).
 
 **The owner's standing rules:**
-- **Only four things wait for a person (WO54 §2,** the owner 2026-11-09: "take your own decisions in order to post it
-  other than just hold off till human will intrude"): her price (a button, a typed number, `thrift price`); a size
-  no photo shows (the card's size buttons); a password or sign-in code; a real CAPTCHA — for the last two a HUMAN
+- **Only three things wait for a person (WO54 §2, WO58,** the owner 2026-11-09: "take your own decisions in order to
+  post it other than just hold off till human will intrude"; 2026-11-10: "absolutely nothing should be skipped …
+  choose appropriate sizes / categories deciding by himself"): her price (a button, a typed number, `thrift price`);
+  a password or sign-in code; a real CAPTCHA. **A size no photo shows no longer waits (WO58):** the card's ⭐ is the
+  item's size at her price (`pipeline.settle_size`, `items.agent_size` — the size field only, never the title), it
+  goes up at once, the size rows stay on the card and her tap edits every live site. For the last two a HUMAN
   STEP (WO56, below): ONE private message with the page's screenshot and "reply show" — never the group, never a 🚨
   — reminders every 12 h and once at 2:05 PM after the quiet hours. The agent never types a password, never solves a
   CAPTCHA, never uses a solving service. WO56 §6 adds one human step no code can take: a share whose upload didn't
@@ -72,9 +75,18 @@ through eBay's official API with no browser, and OFF until its keys arrive** (th
   brand … · no brand · condition … · category … · men / women · boys / girls · cover N`). Every failure is tried
   again by itself another way (rule 4 below; a refused form: once 30 min later, then once per code update with ONE
   ⛔ and ONE 🚨). **Nobody is asked to check a site, ever** (WO53). `tests/test_wo54_decide.py` lists every string
-  that asks a question or prompts a reply (ALLOWED); only the price and the size may wait.
-- **Never leave an item unposted (WO52).** No field ever stops a listing: brands, sizes, categories fall back to the
-  closest real value (never a made-up one; a big brand never "no brand"); site changes are healed or found by the form
+  that asks a question or prompts a reply (ALLOWED); only the price may wait (WO58: the size buttons are a
+  correction, never a wait).
+- **Never leave an item unposted (WO52, WO58).** No field ever stops a listing — **there is no `skipped` outcome for
+  a size, a category, a brand, a condition, a colour, a package or a text**: each falls back to the closest real
+  value of that site (never a made-up one; a big brand never "no brand"); a mapping gap left is an item FAILURE,
+  tried again by itself, set aside, the 🚨 on the third (`crosslist.cant_map`), never a skip. The only things that
+  keep an item off a site: the site refusing it after every fallback (eBay's own refusal / removal; every category
+  eBay suggests takes only new items and it is used), a person's step (WO56), and a site's own WRITTEN ban — eBay's
+  Used clothing policy: "Used underwear and socks are not allowed, even if they are clean." (`ebay.mapping.policy_ban`:
+  used underwear / socks / diapers by the item's type words; never swimwear, never a bra; never a ban made up): ONE
+  private line naming the rule, the other sites go on. `tests/test_wo58_never_skipped.py` fails if a new skip path
+  appears (`ALLOWED`: twins, sold, test-run verdicts, eBay's refusals). Site changes are healed or found by the form
   check; dead browsers are reopened; what still needs code is ONE 🚨 alarm within 20 minutes.
 - **No message twice; a quiet group.** The group gets only cards, the allowed questions, the ✅ cards and plain
   action-needed lines — no ids, errno, tracebacks; everything technical goes to the private (ops) chat. Every reply of
@@ -425,18 +437,29 @@ edit_save; UNVERIFIED: block, captcha, verify, skirt_length, promo_close, listin
   below (⭐ = my guess)"; Poshmark's menu for the category kept to what Depop and Vinted take (`crosslist_ok`), eight in
   two rows (shoes in halves; letters one row), ⭐ on the guess (her shop's history → the category's usual → the middle),
   "‹ smaller · bigger ›" (`sizes:<item>:±1`, kv `size_page`), EU brands (`EU_BRANDS`) "8 · EU 38.5", "S/M → M". A tap
-  (`size:<item>:<value>`, `approve._tap_size`) sets that item's size, edits the card ("📏 Size 8 ✓"), changeable until it
-  starts posting. A price first → "✓ $25 — tap a size to list it"; the item is queued when it has both
-  (`approve.needs_size`). A size typed without a reply → "Which item? Reply 'size …' to its card". An item waiting for a
-  size gets ONE group "Waiting for a size: <title> — tap one on its card (or reply 'size …' …)" (`approve.ask_sizes`,
-  outbox kind `size`); its reply sets the size and puts every site back in line. Every site skips an item with no size
-  with ONE private line (`crosslist.say_no_size`).
+  (`size:<item>:<value>`, `approve._tap_size`) sets that item's size, edits the card ("📏 Size 8 ✓"). **WO58: nothing
+  waits for a size.** Her price is enough: the ⭐ becomes the item's size at once (`pipeline.settle_size` →
+  `items.agent_size`, event `size_decided`; in the facts `size_us` source derived, no photo, confidence
+  `sizes.GUESSED` — `sizes.guessed`; the size field only, `title_size` gives none), the card says "📏 No size on the
+  photos — listed as 8 (my pick); tap another to change it everywhere" (`AGENT_SIZE_LINE`), the price button "✓ $120 —
+  queued", the size rows stay (`approve.size_rows`, also once posted — `SIZE_LIVE`); her tap or her 'size …' after the
+  item is live → `pipeline.set_size_live` → ONE "size" edit per live site (`edits.queue_size`: Poshmark the same
+  category's menu, Depop / Vinted the size alone, eBay the Size item specific). A card sent with size rows is a
+  question (event `size_asked`, `approve.questions_today`, the heartbeat's `questions` → the 9 PM line "❓ Questions
+  today: N"). "Waiting for a size" is never sent (`ASK_SIZES = False`); `ask_sizes` gives an item that waited before
+  the rule its size and puts its sites back in line; a reply to an old one still sets hers. A size typed without a
+  reply → "Which item? Reply 'size …' to its card".
 - **On any site's menu** (`post/fallback.menu_size`, one order): the exact value → the bigger of a dual label
   (`dual_parts`, `bigger_of`) → the nearest in the same system, one step at most (`nearest_size`: 8.5 → 9, XL → L; never
-  Petite or a kids label for a plain size) → One Size only for a one-size item. Depop / Vinted (`catalogs/sizes.py`
-  `depop_size` / `vinted_size`): also the size without its fit mark ("27P" → 27"), then the menu's neutral choice (One
-  size / Other) — each fallback in the note; kids letters on Depop's ages (XS → 5 … XL → 16 years). Only "no size at
-  all" skips.
+  Petite or a kids label for a plain size) → One Size only for a one-size item → WO58: the nearest of the same system
+  however far, the bigger between two ("nearest on the menu": 15 → 12) → the same fit across letters and US women's
+  numbers, one size at most (`same_fit`: M → 10 on a numbers menu, never a 4 for a 4XL) → the menu's neutral choice
+  (One Size / OS / Other) → the caller's last choice: the menu's middle (`last_choice`, said in the check line, the
+  label's size in the description). `fallback.closeness` ranks them (0 as written … 5 the last choice). Depop / Vinted
+  (`catalogs/sizes.py` `depop_size` / `vinted_size`): also the size without its fit mark ("27P" → 27"); no size at all
+  → the menu's neutral choice, else its middle — never a skip; kids letters on Depop's ages (XS → 5 … XL → 16 years).
+  Depop / Vinted conditions, packages, a skirt length and an over-long text take the closest the site has (never
+  Fair).
 
 ### Categories and departments
 - `taxonomy.fit` maps the model's department / category / subcategory onto Poshmark's names
@@ -802,9 +825,11 @@ edit_save; UNVERIFIED: block, captcha, verify, skirt_length, promo_close, listin
   `crosslist.step_text`, `ext_driver.describe_diff`).
 - Never asks (`post/fallback`): brand by the brand rules (none → empty, a big brand never); size `menu_size`; category
   and subcategory exact, else the ONE name that is ours followed by more words or of whose " & " parts ours is one
-  (`fallback.matching`; a category nothing matches skips the item, a subcategory → None); colours not offered left out.
-  Every guess in the item's "Check —" line. A required field nothing fits → `skipped` ("skipped: …"), nothing saved;
-  `thrift requeue <item>` once fixed. An item with no size is skipped before Next. A size pick that didn't register is
+  (`fallback.matching`; WO58: a category nothing matches → `fallback.closest_option`: the option sharing the most of
+  the item's own words, else the form's "Other", else its first; a department Poshmark lacks → `poshmark.department_for`;
+  a subcategory → None); colours not offered left out. Every guess in the item's "Check —" line. WO58: nothing raises
+  `Skipped` — a size nothing on the menu is near takes the menu's last choice, a render with no size at all takes the
+  form's preselected size or the menu's middle (the agent's own size is set at the price). A size pick that didn't register is
   picked again four ways (`SIZE_REPICKS`: plain click, keyboard, the tile's container, the button's own click).
 - Publish: Next → the Share Listing panel (our title; Promote off — one checkbox unchecked, or the panel reads "Promote
   My Closet Off"; unreadable → stop before List, `…-panel.png`) → List This Item once (Poshmark's JSON answers to the
@@ -907,8 +932,9 @@ edit_save; UNVERIFIED: block, captcha, verify, skirt_length, promo_close, listin
   rule 3's proof → `queued` once (never a failure), looked for once more right before the second post (`run_cross`);
   a second unconfirmed → ONE 🚨, never a third post, never a question. Unreadable ≠ absent; unknown 2 h after the
   click → the 🚨.
-- **The size skip**: a size no menu value fits → ONE private line naming the size and menu (`crosslist.say_size_skip`),
-  the other sites go on.
+- **No size skip (WO58)**: every menu gives a value (above); `crosslist.say_size_skip` / `say_no_size` only answer rows
+  from before WO58. A mapping that still can't be made is `crosslist.cant_map` (a failure tried again; a written ban
+  skipped with its line).
 - `thrift crosslist <item> | --dry-run <item> | --backfill [--dry-run] | --check-login | --hand-listed [--apply 1,2]`.
   Backfill: every item still for sale on Poshmark, at its price on Poshmark that day (a differing price becomes
   `owner_price`, ONE private list). Hand-listed (`handlisted.py`): her shops read, our items scored (brand, words, size,
@@ -1027,7 +1053,10 @@ the sandbox spike (`thrift ebay spike`) is the first thing on the day the keys a
   dress", then the title) picked inside the item's family AND department, else the closest valid one with a check
   line, never refused (a pet item → Pet Supplies); the condition from the conditions that category takes — NWT → 1000,
   new without tags → 1500, like new / excellent → 2990, good (and a fair reading) → 3000, **never 3010 Fair**; a
-  category that takes only new items (underwear) leaves a used one off eBay ("eBay takes only …"); **item specifics**
+  category that takes only new items is the plan's cue to try the item's next category (WO58; a used item that EVERY
+  suggested category refuses is eBay refusing it — a `PolicyBan` line, not an alarm); **eBay's written ban** (WO58
+  rule 5, `mapping.policy_ban`, checked before any call): used underwear and socks (its Used clothing policy, quoted
+  in the line) — never new ones, never swimwear or a bra; **item specifics**
   from the facts in eBay's own spelling (Brand — eBay's spelling, else the name as text, "Unbranded" when none; Size
   Type from Poshmark's size tab; Department; Color; Type / Style and the like by the item's own words as whole
   phrases; a material only from a read label, the approved title, or visible denim); a REQUIRED specific the photos
@@ -1038,9 +1067,10 @@ the sandbox spike (`thrift ebay spike`) is the first thing on the day the keys a
   the other sites' order (the bigger of a dual label, the nearest one step, One Size for a one-size item, the list's
   neutral choice) — but first the item's OTHER own categories that eBay suggested (`mapping.ranked_categories`, ≤ 3:
   a 3T under "Baby & Toddler Clothing", a 10 under "Girls' Clothing (Sizes 4 & Up)"), the one holding the size as
-  written winning (`size_as_written`); the closed list is fashion's only (a dog's coat keeps "One Size"); nothing
-  near in any → that site left out with the 📏 line; no size at all → the size buttons, as on every
-  site. The label's own size goes into the description when eBay's value differs. Shipping (`ebay/shipping.py`,
+  written winning (`size_as_written`), else the closest list (`size_closeness`) — a girls' "One Size" costume dress
+  goes to Kids' Costumes (WO58 rule 2.5); the closed list is fashion's only (a dog's coat keeps "One Size"); nothing
+  near in any → the first category's neutral value, else its middle (`map_ebay(…, last=True)`, `LAST_SIZE`, said) —
+  never a skip; no size at all → the same (the agent's own size is set at the price, as on every site). The label's own size goes into the description when eBay's value differs. Shipping (`ebay/shipping.py`,
   `data/ebay_shipping.json`): the parcel per item family, rounded up; `marketplaces.ebay.shipping.type` calculated
   (USPS Ground Advantage by weight and size) or flat — **her own listings' type is read on the spike day and
   mirrored**; handling 3 business days; returns and location from settings — the location is the seller's own data
@@ -1104,7 +1134,8 @@ the sandbox spike (`thrift ebay spike`) is the first thing on the day the keys a
   real poster and queue against the fake eBay), `tests/api/test_api_ebay.py`.
 
 ## Live listing edits and read-backs
-- **`listing_edits`** (`edits.py`; one row per item, site and kind — `category`, `photos`, `text`, `brand`; pending →
+- **`listing_edits`** (`edits.py`; one row per item, site and kind — `category`, `photos`, `text`, `brand`, `size`
+  (WO58: her size after the agent's went up, `edits.queue_size`; Poshmark's read-back checks the size too); pending →
   saving → done | unconfirmed | failed | skipped): taken by each site worker on an idle turn in any hour
   (`parallel.listing_edit`). One Save per site; saved and not confirmed → READ an hour later (`_shows`), never saved again
   blind; a failure retried an hour later, three in all, then ONE private line. Dry runs fill and never save (a private
@@ -1263,8 +1294,9 @@ the sandbox spike (`thrift ebay spike`) is the first thing on the day the keys a
   to ship with the nearest ship-by, unmatched, sold-still-listed, drops due this week), Shares today, a table newest first
   with each site's status / links, the Shipping column (`core.shipping`), "Orders read on the sites: …", per item "live
   since … · drop …"; filters All / Active / Sold / To ship; no buyer data; inline CSS / JS (CSP), light and dark.
-- **The 9 PM line** (`watch.evening_line`): "📊 Today: 7 shares → 8 items, 7 live on all 3 sites with all photos, 1
-  waiting for a size." + the sites line + "🧹 Cleanup freed 270 MB." (from the heartbeat).
+- **The 9 PM line** (`watch.evening_line`): "📊 Today: 7 shares → 8 items, 7 live on all 3 sites with all photos." +
+  WO58's " ❓ Questions today: 0." (`watch.questions_line`, the heartbeat's `questions`) + the sites line + "🧹 Cleanup
+  freed 270 MB." (from the heartbeat).
 
 ## Her laptop comes first (WO54 §4)
 - **The Thrift Chrome** (`deploy/com.thrift.chrome-cross.plist` → `deploy/chrome_cross.sh`; live 2026-11-09: 9.6 GB,

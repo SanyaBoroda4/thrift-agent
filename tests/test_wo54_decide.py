@@ -324,6 +324,10 @@ ALLOWED = [
     ("uploads.py", "didn't finish uploading — please share them again", "share again"),
     # a size no photo shows — the card's size buttons and the one line about them
     ("approve.py", "tap a size to list it", "size"),
+    # WO58: the agent's own size went up at once — the card says which and that a tap changes it everywhere; nothing
+    # waits (her tap is a correction, like 'brand …')
+    ("approve.py", "No size on the photos — listed as {size} (my pick); tap another to change it everywhere", "size"),
+    ("approve.py", "in size {…} — tap another on its card to change it", "size"),
     ("approve.py", "Waiting for a size: {title} — tap one on its card", "size"),
     ("approve.py", "📏 No size on the photos — tap it below", "size"),
     ("approve.py", "Reply with the size, e.g. 'size S' or 'size 8.5'", "size"),

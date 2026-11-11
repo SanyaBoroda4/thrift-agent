@@ -458,6 +458,22 @@ def sites_line(db: Database, day: str, now: datetime | None = None) -> str:
     return "\nSites: " + " · ".join(marks) + when + "."
 
 
+def questions_line(db: Database, day: str) -> str:
+    """WO58 (the owner: "post everywhere with less questions"): " ❓ Questions today: 0." — the size buttons the day's
+    cards showed (a card whose photos show no size; every such item went up at once with the agent's own size), from the
+    Mac's heartbeat (`questions`: {"sizes", "day"}); nothing when the heartbeat doesn't say it for today."""
+    row = db.one("SELECT info FROM heartbeats WHERE source = 'mac'")
+    info = core._loads(row["info"]) if row and row["info"] else None
+    got = (info or {}).get("questions") if isinstance(info, dict) else None
+    if not isinstance(got, dict) or str(got.get("day") or "") != day:
+        return ""
+    n = got.get("sizes")
+    if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+        return ""
+    return (f" ❓ Questions today: {n}" + (f" (a size no photo shows — {'it' if n == 1 else 'each'} went up with my "
+                                          "size, a tap changes it)" if n else "") + ".")
+
+
 def evening_line(db: Database, now: datetime | None = None, mode: str | None = None) -> str | None:
     """§9, once a local day in the 21:00 hour: "📊 Today: 7 shares → 8 items, 7 live on all 3 sites with all photos,
     1 waiting for a size." to the private chat. Returns the line, or None when it isn't the hour or it went already."""
@@ -500,8 +516,8 @@ def evening_line(db: Database, now: datetime | None = None, mode: str | None = N
         head = f"📊 Today (the Mac is offline since {clock(seen, now)} — its figures as of then)"
     text = (f"{head}: {len(shares)} share{'s' if len(shares) != 1 else ''} → {len(item_ids)} item"
             f"{'s' if len(item_ids) != 1 else ''}, {live_all} live on all {len(sites)} sites with all photos"
-            + (f", {n_wait} waiting for a size" if n_wait else "") + "." + _cleanup_today(db, day)
-            + sites_line(db, day, now))
+            + (f", {n_wait} waiting for a size" if n_wait else "") + "." + questions_line(db, day)
+            + _cleanup_today(db, day) + sites_line(db, day, now))
     out = core.Outbox(now, mode)
     with db.tx():
         core.put_setting(db, EVENING_DONE, day)

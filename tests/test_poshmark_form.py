@@ -550,39 +550,44 @@ def test_a_subcategory_not_offered_is_ours_with_more_words_or_none(chrome, posh,
         assert "subcategory:None" in events
 
 
-@pytest.mark.parametrize("change,why", [
-    (dict(category="Sweatshirts"), "Poshmark has no category 'Sweatshirts' under Women (it offers: Accessories, "
-                                   "Bags, Dresses, Jeans, Shorts, Shoes, Sweaters, Tops, Other) (the category is "
-                                   "required)"),
-    (dict(category="Dress", subcategory=None), "Poshmark has no category 'Dress' under Women (it offers: Accessories, "
-                                               "Bags, Dresses, Jeans, Shorts, Shoes, Sweaters, Tops, Other) (the "
-                                               "category is required)"),    # WO36: "Dresses" is not "Dress"
-    (dict(department="Unisex"), "Poshmark has no 'Unisex' department (the category is required)"),
+@pytest.mark.parametrize("change,chosen,how", [
+    (dict(category="Sweatshirts"), "Other", "the form's Other"),       # nothing of the item's words: the form's Other
+    (dict(category="Dress", subcategory=None, title="Floral Wrap Dress Blue"), "Dresses", "the item's own words"),
 ])
-def test_a_category_nothing_on_the_form_comes_close_to_skips_the_item(chrome, posh, photos, change, why,
-                                                                       monkeypatch):
-    err, price = fill_expecting(chrome, posh, render(photos, **change), Skipped, steps=["_category"],
-                                monkeypatch=monkeypatch)
-    assert str(err) == why and price == ""
+def test_a_category_the_form_lacks_takes_the_closest_it_has_never_a_skip(chrome, posh, photos, change, chosen, how):
+    """WO58 (the owner, 2026-11-10: "absolutely nothing should be skipped … choose appropriate sizes / categories
+    deciding by himself"): the form's closest category, said in the item's check line — before, the item was skipped
+    (WO36's "Dresses is not Dress" still holds for the exact match: this is the fallback, and it says so)."""
+    fill_and_read(chrome, posh, render(photos, **change), steps=["_category"])
+    assert posh.chosen["category"] == chosen
+    assert any(g.startswith(f"category set to '{chosen}'") and how in g for g in posh.guesses), posh.guesses
+
+
+def test_a_department_poshmark_lacks_is_the_closest_one(chrome, posh, photos):
+    fill_and_read(chrome, posh, render(photos, department="Unisex"), steps=["_category"])
+    assert posh.guesses[0] == "department set to 'Women' (Poshmark has no 'Unisex')"
+    assert poshmark.department_for(render(photos, department="Unisex", title="Boys Puffer Jacket")) == "kids"
+    assert poshmark.department_for(render(photos, department="Animals", title="Quilted Dog Coat Green")) == "pets"
+    assert poshmark.department_for(render(photos, department="Unisex", title="Dog Print Dress")) == "women"
 
 
 def test_a_size_not_on_the_menu_takes_the_nearest_of_its_kind_one_size_away_at_most(chrome, posh, photos,
                                                                                     monkeypatch):
     r = render(photos, size="12.5")                                  # Women's shoes stop at 12
     seen, _ = fill_and_read(chrome, posh, r, steps=["_category", "_size"])
-    assert posh.chosen["size"] == "12" and posh.guesses == ["size set to '12' (from '12.5')"]
+    assert posh.chosen["size"] == "12" and posh.guesses == ["size set to '12' (from '12.5': nearest)"]
+    assert diff_on(seen, r, posh, "size") == {}, seen
+
+    posh.guesses = []                                   # WO58: further away still a size of the menu, never a skip
+    r = render(photos, size="15")
+    seen, _ = fill_and_read(chrome, posh, r, steps=["_category", "_size"])
+    assert posh.chosen["size"] == "12" and posh.guesses == ["size set to '12' (from '15': nearest on the menu)"]
     assert diff_on(seen, r, posh, "size") == {}, seen
 
     posh.guesses = []
-    err, _ = fill_expecting(chrome, posh, render(photos, size="15"), Skipped, steps=["_category", "_size"],
-                            monkeypatch=monkeypatch)
-    assert str(err).startswith("size '15' isn't on Poshmark's Women/Shoes (Standard) menu, nor one near it (it offers: "
-                               "5, 5.5, ")
-    assert str(err).endswith("(the size is required)")
-
     dress = render(photos, category="Dresses", subcategory="Midi", size="5X")         # Plus: 0X-3X
-    err, _ = fill_expecting(chrome, posh, dress, Skipped, steps=["_category", "_size"], monkeypatch=monkeypatch)
-    assert "size '5X' isn't on Poshmark's Women/Dresses (Plus) menu" in str(err)
+    fill_and_read(chrome, posh, dress, steps=["_category", "_size"])
+    assert posh.chosen["size"] == "3X" and "nearest on the menu" in posh.guesses[-1]
 
 
 def test_smart_sell_switched_on_stops_the_item(chrome, posh, photos):
@@ -1260,10 +1265,13 @@ def test_a_panel_that_cant_be_read_is_kept_with_its_text(chrome, posh, photos, t
     assert list((tmp_path / "shots").glob(f"{SKU}-poshmark-*-panel.png"))      # the panel before ‹ Back
 
 
-def test_an_item_without_a_size_is_skipped_before_next(chrome, posh, photos, monkeypatch):
-    """Live 2026-10-12 (the Clarks): no size on any photo — Next only showed "Required" under Size."""
-    err, price = fill_expecting(chrome, posh, render(photos, size=None), Skipped, steps=["_category", "_size"])
-    assert str(err) == "no size on the item" and price == ""
+def test_an_item_without_a_size_takes_a_size_of_the_menu_never_a_skip(chrome, posh, photos):
+    """Live 2026-10-12 (the Clarks): no size on any photo — Next only showed "Required" under Size, and the item was
+    skipped. WO58: the agent's own size is set at the price (pipeline.settle_size); a render that still reaches the
+    form without one takes a size of the menu (its middle, said in the check line) — the field is never left empty."""
+    r = render(photos, size=None)
+    fill_and_read(chrome, posh, r, steps=["_category", "_size"])
+    assert posh.chosen.get("size") and "from 'no size'" in posh.guesses[-1], posh.guesses
 
 
 # ---------------------------------------------------------------- WO37: a live listing's cover, on its edit page

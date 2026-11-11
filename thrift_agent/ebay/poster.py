@@ -26,6 +26,7 @@ from thrift_agent.catalogs.common import ItemView, MappingError
 from thrift_agent.ebay import LABEL, SITE, mapping
 from thrift_agent.ebay import client as api
 from thrift_agent.post.base import AccountBlocked, Mode, Outcome, Poster, PosterError
+from thrift_agent.post import fallback
 from thrift_agent.schema import Render
 
 ITEM_URL = re.compile(r"/itm/(?:[^/?#]+/)?(\d{9,})")
@@ -182,26 +183,41 @@ class EbayPoster(Poster):
         """The item as an eBay listing: eBay's own category for it, the specifics and conditions that category takes,
         eBay's own code for the shipping service, the price from her price. Raises MappingError (no size at all, a
         size nowhere near eBay's list, a used item where eBay takes only new) or EbayError (eBay couldn't be read)."""
+        if (ban := mapping.policy_ban(view)) is not None:     # WO58 rule 5: eBay's written ban — no API call made
+            raise ban
         refused: MappingError | None = None
-        near = None                                 # the first that maps with a nearest / neutral size
+        tried: list[tuple[mapping.Category, str | None]] = []
+        best = None                                 # (closeness, order, fields, note): the list that comes closest
         f = note = None
-        for suggestion, its_note in await self.client.categories_for(view):
+        for n, (suggestion, its_note) in enumerate(await self.client.categories_for(view)):
             category = await self.client.category(suggestion)
             try:
                 got = mapping.map_ebay(view, category, self.cfg, self.aliases)
-            except MappingError as e:               # the size isn't on THIS category's list: the item's next own one
-                if not mapping.size_refused(e):
+            except MappingError as e:               # the size or the condition isn't THIS category's: the next one
+                if not (mapping.size_refused(e) or mapping.NEW_ONLY in str(e)):
                     raise
-                refused = refused or e
+                refused = refused if refused is not None and mapping.size_refused(refused) else e
+                if mapping.size_refused(e):
+                    tried.append((category, its_note))
                 continue
             if mapping.size_as_written(got):
                 f, note = got, its_note
                 break
-            near = near or (got, its_note)
+            close = mapping.size_closeness(got)
+            if best is None or (close, n) < best[:2]:
+                best = (close, n, got, its_note)
+        if f is None and best is not None:
+            _, _, f, note = best
+        if f is None and tried:                     # WO58: no category of the item's holds its size — the first's list
+            category, note = tried[0]               # gives its neutral value or its middle, said; never a skip
+            f = mapping.map_ebay(view, category, self.cfg, self.aliases, last=True)
         if f is None:
-            if near is None:
-                raise refused or MappingError("eBay suggested no category")
-            f, note = near
+            # what's left: eBay suggested nothing, or every category takes only new items and this one is used — eBay
+            # refusing it after every fallback (the one other honest reason, said privately)
+            if refused is not None and mapping.NEW_ONLY in str(refused):
+                raise mapping.PolicyBan("a pre-owned one in the categories eBay suggests for it", str(refused),
+                                        "item conditions for those categories")
+            raise refused or MappingError("eBay suggested no category")
         f.shipping["service_code"] = await self.client.service_code(f.shipping["service"], f.shipping["service_code"])
         if note:
             f.guesses.insert(0, note)
@@ -486,8 +502,11 @@ class EbayPoster(Poster):
         if live is None or not live.for_sale:
             return {"ok": False, "saved": False, "error": "not for sale on eBay"}
         brand = str(fields.get("brand") or "").strip()
+        if fields.get("size") and not brand:          # WO58: her size tapped after the agent's went up
+            return await self._set_size(live, fields, dry, go)
         if not brand:
-            return {"ok": False, "saved": False, "error": "only the brand of an eBay listing is changed this way"}
+            return {"ok": False, "saved": False, "error": "only the brand or the size of an eBay listing is changed "
+                                                          "this way"}
         aspects = {**live.aspects, "Brand": [brand]}
         if dry:
             await self.client.update(live.listing_id, aspects=aspects, validate=True)
@@ -497,9 +516,39 @@ class EbayPoster(Poster):
         after = await self.client.update(live.listing_id, aspects=aspects)
         return {"ok": after is not None and (after.aspects.get("Brand") or [None])[0] == brand, "saved": True}
 
+    async def _set_size(self, live, fields: dict, dry: bool, go) -> dict:
+        """The listing's Size item specific as her size, in eBay's own spelling for its category (`size_value`; the
+        list's own value nearest it, else as written)."""
+        want = str(fields.get("size") or "").strip()
+        name = next((a for a in live.aspects if a.strip().lower() in mapping.SIZE_ASPECTS), "Size")
+        value = want
+        if fields.get("category_id"):
+            try:
+                meta = mapping.parse_aspects(await self.client.aspects_raw(str(fields["category_id"])))
+                a = next((a for a in meta if a.name == name), None)
+                if a is not None and a.values:
+                    chosen = {k: v for k, v in live.aspects.items() if k != name}
+                    found, _ = mapping.size_value(want, a.allowed(chosen), fields.get("item_type"))
+                    value = found or fallback.last_choice(a.allowed(chosen)) or want
+            except Exception:  # noqa: BLE001 — eBay's list can't be read: her size as written
+                value = want
+        aspects = {**live.aspects, name: [value]}
+        if dry:
+            await self.client.update(live.listing_id, aspects=aspects, validate=True)
+            return {"ok": True, "saved": False, "seen": (live.aspects.get(name) or [None])[0]}
+        if go is not None and not go():
+            return {"ok": False, "saved": False, "error": "stopped before the change"}
+        after = await self.client.update(live.listing_id, aspects=aspects)
+        return {"ok": after is not None and (after.aspects.get(name) or [None])[0] == value, "saved": True,
+                "note": f"size {value}" + (f" (her size {want} in eBay's list)" if value != want else "")}
+
     async def read_fields(self, url: str, fields: dict, shots: Path | None = None, sku: str | None = None) -> dict:
         live = await self._read(url, sku)
         brand = str(fields.get("brand") or "").strip()
+        if fields.get("size") and not brand and live is not None:
+            size = next((v[0] for a, v in live.aspects.items() if a.strip().lower() in mapping.SIZE_ASPECTS and v), None)
+            return {"ok": size is not None and (size == fields["size"]
+                                                or size in mapping.size_candidates(str(fields["size"])))}
         return {"ok": live is not None and (not brand or (live.aspects.get("Brand") or [None])[0] == brand)}
 
     # ------------------------------------------------------------ a take-down (thrift-api does these; here for the CLI)

@@ -197,6 +197,11 @@ cat("147324", "Outerwear", [CSA, BABY, ("3082", "Baby & Toddler Clothing")],
     [brand(), asp("Size", BABY_SIZES, True), color(), dept("Baby", "Girls", "Boys", "Unisex Kids"),
      asp("Type", ["Snowsuit", "Jacket", "Coat", "Bunting", "Vest"], True),
      asp("Season", ["Winter", "Fall", "Spring"]), material(), *EXTRA[:2]])
+cat("80913", "Kids' Costumes", [CSA, ("155240", "Specialty"), ("163147", "Costumes, Reenactment, Theater"),
+                                 ("52762", "Costumes")], ["costume", "cosplay", "princess", "superhero"],
+    [brand(), asp("Size", ["One Size", "XS", "S", "M", "L", "XL", "2T", "3T", "4T", "4", "5", "6", "7", "8", "10", "12",
+                          "14", "16"], True), color(), dept("Girls", "Boys", "Unisex Kids"),
+     asp("Theme", ["Princess", "Superhero", "Animal", "Fairy Tale", "Holiday"]), material(), *EXTRA[:2]])
 cat("15720", "Dresses", [CSA, KIDS, GIRLS, ("11462", "Girls' Clothing (Sizes 4 & Up)")], ["dress", "gown"],
     [brand(), asp("Size", GIRL_SIZES, True), color(), dept("Girls"),
      asp("Style", ["A-Line", "Party", "Sundress", "Tutu", "Smocked"]), material(), *EXTRA[:2]])

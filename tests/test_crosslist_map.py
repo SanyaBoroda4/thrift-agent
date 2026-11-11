@@ -254,12 +254,13 @@ def test_kids_shoes_go_up_a_half_size_only_where_the_menu_has_none():
 
 
 def test_a_size_is_never_invented_and_never_blocks():
-    """WO52 §1 (the owner, 2026-11-01: "never leave it unposted"): no size at all is the only skip; a size the menu
-    lacks takes the nearest value, else the menu's neutral choice — said in the note."""
-    with pytest.raises(MappingError):
-        _vs("size_0", None)
+    """WO52 §1 (the owner, 2026-11-01: "never leave it unposted") and WO58 ("absolutely nothing should be skipped"): a
+    size the menu lacks takes the nearest value, else the menu's neutral choice — said in the note; no size at all
+    takes the menu's own choice (the agent's own size is set at the price — this is the poster's last net)."""
+    o, note = _vs("size_0", None)
+    assert o.title == "One size" and "no size on the item" in note
     o, note = _vs("size_0", "Q")
-    assert o.title == "One size" and "nothing near Q" in note
+    assert o.title == "One size" and "neutral choice" in note and "no Q" in note
     assert _ds("100", "XL", dept="Kids", cat="Shirts & Tops")[0] == "16 years"     # kids letters: the top of the range
     assert _vs("size_4", "One Size", cat="Accessories")[0].title == "One size"
 

@@ -326,13 +326,19 @@ def vinted_size(s: SizeIn, lib: str, options: list[Option]) -> tuple[Option, str
     27); else the menu's nearest value in the same system (WO50's `menu_size`); else the menu's neutral choice (One
     size / Other) — each fallback said in the note. MappingError only for an item with no size at all, or a menu
     with no size the item could take (then the caller skips the site, said)."""
-    from thrift_agent.post.fallback import menu_size
+    from thrift_agent.post.fallback import last_choice, menu_size
     try:
         return _vinted_exact(s, lib, options)
     except MappingError as e:
-        if not s.value or not options:
+        if not options:
             raise
         first = e
+    if not s.value:                                 # WO58: no size at all — the menu's neutral choice, else its middle
+        o = next((o for o in options if o.title.strip() in NEUTRAL), None) or _by_title(
+            options, last_choice([o.title for o in options]) or "")
+        if o is None:
+            raise first
+        return o, f"size '{o.title}' (no size on the item: Vinted's menu's own choice)"
     if (plain := _plain(s)) is not None:
         try:
             o, note = _vinted_exact(plain, lib, options)
@@ -348,19 +354,27 @@ def vinted_size(s: SizeIn, lib: str, options: list[Option]) -> tuple[Option, str
     neutral = next((o for o in options if o.title.strip() in NEUTRAL), None)
     if neutral is not None:
         return neutral, f"size '{neutral.title}' (Vinted's menu has nothing near {s.value})"
+    if (o := _by_title(options, last_choice(titles) or "")) is not None:      # WO58: never skipped for a size
+        return o, f"size '{o.title}' (Vinted's menu has nothing near {s.value}: its middle; the label's size is in " \
+                  "the description)"
     raise first
 
 
 def depop_size(s: SizeIn, sizes: list[str], set_path: str) -> tuple[str, str | None]:
     """WO52 §1: as `vinted_size` — exact, the size without its fit mark, the nearest on the set, the set's neutral
     choice; never skipped for a size the set lacks."""
-    from thrift_agent.post.fallback import menu_size
+    from thrift_agent.post.fallback import last_choice, menu_size
     try:
         return _depop_exact(s, sizes, set_path)
     except MappingError as e:
-        if not s.value or not sizes:
+        if not sizes:
             raise
         first = e
+    if not s.value:                                 # WO58: no size at all — the set's neutral choice, else its middle
+        v = next((v for v in sizes if v.strip() in NEUTRAL), None) or last_choice(sizes)
+        if v is None:
+            raise first
+        return v, f"size '{v}' (no size on the item: Depop's set's own choice)"
     if (plain := _plain(s)) is not None:
         try:
             v, note = _depop_exact(plain, sizes, set_path)
@@ -376,4 +390,7 @@ def depop_size(s: SizeIn, sizes: list[str], set_path: str) -> tuple[str, str | N
     neutral = next((v for v in sizes if v.strip() in NEUTRAL), None)
     if neutral is not None:
         return neutral, f"size '{neutral}' (Depop's set has nothing near {s.value})"
+    if (v := last_choice(sizes)) is not None:                                   # WO58: never skipped for a size
+        return v, f"size '{v}' (Depop's set has nothing near {s.value}: its middle; the label's size is in the " \
+                  "description)"
     raise first

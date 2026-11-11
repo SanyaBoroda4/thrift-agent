@@ -136,7 +136,11 @@ def test_the_fallback_order_and_one_size_only_for_one_size_items():
     assert menu_size("M", menu) == ("M", "exact")
     assert menu_size("XXL", menu) == ("XL", "nearest")
     assert menu_size("XXXXL", menu, "plush robe") == ("One Size", "one size")
-    assert menu_size("XXXXL", menu, "wide leg pants") is None              # never One Size for a sized item
+    # never One Size for a sized item while a size of its own system is there (WO58: however far — never a skip)
+    assert menu_size("XXXXL", menu, "wide leg pants") == ("XL", "nearest on the menu")
+    assert menu_size("XXXXL", ["One Size", "2", "4"], "wide leg pants") == ("One Size", "the menu's neutral choice")
+    assert menu_size("9", ["4", "6", "8", "10", "12"]) == ("10", "nearest")                 # between two: the bigger
+    assert menu_size("M", ["0", "2", "4", "6", "8", "10", "12"]) == ("10", "the same fit")   # M is 8–10: the bigger
     assert dual_parts("M") is None and dual_parts("S/M") == ("S", "M")
 
 

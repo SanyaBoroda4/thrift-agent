@@ -23,7 +23,9 @@ from thrift_agent.config import Settings
 from thrift_agent.db import DB, loads, new_id
 from thrift_agent.schema import Facts, Render
 
-KINDS = ("category", "photos", "text", "brand")   # WO43: a category change; WO45 §6: photos added; WO50: a title / description
+KINDS = ("category", "photos", "text", "brand", "size")
+# WO43: a category change; WO45 §6: photos added; WO50: a title / description; WO52: the brand; WO58: her size
+# tapped after the agent's own went up
 MAX_ATTEMPTS = 3
 RETRY_AFTER = timedelta(hours=1)
 OPEN = ("pending", "saving", "unconfirmed")
@@ -217,6 +219,49 @@ def recategorize(s: Settings, db: DB, iid: str, path: dict, dry: bool = False) -
     return {"placed": placed, "sites": list(payloads), "skipped": skipped, "rows": rows}
 
 
+def queue_size(s: Settings, db: DB, iid: str, dry: bool = False) -> list[str]:
+    """WO58 (the owner: "if she later taps a different size, every site's listing is edited to match"): one "size" edit
+    per site the item is live on, from its record as it is now (her size already set): Poshmark the size on the same
+    category's menu (its edit page: the category chosen again, then the size — `set_category`), Depop / Vinted the
+    size alone (the extension's "fields" job), eBay the Size item specific (`EbayPoster.set_fields`). A site not live yet
+    lists the new size by itself. Returns the rows queued."""
+    it = db.item(iid)
+    if it is None:
+        return []
+    facts = Facts.model_validate(loads(it["facts"]))
+    renders = loads(it["renders"]) or {}
+    posh = renders.get("poshmark") or next(iter(renders.values()), None) or {}
+    posted = {r["marketplace"]: r for r in db.listings_for(iid) if r["status"] == "posted" and r["url"]}
+    payloads: dict[str, dict] = {}
+    size = facts.size_us.value
+    if "poshmark" in posted and posh:
+        payloads["poshmark"] = {"render": posh, "size": size,
+                                "want": {"department": posh.get("department"), "category": posh.get("category"),
+                                         "subcategory": posh.get("subcategory"),
+                                         "size": posh.get("size_value") or posh.get("size")}}
+    cross = [mp for mp in ("depop", "vinted") if mp in posted]
+    if cross:
+        from thrift_agent.catalogs import depop as depop_cat, vinted as vinted_cat
+        from thrift_agent.catalogs.common import ItemView, MappingError
+        view = ItemView(iid=iid, facts=facts, render=Render.model_validate(posh),
+                        price=int(it["owner_price"] or posh.get("price") or 0))
+        for mp in cross:
+            try:
+                f = depop_cat.map_depop(view) if mp == "depop" else vinted_cat.map_vinted(view)
+            except (MappingError, Exception) as e:  # noqa: BLE001 — that site keeps its size; said
+                notify.say(f"❌ {crosslist.LABEL[mp]}: the new size of {_title(db, iid)} couldn't be mapped: {e}")
+                continue
+            if f.size:
+                payloads[mp] = {"fields": {"size": f.size}, "want": {"size": f.size}, "size": size}
+    if "ebay" in posted:
+        fields = loads(posted["ebay"]["fields_json"]) or {}
+        payloads["ebay"] = {"fields": {"size": size, "category_id": fields.get("category_id"),
+                                       "item_type": facts.item_type}, "want": {"size": size}, "size": size}
+    rows = queue(db, iid, "size", payloads, dry=dry)
+    db.log(iid, "size_edit_queued", {"size": size, "sites": list(payloads), "rows": rows})
+    return rows
+
+
 def may_edit(s: Settings, db: DB, site: str, dry_poster: bool = False) -> bool:
     """The poster LIVE, never with PAUSE, the lid closed or the site stopped for the window — in any hour (an edit the
     owner asked for is made now, like a take-down; it lists nothing new)."""
@@ -250,6 +295,7 @@ async def run_one(s: Settings, db: DB, site: str, poster, ctx, sites: list[str],
             else "with its new description" if row["kind"] == "text"
             else f"brand {(payload.get('fields') or {}).get('brand') or (payload.get('render') or {}).get('brand')}"
             if row["kind"] == "brand"
+            else f"size {payload.get('size') or (payload.get('want') or {}).get('size')}" if row["kind"] == "size"
             else path_text(payload.get("path") or payload.get("want") or {}) or row["kind"])
     shots = s.path("failed") / "shots"
     shots.mkdir(parents=True, exist_ok=True)
@@ -315,7 +361,7 @@ async def run_one(s: Settings, db: DB, site: str, poster, ctx, sites: list[str],
         db.log(iid, "listing_edit_dry", {"site": site, "kind": row["kind"], "ok": bool(out.get("ok")),
                                          "error": out.get("error"), "mismatch": out.get("mismatch"),
                                          "seen": out.get("seen"), "evidence": Path(evidence).name if evidence else None})
-        kind = {"photos": "Photos", "text": "Title"}.get(row["kind"], "Category")
+        kind = {"photos": "Photos", "text": "Title", "size": "Size", "brand": "Brand"}.get(row["kind"], "Category")
         notify.say(f"{kind} dry run on {label} — {title} → {what}: "
                    + ("filled in on the edit page, not saved" if out.get("ok") else f"not filled: {out.get('error')}")
                    + (f" · {Path(evidence).name}" if evidence else "")
@@ -363,8 +409,13 @@ async def _shows(site: str, poster, url: str, payload: dict, iid: str, shots: Pa
         return bool(out.get("count") is not None and int(out["count"]) >= need)
     if site == "poshmark":
         live = await asyncio.to_thread(crosslist.poshmark_listing, url)
+        same_size = True
+        if want.get("size") and "size" in payload:                # WO58: a size edit — the size must show too
+            from thrift_agent.post.poshmark import size_same
+            same_size = bool(live and size_same(str(want["size"]), str(live.get("size") or "")))
         return bool(live and (live.get("department") or "").lower() == str(want.get("department") or "").lower()
-                    and (live.get("category") or "").lower() == str(want.get("category") or "").lower())
+                    and (live.get("category") or "").lower() == str(want.get("category") or "").lower()
+                    and same_size)
     out = await poster.read_fields(url, payload.get("fields") or {}, shots, iid)
     return bool(out.get("ok"))
 

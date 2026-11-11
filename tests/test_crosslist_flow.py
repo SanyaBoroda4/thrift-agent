@@ -270,7 +270,10 @@ def test_all_done_only_when_no_marketplace_has_anything_left(tmp_path, loop):
     assert f"/listing/{a}" in said.group[0]
 
 
-def test_a_value_that_cant_be_mapped_skips_only_that_marketplace(tmp_path, loop, monkeypatch):
+def test_a_value_that_cant_be_mapped_is_a_failure_tried_again_never_a_skip(tmp_path, loop, monkeypatch):
+    """WO58 (the owner: "absolutely nothing should be skipped"): a mapping gap left in the code is an item failure on
+    that site only — the attempt counted, ONE private ❌ line, tried again by itself (set aside after two, the 🚨 on
+    the third); the other sites go on. Before, the site was skipped for good."""
     said, run = loop
     s = _settings(tmp_path)
     db = DB(s.path("db"))
@@ -283,10 +286,13 @@ def test_a_value_that_cant_be_mapped_skips_only_that_marketplace(tmp_path, loop,
     monkeypatch.setattr(runner, "map_fields", mapping)
     ps = _posters()
     run(s, db, ps)
-    assert ps["depop"].calls == [] and db.listing(iid, "depop")["status"] == "skipped"
-    assert said.group[0].startswith(card(NAME, 85, [("poshmark", f"https://poshmark.com/listing/{iid}")]) +
-                                    '\n\n🟢 <a href="https://www.vinted.com/items/')   # Depop skipped: left out
-    assert any(m.startswith("📏 ") and "Depop has no reasonable value for its size" in m for m in said.ops)  # WO50
+    row = db.listing(iid, "depop")
+    assert ps["depop"].calls == [] and row["status"] == "failed" and row["attempts"] == 1
+    assert row["error"].startswith("can't map: size 'XL'")
+    assert said.group[0].startswith(card(NAME, 85, [("poshmark", f"https://poshmark.com/listing/{iid}")]))
+    assert "vinted.com/items/" in said.group[0]                                  # the other sites go on
+    assert any(m.startswith("❌ Depop couldn't map") and "tried again" in m for m in said.ops)
+    assert db.listing(iid, "poshmark")["status"] == db.listing(iid, "vinted")["status"] == "posted"
 
 
 def test_a_logged_out_marketplace_stops_for_the_window_with_one_plain_line(tmp_path, loop):

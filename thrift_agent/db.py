@@ -135,6 +135,8 @@ MIGRATIONS = {"items": {"cover_hash": "TEXT", "owner_price": "INTEGER", "owner_c
                         "owner_title": "TEXT",           # WO27: the owner's exact title (`thrift edit --title`)
                         "owner_sizes": "TEXT",           # WO33: [{"piece", "size"}] a set's pieces, the owner's
                         "owner_size": "TEXT",            # WO33: the owner's size for the item ("size S" replied)
+                        "agent_size": "TEXT",            # WO58: the agent's own size for an item no photo shows one
+              #                                            for (the card's ⭐) — listed at once; her tap replaces it
                         "all_live_at": "TEXT",           # WO41: the price-drop clock — live on every site since
                         "drop_stage": "INTEGER",         # WO41: 0, 1, 2 — drops made (never a third)
                         "last_drop_at": "TEXT",          # WO41: when the last stage started

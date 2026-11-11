@@ -300,6 +300,43 @@ def pick_category(view: ItemView, answers: list[list[Suggestion]]) -> tuple[Sugg
 
 
 SIZE_LIST = "isn't on eBay's size list"
+NEW_ONLY = "eBay takes only"
+
+
+class PolicyBan(MappingError):
+    """WO58 rule 5: eBay's own written rules forbid this item on eBay — the one honest reason it isn't listed there (it
+    goes up everywhere else). `rule` is eBay's own wording."""
+
+    def __init__(self, what: str, rule: str, page: str):
+        super().__init__(f"not allowed on eBay: {what} — eBay's {page}: “{rule}”")
+        self.what, self.rule, self.page = what, rule, page
+
+
+# eBay's Used clothing policy (https://www.ebay.com/help/policies/prohibited-restricted-items/used-clothing-policy?id=4281,
+# read 2026-11-10): "Used underwear and socks are not allowed, even if they are clean." "Examples include boxer shorts,
+# panties, briefs, diapers, and athletic supporters." "Bras are not considered underwear". Nothing else is banned
+# there — swimwear, bras, sleepwear and lingerie that isn't underwear are listed as usual (never a ban made up).
+USED_CLOTHING_PAGE = "Used clothing policy"
+USED_CLOTHING_RULE = "Used underwear and socks are not allowed, even if they are clean."
+_UNDERWEAR = re.compile(r"\b(underwear|under\s*wear|panties|panty|briefs?|boxers?|boxer\s+shorts|thongs?|g[- ]?strings?|"
+                        r"knickers|diapers?|nappies|nappy|athletic\s+supporters?|jock\s*straps?|socks?)\b", re.I)
+# never underwear: swimwear, and shoes named like it ("thong sandals", "sock booties") — a bra alone isn't underwear by
+# eBay's page and isn't matched above; a bra AND panty set is (its panties are)
+_NOT_UNDERWEAR = re.compile(r"\b(swim\w*|bikinis?|bathing|board\s*shorts?|sandals?|flip[- ]?flops?|slides?|shoes?|"
+                            r"boots?|booties|sneakers?|slippers?)\b", re.I)
+
+
+def policy_ban(view: ItemView) -> PolicyBan | None:
+    """eBay's written ban for this item, else None: a USED (not new with or without tags) underwear or socks item
+    ("brief", "boxers", "panties", "thong", "socks", "diaper"…) by its own type words — never swimwear, never a bra."""
+    f, r = view.facts, view.render
+    if str(f.condition) in ("NWT", "NWOT"):
+        return None
+    words = f"{f.item_type or ''} {r.subcategory or ''}"
+    if not _UNDERWEAR.search(words) or _NOT_UNDERWEAR.search(words):
+        return None
+    what = "used socks" if re.search(r"\bsocks?\b", words, re.I) else "used underwear"
+    return PolicyBan(what, USED_CLOTHING_RULE, USED_CLOTHING_PAGE)
 OTHER_CATEGORIES = 3
 
 
@@ -324,6 +361,30 @@ def size_refused(e: Exception) -> bool:
 def size_as_written(f) -> bool:
     """The listing's size is the item's own (no nearest / neutral value taken): no other category need be tried."""
     return not any(str(g).startswith("size ") for g in f.guesses)
+
+
+def size_closeness(f) -> int:
+    """How close the listing's size is to the item's (0 as written … 5 the list's last choice) — the poster keeps the
+    category whose list comes closest (WO58 rule 2.5)."""
+    worst = 0
+    for g in f.guesses:
+        g = str(g)
+        if not g.startswith("size "):
+            continue
+        if "eBay lists it under" in g:
+            worst = max(worst, 1)
+        elif "has no place on eBay's size list" in g:
+            worst = max(worst, 4)
+        elif LAST_SIZE in g:
+            worst = max(worst, 5)
+        elif (m := re.search(r"\(([^()]*)\)\s*$", g)) is not None:
+            worst = max(worst, fallback.closeness(m.group(1)))
+        else:
+            worst = max(worst, 3)
+    return worst
+
+
+LAST_SIZE = "nothing on eBay's list is near it"
 
 
 # ---------------------------------------------------------------- the condition
@@ -610,9 +671,11 @@ def _fallback(view: ItemView, a: Aspect, chosen: dict) -> Found:
                                      f"taken: please check")
 
 
-def aspects_for(view: ItemView, category: Category, aliases=None) -> tuple[dict[str, list[str]], list[str]]:
+def aspects_for(view: ItemView, category: Category, aliases=None, last: bool = False
+                ) -> tuple[dict[str, list[str]], list[str]]:
     """({aspect name: its values}, the notes) for a listing in `category`: every required aspect, the recommended ones
-    the facts give, the optional ones only by their own reader. Size Type before Size (the size list depends on it)."""
+    the facts give, the optional ones only by their own reader. Size Type before Size (the size list depends on it).
+    `last` (WO58: no category of the item's has its size): the list's middle value, said — never a skip."""
     chosen: dict[str, list[str]] = {}
     notes: list[str] = []
     closed = any(_key(p) == _key(FASHION_ROOT) for p in category.path)     # eBay's closed size lists: fashion only
@@ -627,11 +690,19 @@ def aspects_for(view: ItemView, category: Category, aliases=None) -> tuple[dict[
         if not found.values and a.required:
             if name in SIZE_ASPECTS:
                 want = (view.size_in().value or "").strip()
-                if not want:
-                    raise MappingError(NO_SIZE)           # her size on the card puts every site back in line
-                # a size is never made up (the owner, WO50): eBay's list for this category has nothing near it
-                raise MappingError(f"size '{want}' isn't on eBay's size list for {category.name}")
-            found = _fallback(view, a, chosen)
+                offered = a.allowed(chosen)
+                if want and not last:
+                    # WO58 rule 2.5: the item's other own categories are tried first (the poster's plan), this one's
+                    # list has nothing near the size
+                    raise MappingError(f"size '{want}' {SIZE_LIST} for {category.name}")
+                # WO58: no size at all reached here, or no category of the item's holds it: the list's neutral value,
+                # else its middle — a real value of eBay's, said in the check line; the label's size is in the text
+                pick = exact(offered, *NEUTRAL_SIZES) or fallback.last_choice(offered)
+                if pick is None:
+                    pick = want or "One Size"
+                found = Found(values=[pick], note=f"size {want or 'none on the item'}: '{pick}' — {LAST_SIZE}")
+            else:
+                found = _fallback(view, a, chosen)
         values = [v[: a.max_length] if a.max_length else v for v in found.values if v]
         if not values:
             continue
@@ -714,14 +785,17 @@ def _label_line(view: ItemView, description: str, size: str | None) -> str:
 
 
 def map_ebay(view: ItemView, category: Category, cfg: Config | None = None, aliases=None,
-             fee_table: fees.Fees | None = None, ship_table: shipping.Table | None = None) -> EbayFields:
+             fee_table: fees.Fees | None = None, ship_table: shipping.Table | None = None, last: bool = False
+             ) -> EbayFields:
     """The item as an eBay listing in `category` (chosen by `choose_category` from eBay's suggestions): fixed price,
     Good 'Til Cancelled, one of it, SKU = our item id. Raises MappingError only for an item with no size at all in a
     category that needs one — every other gap takes the closest valid choice and says so."""
     cfg = cfg or Config()
     f, r = view.facts, view.render
+    if (ban := policy_ban(view)) is not None:         # WO58 rule 5: eBay's own written ban — the only reason left
+        raise ban
     notes: list[str] = []
-    aspects, more = aspects_for(view, category, aliases)
+    aspects, more = aspects_for(view, category, aliases, last=last)
     notes += more
     cid, cname, cnote = condition_for(f.condition, category.conditions)
     if cnote:

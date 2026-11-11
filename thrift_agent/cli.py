@@ -326,6 +326,14 @@ def _safe_sales(db, force_beat: bool = False) -> None:
         db.log(None, "error", f"sales tick: {type(e).__name__}: {e}")
 
 
+def _questions(db) -> dict | None:
+    try:
+        from thrift_agent import approve
+        return approve.questions_today(db)
+    except Exception:  # noqa: BLE001 — the heartbeat never fails for one part of it
+        return None
+
+
 def beat_info(db) -> dict:
     """WO49: what the heartbeat to thrift-api carries — the worker's PROGRESS, not only that it is alive (live
     2026-10-24: the heartbeat said "online" for 71 minutes while no share could be taken): the last finished look,
@@ -346,7 +354,7 @@ def beat_info(db) -> dict:
             "cleanup": kv(cleanup.LAST), "formcheck": formcheck.beat(db),   # WO52 §3: the 9 PM sites line
             "sites": health.beat(db), "alarms": alarm.beat(db),            # WO53 §3: why a site is ✗, the 🚨 said
             "quiet": quiet.beat(db),                       # WO54 §3: thrift-api mirrors the owner's quiet hours
-            "ebay": ebay}
+            "ebay": ebay, "questions": _questions(db)}     # WO58: the day's questions, for the 9 PM line
 
 
 def _safe_window(db, fn) -> None:

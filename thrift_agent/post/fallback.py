@@ -15,6 +15,7 @@ def _system(size: str) -> tuple[str, float] | None:
     (Toddler Girl)" is ("# (toddler girl)", 7.5), "8P" is ("#p", 8) — or a letter size with its suffix ("MP" is
     ("letters p", 4)). None for anything else ("One Size")."""
     s = re.sub(r"\s+", " ", (size or "").strip())
+    s = _SPELL.get(s.upper(), s)                              # "XXXXL" is 4XL
     if m := _LETTER.fullmatch(s.replace(" ", "")):            # first: "2XL" is a letter size, not a 2
         letters = _SPELL.get(m.group(1).upper(), m.group(1).upper())
         return f"letters {(m.group(2) or '').lower()}".strip(), float(_LETTERS.index(letters))
@@ -26,16 +27,16 @@ def _system(size: str) -> tuple[str, float] | None:
 MAX_STEP = 1.0           # a guess is one size away at most: 8.5 -> 9, XL -> L, Waist 33 -> 34; never 15 -> 12
 
 
-def nearest_size(want: str, offered: list[str]) -> str | None:
+def nearest_size(want: str, offered: list[str], step: float | None = MAX_STEP) -> str | None:
     """The offered size nearest to `want` in the same system ("8" or "9" for "8.5": the larger on a tie; "L" for "XL"
-    when the menu stops at L), at most one size away; None when no offered size is that close in its system — never a
-    size of another system (a women's 8 is not a kids' 8 (Toddler Girl))."""
+    when the menu stops at L), at most `step` sizes away (None: however far — WO58); None when no offered size is that
+    close in its system — never a size of another system (a women's 8 is not a kids' 8 (Toddler Girl))."""
     mine = _system(want)
     if mine is None:
         return None
     same = [(abs(n - mine[1]), -n, o) for o in offered if (sys := _system(o)) and sys[0] == mine[0] for n in [sys[1]]]
     best = min(same) if same else None
-    return best[2] if best and best[0] <= MAX_STEP else None
+    return best[2] if best and (step is None or best[0] <= step) else None
 
 
 LETTERS = ("XXS", "XS", "S", "M", "L", "XL", "XXL", "XXXL")
@@ -87,7 +88,75 @@ def menu_size(want: str, offered: list[str], item_type: str | None = None) -> tu
         for o in offered:
             if re.fullmatch(r"\s*(?:one\s*size|os|o/s)\s*", o or "", re.I):
                 return o, "one size"
+    # WO58 (the owner, 2026-11-10: "absolutely nothing should be skipped"): past the close choices, still a value of
+    # the menu — the nearest of the same system however far (the bigger between two), the same fit in the menu's
+    # other system (a letter size on a numbers menu), the menu's neutral choice; a menu that has none of those is
+    # left to the caller (another category whose menu holds the size — rule 2.5 — or its own last choice)
+    for size in [x for x in (bigger_of(want), want) if x]:
+        if (far := nearest_size(size, offered, step=None)) is not None:
+            return far, "nearest on the menu"
+    if want and (fit := same_fit(want, offered)) is not None:
+        return fit, "the same fit"
+    for o in offered:
+        if NEUTRAL.fullmatch(o or ""):
+            return o, "the menu's neutral choice"
     return None
+
+
+NEUTRAL = re.compile(r"\s*(?:one\s*size(?:\s*fits\s*(?:all|most))?|os|o/s|osfa|other)\s*", re.I)
+# how close a choice is to the size as written — the poster that can try several categories (eBay) keeps the closest
+CLOSENESS = {"exact": 0, "as": 0, "the bigger of": 1, "near the bigger of": 2, "nearest": 2, "one size": 2,
+             "nearest on the menu": 3, "the same fit": 3, "the menu's neutral choice": 4}
+
+
+def closeness(how: str | None) -> int:
+    """0 for the size as written … 4 for the menu's neutral choice; 5 for anything else (the caller's last choice)."""
+    how = str(how or "")
+    if how == "exact":
+        return 0
+    if " as " in how:
+        return 0
+    for name in sorted(CLOSENESS, key=len, reverse=True):
+        if how.startswith(name):
+            return CLOSENESS[name]
+    return 5
+
+
+# the same fit in another system: US women's numbers and letters (00-0 XXS, 2 XS, 4-6 S, 8-10 M, 12-14 L, 16-18 XL,
+# 20-22 XXL, 24-26 XXXL — the sizing the catalogs' Vinted mapping uses)
+_FIT_OF_NUMBER = {0: "XXS", 1: "XXS", 2: "XS", 4: "S", 6: "S", 8: "M", 10: "M", 12: "L", 14: "L", 16: "XL", 18: "XL",
+                  20: "XXL", 22: "XXL", 24: "XXXL", 26: "XXXL"}
+
+
+def _fit(size: str) -> float | None:
+    """A size's place on the letters' run (XXS 1 … XXXL 8), from a letter size or a plain US women's number."""
+    s = (size or "").strip().upper()
+    s = _SPELL.get(s, s)
+    if s in _LETTERS:
+        return float(_LETTERS.index(s))
+    if s == "00":
+        return float(_LETTERS.index("XXS"))
+    if re.fullmatch(r"\d{1,2}", s) and int(s) in _FIT_OF_NUMBER:
+        return float(_LETTERS.index(_FIT_OF_NUMBER[int(s)]))
+    return None
+
+
+def same_fit(want: str, offered: list[str]) -> str | None:
+    """The offered size of the other system nearest in fit ("M" → "8" or "10" on a numbers menu: the bigger; "10" → "M"
+    on a letters menu), else None (shoes, waists, kids' sizes keep to their own system)."""
+    mine = _fit(want)
+    if mine is None:
+        return None
+    others = [(abs(f - mine), -f, o) for o in offered if (f := _fit(o)) is not None]
+    best = min(others) if others else None
+    return best[2] if best and best[0] <= MAX_STEP else None      # one size away at most: a 4XL is never a 4
+
+
+def last_choice(offered: list[str]) -> str | None:
+    """WO58: the size a menu still gives when nothing of it is near the item's (and it has no neutral choice): the
+    middle of the menu — a real value of the site's, said in the item's check line; None for an empty menu."""
+    values = [o for o in offered if o and o.strip()]
+    return values[len(values) // 2] if values else None
 
 
 KIDS_SHOE = re.compile(r"\s*(\d{1,2}(?:\.5)?)\s*(?:(c)|(y)|\(?\s*(?:kids?|children'?s?|toddler)\s*\)?)\s*", re.I)
@@ -132,3 +201,38 @@ def matching(want: str, offered: list[str]) -> str | None:
         return longer[0]
     part = [o for o in keyed.values() if any(_key(p) == k for p in re.split(r"\s*(?:&|\band\b)\s*", str(o), flags=re.I))]
     return part[0] if len(part) == 1 else None
+
+
+def closest_option(want: str, offered: list[str], words: str = "") -> tuple[str, str] | None:
+    """WO58 (the owner: nothing is ever skipped — the category is the agent's decision): the offered option for a
+    category or department the form lacks — `matching` first; else the option sharing the most words with the item's
+    own (`words`: its type, subcategory, title — "Rompers" for a romper, singular or plural); else the form's
+    "Other"; else its first option. (the option, how) — None only for an empty list."""
+    values = [o for o in offered if o and o.strip()]
+    if not values:
+        return None
+    if (hit := matching(want, values)) is not None:
+        return hit, "matching"
+
+    def stems(text: str) -> set[str]:
+        return {singular(w) for w in re.findall(r"[a-z]+", str(text).lower())
+                if len(w) > 2 and w not in ("and", "the", "for", "with", "size")}
+    mine = stems(f"{want} {words}")
+    scored = sorted(((len(stems(o) & mine), -n, o) for n, o in enumerate(values)), reverse=True)
+    if scored and scored[0][0] > 0:
+        return scored[0][2], "the item's own words"
+    other = next((o for o in values if _key(o) == "other"), None)
+    return (other, "the form's Other") if other else (values[0], "the first the form offers")
+
+
+def singular(word: str) -> str:
+    """A word's singular, roughly — enough to match "Dresses" with "dress", "Rompers" with "romper", "Accessories"
+    with "accessory"; "dress", "shorts" (one garment) and short words as they are."""
+    w = word.lower()
+    if len(w) <= 3 or w.endswith(("ss", "us", "is")):
+        return w
+    if w.endswith("ies") and len(w) > 4:
+        return w[:-3] + "y"
+    if w.endswith(("sses", "shes", "ches", "xes", "zes")):
+        return w[:-2]
+    return w[:-1] if w.endswith("s") else w

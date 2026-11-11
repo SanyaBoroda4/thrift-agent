@@ -47,24 +47,32 @@ def mapped(v: ItemView, recorded: bool = False, **cfg) -> tuple[mapping.EbayFiel
         name = "suggest_" + hashlib.md5(q.strip().lower().encode()).hexdigest()[:16] + ".json"
         return (recorded and _recorded(name)) or fake.suggestions_answer(q)
     answers = [mapping.parse_suggestions(suggest(q)) for q in mapping.category_queries(v)]
-    refused = near = None
-    for s, _ in mapping.ranked_categories(v, answers):       # as the poster's plan: the item's next own category
+    if (ban := mapping.policy_ban(v)) is not None:
+        raise ban
+    conf = mapping.Config(**{**HOME, **cfg})
+    refused, tried, best = None, [], None
+    for n, (s, _) in enumerate(mapping.ranked_categories(v, answers)):   # as the poster's plan (EbayPoster.plan)
         aspects = (recorded and _recorded(f"aspects_{s.id}.json")) or fake.aspects_answer(s.id)
         conditions = (recorded and _recorded(f"conditions_{s.id}.json")) or fake.conditions_answer(s.id)
         cat = mapping.Category(id=s.id, name=s.name, path=s.path, ids=s.ids, aspects=mapping.parse_aspects(aspects),
                                conditions=mapping.parse_conditions(conditions))
         try:
-            got = mapping.map_ebay(v, cat, mapping.Config(**{**HOME, **cfg}))
+            got = mapping.map_ebay(v, cat, conf)
         except MappingError as e:
-            if not mapping.size_refused(e):
+            if not (mapping.size_refused(e) or mapping.NEW_ONLY in str(e)):
                 raise
-            refused = refused or e
+            refused = refused if refused is not None and mapping.size_refused(refused) else e
+            if mapping.size_refused(e):
+                tried.append(cat)
             continue
         if mapping.size_as_written(got):
             return got, cat
-        near = near or (got, cat)
-    if near:
-        return near
+        if best is None or (mapping.size_closeness(got), n) < best[:2]:
+            best = (mapping.size_closeness(got), n, got, cat)
+    if best is not None:
+        return best[2], best[3]
+    if tried:
+        return mapping.map_ebay(v, tried[0], conf, last=True), tried[0]
     raise refused
 
 
@@ -126,12 +134,12 @@ def test_the_real_items_of_the_closet_pass_the_same_checks_when_they_are_on_this
         try:
             f, cat = mapped(v, recorded=True)
         except MappingError as e:
-            assert "size" in str(e) or "only" in str(e) or "suggested no category" in str(e), f"{row['id']}: {e}"
-            left.append(f"{row['id']}: {e}")
+            left.append(f"{row['id']}: {e}")              # WO58: none — only eBay's written ban may keep one off
+            assert isinstance(e, mapping.PolicyBan), left
             continue
         check_listing(v, f, cat)
         done += 1
-    assert done >= 20, left
+    assert done == len(rows), left                       # WO58: 40 of 40
 
 
 # ---------------------------------------------------------------- the five the work order names
@@ -231,11 +239,14 @@ def test_a_category_without_that_condition_takes_the_nearest_never_fair_and_neve
     assert (cid, name) == ("3000", "Used") and "Pre-owned - Excellent" in note
     assert mapping.condition_for("good", [("3010", "Pre-owned - Fair"), ("2990", "Pre-owned - Excellent")])[0] == "2990"
     assert mapping.condition_for("good", [])[:2] == ("3000", "Pre-owned - Good")        # nothing recorded: the standard
-    with pytest.raises(MappingError, match="only new"):                 # used underwear: eBay has no place for it
+    with pytest.raises(MappingError, match="only new"):                 # a new-only category: the plan's next one
         mapping.condition_for("good", APPAREL[:3])
-    with pytest.raises(MappingError, match="only new"):
+    # WO58 rule 5: used underwear is eBay's own written ban (its Used clothing policy) — the one reason it stays off
+    with pytest.raises(mapping.PolicyBan) as ban:
         mapped(view(cat="Intimates & Sleepwear", sub="Panties", item_type="lace thong panties",
                     title="Hanky Panky Lace Thong Black size S", size_value="S", size_us="S", printed="S"))
+    assert str(ban.value) == ("not allowed on eBay: used underwear — eBay's Used clothing policy: “Used underwear and "
+                              "socks are not allowed, even if they are clean.”")
     f, _ = mapped(view(cat="Intimates & Sleepwear", sub="Panties", item_type="lace thong panties", cond="NWT",
                        title="Hanky Panky Lace Thong Black size S", size_value="S", size_us="S", printed="S"))
     assert f.condition == "New with tags"
@@ -260,9 +271,10 @@ def test_a_size_is_always_one_of_ebays_values_or_the_site_is_left_out():
     assert value == "M" and "bigger" in note                                             # the bigger of a dual label
     value, note = mapping.size_value("9", offered, "dress")
     assert value == "10" and "nearest" in note                                           # one step, said
-    value, note = mapping.size_value("38", offered, "dress")                             # nothing near: the neutral one
-    assert value == "One Size" and "no place" in note
-    assert mapping.size_value("38", offered[:-1], "dress") == (None, None)               # … and none: nothing made up
+    value, note = mapping.size_value("38", offered, "dress")              # WO58: still the list's own nearest
+    assert value == "10" and "nearest on the menu" in note
+    value, note = mapping.size_value("One Size", offered[:-1], "dress")   # nothing of its kind and no neutral one
+    assert (value, note) == (None, None)                                  # … the plan tries the item's other categories
     assert mapping.size_value("Whatever", [], "bed") == ("Whatever", None)               # no list: as written
     with pytest.raises(MappingError, match=r"size 'EU 38' isn't on eBay's size list"):
         cat, _ = category_of(view(cat="Shoes", sub="Sneakers", item_type="leather sneakers",
@@ -270,6 +282,13 @@ def test_a_size_is_always_one_of_ebays_values_or_the_site_is_left_out():
         mapping.map_ebay(view(cat="Shoes", sub="Sneakers", item_type="leather sneakers",
                               title="Veja Leather Sneakers White", size_value="EU 38", size_us="EU 38"), cat,
                          mapping.Config(**HOME))
+    # … and when no category of the item's holds it: the list's middle, said — never a skip (WO58)
+    v = view(cat="Shoes", sub="Sneakers", item_type="leather sneakers", title="Veja Leather Sneakers White",
+             size_value="EU 38", size_us="EU 38")
+    cat, _ = category_of(v)
+    f = mapping.map_ebay(v, cat, mapping.Config(**HOME), last=True)
+    size = next(vals[0] for name, vals in f.aspects.items() if name.lower() in mapping.SIZE_ASPECTS)
+    assert size and any(mapping.LAST_SIZE in g for g in f.guesses) and mapping.size_closeness(f) == 5
 
 
 def test_outside_fashion_a_size_ebays_list_doesnt_hold_goes_as_written():
@@ -277,9 +296,20 @@ def test_outside_fashion_a_size_ebays_list_doesnt_hold_goes_as_written():
     footwear's — a pet's coat keeps its size as written, and still goes to eBay."""
     f, cat = mapped(view(**{**ITEMS["dog coat"][0], "size_value": "One Size", "size_us": "OS", "printed": None}))
     assert cat.path[0] == "Pet Supplies" and f.aspects["Size"] == ["One Size"]
-    with pytest.raises(MappingError, match="isn't on eBay's size list"):          # a girl's dress: the list is closed
-        mapped(view(dept="Kids", kids="girls", item_type="princess costume dress", title="Princess Dress Blue",
-                    size_value="One Size", size_us="OS", printed=None, tab="Girls"))
+
+def test_the_one_size_costume_dress_goes_to_the_costumes_category_never_left_out():
+    """WO58 rule 2.5 (the owner's example): a girls' "One Size" costume dress — eBay's girls' dress sizes have no One
+    Size — moves to the closest category of its own family whose list holds it: eBay's Kids' Costumes."""
+    v = view(dept="Kids", kids="girls", item_type="princess costume dress", title="Princess Costume Dress Blue",
+             size_value="One Size", size_us="OS", printed=None, tab="Girls")
+    f, cat = mapped(v)
+    assert cat.name == "Kids' Costumes" and f.aspects["Size"] == ["One Size"] and f.aspects["Department"] == ["Girls"]
+    assert mapping.size_as_written(f)
+    # a plain girls' dress with that size: no costume category of its own family — the girls' dress list's last choice
+    f, cat = mapped(view(dept="Kids", kids="girls", item_type="tiered party dress", title="Tiered Party Dress Blue",
+                         size_value="One Size", size_us="OS", printed=None, tab="Girls"))
+    assert f.aspects["Size"][0] in next(a for a in cat.aspects if a.name == "Size").values
+    assert any(mapping.LAST_SIZE in g for g in f.guesses), f.guesses
 
 
 def test_kids_clothing_goes_to_the_kids_own_categories():
@@ -295,12 +325,14 @@ def test_kids_clothing_goes_to_the_kids_own_categories():
     assert girls.aspects["Size"] == ["10"] and girls.aspects["Department"] == ["Girls"]
 
 
-def test_an_item_with_no_size_at_all_waits_for_her_size_like_on_every_site():
+def test_an_item_with_no_size_at_all_still_takes_a_size_of_ebays_list():
+    """WO58: the agent's own size is set at the price (pipeline.settle_size); one that still reaches eBay without a
+    size takes the list's neutral value, else its middle — said, never a skip, never a made-up value."""
     v = view(size_value=None, size_us=None, printed=None, title="J.Crew Wrap Midi Dress Navy")
     cat, _ = category_of(v)
-    with pytest.raises(MappingError) as e:
-        mapping.map_ebay(v, cat)
-    assert str(e.value) == mapping.NO_SIZE == "no size on the item"
+    f = mapping.map_ebay(v, cat)
+    allowed = next(a for a in cat.aspects if a.name == "Size").values
+    assert f.aspects["Size"][0] in allowed and any("none on the item" in g for g in f.guesses), f.guesses
 
 
 def test_a_size_under_another_size_type_takes_that_pair():

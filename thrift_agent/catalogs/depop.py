@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from thrift_agent import catalogs
 from thrift_agent.catalogs import categories
-from thrift_agent.catalogs.common import (DEPOP_PACKAGES, ItemView, MappingError, brand_tag, colors_for,
+from thrift_agent.catalogs.common import (DEPOP_PACKAGES, ItemView, brand_tag, colors_for,
                                           condition_key, materials_for, package_class, photos_for)
 from thrift_agent.catalogs.sizes import depop_size
 
@@ -120,8 +120,10 @@ def description(title: str, body: str, tags: list[str], limit: int = 1000) -> st
     tag_line = " ".join(f"#{t}" for t in tags)
     head, tail = title.strip(), (f"\n\n{tag_line}" if tag_line else "")
     room = limit - len(head) - len(tail) - 2
+    if room <= 0 and tail:                          # WO58: never skipped — the hashtags give way first
+        return description(title, body, [], limit)
     if room <= 0:
-        raise MappingError("the title and hashtags alone are over Depop's 1000 characters")
+        return head[:limit]
     if len(body) > room:
         cut = body[:room]
         stop = max(cut.rfind("\n"), cut.rfind(". "))
@@ -149,15 +151,22 @@ def map_depop(view: ItemView, ask=None) -> DepopFields:
     if key == "New without tags":                   # Poshmark's Like New (WO18): the same on Depop
         condition = cat.condition_map_from_agent["Like New"]
     if condition not in cat.condition or condition == cat.condition_map_from_agent.get("never use"):
-        raise MappingError(f"condition {r.condition} has no Depop value")
+        # WO58: never skipped for a condition — the closest Depop has (never its Fair)
+        was = condition
+        condition = next((c for c in (cat.condition_map_from_agent.get(k) for k in ("Like New", "Good", "NWT"))
+                          if c in cat.condition and c != cat.condition_map_from_agent.get("never use")),
+                         next(iter(cat.condition)))
+        guesses.append(f"condition '{condition}' (Depop has no '{was or r.condition}')")
     colors = [c for c in colors_for(view, "depop", int(cat.color.get("max", 2))) if c in cat.colors()]
     v_era = era(view)
     source = ["Vintage"] if view.facts.premium and view.facts.premium.vintage.value else [cat.source["default"]]
     age = v_era if v_era in cat.age["values"] else cat.age["default"]
     attrs, attr_notes = attributes(view, path)
     package = DEPOP_PACKAGES[package_class(view)]
-    if package not in {p["name"] for p in cat.package_sizes}:
-        raise MappingError(f"package size {package!r} isn't Depop's")
+    names = [p["name"] for p in cat.package_sizes]
+    if package not in names and names:              # WO58: never skipped for a package — Depop's middle size
+        guesses.append(f"package '{names[len(names) // 2]}' (Depop has no '{package}')")
+        package = names[len(names) // 2]
     tags = hashtags(view, colors, int(cat.form["description"]["max_hashtags"]))
     from thrift_agent import titles                         # WO50: the first line is a shop-window title too
     brand = (view.facts.brand.value or "").strip() or None

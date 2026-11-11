@@ -159,17 +159,20 @@ def test_a_size_reply_sets_the_size_of_the_card_it_answers_and_no_other(env, tmp
     assert bot.texts()[-1] == "Which item? Reply 'size …' to its card (swipe the card to reply)"
 
 
-def test_a_price_on_a_card_with_no_size_never_says_queued(env, tmp_path, facts, monkeypatch):
+def test_a_price_on_a_card_with_no_size_queues_it_with_the_agents_size(env, tmp_path, facts, monkeypatch):
+    """WO39/WO43 said "tap a size to list it" and the item waited; WO58 (the owner: nothing waits for a size): the
+    card's ⭐ is its size at once, the item is queued, the size rows stay for her tap."""
     s, db, _ = env
     bot = FakeBot()
     monkeypatch.setattr(approve, "bot_for", lambda *_: bot)
     brown = _item(db, tmp_path, facts, BROWN, name="brown")
     db.add_outbox(str(CHAT), 454, "item", brown, text="card")
     _reply(db, s, bot, "25", to=454)
-    # WO43: the card is edited in place — the size rows stay, the price button reads "✓ $25 — tap a size to list it"
     edits = [p for m, p in bot.calls if m in ("editMessageCaption", "editMessageMedia", "editMessageReplyMarkup")]
-    assert edits and "tap a size to list it" in str(edits[-1]) and "queued" not in str(edits[-1])
-    assert bot.texts()[-1] == "✓ $25 — it goes up once a size is tapped on its card"
+    assert edits and "queued" in str(edits[-1]) and "tap a size to list it" not in str(edits[-1])
+    it = db.item(brown)
+    assert it["agent_size"] and it["status"] == "ready"
+    assert "tap another on its card to change it" in bot.texts()[-1]
 
 
 # ---------------------------------------------------------------- a refused form
@@ -352,17 +355,16 @@ def test_an_item_waiting_for_a_size_gets_one_message_and_a_reply_to_it_sets_the_
     monkeypatch.setattr(approve, "bot_for", lambda *_: bot)
     brown = _item(db, tmp_path, facts, BROWN, status="ready", name="brown")
     db.set_item(brown, owner_price=25)
-    assert approve.ask_sizes(s, db) == 0                                     # priced, not skipped yet: nothing
+    # WO58: nothing is asked any more — an item that waited for a size before the rule gets the agent's own size and
+    # goes back in line; a reply to an old "Waiting for a size" message still sets hers
     for mp in ("poshmark", "depop", "vinted"):
         db.upsert_listing(brown, mp, status="skipped", error="skipped: no size on the item")
-    assert approve.ask_sizes(s, db) == 1
-    assert bot.texts() == [f"Waiting for a size: {BROWN} — tap one on its card (or reply 'size …' to this message)"]
-    assert approve.ask_sizes(s, db) == 0                                     # once, never repeated
-    mid = bot.next_id
-    _reply(db, s, bot, "size S", to=mid)
-    assert db.item(brown)["owner_size"] == "S"
+    assert approve.ask_sizes(s, db) == 0 and bot.texts() == []
+    assert db.item(brown)["agent_size"]
     assert {r["status"] for r in db.listings_for(brown)} == {"queued"}         # every site back in line
-    assert approve.ask_sizes(s, db) == 0
+    db.add_outbox(str(CHAT), 777, "size", brown, text="Waiting for a size: …")  # one sent before WO58
+    _reply(db, s, bot, "size S", to=777)
+    assert db.item(brown)["owner_size"] == "S"
 
 
 def test_same_item_on_a_card_whose_twin_was_retired_keeps_it(env, tmp_path, facts, monkeypatch):

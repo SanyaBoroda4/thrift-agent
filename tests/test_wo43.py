@@ -198,12 +198,14 @@ def test_size_and_price_in_either_order_queue_once(env, tmp_path):
     approve.send_item(s, db, a)
     mid = bot.next_id
     handle_update(s, db, bot, _callback(f"approve:{a}:120", mid))              # the price first
-    assert db.item(a)["status"] == "ready" and approve.needs_size(db.item(a))
-    buttons = bot.last_buttons()
-    assert buttons[-1][0]["text"] == "✓ $120 — tap a size to list it" and buttons[0][3]["text"] == "⭐8"
-    handle_update(s, db, bot, _callback(f"size:{a}:8", mid))
+    # WO58: nothing waits for a size — the ⭐ is the item's size at once (agent_size), the rows stay for her tap
     it = db.item(a)
-    assert it["status"] == "ready" and it["owner_size"] == "8" and not approve.needs_size(it)
+    assert it["status"] == "ready" and it["agent_size"] == "8" and not approve.needs_size(it)
+    buttons = bot.last_buttons()
+    assert buttons[-1][0]["text"] == "✓ $120 — queued" and buttons[0][3]["text"].startswith("✓ 8")
+    handle_update(s, db, bot, _callback(f"size:{a}:8.5", mid))
+    it = db.item(a)
+    assert it["status"] == "ready" and it["owner_size"] == "8.5" and not approve.needs_size(it)
     assert bot.last_buttons()[-1][0]["text"] == "✓ $120 — queued"
     b = _item(db, tmp_path, shoe_facts())
     approve.send_item(s, db, b)
