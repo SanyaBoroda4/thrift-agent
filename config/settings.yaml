@@ -135,9 +135,9 @@ marketplaces:
   # the same profit as the same sale on Poshmark (data/ebay_fees.json). The tokens come from thrift-api (the refresh
   # token never leaves Azure). OFF until the keys are in Azure and the owner clicked Agree (docs/EBAY_SETUP.md).
   ebay:
-    enabled: false
+    enabled: true          # on 2026-11-11 (the owner: "turn eBay on", her post-now day; WO57 §7.4)
     driver: api
-    autopublish: false     # the owner's go-live step, after the first real listing read back right (WO57 §7)
+    autopublish: true      # the owner's go-live, 2026-11-11: the first five through the poster's own eBay worker
     environment: production   # production | sandbox (the spike)
     daily_cap: 50          # 25 backfilled items a day + the day's new shares (new shares always go at once)
     gap_seconds: [0, 0]
