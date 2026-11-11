@@ -74,8 +74,8 @@ def send(text: str, chat: str = "group", now: datetime | None = None, mode: str 
         return False
     if mode == "replay":
         chat, text = "ops", REPLAY_PREFIX + text
-    if len(text) > LIMIT:
-        text = text[:LIMIT - 1] + "…"
+    if len(text) > LIMIT and not html:          # HTML is never cut raw (a tag left open is refused): Telegram counts
+        text = text[:LIMIT - 1] + "…"           # its 4,096 after the tags are read — the caller keeps under (WO62)
     if silent is None:
         silent = deadlines.night(now or util.utcnow())
     try:
