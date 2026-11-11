@@ -18,6 +18,7 @@
       "Function.post_sale_match.User": "Information",
       "Function.post_replay.User": "Information",
       "Function.post_test_message.User": "Information",
+      "Function.post_ship_list.User": "Information",
       "Function.get_dashboard.User": "Information",
       "Function.get_health.User": "Information",
       "Function.post_share_photo.User": "Information",

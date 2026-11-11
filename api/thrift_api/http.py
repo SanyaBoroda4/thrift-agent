@@ -17,6 +17,7 @@ without one: /ebay/account-deletion, /ebay/oauth/callback, /ebay/oauth/declined,
   GET  /sales?state=open|unmatched|all
   POST /sales/{id}/match    {"item_id"}
   POST /test-message        {"chat": "ops" | "group", "text": "…" (optional: sent as given, WO45)}
+  POST /ship-list           {"preview": true}: tonight's shipping list to the private chat, marked (WO60)
   GET  /dashboard           the owner's page (HTML)
   GET  /health
   WO45 §2 (uploads.py): the iPhone's shares straight to the API, the Mac fetching them —
@@ -51,7 +52,7 @@ import threading
 from collections.abc import Callable
 from datetime import datetime
 
-from . import core, dashboard, ebay, orders, uploads, util
+from . import core, dashboard, ebay, orders, shiplist, uploads, util
 from .db import Database
 from .schema import migrate
 from .util import ApiError, BadRequest
@@ -172,6 +173,14 @@ def _test_message(db, body, query, params, now):
     return 200, core.test_message(chat, now, text=body.get("text"))
 
 
+def _ship_list(db, body, query, params, now):
+    """WO60: the evening shipping list rendered now and sent to the private chat, marked "Preview" — only a preview
+    here: the group's list is the hourly timer's, once a night."""
+    if body.get("preview") is not True:
+        raise BadRequest('only {"preview": true}: the group gets the list from the 10 PM timer')
+    return 200, shiplist.night_list(db, now, preview=True)
+
+
 def _dashboard(db, body, query, params, now):
     return 200, dashboard.render(core.dashboard_data(db, now), now=now)
 
@@ -272,6 +281,7 @@ ROUTES: tuple[tuple, ...] = (
     ("GET", re.compile(r"/sales"), _sales, True),
     ("POST", re.compile(r"/sales/(?P<sale_id>[^/]+)/match"), _match, True),
     ("POST", re.compile(r"/test-message"), _test_message, False),
+    ("POST", re.compile(r"/ship-list"), _ship_list, True),                                               # WO60
     ("POST", re.compile(r"/replay"), _replay, True),
     ("GET", re.compile(r"/dashboard"), _dashboard, True),
     ("GET", re.compile(r"/health"), _health, True),

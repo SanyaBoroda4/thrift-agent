@@ -10,7 +10,7 @@ from thrift_agent.config import ROOT
 ROUTES = {("POST", "email"), ("POST", "samples"), ("POST", "heartbeat"), ("POST", "sync"), ("GET", "tasks"),
           ("POST", "tasks/{task_id}"), ("POST", "mac-event"), ("POST", "orders"), ("GET", "sales"),
           ("POST", "sales/{sale_id}/match"),
-          ("POST", "test-message"), ("GET", "dashboard"), ("GET", "health"), ("POST", "replay"),
+          ("POST", "test-message"), ("POST", "ship-list"), ("GET", "dashboard"), ("GET", "health"), ("POST", "replay"),
           # WO45 §2: the iPhone's shares
           ("POST", "share/{share_id}/photo"), ("POST", "share/{share_id}/end"), ("GET", "shares/pending"),
           ("GET", "shares/{share_id}/photo/{name}"), ("POST", "shares/{share_id}/fetched"),

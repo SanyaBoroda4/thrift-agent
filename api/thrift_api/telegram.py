@@ -7,7 +7,8 @@ developer's private chat), with TELEGRAM_BOT_TOKEN. In the night hours (WO54 §3
 deadlines.night) a message goes out silently (`disable_notification`), never later. The owner's daytime quiet hours
 (8:30 AM – 2:00 PM) change nothing here: a sale's 💰 line goes out then as always; only the nets that judge the Mac
 rest (quiet.py). SALES_MODE replay: every message goes to the ops chat as "[replay] …"; off: nothing is sent. Plain
-text, no parse mode, so a title needs no escaping.
+text, no parse mode, so a title needs no escaping — except a message sent `html=True` (WO60's evening list: Telegram
+HTML, its caller escapes every title); `silent` given says sound or not whatever the hour (the list asked for at 10 PM).
 
 `SENDER(chat, text, silent) -> bool` does the HTTP call (urllib, 10 s); the tests replace it. A failed send is logged
 (without the token) and dropped: a message is never retried or sent twice."""
@@ -32,8 +33,8 @@ LIMIT = 4096                     # Telegram's longest message
 TIMEOUT = 10
 
 
-def http_send(chat: str, text: str, silent: bool) -> bool:
-    """POSTs one message to Telegram's sendMessage; True when Telegram answered ok."""
+def http_send(chat: str, text: str, silent: bool, html: bool = False) -> bool:
+    """POSTs one message to Telegram's sendMessage (`html`: parse_mode HTML); True when Telegram answered ok."""
     token = os.environ.get(TOKEN_ENV, "").strip()
     chat_id = os.environ.get(CHAT_ENV[chat], "").strip()
     if not token or not chat_id:
@@ -41,6 +42,8 @@ def http_send(chat: str, text: str, silent: bool) -> bool:
         return False
     payload = {"chat_id": chat_id, "text": text, "disable_notification": silent,
                "link_preview_options": {"is_disabled": True}}
+    if html:
+        payload["parse_mode"] = "HTML"
     request = urlrequest.Request(API.format(token=token), data=json.dumps(payload).encode("utf-8"), method="POST",
                                  headers={"Content-Type": "application/json"})
     try:
@@ -61,7 +64,8 @@ def http_send(chat: str, text: str, silent: bool) -> bool:
 SENDER = http_send
 
 
-def send(text: str, chat: str = "group", now: datetime | None = None, mode: str | None = None) -> bool:
+def send(text: str, chat: str = "group", now: datetime | None = None, mode: str | None = None, html: bool = False,
+         silent: bool | None = None) -> bool:
     """Sends `text` to the group or the ops chat as the mode says (see the module); True when it went out."""
     if chat not in CHAT_ENV:
         raise ValueError(f"chat is group or ops, not {chat!r}")
@@ -72,9 +76,10 @@ def send(text: str, chat: str = "group", now: datetime | None = None, mode: str 
         chat, text = "ops", REPLAY_PREFIX + text
     if len(text) > LIMIT:
         text = text[:LIMIT - 1] + "…"
-    silent = deadlines.night(now or util.utcnow())
+    if silent is None:
+        silent = deadlines.night(now or util.utcnow())
     try:
-        return bool(SENDER(chat, text, silent))
+        return bool(SENDER(chat, text, silent, html=True) if html else SENDER(chat, text, silent))
     except Exception as e:  # noqa: BLE001 — a message never takes a request or a timer down with it
         log.error("telegram: the sender failed: %s", util.where(e))   # never its text: it can carry the token (WO35)
         return False

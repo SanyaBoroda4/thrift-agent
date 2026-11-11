@@ -614,7 +614,7 @@ edit_save; UNVERIFIED: block, captcha, verify, skirt_length, promo_close, listin
   "⚠️ Can't read the iCloud inbox …"; 🔋 battery low; 📭 photos still on the iPhone; "⏸ Not published automatically:
   <title> — <site> publishes by itself only once its autopublish is on." (WO53: no "⏭ … Reply 'retry'" line any more —
   a listing the poster couldn't make is ONE private 🚨, `runner.ask_skipped`); 🔻 the day's drops; 💰 sales, ⚠️ sold twice,
-  📦 overdue, "Couldn't take … down on <Site> — please mark it sold there.", "⚠️ <title> sold on <Site> but is still
+  📦 overdue, the 10 PM shipping list (WO60), "Couldn't take … down on <Site> — please mark it sold there.", "⚠️ <title> sold on <Site> but is still
   listed on <Sites> …"; replies to her own messages. Never ids, errno or tracebacks. No "safe to close" / "close the Mac"
   wording anywhere (a grep test).
 - **Everything else is private** (`notify.ops` / `notify.say`): the status message, "Back online", "Poster started
@@ -1265,6 +1265,20 @@ backfill waits for its plan (`--not-before`).**
   sale its site shows shipped / delivered / completed / cancelled. Overdue → "📦 Overdue: <title> (<Site>) — ship today"
   in the group once (kind `overdue_site`) only when the site, read after the day ended, still shows it to ship; else the
   old private line. Her `shipped <title words>` marks it.
+- **The 10 PM shipping list** (WO60, the owner 2026-11-11; `api/thrift_api/shiplist.py`, the hourly timer's
+  `timers.night_list`): once a local day in the 22:00 hour (`settings.ship_list_sent_on`, claimed in one conditional
+  write before the send), ONE group message in Telegram HTML (titles escaped) of every sale not yet shipped on all four
+  sites — not cancelled / double_sale / done / merged, not shown on its way by the order sweep (`LEFT_ON_SITE`) — her
+  own eBay sales too ("(your listing)": title, price, ship-by only), unmatched ones by `title_seen`. "📦 To ship — Wed
+  Nov 11", "4 packages · 1 overdue · 2 due by tomorrow", groups 🔴 Overdue / 🟠 Due today / 🟠 Due by tomorrow / 🟢
+  Later (a group only when it has one), each line "1. <title ≤ 45, cut at a word> · <Site> · $120" + "⏰ ship-by <b>Tue
+  Nov 10</b> — 1 day late | today | tomorrow | in N days"; a sale with no ship-by gets its site's rule from its sale
+  day, marked "≈" (no sale day: from its record, ONE private line, reminders kind `ship_list_no_day`); one order of
+  several items (eBay "<order>:<line>", a shared order id) one block with the earliest day; the labels line for
+  tonight's sites only; nothing open → "📦 Nothing to ship tonight — all caught up ✨"; > 25 packages (or 3800
+  characters) → the next message "(continued)", never a block cut. With sound (the night hours' one exception;
+  `settings` `shipping.night_list.silent` = true makes it silent). `POST /ship-list {"preview": true}`: the same list
+  now to the private chat, marked "🔎 Preview", the day not taken. The 9 AM reminders and the 9 PM line are unchanged.
 - **Take-downs on the Mac** (`thrift_agent/sales.py`, `post/takedown.py`): in any hour, never with PAUSE, the lid closed,
   or a site showing a login / CAPTCHA / block / check page (`parallel.may_take_down`, `crosslist.account_blocked`). ONE
   GET /tasks at most every 2 min for all sites (`sales.TASKS_EVERY`). Poshmark: Availability Not for Sale

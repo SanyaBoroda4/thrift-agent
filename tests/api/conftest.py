@@ -47,7 +47,8 @@ def sent(monkeypatch):
     """Every Telegram message the API sends in a test, as (chat, text, silent); nothing reaches the network."""
     from thrift_api import telegram
     log = []
-    monkeypatch.setattr(telegram, "SENDER", lambda chat, text, silent: log.append((chat, text, silent)) or True)
+    monkeypatch.setattr(telegram, "SENDER",
+                        lambda chat, text, silent, html=False: log.append((chat, text, silent)) or True)
     return log
 
 

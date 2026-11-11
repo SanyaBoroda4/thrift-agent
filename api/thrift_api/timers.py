@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 
-from . import core, deadlines, ebay, orders, quiet, uploads, util, watch
+from . import core, deadlines, ebay, orders, quiet, shiplist, uploads, util, watch
 from .db import Database
 from .util import iso, parse_time, site_name
 
@@ -81,6 +81,11 @@ def every_5_min(db: Database, now: datetime | None = None, mode: str | None = No
 def evening(db: Database, now: datetime | None = None, mode: str | None = None) -> dict:
     """WO45 §9: the day's one line in the 21:00 hour (the hourly timer)."""
     return {"line": watch.evening_line(db, now, mode)}
+
+
+def night_list(db: Database, now: datetime | None = None, mode: str | None = None) -> dict:
+    """WO60: the shipping list in the 22:00 hour, once a day (the hourly timer; shiplist.py)."""
+    return shiplist.night_list(db, now, mode)
 
 
 MAC_SILENCE = timedelta(minutes=30)      # WO53 §4: 2 h was most of the evening's outage (asleep 5:19 PM, told 7:30)
