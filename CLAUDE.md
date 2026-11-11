@@ -506,9 +506,21 @@ edit_save; UNVERIFIED: block, captcha, verify, skirt_length, promo_close, listin
   aside, & = and; a company suffix is one word: "Co" = "Company", `brands.SUFFIX`); only after all, the ONE option that
   is a name of ours followed by more words ("Alo" → "ALO Yoga"; whole words; two → no guess). Then the fallback: Depop
   "Other", Vinted "List without brand", Poshmark empty, with the site's top suggestions in the note — **never for a big
-  brand** (`data/big_brands.json`, ~330 brands: the read-back refuses it, `BrandOf(names, [])`; Poshmark's `_brand`
-  raises — a site failure, the 🚨 path). A site's own fill-in is kept only when it is one of our names. Vinted's 'Use
-  "<brand>" as brand' row lists our exact brand when its list lacks it (never a big brand).
+  brand on Depop / Vinted** (`data/big_brands.json`, ~330 brands: the read-back refuses it, `BrandOf(names, [])`).
+  **Poshmark (WO59, the owner 2026-11-10: "Post on Poshmark anyway, with no brand. The brand still goes in the title
+  and description")**: a brand — big or not — that none of our names finds on Poshmark's list is posted with the field
+  empty, never a failure or a 🚨; the title names it (brand first, the shop's display form), the description ends with
+  ONE line "Brand: Mango" (`poshmark.with_brand_line`, filled again after the brand step, `chosen["description"]` read
+  back), ONE check line "Poshmark: 'Mango' isn't in Poshmark's brand list — posted with the brand in the title and
+  description". A brand is never dropped from a title or description. **The weekly look** (`thrift_agent/brandcheck.py`,
+  kv `posh_brand_recheck`; Poshmark's idle turn, `parallel.brand_recheck`): every listing the agent itself posted that
+  way (its post's check line — seeded once from the post events, `brandcheck.seed`; never one whose brand she cleared)
+  is looked for once a week on a NEW create-listing form left through Discard (`PoshmarkPoster.brand_known` — the edit
+  page's "edit the brand 3 times" warning is answered before its search, so a look there could spend one); found → ONE
+  "brand" edit (`edits.queue_brand`, Poshmark only), never looked at again — at most one of the listing's three brand
+  edits. A brand edit on a live listing never adds text (`_brand(…, in_text=False)`). A site's own fill-in is kept only
+  when it is one of our names. Vinted's 'Use "<brand>" as brand' row lists our exact brand when its list lacks it (never
+  a big brand).
 - **The alias file**: `data/brand_aliases.json` (curated) under `data/brand_aliases.learned.json` on the Mac
   (`paths.brand_aliases`; old `.yaml` still read). Grows by a site's other spelling of the same name (`Aliases.learn`)
   and her `brand <name>` reply (`learn(…, owner=True)`).
@@ -823,8 +835,8 @@ edit_save; UNVERIFIED: block, captcha, verify, skirt_length, promo_close, listin
   (`PoshmarkPoster.fix`: a brand not ours cleared, the rest filled again) then read back again. Still different →
   nothing published, the row `failed` "Mismatch: …" (MAX_ATTEMPTS windows, then skipped with the ⏭ line,
   `crosslist.step_text`, `ext_driver.describe_diff`).
-- Never asks (`post/fallback`): brand by the brand rules (none → empty, a big brand never); size `menu_size`; category
-  and subcategory exact, else the ONE name that is ours followed by more words or of whose " & " parts ours is one
+- Never asks (`post/fallback`): brand by the brand rules (none → empty with the "Brand:" line, WO59 — a big brand
+  too); size `menu_size`; category and subcategory exact, else the ONE name that is ours followed by more words or of whose " & " parts ours is one
   (`fallback.matching`; WO58: a category nothing matches → `fallback.closest_option`: the option sharing the most of
   the item's own words, else the form's "Other", else its first; a department Poshmark lacks → `poshmark.department_for`;
   a subcategory → None); colours not offered left out. Every guess in the item's "Check —" line. WO58: nothing raises

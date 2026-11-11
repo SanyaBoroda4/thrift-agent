@@ -119,6 +119,24 @@ async def listing_edit(s: Settings, db: DB, site: str, poster, ctx, sites: list[
         return True
 
 
+async def brand_recheck(s: Settings, db: DB, poster, ctx, dry: bool) -> bool:
+    """WO59 §5: a Poshmark listing posted with its brand field empty (the brand not on Poshmark's list then) looked
+    for again once a week, on an idle turn — never in the quiet hours, with PAUSE, the lid closed or at memory
+    pressure. True when one was looked at."""
+    from thrift_agent import brandcheck, edits
+    if dry or quiet_hold(s, db) or not edits.may_edit(s, db, "poshmark") or not memory.may_start(db, "poshmark")[0]:
+        return False
+    try:
+        brandcheck.seed(db)
+        return await brandcheck.run_one(s, db, poster, ctx)
+    except AccountBlocked as e:
+        crosslist.block(db, "poshmark", str(e), e.page, getattr(e, "shot", None))
+        return True
+    except Exception as e:  # noqa: BLE001 — never the worker's end
+        notify.say(f"❌ Poshmark brand re-check: {type(e).__name__}: {e}")
+        return False
+
+
 async def price_drop(s: Settings, db: DB, site: str, poster, ctx, sites: list[str], dry: bool) -> bool:
     """WO41: the site's next due price drop, on a turn with no take-down and no listing to do. A login / CAPTCHA page
     stops the site for the window, as a listing's would. True when it worked on one."""
@@ -666,7 +684,8 @@ async def _poshmark_turn(s, db, ps, ctx, dry, stage, state, awake, failures, mar
         job = None                    # WO54 §4: at memory pressure no NEW listing (edits, take-downs go on)
     if job is None:
         if (await listing_edit(s, db, "poshmark", ps["poshmark"], ctx, marketplaces, dry)     # edits: any hour
-                or await price_drop(s, db, "poshmark", ps["poshmark"], ctx, marketplaces, dry)):  # drops: its own hours
+                or await price_drop(s, db, "poshmark", ps["poshmark"], ctx, marketplaces, dry)  # drops: its own hours
+                or await brand_recheck(s, db, ps["poshmark"], ctx, dry)):     # WO59: a lacking brand, weekly
             return True
         state.idle("poshmark")
         return False

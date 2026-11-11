@@ -856,6 +856,10 @@ def record_outcome(db: DB, iid: str, mp: str, render: Render, out: Outcome, mark
                                        "note": out.note, "draft_left": out.draft_left, "clicked": out.clicked,
                                        "guesses": out.guesses, "seconds": round(seconds, 1) if seconds else None,
                                        "slept": slept or None})
+    if out.status == "posted" and mp == "poshmark" and render.brand:
+        from thrift_agent import brandcheck              # WO59 §5: posted with the brand field empty — looked again weekly
+        if brandcheck.empty_by_us(out.guesses):
+            brandcheck.add(db, iid, render.brand)
     _warn_draft(mp, iid, out.draft_left)
     note = f"\n{out.note}" if out.note else ""
     guesses = f"\ncheck: {'; '.join(out.guesses)}" if out.guesses else ""

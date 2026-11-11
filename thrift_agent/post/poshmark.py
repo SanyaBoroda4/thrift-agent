@@ -125,6 +125,25 @@ _PLUS = re.compile(r"^[0-6]X$", re.I)
 _BABY = re.compile(r"\bMonths?\b|^(?:Newborn|Preemie)$", re.I)    # "6 Months", "0-3 Months": the Baby tab (WO23)
 
 
+def brand_shown(brand: str | None) -> str:
+    """The brand as a shop sign writes it (titles.display_brand: "MNG (Mango)" → "Mango")."""
+    from thrift_agent import titles
+    return titles.display_brand(brand) if brand else ""
+
+
+BRAND_LINE = "Brand: {brand}"     # WO59: the description's line when Poshmark's brand list lacks the brand
+
+
+def with_brand_line(description: str, brand: str | None) -> str:
+    """WO59: the description with ONE line "Brand: Mango" at its end — none when there is no brand or the text has the
+    line already ("Brand: …" in any case)."""
+    shown = brand_shown(brand)
+    text = description or ""
+    if not shown or re.search(r"(?im)^\s*brand\s*:", text):
+        return text
+    return f"{text.rstrip()}\n\n{BRAND_LINE.format(brand=shown)}" if text.strip() else BRAND_LINE.format(brand=shown)
+
+
 NO_SUCH_SIZE = "no such size zq9"          # WO58: a value no option is — the size menu read without picking
 
 
@@ -1030,7 +1049,7 @@ class PoshmarkPoster(Poster):
                 await _type(self._loc(page, "title"), r.title)
                 done.append("title")
             if "description" in diff:
-                await self._loc(page, "description").fill(r.description)
+                await self._loc(page, "description").fill(self.chosen.get("description", r.description))
                 done.append("description")
             if "category" in diff or "subcategory" in diff:
                 await self._category(page, r)
@@ -1069,7 +1088,7 @@ class PoshmarkPoster(Poster):
         await option.click()
         await settle(page, 0.3, 0.8)
 
-    async def _brand(self, page: Page, r: Render) -> None:
+    async def _brand(self, page: Page, r: Render, in_text: bool = True) -> None:
         """WO36 (the owner, 2026-10-12): our names in order — the brand as shops list it, the label's text, the alias
         file's names, the two parts of a name like "MNG (Mango)" (brands.candidates) — each typed as written and in
         the other spellings of the same name, never a word of it; picked when Poshmark lists it exactly (case, spaces,
@@ -1108,12 +1127,25 @@ class PoshmarkPoster(Poster):
             self.chosen["brand"] = None
             if choice is not None:
                 note = f"brand left empty: '{choice}' didn't take{brands.offered(options)}"
-            if brands.big(r.brand):                        # WO52 §1: never "no brand" for Zara, Forever 21, Nike…
-                raise PosterError(f"brand: the search found no '{r.brand}' — a big brand is never left empty "
-                                  f"(tried {', '.join(names)}){brands.offered(options)}")
+            # WO59 (the owner, 2026-11-10: "Post on Poshmark anyway, with no brand. The brand still goes in the title
+            # and description"): never a failure — the field stays empty, the brand is said in the text
+            if in_text:
+                await self._brand_in_text(page, r)
+            note = (f"Poshmark: '{brand_shown(r.brand)}' isn't in Poshmark's brand list — posted with the brand in the "
+                    f"title and description{brands.offered(options)}")
         if note:
             self.guesses.append(note)
         await settle(page)
+
+    async def _brand_in_text(self, page: Page, r: Render) -> None:
+        """WO59: the brand Poshmark's list lacks goes in the text — the title names it already (brand first: the copy's
+        rule), the description gets ONE line "Brand: Mango" (the brand as a shop sign writes it) unless it says so
+        already; the read-back then expects that description (self.chosen["description"])."""
+        text = with_brand_line(r.description, r.brand)
+        if text == r.description:
+            return
+        await (await self._find(page, "description")).fill(text)
+        self.chosen["description"] = text
 
     def _brand_chosen(self, r: Render, name: str, shown: str) -> None:
         """Poshmark lists this name of ours: picked. Reported when it isn't our brand as written (case aside) nor the
@@ -1304,7 +1336,8 @@ class PoshmarkPoster(Poster):
         chosen = self.chosen
         brand = chosen["brand"] if "brand" in chosen else (self.aliases.spell(r.brand) if r.brand else r.brand)
         exp = {
-            "title": r.title, "description": r.description, "brand": _straight(brand), "price": r.price,
+            "title": r.title, "description": chosen.get("description", r.description), "brand": _straight(brand),
+            "price": r.price,
             "original_price": r.original_price, "sku": r.sku, "photos": len(r.photos),
             "category": Contains(r.department, chosen.get("category", r.category)),
             "condition": Contains(CONDITION_TO_POSH[r.condition]),
@@ -1797,7 +1830,7 @@ class PoshmarkPoster(Poster):
                 await self._brand_warning(page, out, 3000)
             await box.fill("")
             try:
-                await self._brand(page, r)
+                await self._brand(page, r, in_text=False)   # a live listing's text is never changed by a brand edit
             except PosterError as e:
                 await keep_evidence(page, self.shot, {"url": url, "error": str(e)})
                 return {**out, "error": f"{e}: nothing saved"}
@@ -1834,6 +1867,27 @@ class PoshmarkPoster(Poster):
             try:
                 await page.close()
             except Exception:  # noqa: BLE001
+                pass
+
+    async def brand_known(self, ctx: BrowserContext, r: Render) -> tuple[str | None, str | None]:
+        """WO59 §5: does Poshmark's brand list have this brand now? Looked for on a NEW create-listing form — the
+        category picked (as a listing would), the brand searched with our names (`_brand`, the text left alone) — and
+        the form left through Discard: no listing is touched, so none of a listing's three brand edits is spent on a
+        look. (Poshmark's name for it or None, a note when the form couldn't be left through its Discard dialog)."""
+        self._roots, self._state, self._render, self.chosen, self.guesses = {}, {}, r, {}, []
+        page = await ctx.new_page()
+        try:
+            await page.goto(self.create_url)
+            await page.wait_for_load_state("domcontentloaded")
+            await self._category(page, r)
+            await self._brand(page, r, in_text=False)
+            found = self.chosen.get("brand") or None
+            left = await self.discard(page)
+            return found, left
+        finally:
+            try:
+                await page.close()
+            except PlaywrightError:
                 pass
 
     async def _brand_warning(self, page: Page, out: dict, timeout_ms: int) -> bool:

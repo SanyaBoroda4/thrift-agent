@@ -1670,6 +1670,20 @@ shipping choice were found only by her 12 items). `thrift_agent/formcheck.py`:
 - **The 40-item check:** 40 of 40 of the closet's live items map to a valid eBay listing (the stand-in category
   table); the girls' "One Size" costume dress goes to Kids' Costumes at One Size.
 
+## A brand Poshmark's list lacks (WO59, 2026-11-10)
+- **The owner's decision (Nov 10, 11:28 PM):** "Post on Poshmark anyway, with no brand. The brand still goes in the
+  title and description." It replaces WO52's "a big brand Poshmark's list lacks is a failure retried with the 🚨".
+- **What the Mac showed that night (read only):** no Poshmark row was waiting or failing for an unfound brand. The
+  Nov 1 cases were brand CORRECTIONS of live listings (`thrift brand-fix`, WO52) that failed: Mango (i_261009_cd3997),
+  Free People (i_261018_3bd5b2; Poshmark had offered "Free People" for "Free People Beach" on Oct 18), Victoria's
+  Secret (i_261020_88d284, whose brand is her reply text "Victoria secret brand"), and Zara TRF once. Six live Poshmark
+  listings had an empty brand field — those three plus Kaminski (Poshmark offered "Helen Kaminski"), TOPTEN and
+  Mick Mack LTD — each posted empty by the agent ("brand left empty: Poshmark's list has no …"), each with the brand
+  in its title; so none needed a text edit (the WO's condition), and all six went into the weekly look.
+- **Why the look is on a create form:** Poshmark's edit page asks "You are allowed to edit the brand on your listing 3
+  times. Do you want to continue?" and WO52's edit answers it before its search — a weekly look there could spend an
+  edit without saving one.
+
 # Part 2 — the core sections as they stood on 2026-11-01
 
 ## (Preamble)

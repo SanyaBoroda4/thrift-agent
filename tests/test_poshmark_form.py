@@ -392,7 +392,37 @@ def test_a_brand_poshmark_does_not_offer_is_left_empty_and_the_form_goes_on(chro
     assert not [e for e in events if e.startswith("brand:")] and seen["brand"] == ""
     assert compare(seen, posh.expected(r)) == {}, seen                    # filled to the end: the price is on
     assert seen["price"] == "$85"
-    assert posh.guesses == [f"brand left empty: Poshmark's list has no '{brand}'{offer}"]
+    # WO59: the brand said in the description instead, one check line
+    assert seen["description"] == f"{r.description}\n\nBrand: {brand}"
+    assert posh.guesses == [f"Poshmark: '{brand}' isn't in Poshmark's brand list — posted with the brand in the title "
+                            f"and description{offer}"]
+
+
+def test_an_unfound_big_brand_posts_with_an_empty_field_and_the_brand_in_the_text(chrome, posh, photos, monkeypatch):
+    """WO59 (the owner, 2026-11-10: "Post on Poshmark anyway, with no brand. The brand still goes in the title and
+    description"): a big brand Poshmark's list lacks — never a failure, never a 🚨 — the field empty, the title names
+    it (brand first), the description ends "Brand: Mango", the read-back expects exactly that, one check line."""
+    from thrift_agent import brands as brands_mod
+    monkeypatch.setattr(poshmark, "SUGGEST_TIMEOUT_MS", 400)
+    monkeypatch.setattr(brands_mod, "SEED", {})
+    assert brands_mod.big("Mango")
+    r = render(photos, brand="Mango", title="Mango Linen Wrap Dress Beige size M",
+               description="Linen wrap dress with a tie waist.\nGently pre-loved, please see photos for condition.")
+    seen, events = fill_and_read(chrome, posh, r, brands=["Mangosteen Kids", "Manolo Blahnik"])
+    assert not [e for e in events if e.startswith("brand:")] and seen["brand"] == ""      # no brand in the field
+    assert seen["title"].startswith("Mango ")                                           # the brand in the title
+    assert seen["description"].endswith("\n\nBrand: Mango")                            # … and in the description
+    assert compare(seen, posh.expected(r)) == {}, seen                                  # the read-back agrees
+    assert posh.guesses[0].startswith("Poshmark: 'Mango' isn't in Poshmark's brand list — posted with the brand in "
+                                      "the title and description")
+
+
+def test_a_brand_poshmark_has_is_still_set_in_the_field_and_the_text_left_alone(chrome, posh, photos, monkeypatch):
+    monkeypatch.setattr(brands, "SEED", {})
+    r = render(photos)                                                       # Tory Burch: on the stand-in's list
+    seen, events = fill_and_read(chrome, posh, r)
+    assert seen["brand"] == "Tory Burch" and seen["description"] == r.description
+    assert posh.expected(r)["description"] == r.description and "Brand:" not in seen["description"]
 
 
 def test_j_crew_is_poshmarks_j_crew_never_the_factory_line_and_is_learned(chrome, posh, photos, tmp_path, monkeypatch):
@@ -430,7 +460,9 @@ def test_a_brand_poshmark_lists_only_by_one_word_of_ours_is_never_taken(chrome, 
     r = render(photos, brand="Tory Burch Sport")
     seen, events = fill_and_read(chrome, posh, r, steps=["_brand"])
     assert not [e for e in events if e.startswith("brand:")] and seen["brand"] == ""
-    assert posh.guesses == ["brand left empty: Poshmark's list has no 'Tory Burch Sport'"]
+    assert posh.guesses == ["Poshmark: 'Tory Burch Sport' isn't in Poshmark's brand list — posted with the brand in "
+                            "the title and description" + posh.guesses[0].split("description", 1)[1]]
+    assert posh.chosen["description"].endswith("Brand: Tory Burch Sport")
 
 
 # ---------------------------------------------------------------- WO36: the brand Poshmark lists (the Alo set)
@@ -471,7 +503,8 @@ def test_two_names_that_start_with_ours_are_no_guess(chrome, posh, photos, tmp_p
     r = render(photos, brand="Alo")
     seen, events, _ = typed_brands(chrome, posh, r, brands=["Alo Yoga", "Alo Kids", "ALOHAS"])
     assert not [e for e in events if e.startswith("brand:")] and seen["brand"] == ""
-    assert posh.guesses == ["brand left empty: Poshmark's list has no 'Alo' (it offers: Alo Yoga, Alo Kids, ALOHAS)"]
+    assert posh.guesses == ["Poshmark: 'Alo' isn't in Poshmark's brand list — posted with the brand in the title and "
+                            "description (it offers: Alo Yoga, Alo Kids, ALOHAS)"]
 
 
 def test_solid_and_striped_is_never_solid(chrome, posh, photos, monkeypatch):
@@ -482,7 +515,8 @@ def test_solid_and_striped_is_never_solid(chrome, posh, photos, monkeypatch):
     seen, events, typed = typed_brands(chrome, posh, r)
     assert not [e for e in events if e.startswith("brand:")] and seen["brand"] == ""
     assert "Solid" not in typed and set(typed) <= {"Solid & Striped", "Solid and Striped", ""}
-    assert posh.guesses == ["brand left empty: Poshmark's list has no 'Solid & Striped'"]
+    assert posh.guesses == ["Poshmark: 'Solid & Striped' isn't in Poshmark's brand list — posted with the brand in the "
+                            "title and description"]
 
 
 def test_mng_finds_mango_by_the_alias_file(chrome, posh, photos, tmp_path):
