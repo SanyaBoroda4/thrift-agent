@@ -9,7 +9,7 @@ from thrift_agent import catalogs
 from thrift_agent.catalogs import CatalogError, categories
 from thrift_agent.catalogs.common import ItemView, colors_for, condition_key, materials_for, package_class
 from thrift_agent.catalogs.depop import description, map_depop
-from thrift_agent.catalogs.sizes import MappingError, SizeIn, depop_size, vinted_size
+from thrift_agent.catalogs.sizes import SizeIn, depop_size, vinted_size
 from thrift_agent.catalogs.vinted import map_vinted
 from thrift_agent.schema import Ev, Facts, Fiber, Flaw, Premium, Render
 

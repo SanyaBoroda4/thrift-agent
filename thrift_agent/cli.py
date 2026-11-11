@@ -901,7 +901,7 @@ def text_cmd(item_id: str,
     if not add_line and not title:
         print("[red]nothing to set[/]: give --title and/or --add-line")
         raise typer.Exit(1)
-    s, db = settings(), _db()
+    db = _db()
     it = db.item(item_id)
     if it is None:
         print(f"[red]unknown item[/] {item_id}")

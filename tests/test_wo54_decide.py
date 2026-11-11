@@ -10,12 +10,10 @@ Sneakers got "тщ икфтв" ("no brand" on the Russian keyboard) — it went 
 Fakes only: no network, no browser, no model."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 import wo54_prompts
-from PIL import Image
 from test_crosslist_flow import (Stub, _posters, _settings as flow_settings, driver,  # noqa: F401 (fixtures)
                                  fields_for, loop, verified_selectors)
 from test_pipeline import _jpg, _settings, _split, fake_ask, owner_messages  # noqa: F401 (owner_messages: fixture)
@@ -23,9 +21,8 @@ from test_pipeline import _jpg, _settings, _split, fake_ask, owner_messages  # n
 from thrift_agent import approve, crosslist, daily, pipeline, titles
 from thrift_agent.brain import gate as gate_mod
 from thrift_agent.db import DB, loads
-from thrift_agent.post import parallel, runner
-from thrift_agent.post.base import Outcome
-from thrift_agent.schema import Ev, Facts, Render
+from thrift_agent.post import runner
+from thrift_agent.schema import Ev, Render
 
 
 def _photos(tmp_path: Path, name: str = "item", n: int = 3) -> Path:
@@ -268,7 +265,7 @@ def test_the_items_asked_before_are_decided_once(tmp_path, monkeypatch, facts):
 # ---------------------------------------------------------------- the whole poster loop: it goes up
 
 @pytest.mark.parametrize("driver", ["playwright"], indirect=True)
-def test_an_item_whose_brand_couldnt_be_read_goes_up_on_all_three_sites(tmp_path, loop):
+def test_an_item_whose_brand_couldnt_be_read_goes_up_on_all_three_sites(tmp_path, loop):  # noqa: F811 (fixture)
     """Priced, the card holding the old 🏷️ question: Poshmark, Depop and Vinted all take it (the site's own no-brand
     choice); the group hears its ✅ card, nobody is asked."""
     said, run = loop

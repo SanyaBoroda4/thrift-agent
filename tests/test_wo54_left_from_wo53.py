@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from PIL import Image
 
-from thrift_agent import alerts, approve, cleanup, cli, heal, photocheck, pipeline, uploads
+from thrift_agent import approve, cleanup, cli, heal, photocheck, pipeline, uploads
 from thrift_agent.config import ROOT, Settings, settings
 from thrift_agent.db import DB
 from thrift_agent.telegram import Bot

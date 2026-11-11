@@ -14,7 +14,6 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import httpx
