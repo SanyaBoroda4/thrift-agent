@@ -91,7 +91,13 @@ EBAY_TOKEN_LENGTH = 64                        # eBay: 32 to 80 characters
 
 
 def say(line: str) -> None:
-    print(line, flush=True)
+    """One line out — also on a Windows console that can't print "✓" (cp1252, live 2026-11-11: the deploy had
+    finished, and only its last line raised UnicodeEncodeError)."""
+    try:
+        print(line, flush=True)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "ascii"
+        print(line.replace("✓", "OK").encode(enc, "replace").decode(enc, "replace"), flush=True)
 
 
 def az_path() -> str:
