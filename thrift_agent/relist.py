@@ -162,10 +162,24 @@ def _failed(db: DB, sale_id: str, iid: str, site: str, why: str) -> None:
 
 
 def _requeue(db: DB, sale_id: str, iid: str, site: str) -> None:
-    """Posted again as a new listing by the site's normal queue; the old address kept in the plan."""
+    """Posted again as a new listing by the site's normal queue; the old address kept in the plan. Depop: its own SKU
+    "<item>-r<n>" (live 2026-11-11: "SKU: You've already used this SKU for another listing" — the sold listing keeps
+    the item's id; our checks read the item id inside it)."""
     db.upsert_listing(iid, site, status="queued", url=None, listing_id=None, error=None, attempts=0)
-    _mark(db, sale_id, site, state=WAITING, requeued=_now())
-    db.log(iid, "relist_requeued", {"sale": sale_id, "site": site})
+    extra = {}
+    if site == "depop":
+        n = 1 + sum(1 for e in _load(db).values() if e.get("item") == iid
+                    and ((e.get("sites") or {}).get("depop") or {}).get("sku"))
+        extra["sku"] = f"{iid}-r{n}"
+    _mark(db, sale_id, site, state=WAITING, requeued=_now(), **extra)
+    db.log(iid, "relist_requeued", {"sale": sale_id, "site": site, **extra})
+
+
+def depop_sku(db: DB, iid: str) -> str | None:
+    """The SKU a Depop listing posted again carries ("<item>-r<n>"), or None (the item's id, as always)."""
+    skus = [((e.get("sites") or {}).get("depop") or {}) for e in _load(db).values() if e.get("item") == iid]
+    skus = [st for st in skus if st.get("sku")]
+    return max(skus, key=lambda st: st.get("requeued") or "")["sku"] if skus else None
 
 
 def _follow(db: DB, sale_id: str, iid: str, site: str, st: dict) -> bool:
@@ -179,10 +193,11 @@ def _follow(db: DB, sale_id: str, iid: str, site: str, st: dict) -> bool:
                             (st["posted_at"], iid, site))
         _back(db, sale_id, iid, site, row["url"], row["price"] or st.get("price"), "posted again")
         return True
-    if row["status"] in ("skipped", "failed") and "set aside" not in str(row["error"] or ""):
-        _failed(db, sale_id, iid, site, f"posting it again ended {row['status']}: {row['error'] or ''}")
+    if row["status"] == "skipped":                 # the queue gave up for good: said once, left to her
+        _mark(db, sale_id, site, tries=TRIES - 1)
+        _failed(db, sale_id, iid, site, f"posting it again ended skipped: {row['error'] or ''}")
         return True
-    return False
+    return False                                   # queued / posting / failed: the queue's own retries go on
 
 
 async def run_one(s: Settings, db: DB, site: str, poster, ctx=None, shots: Path | None = None) -> bool:

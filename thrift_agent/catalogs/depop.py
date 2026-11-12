@@ -40,6 +40,7 @@ class DepopFields(BaseModel):
     category_source: str = "table"
     guesses: list[str] = Field(default_factory=list)   # for the "Posted ✓ … — check:" note
     notes: list[str] = Field(default_factory=list)     # for the ops chat
+    sku: str | None = None                             # a relisted item's "<item>-r<n>" (relist.depop_sku); else its id
 
 
 _LENGTH = (("Maxi", r"\bmaxi\b|\bankle[- ]length\b|\bfloor[- ]length\b"), ("Midi", r"\bmidi\b|\btea[- ]length\b"),

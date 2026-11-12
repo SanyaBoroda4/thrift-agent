@@ -357,7 +357,7 @@ class ExtensionPoster(Poster):
             want["material"] = Chosen(ours("material", f.materials[:3]))
         if self.name == "depop":
             if "sku" not in unverified("depop", self.selectors_path):
-                want["sku"] = r.sku                    # WO33 A4: compared once a Mac dry run has recorded it filled
+                want["sku"] = getattr(f, "sku", None) or r.sku     # WO33 A4 (a relisted item: "<item>-r<n>")
             want["brand-input"] = BrandOf(names, [] if brands.big(f.brand) else ["Other"])   # WO52 §1
             want["colour-input"] = Chosen(ours("colour-input", f.colors[:2]))
             want["source-input"] = Chosen(ours("source-input", f.source))
@@ -456,7 +456,7 @@ class ExtensionPoster(Poster):
                       "brand_candidates": names, "size": f.size,
                       "condition": f.condition, "colors": list(f.colors), "source": list(f.source), "age": f.age,
                       "style": [], "attributes": dict(f.attributes), "shipping": f.shipping,   # Style: never (WO36)
-                      "package_size": f.package_size, "sku": r.sku}
+                      "package_size": f.package_size, "sku": getattr(f, "sku", None) or r.sku}
             copy = {"title": f.description.splitlines()[0], "description": f.description}
         return {"fields": fields, "copy": copy, "price": f.price,
                 "photos": self._bridge().photo_urls(r.sku, list(f.photos), self.name), "listing_url": None}

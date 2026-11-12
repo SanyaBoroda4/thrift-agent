@@ -162,3 +162,21 @@ def test_get_tasks_relist_is_taken_by_fetch_tasks(env, monkeypatch):
     monkeypatch.setattr(sales, "api", lambda: Api())
     sales.fetch_tasks(db, ["poshmark", "depop", "vinted"], force=True)
     assert relist.status(db) == {"s_9": {"poshmark": "due", "vinted": "due", "depop": "due"}}
+
+
+def test_a_depop_listing_posted_again_carries_its_own_sku_and_a_refusal_waits_for_the_queues_retry(env):
+    """Live 2026-11-11 11:21 PM: Depop refused the new listing — "SKU: You've already used this SKU for another
+    listing" (the sold one keeps the item's id) — and the follow-up counted that one refusal three times in a second."""
+    db, said = env
+    relist.plan(db, "s_1", IID)
+    assert run(db, "depop", Depop("sold"))
+    assert relist.depop_sku(db, IID) == f"{IID}-r1" and relist.depop_sku(db, "i_other") is None
+    db.upsert_listing(IID, "depop", status="failed", error="Depop refused the form: … SKU: You've already used this SKU")
+    for _ in range(5):                                         # the queue retries it by itself: nothing counted
+        assert not run(db, "depop", Depop("sold"))
+    assert not [m for m in said.ops if m.startswith("⚠️ Couldn't put")]
+    assert relist.status(db)["s_1"]["depop"] == "waiting"
+    db.upsert_listing(IID, "depop", status="skipped", error="refused for good")
+    assert run(db, "depop", Depop("sold"))                     # the queue gave up: said once, left to her
+    assert len([m for m in said.ops if m.startswith("⚠️ Couldn't put")]) == 1
+    assert relist.status(db)["s_1"]["depop"] == "failed"

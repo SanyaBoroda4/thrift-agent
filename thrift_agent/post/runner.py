@@ -1257,6 +1257,10 @@ async def _run_cross(s: Settings, db: DB, ps: dict, ctx, iid: str, mp: str, *, d
                                              f"({looked.get('error') or looked.get('why')})")
             return None
         crosslist.set_unconf(db, iid, mp, stage="reposted")
+    if mp == "depop":                       # 2026-11-11: a relisted item's Depop listing carries its own SKU
+        from thrift_agent import relist
+        if sku := relist.depop_sku(db, iid):
+            fields.sku = sku
     db.upsert_listing(iid, mp, fields_json=fields.model_dump(), price=fields.price)
     if extension:
         # WO32b: the attempt is counted now; the row becomes 'posting' only at the go-ahead (on_go_ahead) — before it
