@@ -1301,7 +1301,10 @@ backfill waits for its plan (`--not-before`).**
   day, "≈" (no sale day: its record's, ONE private line, reminders kind `ship_list_no_day`). `POST /ship-list
   {"preview": true}`: the same list now to the private chat, "🔎 Preview" (nothing open: WO62's made-up sales, "🔎
   Preview (sample)"), the day not taken. `GET /health` → `ship_list` (sent_on, the last list's counts, open packages).
-  The 9 AM reminders and the 9 PM line are unchanged.
+  The 9 AM reminders and the 9 PM line are unchanged. **WO65 footer:** "🔎 Checked on the sites: Poshmark 8:31 PM ·
+  Depop 8:33 PM" (the list's sites, from the sweeps' heartbeats) and "⚠️ Vinted not checked since Tue 3:10 PM — its sales
+  may be out of date." for a Mac site not read in 12 h (also under "Nothing to ship"), then "Shipped or cancelled
+  already? Reply “shipped <words>” or “cancelled <words>”." (`_mac_cancelled`, `approve.CANCELLED_CMD`).
 - **Take-downs on the Mac** (`thrift_agent/sales.py`, `post/takedown.py`): in any hour, never with PAUSE, the lid closed,
   or a site showing a login / CAPTCHA / block / check page (`parallel.may_take_down`, `crosslist.account_blocked`). ONE
   GET /tasks at most every 2 min for all sites (`sales.TASKS_EVERY`). Poshmark: Availability Not for Sale
@@ -1347,6 +1350,14 @@ backfill waits for its plan (`--not-before`).**
   → `sales.listing_gone` (`sold_found` / `not_for_sale`) → take-downs elsewhere; the row `sold` / `delisted`. SOLD acts at
   once; not-for-sale or 404 only when seen again 10+ min later (kv `photocheck_gone_seen`). A take-down of ours = only
   the row. `runner.next_job` never posts a `delisted` / `sold` row again.
+- **WO65 (live 2026-11-11: the 9 PM list showed shipped and cancelled sales):** Depop's receipts carry no title — a
+  title-less order goes to the one sale sold within 30 minutes of it (`orders.CLOSE`; a receipt and its email are
+  seconds apart), else untied with ONE private line naming the candidates (`say_doubt`, settings `order_doubt:`); two
+  of the same title are never a guess. A sale recorded twice (Vinted's "You sold" email and its label email days later)
+  is folded when its order is tied (`fold_twin`: same site and title, no order id, sold within 30 min of the order →
+  'merged'). Depop "refunded / AWAITING_SHIPPING" = cancelled (a refund before the parcel left); Vinted "Payment
+  successful!" / "Shipping label sent to seller." = to ship (they had been dropped as unknown on every sweep); Vinted's
+  sold list read page by page (≤ 5); one more sweep at 8:30 PM (`orders.EVENING`) before the 9 PM list.
 - **The sites' sold orders, read only** (`orders.py`, `parallel._sweep`): nothing on an order page is clicked, typed or
   submitted; no buyer written to, no label downloaded; never stored: buyer names, addresses, tracking (only `orders.SEND`
   fields leave the page); order pages never pictured (`T.noShots`). Poshmark: the seller-hub JSON (a response listener)

@@ -15,7 +15,14 @@ finished one from before going live (those are history, left alone); a cancelled
 A sale is found by the order id, then the item (our SKU, the listing), then the title (and the sale within 3 days of
 the order), then — Depop, whose emails name no order — the one sale on that site without an order id sold within 3
 days (whatever its state: the delivered email may have closed it). When more than one could be it, the order is tied
-to none and nothing new is recorded: never a guess, never a second row of one sale."""
+to none and nothing new is recorded: never a guess, never a second row of one sale — and ONE private line names them.
+
+WO65 (live 2026-11-11, the 9 PM list showed shipped and cancelled sales): Depop's receipts carry no title, and three
+Depop sales without an order id sold within 3 days of each other, so none of the three orders was tied — a title-less
+order now goes to the one candidate sold within CLOSE (30 minutes) of it (the receipt and its sale email were 8–12
+seconds apart). A sale recorded twice — Vinted's "You sold" email, and its label email six days later (beyond the
+email pair's 3 days), the order tied to the label's row — is folded together once the order is tied: the twin (same
+site, same title, no order id, sold within CLOSE of the ORDER) is kept as 'merged' (`fold_twin`)."""
 from __future__ import annotations
 
 import json
@@ -32,6 +39,8 @@ PREFIX = "mac:order:"
 MAX_ORDERS = 200
 RECENT = timedelta(days=45)        # an order our records lack is recorded only if sold this recently
 NEAR = timedelta(days=3)           # a sale and an order this close in time can be the same one
+CLOSE = timedelta(minutes=30)      # WO65: a sale and an order this close are the same one when nothing else is
+DOUBT = "order_doubt:"             # settings: an order that could be several sales, said once
 FIELDS = ("order_id", "status", "status_text", "title", "price", "sold_at", "listing_id", "listing_url", "sku",
           "shipped_at", "delivered_at", "completed_at",
           "ship_by")                # WO57: the day the site itself says to ship by ("YYYY-MM-DD"; eBay's orders give it)
@@ -90,12 +99,21 @@ def clean(entry: object) -> dict | None:
 
 
 def one(db: Database, mp: str, order: dict, seen_at: datetime, now: datetime, mode: str) -> dict:
+    """One order recorded and acted on; its messages go once the transaction has committed."""
     out = core.Outbox(now, mode)
+    try:
+        return _one(db, mp, order, seen_at, now, mode, out)
+    finally:
+        out.flush()
+
+
+def _one(db: Database, mp: str, order: dict, seen_at: datetime, now: datetime, mode: str, out: core.Outbox) -> dict:
     with db.tx():
         sale, doubt = find_sale(db, mp, order)
         action = "linked"
         if sale is None and doubt:
             keep(db, mp, order, None, seen_at)
+            say_doubt(db, mp, order, doubt if isinstance(doubt, list) else [], out)
             return {"order_id": order["order_id"], "status": order["status"], "sale_id": None,
                     "action": "left alone (it could be one of several sales)"}
         if sale is None:
@@ -112,6 +130,8 @@ def one(db: Database, mp: str, order: dict, seen_at: datetime, now: datetime, mo
         if action == "linked" and order["ship_by"] is not None:       # WO57: the site's own ship-by day wins
             core._fill_sale(db, sale, {"ship_by_stated": order["ship_by"]})
         keep(db, mp, order, sale, seen_at)
+        if twin := fold_twin(db, mp, order, sale):
+            action += f", its twin {twin} folded in"
         changed = transition(db, mp, order, sale, seen_at, now, mode, out)
         if sale.get("item_id") and order["status"] != "cancelled":
             # WO40: a sold order the site shows — the item must be down everywhere else: the take-downs it lacks made,
@@ -124,9 +144,9 @@ def one(db: Database, mp: str, order: dict, seen_at: datetime, now: datetime, mo
             "action": f"{action}{', ' + changed if changed else ''}"}
 
 
-def find_sale(db: Database, mp: str, order: dict) -> tuple[dict | None, bool]:
-    """(the sale this order is, False) — see the module; (None, True) when more than one could be it; (None, False)
-    when none is."""
+def find_sale(db: Database, mp: str, order: dict) -> tuple[dict | None, bool | list]:
+    """(the sale this order is, False) — see the module; (None, the sales it could be — truthy) when more than one
+    could be it; (None, False) when none is."""
     row = db.one("SELECT * FROM sales WHERE marketplace = ? AND order_id = ? AND status <> 'merged' "
                  "ORDER BY created_at LIMIT 1", (mp, order["order_id"]))
     if row:
@@ -139,7 +159,7 @@ def find_sale(db: Database, mp: str, order: dict) -> tuple[dict | None, bool]:
         if len(rows) == 1:
             return rows[0], False
         if len(rows) > 1:
-            return None, True
+            return None, _doubts(rows)
     if mp == util.EBAY:
         return None, False        # WO57: an eBay order is tied by its id, the SKU or the listing id only — never a title
     rows = [r for r in db.query("SELECT s.*, i.title AS item_title FROM sales s LEFT JOIN items i ON i.id = s.item_id "
@@ -150,16 +170,72 @@ def find_sale(db: Database, mp: str, order: dict) -> tuple[dict | None, bool]:
         sale_id, ambiguous = match.best(order["title"], candidates)
         if sale_id and not ambiguous:
             return {k: v for k, v in next(r for r in rows if r["id"] == sale_id).items() if k != "item_title"}, False
-        if ambiguous:
-            return None, True
-    # Depop's emails name no order: the one Depop sale without an order id sold within NEAR of it, whatever its state
+        if ambiguous:                    # WO65: two of the same title is never a guess, however close in time
+            return None, _doubts([r for r in rows if any(match.best(order["title"], [(r["id"], t)])[0]
+                                                         for t in (r["title_seen"], r["item_title"]) if t)] or rows)
+    # Depop's emails name no order: the one Depop sale without an order id sold within NEAR of it, whatever its state;
+    # WO65: of several, the one sold within CLOSE of the order (a receipt and its email: seconds apart)
     if mp == "depop" and order["sold_at"] is not None:
         loose = [r for r in rows if r["status"] != "cancelled" and r["order_id"] in (None, "")]
         if len(loose) == 1:
             return {k: v for k, v in loose[0].items() if k != "item_title"}, False
         if len(loose) > 1:
-            return None, True
+            close = [r for r in loose if _close(r, order)]
+            if len(close) == 1:
+                return {k: v for k, v in close[0].items() if k != "item_title"}, False
+            return None, _doubts(close or loose)
     return None, False
+
+
+def _close(sale: dict, order: dict, within: timedelta = CLOSE) -> bool:
+    a, b = parse_time(sale["sold_at"]), order["sold_at"]
+    return a is not None and b is not None and abs(a - b) <= within
+
+
+def _doubts(rows: list[dict]) -> list[dict]:
+    """The sales an order could be (truthy: the order is left untied), for the one private line."""
+    return [{k: r.get(k) for k in ("id", "title_seen", "item_title", "sold_at")} for r in rows] or [{"id": "?"}]
+
+
+def say_doubt(db: Database, mp: str, order: dict, rows: list[dict], out: core.Outbox) -> None:
+    """WO65: ONE private line per order that could be several sales — naming them; it stays untied (never a guess)."""
+    key = f"{DOUBT}{mp}:{order['order_id']}"
+    if core.setting(db, key):
+        return
+    core.put_setting(db, key, iso(order["sold_at"]) if order["sold_at"] else "1")
+    names = "; ".join(f"“{r.get('item_title') or r.get('title_seen') or r.get('id')}” ({r.get('id')}, sold "
+                      f"{core.local_text(parse_time(r.get('sold_at'))) if parse_time(r.get('sold_at')) else '?'})"
+                      for r in rows[:4])
+    words = order["title"] or "no title"
+    out.ops(f"🔎 {util.site_name(mp)} order {order['order_id']} ({words}, {order['status_text'] or order['status']}) "
+            f"could be any of these sales: {names} — left untied, never a guess. Her “shipped <words>” settles one.")
+
+
+def fold_twin(db: Database, mp: str, order: dict, sale: dict) -> str | None:
+    """WO65: the same sale recorded twice — its twin (same site, same title, no order id, not merged or cancelled, sold
+    within CLOSE of the order) folded into `sale`, the order's: kept as 'merged' (never deleted), its price and earlier
+    sale time carried over. Returns the twin's id, or None."""
+    if order["sold_at"] is None:
+        return None
+    title = sale.get("title_seen") or order["title"]
+    rows = db.query("SELECT * FROM sales WHERE marketplace = ? AND id <> ? AND status NOT IN ('merged', 'cancelled') "
+                    "AND (order_id IS NULL OR order_id = '')", (mp, sale["id"]))
+    twins = [r for r in rows if _close(r, order) and title and r["title_seen"]
+             and match.best(title, [(r["id"], r["title_seen"])])[0]
+             and (r["item_id"] in (None, "") or r["item_id"] == sale.get("item_id"))]
+    if len(twins) != 1:
+        return None
+    twin = twins[0]
+    updates = {}
+    if sale.get("price") in (None, "") and twin["price"] not in (None, ""):
+        updates["price"] = twin["price"]
+    if (t1 := parse_time(twin["sold_at"])) and (t0 := parse_time(sale.get("sold_at"))) and t1 < t0:
+        updates["sold_at"] = twin["sold_at"]
+    if updates:
+        sets = ", ".join(f"{column} = ?" for column in updates)          # the columns above, nothing from outside
+        db.execute(f"UPDATE sales SET {sets} WHERE id = ?", (*updates.values(), sale["id"]))
+    db.execute("UPDATE sales SET status = 'merged' WHERE id = ?", (twin["id"],))
+    return twin["id"]
 
 
 def _near(sale: dict, order: dict) -> bool:

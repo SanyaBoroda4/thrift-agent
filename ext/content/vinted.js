@@ -877,16 +877,34 @@
     // WO38: the sold orders from Vinted's own JSON (same origin, the page's cookies), read only — each order's
     // transaction id, title, price, date and status sentence; nothing about the buyer leaves the page.
     async orders(job) {
-      const path = String(T.selectors.vinted.orders?.json || "/api/v2/my_orders?type=sold&status=all&page=1&per_page=20");
-      const r = await fetch(new URL(path, location.origin).href, { credentials: "include",
-                                                                   headers: { Accept: "application/json" } });
-      if (!r.ok) throw new Error(`Vinted's sold orders answered ${r.status}`);
-      const data = await r.json();
-      const orders = (data.my_orders || []).filter((o) => o && o.transaction_id).map((o) => ({
-        order_id: String(o.transaction_id), title: String(o.title || "").slice(0, 200) || null,
-        price: o.price && o.price.amount != null ? String(o.price.amount) : null, sold_at: o.date || null,
-        status_text: String(o.status || "").slice(0, 120) || null,
-      }));
+      // WO65: page by page (its own pagination, else until a short page), at most 5 pages — an order on a later page
+      // was never read
+      const first = String(T.selectors.vinted.orders?.json || "/api/v2/my_orders?type=sold&status=all&page=1&per_page=20");
+      const orders = [];
+      const seen = new Set();
+      for (let page = 1; page <= 5; page++) {
+        const url = new URL(first, location.origin);
+        url.searchParams.set("page", String(page));
+        const r = await fetch(url.href, { credentials: "include", headers: { Accept: "application/json" } });
+        if (!r.ok) {
+          if (page === 1) throw new Error(`Vinted's sold orders answered ${r.status}`);
+          break;
+        }
+        const data = await r.json();
+        const list = (data.my_orders || []).filter((o) => o && o.transaction_id);
+        for (const o of list) {
+          if (seen.has(String(o.transaction_id))) continue;
+          seen.add(String(o.transaction_id));
+          orders.push({
+            order_id: String(o.transaction_id), title: String(o.title || "").slice(0, 200) || null,
+            price: o.price && o.price.amount != null ? String(o.price.amount) : null, sold_at: o.date || null,
+            status_text: String(o.status || "").slice(0, 120) || null,
+          });
+        }
+        const pg = data.pagination || {};
+        const per = Number(url.searchParams.get("per_page")) || 20;
+        if ((pg.total_pages && page >= Number(pg.total_pages)) || list.length < per) break;
+      }
       return { source: "json", orders };
     },
 

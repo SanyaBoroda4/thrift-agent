@@ -285,6 +285,7 @@ def _now() -> str:
 
 EVERY = timedelta(hours=6)              # every 6 hours
 FIRST_HOUR = 8                          # the day's first sweep: the first moment the Mac is awake from 8 AM
+EVENING = (20, 30)                      # WO65: one more at 8:30 PM, so the 9 PM shipping list is at most ~30 min old
 RETRY = timedelta(minutes=30)           # a sweep that failed is tried again after this
 BUDGET = 60.0                           # inside the pause after a listing only when this much of it is left
 RECENT = timedelta(days=60)             # older orders are not sent
@@ -319,7 +320,13 @@ VINTED_STATUS = ((re.compile(r"\bcompleted\b|\baccepted the item\b"), "completed
                  (re.compile(r"\bdelivered\b"), "delivered"),
                  (re.compile(r"\bshipped\b|\bon its way\b|\bin transit\b"), "shipped"),
                  (re.compile(r"\bcancel"), "cancelled"),
-                 (re.compile(r"\brefund|\breturn"), "returned"))
+                 (re.compile(r"\brefund|\breturn"), "returned"),
+                 # WO65 (live 2026-11-11: two of today's sales were dropped by every sweep as "a status I don't know",
+                 # said once and then silent): a paid order waiting for its parcel
+                 (re.compile(r"\bpayment successful\b|\bshipping label sent\b"), "to_ship"))
+# WO65: Depop's refund before the parcel left ("refunded / AWAITING_SHIPPING", live 2026-11-11: Seven Wonders, the
+# app shows "Canceled") is a cancelled sale; a refund after it shipped stays a return
+DEPOP_LEFT = re.compile(r"\bshipped\b|\bin transit\b|\bdelivered\b|\bout for delivery\b|\bdispatched\b")
 RANK = ("to_ship", "shipped", "delivered", "completed")
 
 
@@ -347,6 +354,8 @@ def status_of(site: str, text: str | None) -> str | None:
     if site == "poshmark":
         return POSHMARK_STATUS.get(words)
     if site == "depop":
+        if re.search(r"\brefund", words) and not DEPOP_LEFT.search(words):
+            return "cancelled"
         return DEPOP_STATUS.get(words) or next((ours for pattern, ours in DEPOP_CODES if pattern.search(words)), None)
     return next((ours for pattern, ours in VINTED_STATUS if pattern.search(words)), None)
 
@@ -371,10 +380,11 @@ def due(db, site: str, now: datetime | None = None, tz: str = "America/New_York"
     if failed is not None and now - failed < RETRY:
         return False
     first = local.replace(hour=FIRST_HOUR, minute=0, second=0, microsecond=0)
+    evening = local.replace(hour=EVENING[0], minute=EVENING[1], second=0, microsecond=0)
     last = _when(_kv(db, KV_SWEPT).get(site))
     if last is None:
         return local >= first
-    return now - last >= EVERY or (local >= first and last < first)
+    return now - last >= EVERY or (local >= first and last < first) or (local >= evening and last < evening)
 
 
 async def sweep(s: Settings, db, site: str, read, now: datetime | None = None) -> dict:

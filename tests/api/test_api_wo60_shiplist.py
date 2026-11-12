@@ -84,8 +84,15 @@ def four(db):
 
 # ---------------------------------------------------------------- WO62: the layout and the links
 
+def swept_tonight(db):
+    """WO65: each site's orders read this evening (8:31–8:55 PM)."""
+    for site, minute in (("poshmark", 31), ("depop", 33), ("vinted", 34), ("ebay", 55)):
+        core.heartbeat(db, f"orders:{site}", {}, datetime(2026, 11, 12, 1, minute, tzinfo=timezone.utc))
+
+
 def test_the_shipping_list_as_the_owner_sees_it(db, out):
     four(db)
+    swept_tonight(db)
     got = run(db)
     assert got["sent"] == 1 and got["packages"] == 4
     [(chat, text, silent, as_html)] = out
@@ -116,7 +123,9 @@ Vinted · $76 · sold Mon Nov 9
 🏷 Sold orders & labels
 
 ──────────────
-✓ Shipped ones drop off by themselves once the site shows them on the way."""
+✓ Shipped ones drop off by themselves once the site shows them on the way.
+🔎 Checked on the sites: Poshmark 8:31 PM · Depop 8:33 PM · Vinted 8:34 PM · eBay 8:55 PM
+Shipped or cancelled already? Reply “shipped <words>” or “cancelled <words>”."""
     assert "📦  <b>SHIPPING LIST</b>" in text and "🔴  <b>LATE — SHIP FIRST</b>" in text
     assert text.count("<blockquote>") == 3 and text.count("</blockquote>") == 3   # one per group
     assert "<b><a href=\"https://poshmark.com/listing/Tory-Burch-Croc-Loafers-6acd94d6cbbea59039cf0001\">Tory Burch " \
@@ -328,6 +337,7 @@ def test_a_shipped_or_closed_sale_is_not_on_it(db, out, how):
 
 def test_nothing_open_says_all_caught_up(db, out):
     sale(db, "s1", "poshmark", title="Shipped", ship_by="2026-11-12", shipped_at="2026-11-11T15:00:00+00:00")
+    swept_tonight(db)
     got = run(db)
     assert out == [("group", "📦 <b>Nothing to ship tonight</b> — all caught up ✨", False, True)]
     assert got["packages"] == 0

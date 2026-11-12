@@ -55,6 +55,9 @@ TITLE_CHARS = 40
 LEFT_ON_SITE = ("shipped", "delivered", "completed", "cancelled", "returned")   # the order sweep: on its way, or off
 NOTHING = "📦 <b>Nothing to ship tonight</b> — all caught up ✨"
 FOOTER = "──────────────\n✓ Shipped ones drop off by themselves once the site shows them on the way."
+STALE_AFTER = 12 * 3600                      # WO65: a site's statuses older than this are said to be out of date
+MAC_SITES = ("poshmark", "depop", "vinted")  # read by the Mac's order sweep (eBay: by thrift-api every 5 minutes)
+HINT = "<i>Shipped or cancelled already? Reply “shipped &lt;words&gt;” or “cancelled &lt;words&gt;”.</i>"
 LABEL_LINK = "🏷 Order &amp; label"
 SOLD_LINK = "🏷 Sold orders &amp; labels"
 
@@ -341,15 +344,42 @@ def group_title(g: str, today: date) -> str:
     return f"{emoji}  <b>{name}</b>"
 
 
+def _clock(moment: datetime, now: datetime) -> str:
+    local, today = deadlines.local(moment), deadlines.local(now).date()
+    hm = f"{local.hour % 12 or 12}:{local.minute:02d} {'AM' if local.hour < 12 else 'PM'}"
+    return hm if local.date() == today else f"{deadlines.DAY_NAMES[local.weekday()]} {hm}"
+
+
+def freshness(db: Database, sites: set[str], now: datetime) -> list[str]:
+    """WO65: when each site's statuses were last read — the sites on the list, and any of the Mac's sites not read in
+    12 hours (its sales may be missing or stale): "Checked on the sites: Poshmark 8:31 PM · Depop 8:33 PM", then
+    "⚠️ Vinted not checked since Tue 3:10 PM — its sales may be out of date." Never stale presented as fresh."""
+    from . import orders
+    seen = {site: parse_time(at) for site, at in orders.swept(db).items()}
+    show = [s for s in (*MAC_SITES, EBAY) if s in sites or (s in MAC_SITES and (seen.get(s) is None or (
+        now - seen[s]).total_seconds() > STALE_AFTER))]
+    fresh, stale = [], []
+    for site in show:
+        at = seen.get(site)
+        if at is None:
+            stale.append(f"⚠️ {site_name(site)}'s orders haven't been read yet — its sales may be out of date.")
+        elif (now - at).total_seconds() > STALE_AFTER:
+            stale.append(f"⚠️ {site_name(site)} not checked since {_clock(at, now)} — its sales may be out of date.")
+        else:
+            fresh.append(f"{site_name(site)} {_clock(at, now)}")
+    lines = [f"🔎 Checked on the sites: {' · '.join(fresh)}"] if fresh else []
+    return lines + stale
+
+
 def visible(text: str) -> int:
     """The length Telegram counts: the text without its tags, entities read."""
     return len(html.unescape(re.sub(r"<[^>]+>", "", text)))
 
 
-def render(pkgs: list[Package], today: date) -> list[str]:
-    """The message(s) (WO62's layout — see the module)."""
+def render(pkgs: list[Package], today: date, footer: list[str] | None = None) -> list[str]:
+    """The message(s) (WO62's layout — see the module); `footer`: WO65's freshness lines, under the last message."""
     if not pkgs:
-        return [NOTHING]
+        return ["\n".join([NOTHING, *(footer or [])])]
     head = ["📦  <b>SHIPPING LIST</b>", long_day(today), counts_line(pkgs, today)]
     cont = ["📦  <b>SHIPPING LIST</b> (continued)"]
     pages: list[list[str]] = []
@@ -367,7 +397,7 @@ def render(pkgs: list[Package], today: date) -> list[str]:
         g = group_of(pkg.ship_by, today)
         text = block(n, pkg, today)
         title = "" if g == group else "\n" + group_title(g, today)
-        if shown and (shown == PER_MESSAGE or size_with(title + text) + visible(FOOTER) + 2 > MAX_CHARS):
+        if shown and (shown == PER_MESSAGE or size_with(title + text) + visible(FOOTER) + 400 > MAX_CHARS):
             close()
             pages.append(page)
             page, blocks, shown = list(cont), [], 0
@@ -381,7 +411,7 @@ def render(pkgs: list[Package], today: date) -> list[str]:
         blocks.append(text)
         shown += 1
     close()
-    page.append("\n" + FOOTER)
+    page.append("\n" + "\n".join([FOOTER, *(footer or []), HINT]))
     pages.append(page)
     return ["\n".join(p) for p in pages]
 
@@ -439,7 +469,7 @@ def night_list(db: Database, now: datetime | None = None, mode: str | None = Non
     mark = PREVIEW
     if preview and not pkgs:
         pkgs, mark = sample(local.date()), SAMPLE
-    pages = render(pkgs, local.date())
+    pages = render(pkgs, local.date(), freshness(db, {p.site for p in pkgs}, now))
     today = local.date().isoformat()
     out = core.Outbox(now, mode)
     with db.tx():

@@ -1051,11 +1051,13 @@ def mac_event(db: Database, body: dict, now: datetime | None = None, mode: str |
     kind = _text(body.get("kind")).strip().lower()
     if kind == "shipped":
         return _mac_shipped(db, body.get("words"), now, mode)
+    if kind == "cancelled":
+        return _mac_cancelled(db, body.get("words"), now, mode)
     if kind == "sold_found":
         return _mac_sold_found(db, body, now, mode)
     if kind == "not_for_sale":
         return _mac_not_for_sale(db, body, now, mode)
-    raise BadRequest("kind is shipped, sold_found or not_for_sale")
+    raise BadRequest("kind is shipped, cancelled, sold_found or not_for_sale")
 
 
 def _mac_not_for_sale(db: Database, body: dict, now: datetime, mode: str) -> dict:
@@ -1084,7 +1086,8 @@ def _sites(db: Database) -> tuple[str, ...]:
     return ebay.sites(db)
 
 
-def _mac_shipped(db: Database, words: object, now: datetime, mode: str) -> dict:
+def _open_by_words(db: Database, words: object) -> tuple[list[dict], list[str]]:
+    """The open sales (not shipped, not cancelled / double / done / merged) whose title has all the words."""
     text = " ".join(words) if isinstance(words, list) else _text(words)
     wanted = re.findall(r"[a-z0-9]+", text.lower())
     if not wanted:
@@ -1092,14 +1095,37 @@ def _mac_shipped(db: Database, words: object, now: datetime, mode: str) -> dict:
     rows = db.query("SELECT s.id, s.marketplace, s.title_seen, i.title AS item_title FROM sales s "
                     "LEFT JOIN items i ON i.id = s.item_id WHERE s.shipped_at IS NULL "
                     "AND s.status NOT IN ('cancelled', 'double_sale', 'done', 'merged') ORDER BY s.sold_at")
-    hits = [row for row in rows if any(all(w in title.lower() for w in wanted)
-                                       for title in (row["item_title"], row["title_seen"]) if title)]
+    return [row for row in rows if any(all(w in title.lower() for w in wanted)
+                                       for title in (row["item_title"], row["title_seen"]) if title)], wanted
+
+
+def _no_one(hits: list[dict], wanted: list[str]) -> dict:
+    reason = (f"no open sale's title has all of: {' '.join(wanted)}" if not hits
+              else f"{len(hits)} open sales match: add a word")
+    return {"status": "no_match" if not hits else "ambiguous", "matched": None, "title": None, "reason": reason,
+            "candidates": [{"sale_id": r["id"], "title": r["item_title"] or r["title_seen"],
+                            "marketplace": r["marketplace"]} for r in hits]}
+
+
+def _mac_cancelled(db: Database, words: object, now: datetime, mode: str) -> dict:
+    """WO65: her "cancelled <title words>" — the one open sale whose title has all the words is cancelled at once,
+    as a cancellation email does (its take-downs called off, nothing relisted, the ↩️ line); off the shipping list."""
+    hits, wanted = _open_by_words(db, words)
     if len(hits) != 1:
-        reason = (f"no open sale's title has all of: {' '.join(wanted)}" if not hits
-                  else f"{len(hits)} open sales match: add a word")
-        return {"status": "no_match" if not hits else "ambiguous", "matched": None, "title": None, "reason": reason,
-                "candidates": [{"sale_id": r["id"], "title": r["item_title"] or r["title_seen"],
-                                "marketplace": r["marketplace"]} for r in hits]}
+        return _no_one(hits, wanted)
+    sale = db.one("SELECT * FROM sales WHERE id = ?", (hits[0]["id"],))
+    title = _title(db, sale["item_id"], sale["title_seen"], sale["listing_id"])
+    out = Outbox(now, mode)
+    with db.tx():
+        _cancel(db, sale, title, "live" if mode == "live" else mode, out)
+    out.flush()
+    return {"status": "cancelled", "matched": sale["id"], "title": title, "marketplace": sale["marketplace"]}
+
+
+def _mac_shipped(db: Database, words: object, now: datetime, mode: str) -> dict:
+    hits, wanted = _open_by_words(db, words)
+    if len(hits) != 1:
+        return _no_one(hits, wanted)
     sale = hits[0]
     title = sale["item_title"] or sale["title_seen"]
     out = Outbox(now, mode)
