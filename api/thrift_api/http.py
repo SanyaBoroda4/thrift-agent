@@ -131,6 +131,8 @@ def _tasks(db, body, query, params, now):
         raise BadRequest(f"unknown sites: {', '.join(unknown)} (poshmark, depop, vinted)")
     answer = {"tasks": core.take_tasks(db, sites, now), "sold": core.sold_items(db, now),
               "sold_on": core.sold_sites(db, now), "mode": util.mode()}
+    if relist := core.relists(db):                  # 2026-11-11: a cancelled sale's item, back up everywhere (live)
+        answer["relist"] = relist
     if ebay.configured():
         # WO57: an eBay take-down is never in "tasks" — thrift-api ends the eBay listing itself; here is what it ended
         # (30 days), for the Mac to mark its own row. Without eBay set up the answer is as it always was.

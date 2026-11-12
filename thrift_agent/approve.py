@@ -94,6 +94,7 @@ def cover_index(number: str) -> int:
 
 SHIPPED_CMD =re.compile(r"^\s*shipped\s+(.+?)\s*$", re.I | re.S)       # WO33: "shipped <title words>"
 CANCELLED_CMD = re.compile(r"^\s*cancell?ed\s+(.+?)\s*$", re.I | re.S)  # WO65: "cancelled <title words>"
+BACK_CMD = re.compile(r"^\s*back\s+(.+?)\s*$", re.I | re.S)                # 2026-11-11: a returned item, relisted
 # Replies to "⚠️ … I can't see it in the closet" (outbox kind "unconfirmed", WO28 §3): "posted <url>" / "retry".
 POSTED_CMD = re.compile(r"^\s*(?:it'?s\s+)?posted\s*[:\-]?\s*(\S+)\s*$", re.I)
 RETRY_CMD = re.compile(r"^\s*(?:retry|try again|not there|isn'?t there)\s*[.!]*\s*$", re.I)
@@ -1544,8 +1545,11 @@ def _shipped(db: DB, bot: Bot, words: str, mid: int | None, kind: str = "shipped
         return f"{kind}: kept for later"
     if not (out.get("matched") or out.get("sale_id")):
         more = " (more than one matches — add a word)" if out.get("status") == "ambiguous" else ""
-        bot.send_message(f"No open sale matches \"{words}\"{more} — try words from its title", reply_to=mid)
+        which = "returned sale" if kind == "back" else "open sale"
+        bot.send_message(f"No {which} matches \"{words}\"{more} — try words from its title", reply_to=mid)
         return f"{kind}: no match for {words!r}"
+    if kind == "back":
+        bot.send_message(f"✓ {out.get('title') or 'It'} goes back up on every site it was on", reply_to=mid)
     return f"{kind}: {out.get('matched') or out.get('sale_id')}"
 
 
@@ -1557,6 +1561,8 @@ def _typed(s: Settings, db: DB, bot: Bot, text: str, mid: int | None) -> str:
         return _shipped(db, bot, m[1], mid)
     if m := CANCELLED_CMD.match(text or ""):
         return _shipped(db, bot, m[1], mid, kind="cancelled")
+    if m := BACK_CMD.match(text or ""):
+        return _shipped(db, bot, m[1], mid, kind="back")
     if m := COVER_CMD.match(text or ""):
         row = open_message(db)
         if row is None or row["kind"] != "item":

@@ -1269,7 +1269,7 @@ backfill waits for its plan (`--not-before`).**
   (`core.NOT_OURS`, whole words; `thrift sales match` and a reply with title words still work). Take-down
   tasks for every other posted site (`core.ensure_takedowns` on every path: a listing synced after the sale, the order
   sweep, a task left to her reopened once); sold twice → "⚠️ Sold twice …". SHIPPED stops reminders, DELIVERED closes,
-  CANCELLED is said (no automatic relist). GET /tasks also answers `sold` (items whose queued rows become `skipped:
+  CANCELLED is said (and its item relisted — below). GET /tasks also answers `sold` (items whose queued rows become `skipped:
   sold`) and `sold_on` (`core.sold_sites` → `sales.mark_sold_here`, the site's own row `sold`).
 - **Ship-by** (`api/thrift_api/deadlines.py`): the email's date wins; else Poshmark +7 days, Vinted +5 business days (US
   federal holidays skipped), Depop +5 days. Reminders after 09:00: the day before, the morning it is due; none for a
@@ -1305,6 +1305,20 @@ backfill waits for its plan (`--not-before`).**
   Depop 8:33 PM" (the list's sites, from the sweeps' heartbeats) and "⚠️ Vinted not checked since Tue 3:10 PM — its sales
   may be out of date." for a Mac site not read in 12 h (also under "Nothing to ship"), then "Shipped or cancelled
   already? Reply “shipped <words>” or “cancelled <words>”." (`_mac_cancelled`, `approve.CANCELLED_CMD`).
+- **Cancelled sales relisted** (the owner, 2026-11-11: "every cancelled sale is relisted automatically";
+  `thrift_agent/relist.py`, thrift-api `core._cancel` / `relists` / `note_return`): a sale cancelled before it shipped
+  (by the site, the buyer or her — her "cancelled <words>" too — or refunded before the parcel left) of our item, and
+  no other sale standing, is `sales.relist = wanted`; GET /tasks "relist" hands it to the Mac until it says
+  `POST /mac-event {"kind": "relisted"}` (never twice). The Mac plans every site whose row is `delisted` or `sold`
+  (kv `relists`) and each site worker does its own on an idle turn (`parallel.relist_turn`: the take-downs' rules,
+  never in the quiet hours — it waits until 2 PM), first by the site's own data: a listing still for sale or restored
+  by the site is kept (never twice). Poshmark: Availability back to For Sale (the same listing); Vinted: our Hide
+  undone ("Unhide" pressed once, `vinted.js restore`, `ExtensionPoster.relist`); Depop: live → kept, else posted again
+  as a new listing through the queue (its old `posted_at` put back: the price-drop clock kept); eBay: an ended listing
+  posted again. Each site back up: ONE group line "♻️ Back on <Site>: <title> — $X" + its address; 3 failures → ONE
+  private line. A return after it shipped is never relisted by itself: ONE private line "<title> is being returned —
+  reply 'back <words>' when it's with you and I'll relist it everywhere." (`relist = returning`); her "back <words>"
+  (`approve.BACK_CMD` → mac-event "back") makes it a relist.
 - **Take-downs on the Mac** (`thrift_agent/sales.py`, `post/takedown.py`): in any hour, never with PAUSE, the lid closed,
   or a site showing a login / CAPTCHA / block / check page (`parallel.may_take_down`, `crosslist.account_blocked`). ONE
   GET /tasks at most every 2 min for all sites (`sales.TASKS_EVERY`). Poshmark: Availability Not for Sale

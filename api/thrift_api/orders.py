@@ -286,6 +286,12 @@ def transition(db: Database, mp: str, order: dict, sale: dict, seen_at: datetime
     kinds = {"shipped": ["SHIPPED"], "delivered": ["SHIPPED", "DELIVERED"], "completed": ["SHIPPED", "COMPLETED"],
              "cancelled": ["CANCELLED"]}.get(status, [])
     done = []
+    if status == "returned":
+        # the owner, 2026-11-11: a return after it shipped is on its way back to her — ONE private line, relisted only
+        # on her "back <words>"; a refund before it shipped is a cancellation (the Mac reads it so)
+        current = db.one("SELECT * FROM sales WHERE id = ?", (sale["id"],))
+        if current and core.note_return(db, current, out):
+            done.append("return noted")
     for kind in kinds:
         message_id = f"{PREFIX}{mp}:{order['order_id']}:{kind}"
         at = {"SHIPPED": order["shipped_at"], "DELIVERED": order["delivered_at"],

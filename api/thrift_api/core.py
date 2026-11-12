@@ -790,6 +790,11 @@ def _cancel(db: Database, sale: dict, title: str, handling: str, out: Outbox) ->
     if sale["item_id"] and sale["status"] != "double_sale":
         stands = db.one("SELECT * FROM sales WHERE item_id = ? AND id <> ? AND status = 'double_sale' "
                         "ORDER BY sold_at, created_at LIMIT 1", (sale["item_id"], sale["id"]))
+    if sale["item_id"] and not stands and not sale.get("shipped_at") and not hers(sale["marketplace"], sale["item_id"]):
+        # the owner, 2026-11-11: a sale cancelled before it shipped — the item goes back on every site it came down
+        # from, by the Mac (GET /tasks "relist"), at each site's last price; never twice (relist done)
+        db.execute("UPDATE sales SET relist = 'wanted', relist_why = 'cancelled', relist_at = ? WHERE id = ? AND "
+                   "(relist IS NULL OR relist = '')", (iso(_clock(None)), sale["id"]))
     tasks = db.query(f"SELECT id, marketplace, status FROM delist_tasks WHERE sale_id = ? ORDER BY {TASK_ORDER}",
                      (sale["id"],))
     called_off, kept = [], []
@@ -819,10 +824,39 @@ def _cancel(db: Database, sale: dict, title: str, handling: str, out: Outbox) ->
     if kept:
         details.append(f"Take-downs kept for the {site_name(stands['marketplace'])} sale: {util.and_list(kept)}.")
     taken = [site_name(t["marketplace"]) for t in tasks if t["status"] == "done"]
+    relisting = bool(sale["item_id"] and not stands and not sale.get("shipped_at")
+                     and not hers(sale["marketplace"], sale["item_id"]))
     if taken and not stands:
-        details.append(f"Already taken down on {util.and_list(taken)} — relist by hand if wanted.")
-    details.append("Nothing is relisted automatically.")
+        details.append(f"Already taken down on {util.and_list(taken)}" + ("." if relisting else
+                                                                          " — relist by hand if wanted."))
+    details.append("It goes back on every site it came down from (the Mac relists it)." if relisting
+                   else "Nothing is relisted automatically.")
     out.ops(" ".join(details))
+
+
+def relists(db: Database, mode: str | None = None) -> list[dict]:
+    """GET /tasks "relist": the sales whose item the Mac is to put back up — [{sale_id, item_id, marketplace, why}].
+    Live only (else [])."""
+    if (mode or util.mode()) != "live":
+        return []
+    return [{"sale_id": r["id"], "item_id": r["item_id"], "marketplace": r["marketplace"], "why": r["relist_why"]}
+            for r in db.query("SELECT id, item_id, marketplace, relist_why FROM sales WHERE relist = 'wanted' AND "
+                              "item_id IS NOT NULL ORDER BY relist_at, id")]
+
+
+RETURN_LINE = "{title} is being returned — reply 'back <words>' when it's with you and I'll relist it everywhere."
+
+
+def note_return(db: Database, sale: dict, out: Outbox) -> bool:
+    """A return after it shipped: the item is on its way back to her — never relisted by itself; ONE private line,
+    and the sale waits for her "back <words>" (relist = returning)."""
+    if not sale.get("item_id") or hers(sale["marketplace"], sale["item_id"]) or sale.get("relist"):
+        return False
+    db.execute("UPDATE sales SET relist = 'returning', relist_why = 'return', relist_at = ? WHERE id = ? AND "
+               "(relist IS NULL OR relist = '')", (iso(_clock(None)), sale["id"]))
+    title = _title(db, sale["item_id"], sale["title_seen"], sale["listing_id"])
+    out.ops(RETURN_LINE.format(title=title))
+    return True
 
 
 # --- the Mac --------------------------------------------------------------------------------------------------------
@@ -1053,11 +1087,15 @@ def mac_event(db: Database, body: dict, now: datetime | None = None, mode: str |
         return _mac_shipped(db, body.get("words"), now, mode)
     if kind == "cancelled":
         return _mac_cancelled(db, body.get("words"), now, mode)
+    if kind == "back":
+        return _mac_back(db, body.get("words"), now, mode)
+    if kind == "relisted":
+        return _mac_relisted(db, body.get("sale_id"), body.get("sites"))
     if kind == "sold_found":
         return _mac_sold_found(db, body, now, mode)
     if kind == "not_for_sale":
         return _mac_not_for_sale(db, body, now, mode)
-    raise BadRequest("kind is shipped, cancelled, sold_found or not_for_sale")
+    raise BadRequest("kind is shipped, cancelled, back, relisted, sold_found or not_for_sale")
 
 
 def _mac_not_for_sale(db: Database, body: dict, now: datetime, mode: str) -> dict:
@@ -1120,6 +1158,41 @@ def _mac_cancelled(db: Database, words: object, now: datetime, mode: str) -> dic
         _cancel(db, sale, title, "live" if mode == "live" else mode, out)
     out.flush()
     return {"status": "cancelled", "matched": sale["id"], "title": title, "marketplace": sale["marketplace"]}
+
+
+def _mac_back(db: Database, words: object, now: datetime, mode: str) -> dict:
+    """Her "back <title words>": the returned item is with her again — the one sale being returned (else the one of
+    ours cancelled or done in 60 days) whose title has all the words is relisted everywhere, as a cancellation is."""
+    text = " ".join(words) if isinstance(words, list) else _text(words)
+    wanted = re.findall(r"[a-z0-9]+", text.lower())
+    if not wanted:
+        raise BadRequest("words is required")
+
+    def hits(where: str, params: tuple) -> list[dict]:
+        rows = db.query("SELECT s.*, i.title AS item_title FROM sales s LEFT JOIN items i ON i.id = s.item_id "
+                        f"WHERE s.item_id IS NOT NULL AND {where} ORDER BY s.sold_at DESC", params)
+        return [r for r in rows if any(all(w in t.lower() for w in wanted) for t in (r["item_title"], r["title_seen"])
+                                       if t)]
+    found = hits("s.relist = 'returning'", ()) or hits(
+        "s.status IN ('cancelled', 'done') AND (s.relist IS NULL OR s.relist = '') AND s.sold_at >= ?",
+        (iso(now - timedelta(days=60)),))
+    if len(found) != 1:
+        return _no_one(found, wanted)
+    sale = found[0]
+    with db.tx():
+        db.execute("UPDATE sales SET relist = 'wanted', relist_why = 'back', relist_at = ? WHERE id = ?",
+                   (iso(now), sale["id"]))
+    title = sale["item_title"] or sale["title_seen"]
+    return {"status": "relisting", "matched": sale["id"], "title": title, "marketplace": sale["marketplace"]}
+
+
+def _mac_relisted(db: Database, sale_id: object, sites: object = None) -> dict:
+    """The Mac's word: the item of this sale is back up everywhere it could be — never asked for again."""
+    sid = _text(sale_id).strip()
+    if not sid:
+        raise BadRequest("sale_id is required")
+    changed = db.execute("UPDATE sales SET relist = 'done' WHERE id = ? AND relist = 'wanted'", (sid,))
+    return {"status": "done" if changed else "not wanted", "sale_id": sid}
 
 
 def _mac_shipped(db: Database, words: object, now: datetime, mode: str) -> dict:

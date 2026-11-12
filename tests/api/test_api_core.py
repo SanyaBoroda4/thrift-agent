@@ -240,7 +240,8 @@ def test_delivered_closes_the_sale(db, live, sent):
     assert sent == []
 
 
-def test_cancelled_says_so_and_never_relists(db, live, sent):
+def test_cancelled_says_so_and_asks_the_mac_to_relist_where_it_came_down(db, live, sent):
+    """(Before 2026-11-11 nothing was relisted; the owner: every sale cancelled before it shipped is relisted.)"""
     seed(db)
     first = core.process_email(db, posh_sale(), NOW)
     depop_task, vinted_task = core.take_tasks(db, ["depop", "vinted"], NOW)
@@ -251,8 +252,10 @@ def test_cancelled_says_so_and_never_relists(db, live, sent):
     assert sale(db, first["sale_id"])["status"] == "cancelled"
     assert texts(sent, "group") == ["↩️ Lacoste Tee White size M's sale on Poshmark was cancelled."]
     assert texts(sent, "ops") == [f"Cancelled: Lacoste Tee White size M on Poshmark ({first['sale_id']}, order "
-                                  f"{POSH_ORDER}). Take-downs called off: Vinted. Already taken down on Depop — relist "
-                                  "by hand if wanted. Nothing is relisted automatically."]
+                                  f"{POSH_ORDER}). Take-downs called off: Vinted. Already taken down on Depop. It goes "
+                                  "back on every site it came down from (the Mac relists it)."]
+    assert core.relists(db, "live") == [{"sale_id": first["sale_id"], "item_id": sale(db, first["sale_id"])["item_id"],
+                                         "marketplace": "poshmark", "why": "cancelled"}]
     assert {t["marketplace"]: t["status"] for t in tasks(db)} == {"depop": "done", "vinted": "cancelled"}
     assert listing_states(db) == {"poshmark": "posted", "depop": "delisted", "vinted": "posted"}
     assert core.task_result(db, vinted_task["id"], "done", now=NOW)["changed"] is False     # called off: final

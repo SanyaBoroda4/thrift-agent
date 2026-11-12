@@ -1588,6 +1588,30 @@ class ExtensionPoster(Poster):
             return True
         raise PosterError(f"{self.site}: Delete listing pressed, but {address} is still there ({after})")
 
+    async def relist(self, url: str) -> str | bool:
+        """2026-11-11, a cancelled sale relisted: Vinted's Hide undone — the listing's own page, "Unhide" pressed once,
+        done when it offers Hide again. "shown": it wasn't hidden (kept); True: shown again; False: still hidden."""
+        if self.name != "vinted":
+            raise PosterError(f"{self.site}: a hidden listing is only Vinted's")
+        address = self.listing_address(url)
+        if address is None:
+            raise PosterError(f"not a {self.name} listing address: {url!r}")
+        ev = await self._job("delist", {"listing_url": address, "restore": True}, 180, shot=self.shot)
+        if ev.get("event") == "error":
+            if ev.get("page") in STOP_PAGES:
+                raise self._stop(ev)
+            raise PosterError(f"{self.site} unhide {address}: {ev.get('message')}")
+        if ev.get("shown_already"):
+            return "shown"
+        return bool(ev.get("restored"))
+
+    async def depop_state(self, url: str) -> str:
+        """Depop's listing as it is now: "live" | "sold" | "gone" (by its own page, `_depop_state`)."""
+        address = self.listing_address(url)
+        if address is None:
+            raise PosterError(f"not a {self.name} listing address: {url!r}")
+        return await self._depop_state(address)
+
     async def _depop_state(self, address: str) -> str:
         """Depop's listing page as it is now: "live", "sold" (its JSON-LD says SoldOut) or "gone" (no product there)."""
         ev = await self._job("verify", {"listing_url": address}, 120)

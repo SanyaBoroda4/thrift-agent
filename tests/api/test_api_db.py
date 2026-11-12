@@ -23,7 +23,8 @@ COLUMNS = {
     "email_events": ["message_id", "thread_id", "marketplace", "kind", "subject", "received_at", "parsed_json",
                      "raw_text", "status", "attempts", "created_at"],
     "sales": ["id", "marketplace", "item_id", "listing_id", "title_seen", "price", "order_id", "sold_at", "ship_by",
-              "ship_by_source", "shipped_at", "delivered_at", "status", "message_id", "created_at", "drops"],
+              "ship_by_source", "shipped_at", "delivered_at", "status", "message_id", "created_at", "drops",
+              "relist", "relist_why", "relist_at"],
     "delist_tasks": ["id", "sale_id", "item_id", "marketplace", "listing_url", "status", "attempts", "last_error",
                      "evidence", "lease_until", "created_at", "done_at", "kind"],                    # WO45 §7
     "reminders": ["sale_id", "kind", "sent_at"],

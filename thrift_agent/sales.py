@@ -355,6 +355,9 @@ def fetch_tasks(db: DB, sites: list[str], force: bool = False) -> int:
     for entry in answer.get("sold_on") or []:       # and the site it sold ON holds it as sold (2026-10-27)
         if isinstance(entry, dict):
             mark_sold_here(db, entry.get("item"), entry.get("site"))
+    if answer.get("relist"):                        # 2026-11-11: a cancelled sale's item, back up everywhere
+        from thrift_agent import relist
+        relist.take(db, answer["relist"])
     for entry in answer.get("ended") or []:         # WO57: a listing thrift-api itself took down (eBay, by API)
         if isinstance(entry, dict):
             mark_ended_by_api(db, entry.get("item"), entry.get("site"), entry.get("result"), entry.get("at"))

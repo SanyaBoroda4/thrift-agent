@@ -816,6 +816,7 @@
       // The listing this agent created: its Hide, and the confirmation if one shows. Never Delete (WO32 §4).
       const re = new RegExp(S().hide.text, "i");
       const findHide = () => T.$$(S().hide.selectors).find((b) => T.visible(b) && re.test(T.norm(b.textContent)));
+      if (job.restore) return this.restore(job, findHide);
       // WO40 (the UGG, 2026-10-16: "no Hide button" twice): the seller's buttons are drawn after the page script
       // starts — waited for, never read once. A Hide already pressed before a reload (job.pressed) is never pressed
       // again: its page only says whether it took.
@@ -861,6 +862,39 @@
                         message: "Hide pressed, but the listing still offers Hide: not hidden" });
       }
       T.emit({ event: "result", job_id: job.job_id, delisted: true, url: location.href });
+    },
+
+    // 2026-11-11 (a cancelled sale relisted): our Hide undone — the same button, reading "Unhide" while the listing is
+    // hidden, pressed ONCE; shown again when the page offers Hide. A listing not hidden is left (shown_already); a
+    // press before a reload (job.pressed) is never pressed again: the page only says whether it took.
+    async restore(job, findHide) {
+      const findUnhide = () => [...T.$$(S().hide.selectors), ...T.$$("button")]
+        .find((b) => T.visible(b) && /^unhide$/i.test(T.norm(b.textContent)));
+      const first = await T.until(() => findHide() || findUnhide(), 15000);
+      if (first && findHide() && !findUnhide()) {
+        await T.screenshot("shown");
+        return T.emit({ event: "result", job_id: job.job_id, restored: true, shown_already: !job.pressed,
+                        url: location.href });
+      }
+      if (job.pressed) {
+        await T.screenshot("shown");
+        return T.emit({ event: "error", job_id: job.job_id, stage: "unhide", page: "listing",
+                        message: "Unhide pressed, the page reloaded, and it still offers Unhide: still hidden" });
+      }
+      const unhide = findUnhide();
+      if (!unhide) {
+        await T.screenshot("no-unhide");
+        return T.emit({ event: "error", job_id: job.job_id, stage: "unhide", page: "form", message: "no Unhide button" });
+      }
+      T.emit({ event: "step", job_id: job.job_id, name: "hide", ok: true, clicked: true });
+      await T.click(unhide);
+      const shown = await T.until(() => !!findHide() && !findUnhide(), 8000);
+      await T.screenshot("shown");
+      if (!shown) {
+        return T.emit({ event: "error", job_id: job.job_id, stage: "unhide", page: "listing",
+                        message: "Unhide pressed, but the listing still offers Unhide: still hidden" });
+      }
+      T.emit({ event: "result", job_id: job.job_id, restored: true, url: location.href });
     },
 
     // WO33: the take-down control (Hide) looked for on our listing's page — never clicked; the page and its picture

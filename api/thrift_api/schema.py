@@ -85,7 +85,9 @@ COLUMNS = {
     "listings": {"price_live": "DOUBLE PRECISION", "price_read_at": "TEXT",
                  # WO45 §6/§7: the row's reason, the photos sent and the photos the site shows
                  "error": "TEXT", "photos_sent": "INTEGER", "photos_live": "INTEGER", "photos_read_at": "TEXT"},
-    "sales": {"drops": "INTEGER"},              # WO41: the item's price drops made before it sold
+    "sales": {"drops": "INTEGER",               # WO41: the item's price drops made before it sold
+              # 2026-11-11 (the owner: every cancelled sale is relisted): wanted | returning | done, why, when
+              "relist": "TEXT", "relist_why": "TEXT", "relist_at": "TEXT"},
     "delist_tasks": {"kind": "TEXT"},           # WO45 §7: NULL / delist = a take-down; repost = the safety net's one retry
     # WO51 §6: what an open share waits for, from the Mac's queue (shares.refresh_open there) — the watchdog fires only
     # when nothing moves, and says what it waits for

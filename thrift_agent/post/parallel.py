@@ -104,6 +104,22 @@ async def takedowns(site: str, poster, db: DB, ctx, sites: list[str] | None = No
     return await sales.run_takedown(site, poster, db, ctx, ready=delist_ready, shots=shots)
 
 
+async def relist_turn(s: Settings, db: DB, site: str, poster, ctx) -> bool:
+    """2026-11-11: a cancelled sale's item back on this site (thrift_agent/relist.py) — the take-downs' hours and
+    rules (any hour but the quiet hours, never with PAUSE, the lid closed or a sign-in page)."""
+    from thrift_agent import relist
+    if quiet_hold(s, db) or not may_take_down(s, db, site):     # the quiet hours: it waits until 2:00 PM
+        return False
+    try:
+        return await relist.run_one(s, db, site, poster, ctx, shots=s.path("failed") / "shots")
+    except AccountBlocked as e:
+        crosslist.block(db, site, str(e), e.page, getattr(e, "shot", None))
+        return True
+    except Exception as e:  # noqa: BLE001 — never the worker's end
+        notify.say(f"❌ {crosslist.LABEL.get(site, site)} relist: {type(e).__name__}: {e}")
+        return True
+
+
 async def listing_edit(s: Settings, db: DB, site: str, poster, ctx, sites: list[str], dry: bool) -> bool:
     """WO43: the site's next due listing edit (a department / category change), before a price drop."""
     from thrift_agent import edits
@@ -648,6 +664,9 @@ async def _poshmark_turn(s, db, ps, ctx, dry, stage, state, awake, failures, mar
         await runner.serve_requests(s, db, ps, ctx)
     if takedowns is not None and may_take_down(s, db, "poshmark") and await takedowns("poshmark", ps["poshmark"], db, ctx):
         return True
+    if takedowns is not None and not dry and may_take_down(s, db, "poshmark") and not quiet_hold(s, db) \
+            and await relist_turn(s, db, "poshmark", ps["poshmark"], ctx):     # 2026-11-11: a cancelled sale's item
+        return True
     # WO53 §2: a publish being verified, looked at by Poshmark's own public pages on its schedule — quietly, any hour,
     # also while Poshmark is paused (plain reads: nothing opened in the browser, nothing clicked)
     if not dry and not quiet_hold(s, db) and await runner.recheck_unconfirmed(s, db, ps, "poshmark", ctx):
@@ -826,6 +845,9 @@ async def _cross_turn(s, db, ps, mp, dry, state, awake, takedowns) -> bool:
     poster = ps[mp]
     reachable = getattr(poster, "available", lambda: True)()
     if takedowns is not None and reachable and may_take_down(s, db, mp) and await takedowns(mp, poster, db, None):
+        return True
+    if (takedowns is not None and reachable and not dry and may_take_down(s, db, mp) and not quiet_hold(s, db)
+            and await relist_turn(s, db, mp, poster, None)):               # 2026-11-11: a cancelled sale's item
         return True
     # WO35 §4: an unconfirmed publish looked for again by the site's own data (quiet; any hour, never with the lid
     # closed or the site stopped by what it showed — a read runs on a site stopped by our own failures in a row:
