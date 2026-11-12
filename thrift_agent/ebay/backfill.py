@@ -15,13 +15,22 @@ eBay listing is live (posted: read back) gets ONE new group message, silent, "�
 address (`send_links`, the housekeeping's turn; never twice: the event `backfill_link_sent` taken in one statement
 before the send; the items already live when this began are recorded without a message, `seed_links`); a failed one
 gets none (its private line as before). A new share gets none: its own card is fresh. Once the day's batch is done, or
-at 9 PM, ONE line: "🔵 eBay today: 25 more items up · 64 to go · about 3 more days." (`day_line`)."""
+at 9 PM, ONE line: "🔵 eBay today: 25 more items up · 64 to go · about 3 more days." (`day_line`).
+
+WO64 (the owner, 2026-11-11 6:53 PM: "let's 50 listings now please. I want it now with links posted in the groups"):
+`thrift ebay backfill --now 50` — ONE switch in the plan's own record (`boost`): from now, today's limit is the items
+already let in today + 50 and today's eBay cap is raised (the day's listings + 50 + room for new shares, `cap_today`);
+both end at local midnight, and the next day lets nothing in before 2:00 PM (after the quiet hours), then the old pace
+(25 a day, cap 50). Three backfilled items in a row refused by eBay for the same account-level reason (a selling
+limit, the account on hold, restricted or suspended, a policy block) stop the batch: ONE private line in eBay's words,
+nothing more let in until the owner says so (`--resume`, or `--now` again)."""
 from __future__ import annotations
 
 import html
 import json
 import math
-from datetime import date, datetime, timezone
+import re
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from thrift_agent.config import Settings
@@ -127,9 +136,104 @@ def plan(s: Settings | None, db: DB, since: str | None = None, dry: bool = False
     return [*waiting, *fresh]
 
 
+def _tz(s: Settings | None) -> ZoneInfo:
+    return ZoneInfo(str((s.get("schedule.timezone") if s is not None else None) or "America/New_York"))
+
+
 def _today(s: Settings | None, now: datetime) -> date:
-    tz = (s.get("schedule.timezone") if s is not None else None) or "America/New_York"
-    return now.astimezone(ZoneInfo(str(tz))).date()
+    return now.astimezone(_tz(s)).date()
+
+
+# --- WO64: tonight's boost, its cap, the account-level stop --------------------------------------------------------
+
+BOOST_ROOM = 5                       # new shares tonight on top of the boost's items (WO64: 5 + 50 + room = 60)
+RESUME_AT = time(14, 0)              # the day after a boost: nothing before 2:00 PM (after the owner's quiet hours)
+STOP_AFTER = 3                       # backfilled items in a row refused by eBay for the same account-level reason
+ACCOUNT_WORDS = re.compile(r"selling limit|\blimit\b|exceed\w* (?:the|your)|\baccount\b|on hold|\bhold\b|"
+                           r"restrict\w*|suspend\w*|polic(?:y|ies)|not allowed|blocked", re.I)
+
+
+def boost(s: Settings | None, db: DB, n: int, now: datetime | None = None) -> dict:
+    """WO64's switch (`thrift ebay backfill --now N`): from now, `n` more planned items today (the oldest first, the
+    running poster's normal path), today's eBay cap raised to the day's listings + n + room; tomorrow nothing before
+    2:00 PM, then the old pace. Clears a stop (the owner said go). Returns the boost record."""
+    data = _load(db)
+    waiting = [iid for iid, e in data["items"].items() if not e.get("queued_at") and not e.get("left")]
+    if not waiting:
+        raise ValueError("nothing planned is waiting — plan first (thrift ebay backfill)")
+    if n < 1:
+        raise ValueError("--now takes how many items, 1 or more")
+    now = now or datetime.now(timezone.utc)
+    today = _today(s, now)
+    let_in = sum(1 for e in data["items"].values() if str(e.get("queued_day") or "") == today.isoformat())
+    from thrift_agent import crosslist
+    from thrift_agent.scheduler import windows
+    _, midnight = windows(now, tz=str((s.get("schedule.timezone") if s is not None else None) or "America/New_York"))
+    listed = db.listed_since(midnight, SITE)
+    base_cap = crosslist.daily_cap(s, SITE) if s is not None else 50
+    then = datetime.combine(today + timedelta(days=1), RESUME_AT, tzinfo=_tz(s)).astimezone(timezone.utc)
+    record = {"day": today.isoformat(), "n": int(n), "limit": let_in + int(n),
+              "cap": max(base_cap, listed + int(n) + BOOST_ROOM), "then": then.isoformat(timespec="seconds"),
+              "set_at": now.isoformat(timespec="seconds")}
+    data["boost"] = record
+    data["not_before"] = now.isoformat(timespec="seconds")
+    data.pop("stopped", None)
+    _save(db, data)
+    db.log(None, "ebay_backfill_boost", {**record, "waiting": len(waiting)})
+    return record
+
+
+def today_limit(s: Settings | None, data: dict, today: str) -> int:
+    b = data.get("boost") or {}
+    return int(b["limit"]) if b.get("day") == today and b.get("limit") else per_day(s)
+
+
+def cap_today(s: Settings | None, db: DB, now: datetime | None = None) -> int | None:
+    """Today's raised eBay cap while a boost is on (until local midnight), else None (the setting's)."""
+    b = _load(db).get("boost") or {}
+    today = _today(s, now or datetime.now(timezone.utc)).isoformat()
+    return int(b["cap"]) if b.get("day") == today and b.get("cap") else None
+
+
+def resume(db: DB) -> bool:
+    """The owner's go after a stop: the batch goes on. True when there was a stop."""
+    data = _load(db)
+    was = data.pop("stopped", None)
+    _save(db, data)
+    if was:
+        db.log(None, "ebay_backfill_resumed", {"was": was})
+    return bool(was)
+
+
+def _refusal(db: DB, iid: str, row) -> str | None:
+    """eBay's words for the item's last failure on eBay (its row, else its last failure event), or None."""
+    if row is not None and row["error"]:
+        return str(row["error"])
+    for (detail,) in db.conn.execute("SELECT detail FROM events WHERE ref=? AND kind IN ('post_failed', 'post_nonitem', "
+                                     "'post_skipped') ORDER BY rowid DESC LIMIT 5", (iid,)):
+        d = loads(detail) or {}
+        if d.get("mp") == SITE and d.get("error"):
+            return str(d["error"])
+    return None
+
+
+def account_stop(db: DB, data: dict) -> str | None:
+    """eBay's words when the last STOP_AFTER items let in were all refused for the same account-level reason (none of
+    them live), else None."""
+    recent = sorted((e["queued_at"], iid) for iid, e in data["items"].items() if e.get("queued_at"))[-STOP_AFTER:]
+    if len(recent) < STOP_AFTER:
+        return None
+    words = []
+    for _, iid in recent:
+        row = db.listing(iid, SITE)
+        if row is None or row["status"] in ("posted", "posting"):
+            return None
+        why = _refusal(db, iid, row)
+        if not why or not ACCOUNT_WORDS.search(why):
+            return None
+        words.append(why)
+    shapes = {re.sub(r"\d+", "#", re.sub(r"\s+", " ", w)).strip()[:160] for w in words}
+    return words[-1] if len(shapes) == 1 else None
 
 
 def current_price(db: DB, iid: str, read_poshmark=None) -> int | None:
@@ -164,6 +268,8 @@ def tick(s: Settings, db: DB, now: datetime | None = None, read_poshmark=None) -
     if not planned:
         return None
     now = now or datetime.now(timezone.utc)
+    if data.get("stopped"):
+        return None                                      # WO64: stopped by eBay's account-level refusals — the owner's go
     start = data.get("not_before")
     if start:
         try:
@@ -172,8 +278,24 @@ def tick(s: Settings, db: DB, now: datetime | None = None, read_poshmark=None) -
         except ValueError:
             pass
     today = _today(s, now).isoformat()
+    b = data.get("boost") or {}
+    if b.get("day") and today > str(b["day"]) and b.get("then"):
+        try:
+            if now < datetime.fromisoformat(str(b["then"])):
+                return None                              # WO64: the day after a boost, nothing before 2:00 PM
+        except ValueError:
+            pass
+    why = account_stop(db, data)
+    if why is not None:
+        data["stopped"] = {"at": now.isoformat(timespec="seconds"), "why": why[:400]}
+        _save(db, data)
+        db.log(None, "ebay_backfill_stopped", data["stopped"])
+        from thrift_agent import notify
+        notify.say(f"⛔ eBay backfill stopped: eBay refused {STOP_AFTER} items in a row — “{why[:300]}”. Nothing more "
+                   "goes to eBay from the backfill until you say so (thrift ebay backfill --resume).")
+        return None
     done_today = sum(1 for e in planned.values() if str(e.get("queued_day") or "") == today)
-    if done_today >= per_day(s):
+    if done_today >= today_limit(s, data, today):
         return None
     for iid, entry in sorted(planned.items(), key=lambda kv: kv[1].get("n", 0)):
         if entry.get("queued_at") or entry.get("left"):
@@ -204,10 +326,12 @@ def status(db: DB) -> dict:
     for iid, e in planned.items():
         row = db.listing(iid, SITE) if e.get("queued_at") else None
         live += 1 if row is not None and row["status"] == "posted" else 0
+    data = _load(db)
     return {"planned": len(planned), "queued": sum(1 for e in planned.values() if e.get("queued_at")), "live": live,
             "left": sum(1 for e in planned.values() if e.get("left")),
             "waiting": sum(1 for e in planned.values() if not e.get("queued_at") and not e.get("left")),
-            "since": _load(db).get("since"), "not_before": _load(db).get("not_before")}
+            "since": data.get("since"), "not_before": data.get("not_before"), "boost": data.get("boost"),
+            "stopped": data.get("stopped")}
 
 
 # --- WO61: a link for every backfilled item, and the day's line -----------------------------------------------------
@@ -306,7 +430,7 @@ def send_links(s: Settings, db: DB, limit: int = LINKS_PER_TURN) -> list[str]:
             db.conn.execute("DELETE FROM events WHERE rowid=?", (claim,))
             db.log(iid, LINK_FAILED, {"error": str(e)[:200]})
             if tries + 1 >= LINK_TRIES:
-                notify.ops(f"🔵 The eBay link message for {iid} was refused {LINK_TRIES} times — left: {row['url']}")
+                notify.say(f"🔵 The eBay link message for {iid} was refused {LINK_TRIES} times — left: {row['url']}")
             break                                      # Telegram away: the rest wait for the next turn
         sent.append(iid)
     return sent
@@ -322,15 +446,19 @@ def day_line(s: Settings, db: DB, now: datetime | None = None) -> str | None:
     today = local.date().isoformat()
     if db.kv_get(DAY_SAID) == today:
         return None
-    planned = _load(db)["items"]
+    data = _load(db)
+    planned = data["items"]
     todays = [iid for iid, e in planned.items() if str(e.get("queued_day") or "") == today]
     rows = {iid: db.listing(iid, SITE) for iid in todays}
-    up = [iid for iid, r in rows.items() if r is not None and r["status"] == "posted"]
+    seeded = {r[0] for r in db.conn.execute("SELECT ref FROM events WHERE kind=? AND detail LIKE '%\"seeded\": true%'",
+                                            (LINK_EVENT,))}
+    # WO64: only the items that went up with their link — the five live before the links began aren't today's news
+    up = [iid for iid, r in rows.items() if r is not None and r["status"] == "posted" and iid not in seeded]
     if not up:
         return None
     waiting = sum(1 for e in planned.values() if not e.get("queued_at") and not e.get("left"))
-    done = (len(todays) >= per_day(s) or waiting == 0) and all(r is not None and r["status"] in SETTLED
-                                                               for r in rows.values())
+    done = (len(todays) >= today_limit(s, data, today) or waiting == 0 or data.get("stopped")) and \
+        all(r is not None and r["status"] in SETTLED for r in rows.values())
     if not done and local.hour < DAY_LINE_HOUR:
         return None
     n = len(up)

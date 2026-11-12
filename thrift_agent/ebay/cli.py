@@ -213,7 +213,10 @@ def backfill_cmd(since: str = typer.Option(None, "--since", help="items first po
                  show: bool = typer.Option(False, "--status", help="where the backfill stands"),
                  only: str = typer.Option(None, "--items", help="just these items, comma-separated, in this order"),
                  not_before: str = typer.Option(None, "--not-before",
-                                                help="let nothing in before this local time, e.g. '2026-11-12 14:00'")
+                                                help="let nothing in before this local time, e.g. '2026-11-12 14:00'"),
+                 now: int = typer.Option(None, "--now", help="WO64: N more planned items today, from now (today's cap "
+                                                             "raised to midnight; tomorrow from 2:00 PM, 25 a day)"),
+                 go_on: bool = typer.Option(False, "--resume", help="WO64: go on after eBay's refusals stopped it")
                  ) -> None:
     """Every item posted since the day that is still live on at least one site and not sold goes to eBay too — planned
     here, let into eBay's queue by the running poster 25 a day, oldest first, each at its price that day. The
@@ -226,6 +229,20 @@ def backfill_cmd(since: str = typer.Option(None, "--since", help="items first po
     s, db = _s(), _db()
     if show:
         print(backfill.status(db))
+        return
+    if go_on:
+        print("resumed: the backfill goes on" if backfill.resume(db) else "it wasn't stopped")
+        return
+    if now is not None:
+        try:
+            b = backfill.boost(s, db, now)
+        except ValueError as e:
+            print(f"[red]not started[/] — {escape(str(e))}")
+            raise typer.Exit(1) from None
+        st = backfill.status(db)
+        print(f"from now: {b['n']} more planned items today (the oldest first; today's limit {b['limit']}, today's eBay "
+              f"cap {b['cap']} until midnight); tomorrow nothing before {b['then']} (2:00 PM), then "
+              f"{backfill.per_day(s)} a day — {st['waiting']} waiting")
         return
     start = None
     if not_before:

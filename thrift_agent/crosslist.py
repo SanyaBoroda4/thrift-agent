@@ -343,7 +343,11 @@ def failure(db: DB, mp: str, failed: bool, limit: int = 3) -> None:
 def capped(s: Settings, db: DB, mp: str) -> bool:
     from thrift_agent.scheduler import windows
     _, midnight = windows(tz=s["schedule"]["timezone"])
-    return db.listed_since(midnight, mp) >= daily_cap(s, mp)
+    cap = daily_cap(s, mp)
+    if mp == "ebay":                                   # WO64: tonight's boost raises today's eBay cap, to midnight
+        from thrift_agent.ebay import backfill
+        cap = backfill.cap_today(s, db) or cap
+    return db.listed_since(midnight, mp) >= cap
 
 
 def live_elsewhere(db: DB, iid: str, mp: str) -> bool:

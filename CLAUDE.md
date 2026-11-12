@@ -1163,7 +1163,13 @@ backfill waits for its plan (`--not-before`).**
   $161" + its address (`backfill.send_links` from the eBay housekeeping, ≤ 5 a turn; the event `backfill_link_sent`
   taken before the send; items live before WO61 seeded without one, `seed_links`; none for a failed row or a new
   share), and ONE line a day once the day's batch is settled or at 9 PM: "🔵 eBay today: 25 more items up · 64 to go ·
-  about 3 more days." (`backfill.day_line`, kv `ebay_backfill_day_said`).
+  about 3 more days." (`backfill.day_line`, kv `ebay_backfill_day_said`; only items that went up with their link count).
+  **WO64 (the owner: "let's 50 listings now"):** `thrift ebay backfill --now N` — one switch in the plan's record
+  (`boost`): from now N more planned items today (today's limit = the day's let-in + N), today's eBay cap raised to
+  the day's listings + N + 5 (`backfill.cap_today`, read by `crosslist.capped`) until local midnight; the next day
+  nothing before 2:00 PM, then 25 a day, cap 50. Three backfilled items in a row refused for the same account-level
+  reason (selling limit, account on hold / restricted / suspended, policy) stop it: ONE private line in eBay's words,
+  nothing more let in until `--resume` (or `--now` again).
 - **Commands:** `thrift ebay status | price [bases…] [--items N] | plan <item> | validate <item> | first <item>
   [--yes] | hers | backfill … | record | spike <item>` — `hers` reads her own eBay listings (shipping type, handling
   time — to mirror in settings; read only); `first` is WO57 §7's ONE real listing (the Mac; validated, created,
