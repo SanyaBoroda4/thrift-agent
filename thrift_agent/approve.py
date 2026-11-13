@@ -1383,6 +1383,10 @@ def _route_message(s: Settings, db: DB, bot: Bot, msg: dict) -> str:
         return _typed(s, db, bot, text, mid)
     row = db.outbox_lookup(msg["chat"]["id"], reply["message_id"])
     if row is None:
+        # WO66: a reply to a message the Mac didn't send — the 9 PM shipping list goes from thrift-api — still takes
+        # her "shipped 1 3" / "shipped all" / "shipped <words>" (and "cancelled …", "back …"); nothing else
+        if any(cmd.match(text or "") for cmd in (SHIPPED_CMD, CANCELLED_CMD, BACK_CMD)):
+            return _typed(s, db, bot, text, mid)
         return "ignored: not a reply to the bot"
     kind, ref = row["kind"], row["ref"]
     if kind not in ("batch", "regroup") and _no_drop_reply(text):
@@ -1544,6 +1548,9 @@ def _shipped(db: DB, bot: Bot, words: str, mid: int | None, kind: str = "shipped
         bot.send_message(f"Got it — it's marked {kind} as soon as the Mac reaches the sales tracker again", reply_to=mid)
         return f"{kind}: kept for later"
     if not (out.get("matched") or out.get("sale_id")):
+        if out.get("say"):                            # WO66: "shipped 7" with no 7 on tonight's list — the API's words
+            bot.send_message(str(out["say"])[:400], reply_to=mid)
+            return f"{kind}: {words!r} — {out.get('status') or 'no match'}"
         more = " (more than one matches — add a word)" if out.get("status") == "ambiguous" else ""
         which = "returned sale" if kind == "back" else "open sale"
         bot.send_message(f"No {which} matches \"{words}\"{more} — try words from its title", reply_to=mid)

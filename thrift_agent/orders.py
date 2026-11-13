@@ -286,16 +286,20 @@ def _now() -> str:
 EVERY = timedelta(hours=6)              # every 6 hours
 FIRST_HOUR = 8                          # the day's first sweep: the first moment the Mac is awake from 8 AM
 EVENING = (20, 30)                      # WO65: one more at 8:30 PM, so the 9 PM shipping list is at most ~30 min old
+LAST_LOOK = (20, 50)                    # WO66: and at 8:50 PM for a site whose last sweep still had a parcel to ship or
+                                        # waiting for its scan — a USPS scan between 8:30 and 9 still counts
 RETRY = timedelta(minutes=30)           # a sweep that failed is tried again after this
 BUDGET = 60.0                           # inside the pause after a listing only when this much of it is left
 RECENT = timedelta(days=60)             # older orders are not sent
-DETAILS = 4                             # Poshmark: the open orders' own pages read, at most (a handful of loads)
+DETAILS = 10                            # Poshmark: the open orders' own pages read, at most (WO66: 4 → 10 — the to-ship
+                                        # ones AND the ones Poshmark calls "Shipped": scanned, or only her label?)
 KV_SWEPT, KV_STOPPED, KV_FAILED = "orders_swept", "orders_stopped", "orders_failed"
+KV_OPEN = "orders_open"                 # WO66: {site: its last sweep's orders to ship or waiting for their scan}
 SWEEP_LOCK = threading.Lock()           # one site at a time: the Poshmark thread and the extension sites alike
 STOP_PAGES = ("login", "captcha", "block", "verify", "challenge")   # WO56: a "Just a moment" that stayed 2 minutes
 LABEL = {"poshmark": "Poshmark", "depop": "Depop", "vinted": "Vinted"}
 SEND = ("order_id", "status", "status_text", "title", "price", "sold_at", "listing_id", "listing_url", "sku",
-        "shipped_at", "delivered_at", "completed_at")         # what leaves the Mac for the API: never a buyer field
+        "shipped_at", "delivered_at", "completed_at", "label_at")   # what leaves the Mac for the API: never a buyer field
 
 # What each site's status words mean (WO38 §1): Poshmark's display_status (and its unit status), Depop's list words,
 # Vinted's sentences — anything else is unknown: those orders are left as they are, and the words told once.
@@ -327,7 +331,14 @@ VINTED_STATUS = ((re.compile(r"\bcompleted\b|\baccepted the item\b"), "completed
 # WO65: Depop's refund before the parcel left ("refunded / AWAITING_SHIPPING", live 2026-11-11: Seven Wonders, the
 # app shows "Canceled") is a cancelled sale; a refund after it shipped stays a return
 DEPOP_LEFT = re.compile(r"\bshipped\b|\bin transit\b|\bdelivered\b|\bout for delivery\b|\bdispatched\b")
-RANK = ("to_ship", "shipped", "delivered", "completed")
+RANK = ("to_ship", "awaiting_scan", "shipped", "delivered", "completed")
+# WO66 (live 2026-11-13, the Loft jacket the day she shipped 10 parcels): Poshmark makes a QR label the minute an item
+# sells — "Shipping Label Created" on a sold order is NOT her label. What says she sent it and USPS hasn't scanned it
+# yet: the order page's unit status "seller_shipped" with its shipment status still "Shipping Label Created" (its list
+# then says "Shipped"); the first scan makes them "shipped" / "USPS in possession of item".
+POSHMARK_SENT = "seller_shipped"
+POSHMARK_LABEL_ONLY = re.compile(r"^\s*shipping label created\s*$", re.I)
+OPEN = ("to_ship", "awaiting_scan")     # still to leave her hands, or waiting for the first scan
 
 
 class Stopped(Exception):
@@ -381,9 +392,12 @@ def due(db, site: str, now: datetime | None = None, tz: str = "America/New_York"
         return False
     first = local.replace(hour=FIRST_HOUR, minute=0, second=0, microsecond=0)
     evening = local.replace(hour=EVENING[0], minute=EVENING[1], second=0, microsecond=0)
+    last_look = local.replace(hour=LAST_LOOK[0], minute=LAST_LOOK[1], second=0, microsecond=0)
     last = _when(_kv(db, KV_SWEPT).get(site))
     if last is None:
         return local >= first
+    if local >= last_look and last < last_look and _kv(db, KV_OPEN).get(site):
+        return True                                   # WO66: a parcel still to ship or waiting for its scan
     return now - last >= EVERY or (local >= first and last < first) or (local >= evening and last < evening)
 
 
@@ -429,6 +443,8 @@ async def sweep(s: Settings, db, site: str, read, now: datetime | None = None) -
                        "left as they are.")
         sent = sales.call(db, "/orders", {"marketplace": site, "swept_at": _iso(moment), "orders": orders})
         _put(db, KV_SWEPT, site, _iso(moment))
+        still = sum(1 for o in orders if o["status"] in OPEN)
+        _put(db, KV_OPEN, site, str(still) if still else None)                       # WO66: the 8:50 PM look
         _put(db, KV_FAILED, site, None)
         counts: dict[str, int] = {}
         for order in orders:
@@ -494,7 +510,28 @@ def poshmark_detail(order: dict) -> dict:
     out = {"sku": item.get("sku") or None, "listing_id": item.get("product_id") or None,
            "shipped_at": unit.get("shipped_on") or None, "delivered_at": unit.get("delivered_on") or None,
            "completed_at": unit.get("received_at") or None}
-    return {**out, "unit_status": POSHMARK_UNIT.get(str(unit.get("status") or "").lower())}
+    raw = str(unit.get("status") or "").lower()
+    waiting = raw == POSHMARK_SENT and bool(POSHMARK_LABEL_ONLY.match(str(unit.get("shipment_status") or "")))
+    return {**out, "unit_status": "awaiting_scan" if waiting else POSHMARK_UNIT.get(raw),
+            "label_at": label_time(order) if waiting else None}
+
+
+def label_time(order: dict) -> str | None:
+    """When the order's QR label was made: the first 8 hex of its 24-hex id are its creation time (as a listing's)."""
+    info = order.get("shipping_label_info") if isinstance(order, dict) else None
+    qr = (info or {}).get("qr_code_label") if isinstance(info, dict) else None
+    lid = str(qr.get("id") or "") if isinstance(qr, dict) else ""
+    if not re.fullmatch(r"[0-9a-f]{24}", lid):
+        return None
+    return _iso(datetime.fromtimestamp(int(lid[:8], 16), timezone.utc))
+
+
+def detail_first(order: dict) -> int:
+    """WO66: which open Poshmark orders get their own page read first — to ship and the ones its list calls "Shipped"
+    (her label only, or scanned?), then the rest on their way."""
+    if order.get("status") == "to_ship" or str(order.get("status_text") or "").strip().lower() == "shipped":
+        return 0
+    return 1 if order.get("status") == "shipped" else 2
 
 
 def furthest(*statuses: str | None) -> str | None:
@@ -553,7 +590,8 @@ async def read_poshmark(ctx, yield_to=None, timeout: float = 25.0) -> list[dict]
                     ids.add(r.get("id"))
                     rows.append(r)
         orders = [o for o in (poshmark_order(r) for r in rows) if o and _recent(o)]
-        for order in [o for o in orders if o["status"] not in ("completed", "cancelled")][:DETAILS]:
+        todo = sorted((o for o in orders if o["status"] not in ("completed", "cancelled", "returned")), key=detail_first)
+        for order in todo[:DETAILS]:
             if yield_to is not None and yield_to():
                 raise Yielded
             try:
@@ -561,7 +599,11 @@ async def read_poshmark(ctx, yield_to=None, timeout: float = 25.0) -> list[dict]
             except Exception:  # noqa: BLE001 — the list's status stands
                 continue
             detail = poshmark_detail((state.get("$_order_details") or {}).get("order") or {})
-            order["status"] = furthest(order["status"], detail.pop("unit_status"))
+            unit = detail.pop("unit_status")
+            if unit == "awaiting_scan" and order["status"] in ("to_ship", "shipped"):
+                order["status"] = "awaiting_scan"         # WO66: "Shipped" on the list, no scan on its own page
+            else:
+                order["status"] = furthest(order["status"], unit)
             order.update({k: v for k, v in detail.items() if v})
         return orders
     finally:

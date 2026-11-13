@@ -80,7 +80,7 @@ def test_poshmarks_order_page_gives_our_sku_the_listing_and_the_exact_times():
         "buyer": {"username": "janedoe"}, "shipping_address": {"street": "12 Main St"}})
     assert detail == {"sku": "i_261004_80586f", "listing_id": "6ac301264dfc815534ea174f",
                       "shipped_at": "2026-09-29T10:37:43-07:00", "delivered_at": "2026-10-05T16:46:18-07:00",
-                      "completed_at": "2026-10-05T16:46:31-07:00", "unit_status": "completed"}
+                      "completed_at": "2026-10-05T16:46:31-07:00", "unit_status": "completed", "label_at": None}
     assert orders.furthest("shipped", "completed") == "completed"
     assert orders.furthest("delivered", None) == "delivered" and orders.furthest("cancelled", "shipped") == "cancelled"
 
