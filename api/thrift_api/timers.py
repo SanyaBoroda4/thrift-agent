@@ -185,6 +185,8 @@ def reminders(db: Database, now: datetime, mode: str) -> list[list[str]]:
             row = by_id[sale_id]
             if row["site_status"] in LEFT_ON_SITE:
                 continue                              # the site shows it on its way (or not to be shipped): nothing
+            if row["site_status"] == "awaiting_scan":
+                continue                              # WO66: its label printed, handed over — the 9 PM list watches it
             if kind == "overdue" and row["marketplace"] in swept and row["site_status"] is not None:
                 continue                              # the site's own reading decides (below)
             if not _record(db, sale_id, kind, now):

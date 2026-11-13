@@ -1195,7 +1195,74 @@ def _mac_relisted(db: Database, sale_id: object, sites: object = None) -> dict:
     return {"status": "done" if changed else "not wanted", "sale_id": sid}
 
 
+LIST_NUMBERS = "ship_list_numbers"     # WO66: settings — the last 9 PM list's numbering (shiplist.night_list writes it)
+NUMBERED = re.compile(r"(?:#?\s*\d+|,|&|\band\b|\s)+", re.IGNORECASE)
+
+
+def numbered(words: object) -> list[int] | str | None:
+    """WO66: her "shipped 1 3 5" / "shipped 1, 3" / "shipped #2" / "shipped all" — the numbers of the last list (a list
+    of ints), "all", or None (title words)."""
+    text = (" ".join(words) if isinstance(words, list) else _text(words)).strip()
+    if text.lower() == "all":
+        return "all"
+    if text and NUMBERED.fullmatch(text) and re.search(r"\d", text):
+        return [int(n) for n in dict.fromkeys(re.findall(r"\d+", text))]
+    return None
+
+
+def _mac_shipped_numbers(db: Database, which: list[int] | str, now: datetime, mode: str) -> dict:
+    """WO66: the packages of the LAST list sent, by their numbers (or "all": its to-ship packages, never the 📮 block's)
+    — each of their sales shipped now, as a "shipped <words>" reply does; ONE group line naming them. A number the list
+    didn't have → nothing marked, the `say` line (the Mac posts it as its reply)."""
+    try:
+        last = json.loads(setting(db, LIST_NUMBERS) or "null")
+    except ValueError:
+        last = None
+    if not isinstance(last, dict):
+        return {"status": "no_match", "matched": None, "title": None,
+                "say": "No shipping list has gone out yet — reply “shipped <words>” instead."}
+    packages = {str(k): list(v) for k, v in (last.get("packages") or {}).items() if isinstance(v, list)}
+    day = day_of(last.get("day")) if last.get("day") else None
+    named = ("tonight's list" if day == deadlines.local(now).date()
+             else f"the list of {deadlines.fmt_day(day)}" if day else "the last list")
+    if which == "all":
+        chosen = [n for n in sorted(packages, key=int)]
+    else:
+        chosen = [str(n) for n in which]
+        missing = [n for n in chosen if n not in packages]
+        if missing:
+            had = (f"it had 1–{len(packages)}" if len(packages) > 1 else "it had only 1" if packages
+                   else "it had nothing to ship")
+            return {"status": "no_match", "matched": None, "title": None,
+                    "say": f"No {', '.join(missing)} on {named} ({had}) — nothing marked."}
+    if not chosen:
+        return {"status": "no_match", "matched": None, "title": None,
+                "say": f"{named[0].upper()}{named[1:]} had nothing to ship — nothing marked."}
+    ids = [sid for n in chosen for sid in packages[n]]
+    out = Outbox(now, mode)
+    matched, titles = [], []
+    with db.tx():
+        for sid in ids:
+            row = db.one("SELECT s.id, s.status, s.shipped_at, s.title_seen, i.title AS item_title FROM sales s "
+                         "LEFT JOIN items i ON i.id = s.item_id WHERE s.id = ?", (sid,))
+            if row is None or row["status"] in ("cancelled", "double_sale", "merged"):
+                continue                                   # gone from the list since (cancelled): not shipped
+            db.execute("UPDATE sales SET shipped_at = ? WHERE id = ? AND shipped_at IS NULL", (iso(now), sid))
+            matched.append(sid)                            # one closed before counts as done: named too
+            titles.append(row["item_title"] or row["title_seen"] or "an item")
+        if titles:
+            out.group(f"✓ Marked shipped: {' · '.join(titles)}")
+    out.flush()
+    if not matched:
+        return {"status": "no_match", "matched": None, "title": None,
+                "say": f"Nothing on {named} could be marked — those sales were cancelled since."}
+    return {"status": "shipped", "matched": matched, "titles": titles, "title": " · ".join(titles),
+            "numbers": [int(n) for n in chosen]}
+
+
 def _mac_shipped(db: Database, words: object, now: datetime, mode: str) -> dict:
+    if (which := numbered(words)) is not None:
+        return _mac_shipped_numbers(db, which, now, mode)
     hits, wanted = _open_by_words(db, words)
     if len(hits) != 1:
         return _no_one(hits, wanted)
@@ -1452,6 +1519,8 @@ def shipping(status: str | None, shipped_at: str | None, delivered_at: str | Non
     if site_status == "returned":
         return "returned"
     ours = "delivered" if delivered_at else "shipped" if shipped_at else "to_ship"
+    if site_status == "awaiting_scan" and ours == "to_ship":
+        return "awaiting_scan"                          # WO66: label printed, no carrier scan yet
     if site_status in SHIPPING:
         return max(ours, site_status, key=SHIPPING.index)
     return ours

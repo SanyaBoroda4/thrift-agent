@@ -32,7 +32,11 @@ from . import core, match, util
 from .db import Database
 from .util import BadRequest, iso, parse_time
 
-STATUSES = ("to_ship", "shipped", "delivered", "completed", "cancelled", "returned")
+STATUSES = ("to_ship", "awaiting_scan", "shipped", "delivered", "completed", "cancelled", "returned")
+# WO66: "awaiting_scan" — the seller's label is printed and the parcel handed over, no carrier scan yet (Poshmark's
+# unit "seller_shipped" with "Shipping Label Created"): not to ship (off the 9 PM list's to-ship groups, no reminder),
+# not on its way either (no SHIPPED, the sale stays open) — the first scan moves it on
+WAITING = "awaiting_scan"
 ON_ITS_WAY = ("shipped", "delivered", "completed")             # the site shows it left: no shipping reminder
 EVENTS = {"shipped": "SHIPPED", "delivered": "DELIVERED", "completed": "COMPLETED", "cancelled": "CANCELLED"}
 PREFIX = "mac:order:"
@@ -43,7 +47,8 @@ CLOSE = timedelta(minutes=30)      # WO65: a sale and an order this close are th
 DOUBT = "order_doubt:"             # settings: an order that could be several sales, said once
 FIELDS = ("order_id", "status", "status_text", "title", "price", "sold_at", "listing_id", "listing_url", "sku",
           "shipped_at", "delivered_at", "completed_at",
-          "ship_by")                # WO57: the day the site itself says to ship by ("YYYY-MM-DD"; eBay's orders give it)
+          "ship_by",                # WO57: the day the site itself says to ship by ("YYYY-MM-DD"; eBay's orders give it)
+          "label_at")               # WO66: when the site's label was made (an "awaiting_scan" order)
 
 
 def report(db: Database, body: dict, now: datetime | None = None, mode: str | None = None) -> dict:
@@ -89,7 +94,7 @@ def clean(entry: object) -> dict | None:
     for key in ("status_text", "title", "listing_id", "listing_url", "sku"):
         order[key] = core._text(order[key]).strip()[:300] or None
     order["price"] = util.number(order["price"])
-    for key in ("sold_at", "shipped_at", "delivered_at", "completed_at"):
+    for key in ("sold_at", "shipped_at", "delivered_at", "completed_at", "label_at"):
         order[key] = parse_time(order[key])
     try:
         order["ship_by"] = date.fromisoformat(str(order["ship_by"])[:10]) if order["ship_by"] else None
@@ -256,7 +261,7 @@ def qualifies(db: Database, order: dict, now: datetime) -> bool:
     if order["status"] == "cancelled" or sold is None or now - sold > RECENT:
         return False
     live_since = parse_time(core.setting(db, "go_live_at"))
-    return (live_since is not None and sold >= live_since) or order["status"] in ("to_ship", "shipped")
+    return (live_since is not None and sold >= live_since) or order["status"] in ("to_ship", WAITING, "shipped")
 
 
 def record_sale(db: Database, mp: str, order: dict, now: datetime, mode: str, out: core.Outbox) -> dict:
@@ -310,7 +315,9 @@ def transition(db: Database, mp: str, order: dict, sale: dict, seen_at: datetime
 
 
 def keep(db: Database, mp: str, order: dict, sale: dict | None, seen_at: datetime) -> None:
-    """The order's row: its sale and item, the site's status and words, and the first time each status was seen."""
+    """The order's row: its sale and item, the site's status and words, and the first time each status was seen.
+    WO66: an "awaiting_scan" order's label time — the site's own when it gives one, else the first sweep that saw it
+    waiting (kept)."""
     row = db.one("SELECT seen_json, first_seen FROM orders WHERE marketplace = ? AND order_id = ?",
                  (mp, order["order_id"]))
     seen = (core._loads(row["seen_json"]) if row else None) or {}
@@ -318,15 +325,19 @@ def keep(db: Database, mp: str, order: dict, sale: dict | None, seen_at: datetim
     values = (sale["id"] if sale else None, sale["item_id"] if sale else None, order["title"], order["price"],
               iso(order["sold_at"]) if order["sold_at"] else None, order["status"], order["status_text"],
               json.dumps(seen, sort_keys=True), iso(seen_at))
+    label = iso(order["label_at"]) if order.get("label_at") else None
+    fallback = iso(seen_at) if order["status"] == WAITING else None
     if row:
         db.execute("UPDATE orders SET sale_id = COALESCE(?, sale_id), item_id = COALESCE(?, item_id), "
                    "title = COALESCE(?, title), price = COALESCE(?, price), sold_at = COALESCE(?, sold_at), "
-                   "status = ?, status_text = ?, seen_json = ?, last_seen = ? WHERE marketplace = ? AND order_id = ?",
-                   (*values, mp, order["order_id"]))
+                   "status = ?, status_text = ?, seen_json = ?, last_seen = ?, label_at = COALESCE(?, label_at, ?) "
+                   "WHERE marketplace = ? AND order_id = ?",
+                   (*values, label, fallback, mp, order["order_id"]))
     else:
         db.execute("INSERT INTO orders (marketplace, order_id, sale_id, item_id, title, price, sold_at, status, "
-                   "status_text, seen_json, last_seen, first_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                   (mp, order["order_id"], *values, iso(seen_at)))
+                   "status_text, seen_json, last_seen, first_seen, label_at) "
+                   "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                   (mp, order["order_id"], *values, iso(seen_at), label or fallback))
 
 
 def swept(db: Database) -> dict[str, str]:

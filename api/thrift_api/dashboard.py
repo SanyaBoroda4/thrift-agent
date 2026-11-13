@@ -69,7 +69,8 @@ def _columns(sites: tuple) -> tuple:
 COLUMNS = _columns(SITES)
 # WO38: where a sale is, as the site itself last showed it (the order sweep) or our records say
 SHIPPING = {"to_ship": ("To ship", "late"), "shipped": ("Shipped", "ok"), "delivered": ("Delivered", "ok"),
-            "completed": ("Completed", "ok"), "returned": ("Returned", "warn"), "cancelled": ("Cancelled", "dim")}
+            "completed": ("Completed", "ok"), "returned": ("Returned", "warn"), "cancelled": ("Cancelled", "dim"),
+            "awaiting_scan": ("Label printed", "ok")}                    # WO66: handed over, no carrier scan yet
 
 STYLE = """
 :root {

@@ -32,7 +32,7 @@ COLUMNS = {
     "samples": ["message_id", "marketplace", "subject", "received_at", "text"],
     "settings": ["key", "value"],
     "orders": ["marketplace", "order_id", "sale_id", "item_id", "title", "price", "sold_at", "status", "status_text",
-               "seen_json", "last_seen", "first_seen"],
+               "seen_json", "last_seen", "first_seen", "label_at"],                          # WO66: label_at
     "price_changes": ["id", "item_id", "marketplace", "stage", "old_price", "new_price", "pct", "status", "attempts",
                       "error", "due_at", "done_at", "created_at", "updated_at"],                     # WO41
     "shares_in": ["share_id", "count", "received", "started_at", "ended_at", "fetched_at", "last_received_at",

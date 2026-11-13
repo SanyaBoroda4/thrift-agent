@@ -35,7 +35,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from . import core, deadlines, emails, util
 from .db import Database
@@ -58,6 +58,10 @@ FOOTER = "──────────────\n✓ Shipped ones drop off 
 STALE_AFTER = 12 * 3600                      # WO65: a site's statuses older than this are said to be out of date
 MAC_SITES = ("poshmark", "depop", "vinted")  # read by the Mac's order sweep (eBay: by thrift-api every 5 minutes)
 HINT = "<i>Shipped or cancelled already? Reply “shipped &lt;words&gt;” or “cancelled &lt;words&gt;”.</i>"
+NUMBERS_HINT = "<i>Shipped some? Reply “shipped 1 3” or “shipped all”.</i>"       # WO66: by the list's numbers
+WAITING = "awaiting_scan"                  # WO66: the order sweep's "label printed, no carrier scan yet"
+WAIT_FOR_SCAN = timedelta(days=2)          # WO66: a label this old with no scan goes back to the to-ship groups
+NUMBERS = "ship_list_numbers"              # WO66: settings — the last list's numbering (core.LIST_NUMBERS reads it)
 LABEL_LINK = "🏷 Order &amp; label"
 SOLD_LINK = "🏷 Sold orders &amp; labels"
 
@@ -107,6 +111,8 @@ class Sale:
     url: str | None = None                    # the listing on its site
     order_url: str | None = None              # that sale's own order page (or the site's sold list)
     order_page: bool = False                  # True: its own order page; False: the sold list
+    waiting: bool = False                     # WO66: label printed, no carrier scan yet — the 📮 block, not to ship
+    label_day: date | None = None             # WO66: the day its label was made (an "awaiting_scan" order)
 
 
 @dataclass
@@ -204,11 +210,13 @@ def order_url(site: str, *ids: str | None) -> tuple[str | None, bool]:
 
 def open_sales(db: Database, now: datetime) -> tuple[list[tuple[Sale, str | None]], list[dict]]:
     """Every sale still to ship as (Sale, its order), and the sales whose day had to come from their record (no sale
-    day: the one private line)."""
+    day: the one private line). WO66: a sale whose order the site shows "awaiting_scan" (label printed, no carrier
+    scan yet) comes `waiting` (the 📮 block) — unless its label is 2+ days old or its ship-by has passed: then it is to
+    ship again, its `label_day` set (the "check it went out" line)."""
     rows = db.query(
         "SELECT s.id, s.marketplace, s.item_id, s.listing_id, s.title_seen, s.price, s.order_id, s.sold_at, s.ship_by, "
         "s.created_at, i.title AS item_title, i.size AS item_size, l.url AS held_url, o.status AS site_status, "
-        "o.order_id AS site_order_id, e.parsed_json "
+        "o.order_id AS site_order_id, o.label_at AS site_label_at, o.seen_json AS site_seen_json, e.parsed_json "
         "FROM sales s LEFT JOIN items i ON i.id = s.item_id "
         "LEFT JOIN listings l ON l.item_id = s.item_id AND l.marketplace = s.marketplace "
         "LEFT JOIN orders o ON o.sale_id = s.id "
@@ -217,10 +225,15 @@ def open_sales(db: Database, now: datetime) -> tuple[list[tuple[Sale, str | None
         "ORDER BY s.ship_by, s.sold_at, s.id")
     by_id: dict[str, dict] = {}
     gone: set[str] = set()
+    labels: dict[str, datetime] = {}
     for row in rows:
         if row["site_status"] in LEFT_ON_SITE:
             gone.add(row["id"])                       # the site shows it on its way (or not to be shipped)
+        if row["site_status"] == WAITING:
+            at = parse_time(row["site_label_at"]) or parse_time(_parsed(row["site_seen_json"]).get(WAITING)) or now
+            labels[row["id"]] = min(at, labels.get(row["id"], at))
         by_id.setdefault(row["id"], row)
+    today = deadlines.local(now).date()
     out, no_day = [], []
     for sid, row in by_id.items():
         if sid in gone:
@@ -248,8 +261,16 @@ def open_sales(db: Database, now: datetime) -> tuple[list[tuple[Sale, str | None
                     url=listing_url(site, row["held_url"], parsed.get("listing_url"),
                                     row["listing_id"] or parsed.get("listing_id")),
                     order_url=own, order_page=is_page)
+        if (label := labels.get(sid)) is not None:
+            sale.label_day = deadlines.local(label).date()
+            sale.waiting = now - label < WAIT_FOR_SCAN and day >= today
         out.append((sale, _base_order(site, row["order_id"] or row["site_order_id"])))
     return out, no_day
+
+
+def split(sales: list[tuple[Sale, str | None]]) -> tuple[list[tuple[Sale, str | None]], list[Sale]]:
+    """WO66: (the sales to ship, the sales waiting for their first carrier scan — the 📮 block)."""
+    return [(s, o) for s, o in sales if not s.waiting], [s for s, _ in sales if s.waiting]
 
 
 def _parsed(text: str | None) -> dict:
@@ -324,6 +345,10 @@ def block(n: int, pkg: Package, today: date) -> str:
         lines.append(f"⏰ Was due {approx}{day} · {when(pkg.ship_by, today)}")
     elif g == "later" or pkg.approx:                  # TODAY / TOMORROW say the day in their title
         lines.append(f"⏰ Ship by {approx}{day} · {when(pkg.ship_by, today)}")
+    labelled = [s.label_day for s in pkg.sales if s.label_day is not None]
+    if labelled:                                      # WO66: back from the 📮 block — the label never got its scan
+        lines.append(f"⏰ label printed {deadlines.DAY_NAMES[min(labelled).weekday()]}, no USPS scan yet — "
+                     "check it went out")
     url, own = pkg.order
     if url:
         lines.append(_link(url, LABEL_LINK if own else SOLD_LINK))
@@ -376,10 +401,21 @@ def visible(text: str) -> int:
     return len(html.unescape(re.sub(r"<[^>]+>", "", text)))
 
 
-def render(pkgs: list[Package], today: date, footer: list[str] | None = None) -> list[str]:
-    """The message(s) (WO62's layout — see the module); `footer`: WO65's freshness lines, under the last message."""
+def waiting_block(waiting: list[Sale]) -> str:
+    """WO66: the parcels whose label is printed and that wait for their first carrier scan — one line each, no
+    deadline, no number: "📮 LABEL PRINTED — WAITING FOR USPS SCAN (3)" and one blockquote."""
+    lines = [f"<b>{_link(s.url, _esc(s.title))}</b> · {site_name(s.site)}" for s in waiting]
+    return (f"📮 <b>LABEL PRINTED — WAITING FOR USPS SCAN</b> ({len(waiting)})\n"
+            "<blockquote>" + "\n".join(lines) + "</blockquote>")
+
+
+def render(pkgs: list[Package], today: date, footer: list[str] | None = None,
+           waiting: list[Sale] | None = None) -> list[str]:
+    """The message(s) (WO62's layout — see the module); `footer`: WO65's freshness lines, under the last message;
+    `waiting` (WO66): the 📮 block under the to-ship groups (not numbered, not counted)."""
+    mailed = ["\n" + waiting_block(waiting)] if waiting else []
     if not pkgs:
-        return ["\n".join([NOTHING, *(footer or [])])]
+        return ["\n".join([NOTHING, *mailed, *(["\n" + "\n".join(footer)] if footer and mailed else footer or [])])]
     head = ["📦  <b>SHIPPING LIST</b>", long_day(today), counts_line(pkgs, today)]
     cont = ["📦  <b>SHIPPING LIST</b> (continued)"]
     pages: list[list[str]] = []
@@ -411,7 +447,11 @@ def render(pkgs: list[Package], today: date, footer: list[str] | None = None) ->
         blocks.append(text)
         shown += 1
     close()
-    page.append("\n" + "\n".join([FOOTER, *(footer or []), HINT]))
+    if mailed and visible("\n".join([*page, *mailed])) + visible(FOOTER) + 400 > MAX_CHARS:
+        pages.append(page)                            # WO66: the 📮 block goes on the next message, never cut
+        page = list(cont)
+    page += mailed
+    page.append("\n" + "\n".join([FOOTER, *(footer or []), NUMBERS_HINT, HINT]))
     pages.append(page)
     return ["\n".join(p) for p in pages]
 
@@ -465,11 +505,13 @@ def night_list(db: Database, now: datetime | None = None, mode: str | None = Non
     if not preview and local.hour != hour:
         return {"sent": 0, "why": f"sent in the {hour}:00 hour New York time"}
     sales, no_day = open_sales(db, now)
-    pkgs = packages(sales)
+    to_ship, waiting = split(sales)
+    pkgs = packages(to_ship)
     mark = PREVIEW
-    if preview and not pkgs:
+    if preview and not pkgs and not waiting:
         pkgs, mark = sample(local.date()), SAMPLE
-    pages = render(pkgs, local.date(), freshness(db, {p.site for p in pkgs}, now))
+    pages = render(pkgs, local.date(), freshness(db, {p.site for p in pkgs} | {s.site for s in waiting}, now),
+                   waiting)
     today = local.date().isoformat()
     out = core.Outbox(now, mode)
     with db.tx():
@@ -486,7 +528,7 @@ def night_list(db: Database, now: datetime | None = None, mode: str | None = Non
     for page in pages:
         sent += bool(telegram.send((mark + page) if preview else page, "ops" if preview else "group", now=now, mode=mode,
                                    html=True, silent=quiet_send if not preview else None))
-    got = {"sent": sent, "packages": len(pkgs), "messages": len(pages), "preview": preview,
+    got = {"sent": sent, "packages": len(pkgs), "waiting": len(waiting), "messages": len(pages), "preview": preview,
            "groups": {g: sum(1 for p in pkgs if group_of(p.ship_by, local.date()) == g) for g, _, _ in GROUPS},
            "links": {"listing": sum(1 for p in pkgs for s in p.sales if s.url),
                      "order_page": sum(1 for p in pkgs if p.order[1]),
@@ -495,8 +537,12 @@ def night_list(db: Database, now: datetime | None = None, mode: str | None = Non
         got["pages"] = pages                          # the preview's answer carries its text (titles and prices only)
         got["sample"] = mark == SAMPLE
         return got
+    numbers = {"day": today, "at": iso(now),                     # WO66: her "shipped 1 3" / "shipped all" reads it
+               "packages": {str(n): [s.id for s in p.sales] for n, p in enumerate(pkgs, start=1)},
+               "waiting": [s.id for s in waiting]}
     with db.tx():
         core.put_setting(db, LAST, json.dumps({"at": iso(now), "day": today, **got}))
+        core.put_setting(db, NUMBERS, json.dumps(numbers))
     log.info("ship list %s: %d package(s) in %d message(s), %d sent", today, len(pkgs), len(pages), sent)
     return got
 
@@ -509,4 +555,6 @@ def status(db: Database, now: datetime | None = None) -> dict:
         last = json.loads(last) if last else None
     except ValueError:
         last = None
-    return {"sent_on": core.setting(db, SENT_ON), "last": last, "open_packages": len(packages(open_sales(db, now)[0]))}
+    to_ship, waiting = split(open_sales(db, now)[0])
+    return {"sent_on": core.setting(db, SENT_ON), "last": last, "open_packages": len(packages(to_ship)),
+            "waiting_for_scan": len(waiting)}

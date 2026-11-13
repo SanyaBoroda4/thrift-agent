@@ -125,6 +125,7 @@ Vinted · $76 · sold Mon Nov 9
 ──────────────
 ✓ Shipped ones drop off by themselves once the site shows them on the way.
 🔎 Checked on the sites: Poshmark 8:31 PM · Depop 8:33 PM · Vinted 8:34 PM · eBay 8:55 PM
+Shipped some? Reply “shipped 1 3” or “shipped all”.
 Shipped or cancelled already? Reply “shipped <words>” or “cancelled <words>”."""
     assert "📦  <b>SHIPPING LIST</b>" in text and "🔴  <b>LATE — SHIP FIRST</b>" in text
     assert text.count("<blockquote>") == 3 and text.count("</blockquote>") == 3   # one per group

@@ -45,7 +45,8 @@ TABLES = (
         message_id TEXT PRIMARY KEY, marketplace TEXT, subject TEXT, received_at TEXT, text TEXT)""",
     """CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)""",
     # WO38: each site's sold orders as the Mac's sweep read them — never a buyer's name, address or tracking number;
-    # status to_ship | shipped | delivered | completed | cancelled | returned, seen_json {status: first seen at}
+    # status to_ship | awaiting_scan (WO66) | shipped | delivered | completed | cancelled | returned,
+    # seen_json {status: first seen at}
     """CREATE TABLE IF NOT EXISTS orders (
         marketplace TEXT NOT NULL, order_id TEXT NOT NULL, sale_id TEXT, item_id TEXT, title TEXT,
         price DOUBLE PRECISION, sold_at TEXT, status TEXT NOT NULL, status_text TEXT, seen_json TEXT,
@@ -92,6 +93,9 @@ COLUMNS = {
     # WO51 §6: what an open share waits for, from the Mac's queue (shares.refresh_open there) — the watchdog fires only
     # when nothing moves, and says what it waits for
     "shares": {"items": "INTEGER", "cards": "INTEGER", "state": "TEXT", "waiting": "TEXT", "moved_at": "TEXT"},
+    # WO66: when the site's label was made for an order "awaiting_scan" (label printed, no carrier scan yet) — the
+    # site's own time, else the first sweep that saw it so
+    "orders": {"label_at": "TEXT"},
 }
 
 INDEXES = (
