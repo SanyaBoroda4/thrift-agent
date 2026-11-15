@@ -619,9 +619,10 @@ class FakeEbay:
 
     def _read(self, variables: dict, op: str) -> dict:
         asked = [str(x.get("listingId")) for x in ((variables.get("input") or {}).get("listings") or [])]
-        if len(asked) > 20:
+        if len(asked) > 1:                             # eBay's own limit, live 2026-11-14 (WO68): maxAllowed=1
             return {"sellerListings": {"__typename": "ListingIdsMaxLimitError", "errorCode": "MAX",
-                                       "errorMessage": "too many listing ids", "maxAllowed": 20}}
+                                       "errorMessage": "The number of listing ids exceeds the maximum allowed limit.",
+                                       "maxAllowed": 1}}
         return {"sellerListings": {"__typename": "ListingsSuccess", "listings": [
             {"__typename": "ListingSuccess", "listingId": i, "listing": self.listings.get(i)} for i in asked]}}
 

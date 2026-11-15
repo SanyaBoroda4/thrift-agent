@@ -293,7 +293,8 @@ ACTIVE = f"""query ActiveListings($search: SellerActiveListingSearchInput) {{ se
 ENDED = f"""query EndedListings($search: SellerEndedListingSearchInput) {{ sellerListingSearch {{
   endedListings(searchInput: $search) {{ {_FOUND} }} }} }}"""
 PAGE = 100
-BY_ID_MAX = 20
+BY_ID_MAX = 1           # sellerListings takes ONE id a call: live 2026-11-14 (WO68) 2, 5 and 20 ids each answered
+                        # ListingIdsMaxLimitError maxAllowed=1 (the photo check's listing_states asks for several)
 PACKAGE_TYPE = "PACKAGE_THICK_ENVELOPE"
 IMMEDIATE_PAY = True                          # WO68: every listing of ours (new ones, and `thrift ebay immediate-pay`)
 
