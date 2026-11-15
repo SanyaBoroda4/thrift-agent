@@ -226,7 +226,9 @@ def wanted(prefs: dict) -> bool:
 def set_preferences(token: str) -> dict:
     """eBay's own automatic cancel at its minimum, 4 days, without its relist (ours relists every site), then read back.
     eBay: a preference set can't be changed again for 7 days, and may take up to 7 days to act — so this is called once,
-    by hand (the report), never by a timer."""
+    by hand (the report), never by a timer. Live 2026-11-14: eBay answered 21916809 "Invalid value for OptIn delay."
+    for 4 although its own form (Selling preferences → Preferences for items awaiting payment) offers 4, 7, 11, 19, 27
+    and 30 days — it was saved there (auto-cancel on, 4 days, relist off) and `preferences` read it back as wanted."""
     fields = "".join(f"<{k}>{v}</{k}>" for k, v in PREFS.items())
     trading(token, "SetUserPreferences", f"<UnpaidItemAssistancePreferences>{fields}</UnpaidItemAssistancePreferences>")
     return preferences(token)
