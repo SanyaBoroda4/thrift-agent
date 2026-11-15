@@ -88,7 +88,11 @@ COLUMNS = {
                  "error": "TEXT", "photos_sent": "INTEGER", "photos_live": "INTEGER", "photos_read_at": "TEXT"},
     "sales": {"drops": "INTEGER",               # WO41: the item's price drops made before it sold
               # 2026-11-11 (the owner: every cancelled sale is relisted): wanted | returning | done, why, when
-              "relist": "TEXT", "relist_why": "TEXT", "relist_at": "TEXT"},
+              "relist": "TEXT", "relist_why": "TEXT", "relist_at": "TEXT",
+              # WO68: an eBay order not paid at checkout — payment NULL (paid at checkout: every other sale) |
+              # unpaid | paid (paid later); eBay's commitment time, the first moment a cancel is allowed, the order
+              # line's "<item>-<transaction>" (its paid order carries it as legacyItemId + lineItemId), when it was paid
+              "payment": "TEXT", "committed_at": "TEXT", "cancel_from": "TEXT", "pay_ref": "TEXT", "paid_at": "TEXT"},
     "delist_tasks": {"kind": "TEXT"},           # WO45 §7: NULL / delist = a take-down; repost = the safety net's one retry
     # WO51 §6: what an open share waits for, from the Mac's queue (shares.refresh_open there) — the watchdog fires only
     # when nothing moves, and says what it waits for
@@ -109,6 +113,7 @@ INDEXES = (
     "CREATE INDEX IF NOT EXISTS ix_delist_tasks_item ON delist_tasks (item_id, marketplace)",
     "CREATE UNIQUE INDEX IF NOT EXISTS ux_delist_tasks_sale_site ON delist_tasks (sale_id, marketplace)",
     "CREATE INDEX IF NOT EXISTS ix_orders_sale ON orders (sale_id)",
+    "CREATE INDEX IF NOT EXISTS ix_sales_pay_ref ON sales (marketplace, pay_ref)",                 # WO68
     "CREATE INDEX IF NOT EXISTS ix_price_changes_item ON price_changes (item_id, marketplace)",
     "CREATE INDEX IF NOT EXISTS ix_shares_in_pending ON shares_in (fetched_at, started_at)",         # WO45 §2
     "CREATE UNIQUE INDEX IF NOT EXISTS ux_share_uploads_sha ON share_uploads (share_id, sha256)",  # the same bytes once

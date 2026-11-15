@@ -173,6 +173,8 @@ def reminders(db: Database, now: datetime, mode: str) -> list[list[str]]:
                     "AND s.ship_by IS NOT NULL AND s.status NOT IN ('cancelled', 'double_sale', 'done', 'merged') "
                     # WO57: an eBay sale of a listing that isn't ours is hers (core.hers): no reminder of it
                     "AND NOT (s.marketplace = 'ebay' AND s.item_id IS NULL) "
+                    # WO68: an order not paid yet is never to ship (the 9 PM list's ⏳ block says so)
+                    "AND COALESCE(s.payment, '') <> 'unpaid' "
                     "ORDER BY s.ship_by, s.sold_at, s.id")
     sent = {(row["sale_id"], row["kind"]) for row in db.query("SELECT sale_id, kind FROM reminders")}
     swept = orders.swept(db)

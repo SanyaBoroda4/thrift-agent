@@ -122,7 +122,9 @@ def test_the_consent_link_redirects_to_ebays_page_with_a_single_use_state(db, fa
     assert ebay.DEFAULT_SCOPES.split() == [
         "https://api.ebay.com/oauth/api_scope", "https://api.ebay.com/oauth/api_scope/sell.listing",
         "https://api.ebay.com/oauth/api_scope/sell.inventory",
-        "https://api.ebay.com/oauth/api_scope/sell.fulfillment.readonly"]
+        "https://api.ebay.com/oauth/api_scope/sell.fulfillment.readonly",
+        # WO68: the day-4 backstop's two — to find an unpaid order and cancel it as "buyer hasn't paid"
+        "https://api.ebay.com/oauth/api_scope/sell.commitment.read", "https://api.ebay.com/oauth/api_scope/sell.cancellation"]
     assert "scope=https%3A%2F%2Fapi.ebay.com%2Foauth%2Fapi_scope%20https%3A" in where     # space-separated, URL-encoded
     assert len(query["state"]) >= 24 and core.setting(db, "ebay_state:" + query["state"]) == "2026-10-08T15:10:00+00:00"
     assert start(db)[1]["state"] != query["state"]                                         # a new one each time

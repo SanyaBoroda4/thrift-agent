@@ -340,3 +340,44 @@ def test_the_sandbox_has_its_own_addresses():
     assert c.item_url("123") == "https://sandbox.ebay.com/itm/123"
     with pytest.raises(ValueError):
         ebay.EbayClient(tokens(), environment="staging")
+
+
+# ---------------------------------------------------------------- WO68: Buy It Now paid at once
+
+def test_every_listing_of_ours_requires_immediate_payment_and_it_can_be_switched_on(monkeypatch):
+    """WO68: new listings carry paymentTerms.immediatePay; `thrift ebay immediate-pay --yes` switches it on for every
+    active listing of OURS (validated only without --yes) and never touches one of hers."""
+    async def go():
+        shop = fake.FakeEbay(recorded=None, seller_listings=[fake.hand_listing("By hand")])
+        c, _ = make(shop)
+        f = await fields_for(c)
+        assert ebay.create_input(f, URLS, KEY)["listingTerms"]["paymentTerms"] == {"immediatePay": True}
+        lid = (await c.create(f, URLS, KEY)).listing_id
+        assert (await c.read_one(lid)).immediate_pay is True
+        shop.listings[lid]["listingTerms"]["listingPaymentTerms"]["immediatePay"] = False     # as made before WO68
+        assert await c.update(lid, immediate_pay=True, validate=True) is None
+        assert (await c.read_one(lid)).immediate_pay is False                                  # only validated
+        live = await c.update(lid, immediate_pay=True)
+        assert live.immediate_pay is True and live.title == f.title                            # nothing else changed
+        sent = [v for what, v in shop.calls if what == "update"][-1]["input"]
+        assert sent["listingTerms"] == {"paymentTerms": {"immediatePay": True}} and "product" not in sent
+        return shop, c, lid
+    shop, c, lid = run(go())
+
+    from typer.testing import CliRunner
+    from thrift_agent.ebay import cli
+    shop.listings[lid]["listingTerms"]["listingPaymentTerms"]["immediatePay"] = False
+    hers = [x for x in shop.listings.values() if not x.get("sku")]
+    poster = type("P", (), {"client": c, "ours": staticmethod(lambda x: bool(x and (x.sku or "").startswith("i_")))})()
+    monkeypatch.setattr(cli, "_poster", lambda: poster)
+    out = CliRunner().invoke(cli.app, ["immediate-pay"])
+    assert out.exit_code == 0 and "1 validated by eBay, nothing saved" in out.output
+    assert shop.listings[lid]["listingTerms"]["listingPaymentTerms"]["immediatePay"] is False
+    out = CliRunner().invoke(cli.app, ["immediate-pay", "--yes"])
+    assert out.exit_code == 0 and "1 changed" in out.output and "True" in out.output       # read back
+    assert shop.listings[lid]["listingTerms"]["listingPaymentTerms"]["immediatePay"] is True
+    assert all("immediatePay" not in json.dumps(v) or v["input"]["listingIdentifier"]["listingId"] == lid
+               for what, v in shop.calls if what == "update")                             # hers: never an update
+    assert hers and all(not h["listingTerms"].get("listingPaymentTerms", {}).get("immediatePay") for h in hers)
+    out = CliRunner().invoke(cli.app, ["immediate-pay", "--yes"])
+    assert "1 of ours had immediate payment already; 0 changed" in out.output

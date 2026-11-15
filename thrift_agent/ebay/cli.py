@@ -207,6 +207,44 @@ def hers() -> None:
           + (f" · shipping type{'s' if len(kinds) != 1 else ''}: {', '.join(kinds)}" if kinds else ""))
 
 
+@app.command("immediate-pay")
+def immediate_pay(yes: bool = typer.Option(False, "--yes", help="really change the listings (else eBay only validates)"),
+                  show: int = typer.Option(5, "--show", help="how many changed listings are read back at the end")) -> None:
+    """WO68: Buy It Now must be paid at once on every ACTIVE listing of OURS (its SKU is one of our item ids; her own
+    hand-made listings are never read as ours, never touched). A listing already set is left alone. Without --yes each
+    change is only validated by eBay (nothing saved). New listings carry it from createListing (client.IMMEDIATE_PAY).
+    An accepted Best Offer is never paid at once on eBay: the unpaid notes and the day-4 cancel (thrift-api) cover it."""
+    from thrift_agent.ebay import client as api
+    poster = _poster()
+
+    async def go():
+        listings, complete = await poster.client.active()
+        ours = [x for x in listings if poster.ours(x)]
+        todo = [x for x in ours if x.immediate_pay is not True]
+        changed, failed = [], []
+        for x in todo:
+            try:
+                await poster.client.update(x.listing_id, immediate_pay=True, validate=not yes)
+                changed.append(x)
+            except api.EbayError as e:
+                failed.append((x, str(e)))
+        back = await poster.client.read([x.listing_id for x in changed][:show]) if yes and changed else {}
+        return listings, ours, todo, changed, failed, back, complete
+    listings, ours, todo, changed, failed, back, complete = asyncio.run(go())
+    print(f"{len(listings)} active eBay listings: {len(ours)} ours, {len(listings) - len(ours)} hers (never touched)"
+          + ("" if complete else " — not read to the end"))
+    print(f"{len(ours) - len(todo)} of ours had immediate payment already; {len(changed)} "
+          + ("changed" if yes else "validated by eBay, nothing saved (add --yes)") + f"; {len(failed)} refused")
+    for x, why in failed:
+        print(f"  [red]refused[/red] {x.listing_id} {escape(x.sku or '')}: {escape(why[:200])}")
+    if back:
+        t = Table("listing", "SKU", "title", "immediate pay (read back)")
+        for lid, live in back.items():
+            t.add_row(lid, escape((live.sku if live else "") or ""), escape(((live.title if live else "") or "")[:40]),
+                      str(live.immediate_pay if live else "gone"))
+        print(t)
+
+
 @app.command("backfill")
 def backfill_cmd(since: str = typer.Option(None, "--since", help="items first posted on or after this day (YYYY-MM-DD)"),
                  dry_run: bool = typer.Option(False, "--dry-run", help="only say what would be planned"),

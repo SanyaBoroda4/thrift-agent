@@ -732,3 +732,30 @@ def test_the_ebay_commands(env, monkeypatch):
     assert out.exit_code == 1 and "on the Mac only" in out.output
     out = run(cli.app, ["poster", "--publish-first", live[0], "--marketplace", "ebay"])
     assert out.exit_code != 0 or "thrift ebay first" in out.output
+
+
+# ---------------------------------------------------------------- WO68: an unpaid order cancelled, relisted
+
+def test_a_relist_after_an_unpaid_cancel_adopts_the_listing_ebay_relisted_itself(env):
+    """WO68: after a cancel eBay may relist a single-quantity Buy It Now by itself — our relist finds that listing by
+    its SKU and records it: never a second one; the price-drop clock keeps its old date."""
+    from thrift_agent import relist
+    s, db, said = env
+    iid = item(s, db, 1)
+    poster, shop = ebay(s)
+    db.upsert_listing(iid, "ebay", status="sold", url="https://www.ebay.com/itm/407358644533", price=49,
+                      posted_at=OLD)
+    relist.plan(db, "s_unpaid", iid, "unpaid")
+    assert asyncio.run(relist.run_one(s, db, "ebay", poster, None, shots=s.path("failed")))
+    assert db.listing(iid, "ebay")["status"] == "queued"
+    f = asyncio.run(poster.plan(runner.ItemView.from_row(db.item(iid))))
+    made = asyncio.run(poster.client.create(f, ["https://i.ebayimg.com/x.jpg"], api.idempotency_key(iid, 9)))
+    creates = shop.count("create")                                   # eBay's own relist, before ours could run
+    go(s, db, {"ebay": poster}, iid)
+    row = db.listing(iid, "ebay")
+    assert row["status"] == "posted" and listing_id_of(row["url"]) == made.listing_id
+    assert shop.count("create") == creates                           # found by its SKU: nothing created
+    assert asyncio.run(relist.run_one(s, db, "ebay", poster, None, shots=s.path("failed")))
+    assert said.group[-1] == f"♻️ Back on eBay: {relist._title(db, iid, 'ebay')} — $49\n{row['url']}"
+    assert db.listing(iid, "ebay")["posted_at"] == OLD               # the price-drop clock kept
+    assert not asyncio.run(relist.run_one(s, db, "ebay", poster, None, shots=s.path("failed")))   # never twice

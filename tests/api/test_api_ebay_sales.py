@@ -60,7 +60,8 @@ def test_only_the_named_fields_of_an_order_are_read():
     assert ebay.order_entries(order()) == [{
         "order_id": "12-34567-89012", "status": "to_ship", "status_text": "Awaiting shipment", "title": TITLE,
         "price": "35.0", "sold_at": "2026-10-08T14:05:00.000Z", "listing_id": LISTING, "sku": ITEM,
-        "ship_by": "2026-10-12"}]                                   # eBay's 06:59:59Z is the end of Oct 12 in the US
+        "ship_by": "2026-10-12",                                    # eBay's 06:59:59Z is the end of Oct 12 in the US
+        "pay_ref": f"{LISTING}-10011111111111"}]                    # WO68: the unpaid order it was, if it was one
     assert [e["status"] for e in map(ebay.order_entries, (order(status="FULFILLED"), order(cancel="CANCELED"),
                                                           order(payment="FULLY_REFUNDED"), order(status="IN_PROGRESS")))
             for e in e] == ["shipped", "cancelled", "returned", "to_ship"]
@@ -208,7 +209,8 @@ def test_every_page_is_read_and_only_ebays_own_next_is_followed(shop, db, monkey
 def test_a_read_that_fails_is_tried_again_and_said_after_an_hour(shop, db, sent, caplog):
     shop.orders_status = 500
     out = timers.every_5_min(db, NOW)
-    assert out["ebay"] == {"orders": {"read": False, "why": "HTTP 500"}, "takedowns": []} and "shares" in out
+    assert {k: v for k, v in out["ebay"].items() if k != "unpaid"} == {"orders": {"read": False, "why": "HTTP 500"},
+                                                                       "takedowns": []} and "shares" in out
     assert call(db, "GET", "/ebay/status")[1]["orders_error"] == "HTTP 500"
     for minutes in range(5, 60, 5):
         timers.every_5_min(db, NOW + minutes * MINUTE)
@@ -237,7 +239,8 @@ def test_a_bug_in_ebays_work_never_stops_the_timer(shop, db, monkeypatch, caplog
     monkeypatch.setattr(ebay, "read_orders", boom)
     with caplog.at_level(logging.DEBUG):
         out = timers.every_5_min(db, NOW)
-    assert out["ebay"] == {"orders": "failed", "takedowns": []} and out["shares"] == [] and out["uploads"] == []
+    assert {k: v for k, v in out["ebay"].items() if k != "unpaid"} == {"orders": "failed", "takedowns": []}
+    assert out["shares"] == [] and out["uploads"] == []
     assert "ebay: orders failed: RuntimeError at " in caplog.text and REFRESH not in caplog.text
     assert PRIVATE[0] not in caplog.text
     monkeypatch.setattr(ebay, "tick", boom)

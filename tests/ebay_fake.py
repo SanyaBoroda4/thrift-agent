@@ -507,6 +507,8 @@ class FakeEbay:
                                    "actualEndAt": None, "endListingReason": None, "listingDurationInDays": "GTC"},
                 "itemLocation": dict(terms.get("itemLocation") or {}),
                 "bestOfferTerms": {"acceptBestOffer": bool((terms.get("bestOfferTerms") or {}).get("bestOfferEnabled"))},
+                # WO68: eBay's default is false; our listings send true
+                "listingPaymentTerms": {"immediatePay": bool((terms.get("paymentTerms") or {}).get("immediatePay"))},
                 "listingReturnTerms": {"domesticReturnTerms": {
                     "returnAccepted": ret.get("returnAccepted"), "returnDuration": ret.get("returnDuration"),
                     # eBay reads the payer back in its own case: BUYER sent, "Buyer" read (live 2026-11-11)
@@ -581,6 +583,9 @@ class FakeEbay:
             sp["aspects"] = [dict(a) for a in p["aspects"]]
         if "categories" in p:
             sp["categories"] = {"primaryCategory": {"categoryId": str(p["categories"]["primaryCategoryId"]), "name": ""}}
+        pay = ((inp.get("listingTerms") or {}).get("paymentTerms")) or {}
+        if "immediatePay" in pay:                       # WO68
+            listing["listingTerms"]["listingPaymentTerms"] = {"immediatePay": bool(pay["immediatePay"])}
         return {"updateListing": {"__typename": "UpdateListingSuccess", "listing": listing, "warnings": []}}
 
     def _price(self, variables: dict, op: str) -> dict:

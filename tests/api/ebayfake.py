@@ -4,6 +4,7 @@ and the Fulfillment API's orders (with the buyer's name, address and notes in ev
 tests assert none of it is ever kept). Every call is recorded; nothing reaches the network."""
 import base64
 import json
+import xml.etree.ElementTree as ET
 from urllib.parse import parse_qs, urlsplit
 
 from apitools import BUYER, ITEM, NOW, TITLE, call
@@ -78,6 +79,18 @@ class FakeEbay:
         self.ended: list[str] = []                   # the listing ids endListing ended
         self.tokens: set[str] = set()                # the access tokens handed out
         self.minted = 0
+        # WO68 — the Trading API (XML) and the unpaid orders ("item commitments") of the GraphQL Cancellation API
+        self.trading: list[dict] = []                # GetOrders' orders (see `unpaid_order`)
+        self.trading_status = 200
+        self.prefs: dict = {}                        # the unpaid-item preferences SetUserPreferences stored
+        self.invoice_errors: list[str] = []          # SendInvoice answers Failure with these codes
+        self.invoice_down = False                    # SendInvoice's answer never comes
+        self.invoices: list[dict] = []               # {"ref", "text", "copy"}
+        self.messages: list[dict] = []               # AddMemberMessageAAQToPartner: {"item", "subject", "body", "to"}
+        self.aaq_errors: list[str] = []              # AddMemberMessageAAQToPartner answers Failure with these codes
+        self.cancel_scope = True                     # the token carries sell.commitment.read and sell.cancellation
+        self.cancel_refused: list[str] = []          # createItemCommitmentCancellation's ineligibility codes
+        self.cancels: list[dict] = []                # {"commitment", "reason", "relist"}
 
     # --- what the tests set up
 
@@ -111,7 +124,59 @@ class FakeEbay:
             return self._graphql(headers, body)
         if path == "/sell/fulfillment/v1/order":
             return self._orders(url, headers)
+        if host == "api.ebay.com" and path == "/ws/api.dll":
+            return self._trading_call(headers, body)
         raise AssertionError(f"not an eBay address the API should call: {url}")
+
+    # --- WO68: the Trading API
+
+    def _trading_call(self, headers: dict, body: bytes | None):
+        name = headers["X-EBAY-API-CALL-NAME"]
+        assert headers["X-EBAY-API-SITEID"] == "0" and headers["Content-Type"] == "text/xml"
+        self.calls.append(("trading", name))
+        if self.trading_status != 200:
+            return self.trading_status, b"<html>busy</html>"
+        if headers.get("X-EBAY-API-IAF-TOKEN") not in self.tokens:
+            return 200, _failure(name, "21916984")
+        root = ET.fromstring(body or b"")
+        for el in root.iter():
+            el.tag = el.tag.rsplit("}", 1)[-1]
+        assert root.tag == f"{name}Request"
+        if name == "GetOrders":
+            wanted = [e.text for e in root.findall("OrderIDArray/OrderID")]
+            assert wanted or (root.findtext("CreateTimeFrom") and root.findtext("OrderStatus") == "All")
+            orders = [o for o in self.trading if not wanted or o["ref"] in wanted]
+            return 200, _ok(name, "<OrderArray>" + "".join(_order_xml(o) for o in orders) + "</OrderArray>"
+                                  "<HasMoreOrders>false</HasMoreOrders>")
+        if name == "GetUserPreferences":
+            assert root.findtext("ShowUnpaidItemAssistancePreference") == "true"
+            inner = "".join(f"<{k}>{v}</{k}>" for k, v in self.prefs.items())
+            return 200, _ok(name, f"<UnpaidItemAssistancePreferences>{inner}</UnpaidItemAssistancePreferences>"
+                            if inner else "")
+        if name == "SetUserPreferences":
+            pref = root.find("UnpaidItemAssistancePreferences")
+            self.prefs.update({c.tag: c.text for c in pref})
+            return 200, _ok(name, "")
+        if name == "SendInvoice":
+            if self.invoice_down:
+                raise OSError("timed out")
+            if self.invoice_errors:
+                return 200, _failure(name, *self.invoice_errors)
+            self.invoices.append({"ref": root.findtext("OrderLineItemID"), "text": root.findtext("CheckoutInstructions"),
+                                  "copy": root.findtext("EmailCopyToSeller")})
+            return 200, _ok(name, "")
+        if name == "AddMemberMessageAAQToPartner":
+            if self.aaq_errors:
+                return 200, _failure(name, *self.aaq_errors)
+            m = root.find("MemberMessage")
+            self.messages.append({"item": root.findtext("ItemID"), "subject": m.findtext("Subject"),
+                                  "body": m.findtext("Body"), "to": m.findtext("RecipientID"),
+                                  "type": m.findtext("QuestionType")})
+            return 200, _ok(name, "")
+        raise AssertionError(f"a Trading call the API shouldn't make: {name}")
+
+    def commitments(self) -> list[dict]:
+        return [o for o in self.trading if o["status"] == "Active" and not o.get("paid")]
 
     def _access(self, kind: str) -> str:
         self.minted += 1
@@ -164,7 +229,8 @@ class FakeEbay:
         assert headers["X-EBAY-C-MARKETPLACE-ID"] == "EBAY_US" and headers["Content-Type"] == "application/json"
         sent = json.loads(body or b"{}")
         query, variables = sent["query"], sent["variables"]
-        operation = next(name for name in ("endListing", "sellerListings", "activeListings", "endedListings")
+        operation = next(name for name in ("endListing", "sellerListings", "activeListings", "endedListings",
+                                           "sellerItemCommitments", "createItemCommitmentCancellation")
                          if f"{name}(" in query)
         self.calls.append(("graphql", operation))
         assert not any(word in query for word in (ITEM, *self.listings)), "an input written into the query itself"
@@ -174,6 +240,34 @@ class FakeEbay:
             return 401, b'{"errors": [{"message": "Invalid access token"}]}'
         if self.graphql_errors:
             return 200, json.dumps({"errors": self.graphql_errors, "data": None}).encode()
+        if operation in ("sellerItemCommitments", "createItemCommitmentCancellation"):
+            if not self.cancel_scope:                   # live 2026-11-14 with the four scopes of the first consent
+                return 200, json.dumps({"errors": [{"message": "Insufficient permissions to fulfill the request.",
+                                                    "extensions": {"errorCode": "FORBIDDEN"}}], "data": None}).encode()
+            if operation == "sellerItemCommitments":
+                wanted = variables["input"]["itemCommitmentsFirstPage"]["filter"]["filter"]["listingId"]
+                found = [{"itemCommitmentId": f"ic-{o['ref']}", "createdAt": o["created"],
+                          "lineItem": {"item": {"itemId": o["item"]}, "itemSku": {"sellerSku": o["sku"]}}}
+                         for o in self.commitments() if o["item"] == wanted]
+                data = {"itemCommitments": {"sellerItemCommitments": {"itemCommitments": found}}}
+            else:
+                given = variables["input"]
+                self.cancels.append({"commitment": given["itemCommitmentId"],
+                                     "reason": given["contractCancellationReason"], "relist": given["relistItem"]})
+                assert given["contractCancellationReason"] == "UNPAID_CONTRACT" and given["relistItem"] is False
+                if self.cancel_refused:
+                    data = {"createItemCommitmentCancellation": {
+                        "__typename": "ItemCommitmentCancellationEligibilityError",
+                        "errorCode": "CNCL_ITEM_COMMITMENT_ELIGIBILITY_ERROR",
+                        "ineligibilityReasons": [{"code": c} for c in self.cancel_refused]}}
+                else:
+                    for o in self.trading:
+                        if f"ic-{o['ref']}" == given["itemCommitmentId"]:
+                            o.update(status="Cancelled", cancel="CancelClosedForCommitment")
+                    data = {"createItemCommitmentCancellation": {
+                        "__typename": "CreateItemCommitmentCancellationSuccess",
+                        "itemCommitmentCancellation": {"cancellationId": "cncl-1"}}}
+            return 200, json.dumps({"data": data}).encode()
         if operation == "sellerListings":
             listing_id = variables["input"]["listings"][0]["listingId"]
             data = {"sellerListings": {"__typename": "ListingsSuccess", "listings": [
@@ -222,6 +316,51 @@ class FakeEbay:
         urls = [detail for name, detail in self.calls if name == "orders"]
         query = parse_qs(urlsplit(urls[n]).query)["filter"][0]
         return query.removeprefix("lastmodifieddate:[").removesuffix("..]")
+
+
+BUYER_ID = "janeq_closet"                                        # eBay's id of the buyer (BUYER[1]): never kept
+
+
+def unpaid_order(ref: str = f"{LISTING}-10077777777771", sku: str | None = ITEM, title: str = TITLE,
+                 price: str = "44.0", created: str = "2026-10-08T22:37:18.000Z", status: str = "Active",
+                 paid: str | None = None, cancel: str = "NotApplicable") -> dict:
+    """One order as Trading's GetOrders answers it (an unpaid one by default: Active, checkout Incomplete)."""
+    item, tx = ref.split("-", 1)
+    return {"ref": ref, "item": item, "tx": tx, "sku": sku, "title": title, "price": price, "created": created,
+            "status": status, "paid": paid, "cancel": cancel}
+
+
+def _ok(name: str, inner: str) -> bytes:
+    return (f'<?xml version="1.0" encoding="UTF-8"?><{name}Response xmlns="urn:ebay:apis:eBLBaseComponents">'
+            f"<Timestamp>2026-10-08T15:00:00.000Z</Timestamp><Ack>Success</Ack><Version>1451</Version>{inner}"
+            f"</{name}Response>").encode()
+
+
+def _failure(name: str, *codes: str) -> bytes:
+    errors = "".join(f"<Errors><ShortMessage>Refused for {BUYER[0]}</ShortMessage><ErrorCode>{c}</ErrorCode>"
+                     "<SeverityCode>Error</SeverityCode></Errors>" for c in codes)
+    return (f'<?xml version="1.0" encoding="UTF-8"?><{name}Response xmlns="urn:ebay:apis:eBLBaseComponents">'
+            f"<Ack>Failure</Ack>{errors}</{name}Response>").encode()
+
+
+def _order_xml(o: dict) -> str:
+    """An order with everything about the buyer eBay puts in: the tests assert none of it is kept."""
+    paid = o.get("paid")
+    checkout = "Complete" if paid else "Incomplete"
+    sku = f"<SKU>{o['sku']}</SKU>" if o.get("sku") else ""
+    return (f"<Order><OrderID>{o['ref']}</OrderID><OrderStatus>{o['status']}</OrderStatus>"
+            f"<CheckoutStatus><eBayPaymentStatus>NoPaymentFailure</eBayPaymentStatus><Status>{checkout}</Status>"
+            "</CheckoutStatus>"
+            f"<CreatedTime>{o['created']}</CreatedTime>" + (f"<PaidTime>{paid}</PaidTime>" if paid else "") +
+            f"<CancelStatus>{o['cancel']}</CancelStatus><BuyerUserID>{BUYER_ID}</BuyerUserID>"
+            f"<ShippingAddress><Name>{BUYER[0]}</Name><Street1>{BUYER[2]}</Street1><CityName>Springfield</CityName>"
+            "</ShippingAddress>"
+            f"<BuyerCheckoutMessage>{NOTES}</BuyerCheckoutMessage><Total>{o['price']}</Total>"
+            f"<TransactionArray><Transaction><Buyer><Email>{EMAIL}</Email></Buyer>"
+            f"<Item><ItemID>{o['item']}</ItemID><Title>{o['title']}</Title>{sku}</Item>"
+            f"<TransactionID>{o['tx']}</TransactionID><OrderLineItemID>{o['ref']}</OrderLineItemID>"
+            f"<TransactionPrice>{o['price']}</TransactionPrice><CreatedDate>{o['created']}</CreatedDate>"
+            "</Transaction></TransactionArray></Order>")
 
 
 def install(monkeypatch) -> FakeEbay:

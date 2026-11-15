@@ -158,6 +158,7 @@ class Live:
     category_id: str | None = None
     condition_id: str | None = None
     best_offer: bool | None = None
+    immediate_pay: bool | None = None        # WO68: Buy It Now requires immediate payment (listingPaymentTerms)
     format: str | None = None
     duration: str | None = None
     postal_code: str | None = None
@@ -224,6 +225,7 @@ def live_from(listing: dict | None, item_base: str) -> Live | None:
         category_id=str((((product.get("categories") or {}).get("primaryCategory")) or {}).get("categoryId") or "") or None,
         condition_id=str((product.get("itemCondition") or {}).get("itemConditionId") or "") or None,
         best_offer=(lt.get("bestOfferTerms") or {}).get("acceptBestOffer"), format=lt.get("listingFormat"),
+        immediate_pay=(lt.get("listingPaymentTerms") or {}).get("immediatePay"),
         duration=life.get("listingDurationInDays"), postal_code=(lt.get("itemLocation") or {}).get("postalCode"),
         country=(lt.get("itemLocation") or {}).get("country"), returns_accepted=ret.get("returnAccepted"),
         returns_days=ret.get("returnDuration"), returns_payer=ret.get("returnShipmentInvoicee"),
@@ -247,6 +249,7 @@ _LISTING = """
     lifecycleTerms { listingStatus onHold createdAt actualEndAt endListingReason listingDurationInDays }
     itemLocation { country postalCode location }
     bestOfferTerms { acceptBestOffer }
+    listingPaymentTerms { immediatePay }
     listingReturnTerms { domesticReturnTerms { returnAccepted returnDuration returnShipmentInvoicee
                                                listingRefundMethod } }
     listingFulfillmentTerms { shippingTerms { handlingTimeDuration
@@ -292,6 +295,7 @@ ENDED = f"""query EndedListings($search: SellerEndedListingSearchInput) {{ selle
 PAGE = 100
 BY_ID_MAX = 20
 PACKAGE_TYPE = "PACKAGE_THICK_ENVELOPE"
+IMMEDIATE_PAY = True                          # WO68: every listing of ours (new ones, and `thrift ebay immediate-pay`)
 
 
 def _days(n: int) -> str:
@@ -340,6 +344,10 @@ def create_input(f: mapping.EbayFields, image_urls: list[str], key: str, validat
             "itemLocation": {"country": f.location.get("country") or "US",
                              "postalCode": str(f.location.get("postal_code") or ""), **({"location": place} if place else {})},
             "bestOfferTerms": {"bestOfferEnabled": bool(f.best_offer)},
+            # WO68: Buy It Now must be paid at once (eBay: "require immediate payment for fixed price listings"; not
+            # for an accepted Best Offer — the unpaid notes and the day-4 cancel cover those). Her account is not
+            # opted in to business policies, so the term goes inline
+            "paymentTerms": {"immediatePay": IMMEDIATE_PAY},
             "fulfillmentTerms": fulfillment,
             "returnTerms": {"domesticReturnTerms": returns}},
     }
@@ -678,8 +686,10 @@ class EbayClient:
 
     async def update(self, listing_id: str, *, title: str | None = None, description: str | None = None,
                      image_urls: list[str] | None = None, aspects: dict[str, list[str]] | None = None,
-                     category_id: str | None = None, validate: bool = False) -> Live | None:
-        """updateListing: only what is given changes (a list given replaces the listing's whole list)."""
+                     category_id: str | None = None, immediate_pay: bool | None = None,
+                     validate: bool = False) -> Live | None:
+        """updateListing: only what is given changes (a list given replaces the listing's whole list); `immediate_pay`
+        (WO68): the listing's paymentTerms.immediatePay."""
         product: dict[str, Any] = {}
         if title is not None:
             product["title"] = title
@@ -691,10 +701,12 @@ class EbayClient:
             product["aspects"] = [{"name": n, "values": list(v)} for n, v in aspects.items() if v]
         if category_id is not None:
             product["categories"] = {"primaryCategoryId": str(category_id)}
-        if not product:
+        terms = {"paymentTerms": {"immediatePay": bool(immediate_pay)}} if immediate_pay is not None else {}
+        if not product and not terms:
             return await self.read_one(listing_id)
         variables = {"input": {"listingIdentifier": {"listingId": str(listing_id)}, "marketplace": MARKETPLACE,
-                               "product": product, **({"options": {"operationMode": "VALIDATE"}} if validate else {})}}
+                               **({"product": product} if product else {}), **({"listingTerms": terms} if terms else {}),
+                               **({"options": {"operationMode": "VALIDATE"}} if validate else {})}}
         node = await self.graphql("updateListing", UPDATE, variables, "updateListing")
         kind = node.get("__typename")
         if kind == "UpdateListingValidationError":

@@ -64,7 +64,11 @@ GRAPHQL_URL = {"production": "https://graphqlapi.ebay.com/graphql", "sandbox": G
 MARKETPLACE = "EBAY_US"
 APP_SCOPE = "https://api.ebay.com/oauth/api_scope"
 DEFAULT_SCOPES = " ".join((APP_SCOPE, f"{APP_SCOPE}/sell.listing", f"{APP_SCOPE}/sell.inventory",
-                           f"{APP_SCOPE}/sell.fulfillment.readonly"))
+                           f"{APP_SCOPE}/sell.fulfillment.readonly",
+                           # WO68: the day-4 backstop — find the unpaid order (an "item commitment") and cancel it as
+                           # "buyer hasn't paid" (unpaid.py); nothing broader. eBay's consent page takes both for this
+                           # keyset (asked 2026-11-14: a made-up scope answers invalid_scope, these two go to sign-in)
+                           f"{APP_SCOPE}/sell.commitment.read", f"{APP_SCOPE}/sell.cancellation"))
 TIMEOUT = 10                             # seconds a call to eBay may take (a take-down is 2 to 5 of them)
 MAX_ANSWER = 4_000_000                   # bytes of one answer read
 FREE_LISTINGS = 250                      # eBay's free listings a month (the 9 PM line)
@@ -725,7 +729,10 @@ def order_entries(order: object) -> list[dict]:
         state, words = _line_status(order, line)
         cost = line.get("lineItemCost") if isinstance(line.get("lineItemCost"), dict) else {}
         ship = line.get("lineItemFulfillmentInstructions")
+        listing, tx = _code(line.get("legacyItemId"), 20), _code(line.get("lineItemId"), 20)
         entries.append({
+            # WO68: "<item>-<transaction>" — the unpaid order GetOrders showed, if it was one (unpaid.py)
+            "pay_ref": f"{listing}-{tx}" if listing.isdigit() and tx.isdigit() else None,
             "order_id": order_id if len(lines) == 1 else f"{order_id}:{_code(line.get('lineItemId'), 22)}",
             "status": state, "status_text": words, "title": line.get("title"), "price": cost.get("value"),
             "sold_at": order.get("creationDate"), "listing_id": _code(line.get("legacyItemId"), 40) or None,
@@ -1049,7 +1056,8 @@ def tick(db: Database, now: datetime | None = None, mode: str | None = None) -> 
     (nor the timer's other work): it is logged as its type and place."""
     now, mode = _clock(now), mode or util.mode()
     out: dict = {}
-    for name, job in (("orders", read_orders), ("takedowns", run_takedowns)):
+    from . import unpaid                        # WO68: the orders not paid yet (the Trading API), after the paid ones
+    for name, job in (("orders", read_orders), ("unpaid", unpaid.tick), ("takedowns", run_takedowns)):
         try:
             out[name] = job(db, now, mode)
         except Exception as e:  # noqa: BLE001

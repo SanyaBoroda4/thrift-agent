@@ -103,22 +103,22 @@ Wednesday, November 11
 
 🔴  LATE — SHIP FIRST
 1. Tory Burch Croc Loafers · 8.5
-Poshmark · $120 · sold Tue Nov 3
+Poshmark · $120 · 💵 Paid · sold Tue Nov 3
 ⏰ Was due Tue Nov 10 · 1 day late
 🏷 Order & label
 
 🟠  SHIP TOMORROW · Thu Nov 12
 2. Birkenstock Rio Sandals · 38
-Depop · $49 · sold Sat Nov 7
+Depop · $49 · 💵 Paid · sold Sat Nov 7
 🏷 Order & label
 
 3. Zara TRF Leather Moto Jacket Black · S
-eBay · $161 · sold Tue Nov 10
+eBay · $161 · 💵 Paid · sold Tue Nov 10
 🏷 Order & label
 
 🟢  LATER
 4. Moncler Down Snowsuit · 9-12M
-Vinted · $76 · sold Mon Nov 9
+Vinted · $76 · 💵 Paid · sold Mon Nov 9
 ⏰ Ship by Tue Nov 17 · in 6 days
 🏷 Sold orders & labels
 
@@ -232,7 +232,7 @@ def test_a_bundle_is_one_block_one_site_line_one_label(db, out):
     assert """1. 2 items · one order
 • Zara Girls Textured Tie Top · 8
 • Zara Girls Wide Leg Pants · 10
-eBay · $45 · sold Mon Nov 9
+eBay · $45 · 💵 Paid · sold Mon Nov 9
 ⏰ Ship by Fri Nov 13 · in 2 days
 🏷 Order & label
 
@@ -244,7 +244,7 @@ def test_her_own_ebay_sale_says_your_listing(db, out):
     sale(db, "s1", "ebay", item_id=None, title="Vintage Coach Legacy Shoulder Bag", price=95, ship_by="2026-11-13",
          order_id="22-15011-34002", listing_id="406909579692")
     run(db)
-    assert "1. Vintage Coach Legacy Shoulder Bag\neBay · your listing · $95 · sold Mon Nov 9" in plain(out[0][1])
+    assert "1. Vintage Coach Legacy Shoulder Bag\neBay · your listing · $95 · 💵 Paid · sold Mon Nov 9" in plain(out[0][1])
 
 
 def test_a_title_with_markup_and_quotes_is_escaped_and_the_address_only_in_href(db, out):

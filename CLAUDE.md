@@ -1055,7 +1055,7 @@ backfill waits for its plan (`--not-before`).**
   API `createImageFromFile` (host `apim.ebay.com`, multipart field `image`, scope `sell.inventory`) → EPS addresses.
   Categories / item specifics / conditions / shipping-service codes: Taxonomy and Metadata (`api.ebay.com`, an
   application token), kept 7 days beside the DB (`<var>/ebay/*.json`). Orders: Fulfillment `getOrders` (host
-  `api.ebay.com` — NOT the spec's `apiz.ebay.com`, which answers 404 "Resource not found" (live 2026-11-11) — scope `sell.fulfillment.readonly`) — thrift-api only. Never the Trading API (retired call by call).
+  `api.ebay.com` — NOT the spec's `apiz.ebay.com`, which answers 404 "Resource not found" (live 2026-11-11) — scope `sell.fulfillment.readonly`) — thrift-api only. Never the Trading API (retired call by call) — except WO68's unpaid orders (below): the Fulfillment API never shows an order whose checkout isn't done, so GetOrders (deprecated 2026-11-06, off 2027-06-30: move to the GraphQL Item Commitment API, `sell.commitment.read`, before then), Get/SetUserPreferences, SendInvoice and AddMemberMessageAAQToPartner go through the Trading API with the same OAuth user token (`X-EBAY-API-IAF-TOKEN`, no new scope).
   Verified on production 2026-11-11: USPS Ground Advantage is **`USPSParcel`** (eBay's Metadata list; `client.service_code`
   reads it first, `data/ebay_shipping.json` holds it as the fallback); `Decimal` is string-encoded ("48.00", per the
   schema); the package type is **`PACKAGE_THICK_ENVELOPE`**, as on all of her listings (`client.PACKAGE_TYPE`), because
@@ -1152,6 +1152,40 @@ backfill waits for its plan (`--not-before`).**
   item's id; `GET /tasks` never hands one to the Mac and answers `ended`). `provision.py ebay` (secrets made once in
   `var/azure/secrets.json`; the keyset written only when all three are in `private/.env`; names printed, never
   values) · `ebay status` · `ebay show` (a real terminal only: the endpoint, the token, the three addresses, the link).
+- **Unpaid orders (WO68**, the owner 2026-11-14: "remind to pay … after 24 more hours still not paid then cancel the
+  deal and relist it everywhere … clearly state in 9pm list if the item was paid or not yet"; `api/thrift_api/unpaid.py`,
+  `tests/api/test_api_wo68_unpaid.py`). eBay's rules: eBay emails the buyer itself at 24 h and 48 h; the seller may
+  cancel for non-payment only after 4 calendar days, and only with the true reason ("buyer hasn't paid": no defect;
+  "out of stock": a defect). The live case: the Edikted dress (sold Thu Nov 12 6:37 PM) was an accepted Best Offer
+  (GetItemTransactions `BestOfferSale` true, offer 162406569 $44 Accepted; the listing's `AutoPay` false) — eBay never
+  requires immediate payment for an accepted offer. **Seen:** eBay's 5-minute work reads GetOrders (10 days, every
+  state; only ids, dates, states, SKU, title, price — never the buyer) after the Fulfillment read; a line of OUR SKU not
+  paid is a sale `payment = unpaid` (`committed_at`, `cancel_from`, `pay_ref` = eBay's "<item>-<transaction>", which the
+  paid Fulfillment order carries again as legacyItemId + lineItemId — `orders.find_sale` ties it, never a second row),
+  the take-downs elsewhere as for any sale, the group's "🛒 Sold on eBay: <title> — $44 · not paid yet, don't ship."
+  (a sale the Mac recorded first is marked so with the same line); her own listings never. **Paid** (the Fulfillment
+  order, or GetOrders' PaidTime) → payment `paid`, "✅ Paid on eBay: <title> — ship by <eBay's day>.", a normal package.
+  **Notes:** 24 h "Hi! Just a friendly reminder that your order for <title> is waiting for payment. We'll ship it within
+  2 business days of payment. Thank you!", 48 h "Hi! Your order for <title> is still unpaid. If payment isn't received by
+  <Tuesday, November 17 at 6:37 PM ET>, the order will be cancelled. Thanks!" — SendInvoice (CheckoutInstructions, the
+  order line's id only), refused → AddMemberMessageAAQToPartner (the buyer's id read for that call only); each claimed in
+  `reminders` before the send, never twice, never a third, a due first note gives way to a due second; never in the
+  quiet hours or 10 PM – 8 AM New York; ONE private "💳 Reminder sent to the eBay buyer of <title>." each. **The cancel:**
+  `cancel_from` = the purchase + 5 days (after eBay's 4 calendar days however counted — eBay's own page for the Edikted
+  dress: "beginning Nov 17"); eBay's own automatic cancel at 4 days without its relist (`unpaid.set_preferences`:
+  OptInStatus true, DelayBeforeOpeningDispute 4, AutoRelist false — set ONCE by hand: eBay allows no change for 7 days
+  and may take 7 to act); the backstop an hour after `cancel_from` (`cancel_due` → `cancel_unpaid`: the GraphQL
+  Cancellation API's createItemCommitmentCancellation with the ONE reason `UNPAID_CONTRACT`, relistItem false — it takes
+  no reason argument; `TooEarly` before `cancel_from` or within 4 days of the purchase), hourly; its scopes
+  `sell.commitment.read` + `sell.cancellation` (in `DEFAULT_SCOPES` since WO68; the keyset may ask for them) missing →
+  ONE private message with the consent link naming them (`ask_scopes`), and at the cancel ONE line with the taps
+  "eBay app: Selling → Orders → <title> → Cancel order → Buyer hasn't paid". **Cancelled** (GetOrders shows it) → the
+  sale cancelled, relist why "unpaid", "↩️ <title>: the eBay buyer didn't pay — cancelled and relisted everywhere." —
+  the relist rule (every site it came down from, eBay included; an eBay listing eBay relisted itself is adopted by its
+  SKU, never a second one). No ship reminder for an unpaid sale (`timers.reminders`). `GET /health` → `unpaid`. The
+  Edikted dress is seeded (`unpaid.SEEDED`): no new line, its first note not sent (she reminded by hand), the final one
+  once after 2:00 PM Sun Nov 15. **Buy It Now paid at once:** every new listing `paymentTerms.immediatePay` true
+  (`client.IMMEDIATE_PAY`); `thrift ebay immediate-pay [--yes]` switches our active ones (hers never), reads back.
 - **The backfill** (`ebay/backfill.py`, kv `ebay_backfill`): `thrift ebay backfill [--since 2026-10-13] [--dry-run |
   --status] [--items a,b,c] [--not-before 'YYYY-MM-DD HH:MM']` plans every item first posted since the day that is
   still live on a site and not sold (`--items`: just those, in that order — refused whole when one may not go;
@@ -1305,6 +1339,11 @@ backfill waits for its plan (`--not-before`).**
   Depop 8:33 PM" (the list's sites, from the sweeps' heartbeats) and "⚠️ Vinted not checked since Tue 3:10 PM — its sales
   may be out of date." for a Mac site not read in 12 h (also under "Nothing to ship"), then "Shipped or cancelled
   already? Reply “shipped <words>” or “cancelled <words>”." (`_mac_cancelled`, `approve.CANCELLED_CMD`).
+  **WO68:** every package's site line says "💵 Paid" (Poshmark, Depop, Vinted are paid at checkout; an eBay order on
+  the list has its checkout done); an eBay order not paid is never in the to-ship groups: its own block above the footer,
+  not numbered, not counted ("⏳ NOT PAID YET — DON'T SHIP (1)", per sale "<title> · eBay · $44" and "sold Thu Nov 12 ·
+  2 reminders sent · cancels Tue Nov 17 6:37 PM if still unpaid" — eBay's own reminders and ours), the header adds
+  "· ⏳ 1 not paid"; "shipped all" / "shipped <n>" never touch it (`ship_list_numbers.unpaid`).
 - **Cancelled sales relisted** (the owner, 2026-11-11: "every cancelled sale is relisted automatically";
   `thrift_agent/relist.py`, thrift-api `core._cancel` / `relists` / `note_return`): a sale cancelled before it shipped
   (by the site, the buyer or her — her "cancelled <words>" too — or refunded before the parcel left) of our item, and

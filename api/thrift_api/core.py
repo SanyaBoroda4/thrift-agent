@@ -36,7 +36,8 @@ OPEN_TASKS = ("pending", "running")
 RESULTS = ("done", "not_found", "failed", "sold")
 MAC_PREFIX = "mac:"
 SALE_COLUMNS = ("id", "marketplace", "item_id", "listing_id", "title_seen", "price", "order_id", "sold_at", "ship_by",
-                "ship_by_source", "shipped_at", "delivered_at", "status", "message_id", "created_at")
+                "ship_by_source", "shipped_at", "delivered_at", "status", "message_id", "created_at",
+                "payment", "committed_at", "cancel_from", "paid_at")       # WO68: an eBay order not paid (yet)
 SALE_LISTS = {"open": "s.shipped_at IS NULL AND s.status NOT IN ('cancelled', 'done', 'merged')",
               "unmatched": "s.status = 'unmatched'",
               "all": "s.status <> 'merged'"}
@@ -368,6 +369,9 @@ def _handling(db: Database, mode: str, received: datetime, now: datetime) -> str
 # WO53 §6 (the owner): a sale the agent can't tie to one of its items is said once, quietly — never a question; the
 # agent checked its records itself (the address, the SKU, the title, then its words and the price)
 NOT_OURS = "Sold on {site}: {title} — not one of the agent's listings, nothing to take down."
+# WO68: an eBay order not paid yet — the group's line instead of the 💰 one (unpaid.py); and when it is cancelled
+UNPAID_SOLD_LINE = "🛒 Sold on eBay: {title}{price} · not paid yet, don't ship."
+UNPAID_CANCELLED_LINE = "↩️ {title}: the eBay buyer didn't pay — cancelled and relisted everywhere."
 
 def _short(title: str | None, limit: int = 70) -> str:
     """A sale's title as the quiet line says it: whole words, never cut mid-word."""
@@ -407,6 +411,10 @@ def _sale(db: Database, mp: str, parsed: dict, message_id: str, subject: str | N
                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?)",
                (sale_id, mp, item_id, parsed.get("listing_id"), parsed.get("title"), util.number(parsed.get("price")),
                 parsed.get("order_id"), iso(sold_at), ship_day.isoformat(), source, status, message_id, iso(now)))
+    unpaid = parsed.get("unpaid") if isinstance(parsed.get("unpaid"), dict) else None
+    if unpaid:                  # WO68: an eBay order not paid yet (unpaid.py) — "not paid yet, don't ship"
+        db.execute("UPDATE sales SET payment = 'unpaid', committed_at = ?, cancel_from = ?, pay_ref = ? WHERE id = ?",
+                   (unpaid.get("committed_at"), unpaid.get("cancel_from"), unpaid.get("pay_ref"), sale_id))
     tasks = []
     if status == "matched" and handling == "live":
         tasks = _create_tasks(db, sale_id, item_id, mp, now)
@@ -425,6 +433,9 @@ def _sale(db: Database, mp: str, parsed: dict, message_id: str, subject: str | N
             why = "by Poshmark's reminder to ship it" if parsed.get("reminder") else "late (its email wasn't recognised)"
             down = f" Taking it down on {util.and_list([site_name(t['marketplace']) for t in tasks])}." if tasks else ""
             out.ops(f"💰 Found {why}: {_sold_line(site, title, parsed.get('price'), ship_day)[2:]}{down}")
+        elif unpaid:
+            amount = f" — {util.money(parsed.get('price'))}" if util.number(parsed.get("price")) is not None else ""
+            out.group(UNPAID_SOLD_LINE.format(title=title, price=amount))
         else:
             out.group(_sold_line(site, title, parsed.get("price"), ship_day))
         if status == "unmatched":
@@ -790,11 +801,13 @@ def _cancel(db: Database, sale: dict, title: str, handling: str, out: Outbox) ->
     if sale["item_id"] and sale["status"] != "double_sale":
         stands = db.one("SELECT * FROM sales WHERE item_id = ? AND id <> ? AND status = 'double_sale' "
                         "ORDER BY sold_at, created_at LIMIT 1", (sale["item_id"], sale["id"]))
+    unpaid = sale.get("payment") == "unpaid"       # WO68: the eBay buyer never paid (eBay's cancel, or ours)
     if sale["item_id"] and not stands and not sale.get("shipped_at") and not hers(sale["marketplace"], sale["item_id"]):
         # the owner, 2026-11-11: a sale cancelled before it shipped — the item goes back on every site it came down
         # from, by the Mac (GET /tasks "relist"), at each site's last price; never twice (relist done)
-        db.execute("UPDATE sales SET relist = 'wanted', relist_why = 'cancelled', relist_at = ? WHERE id = ? AND "
-                   "(relist IS NULL OR relist = '')", (iso(_clock(None)), sale["id"]))
+        db.execute("UPDATE sales SET relist = 'wanted', relist_why = ?, relist_at = ? WHERE id = ? AND "
+                   "(relist IS NULL OR relist = '')", ("unpaid" if unpaid else "cancelled", iso(_clock(None)),
+                                                      sale["id"]))
     tasks = db.query(f"SELECT id, marketplace, status FROM delist_tasks WHERE sale_id = ? ORDER BY {TASK_ORDER}",
                      (sale["id"],))
     called_off, kept = [], []
@@ -811,7 +824,10 @@ def _cancel(db: Database, sale: dict, title: str, handling: str, out: Outbox) ->
         db.execute("UPDATE sales SET status = ? WHERE id = ?", ("delisting" if kept else "matched", stands["id"]))
     if handling not in ACTING:
         return
-    line = f"↩️ {title}'s sale on {site} was cancelled."
+    relisting = bool(sale["item_id"] and not stands and not sale.get("shipped_at")
+                     and not hers(sale["marketplace"], sale["item_id"]))
+    line = (UNPAID_CANCELLED_LINE.format(title=title) if unpaid and relisting
+            else f"↩️ {title}'s sale on {site} was cancelled.")
     if stands:
         line += (f" The {site_name(stands['marketplace'])} sale stands — ship it by "
                  f"{deadlines.fmt_day(day_of(stands['ship_by']))}.")
@@ -824,8 +840,8 @@ def _cancel(db: Database, sale: dict, title: str, handling: str, out: Outbox) ->
     if kept:
         details.append(f"Take-downs kept for the {site_name(stands['marketplace'])} sale: {util.and_list(kept)}.")
     taken = [site_name(t["marketplace"]) for t in tasks if t["status"] == "done"]
-    relisting = bool(sale["item_id"] and not stands and not sale.get("shipped_at")
-                     and not hers(sale["marketplace"], sale["item_id"]))
+    if unpaid:
+        details.append("The buyer never paid (cancelled as “buyer hasn't paid”).")
     if taken and not stands:
         details.append(f"Already taken down on {util.and_list(taken)}" + ("." if relisting else
                                                                           " — relist by hand if wanted."))
@@ -1438,7 +1454,13 @@ def health(db: Database, now: datetime | None = None, mode: str | None = None) -
             "open_tasks": count("SELECT COUNT(*) AS n FROM delist_tasks WHERE status IN ('pending', 'running')"),
             "failed_emails": count("SELECT COUNT(*) AS n FROM email_events WHERE status = 'failed'"),
             "go_live_at": setting(db, "go_live_at"), "now": iso(now),
-            "quiet": quiet.describe(now, quiet.read(db))}       # WO54 §3: the quiet hours as thrift-api knows them
+            "quiet": quiet.describe(now, quiet.read(db)),       # WO54 §3: the quiet hours as thrift-api knows them
+            "unpaid": _unpaid_status(db, now)}                  # WO68: our eBay orders not paid yet
+
+
+def _unpaid_status(db: Database, now: datetime) -> dict:
+    from . import unpaid
+    return unpaid.status(db, now)
 
 
 def dashboard_data(db: Database, now: datetime | None = None) -> dict:

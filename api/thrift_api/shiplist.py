@@ -63,6 +63,7 @@ WAITING = "awaiting_scan"                  # WO66: the order sweep's "label prin
 WAIT_FOR_SCAN = timedelta(days=2)          # WO66: a label this old with no scan goes back to the to-ship groups
 NUMBERS = "ship_list_numbers"              # WO66: settings — the last list's numbering (core.LIST_NUMBERS reads it)
 LABEL_LINK = "🏷 Order &amp; label"
+PAID = "💵 Paid"                            # WO68: on every package (an unpaid eBay order is in the ⏳ block)
 SOLD_LINK = "🏷 Sold orders &amp; labels"
 
 # WO62 — each site's own order page, only as verified on the site (never a made-up address):
@@ -113,6 +114,9 @@ class Sale:
     order_page: bool = False                  # True: its own order page; False: the sold list
     waiting: bool = False                     # WO66: label printed, no carrier scan yet — the 📮 block, not to ship
     label_day: date | None = None             # WO66: the day its label was made (an "awaiting_scan" order)
+    unpaid: bool = False                      # WO68: an eBay order not paid yet — the ⏳ block, never to ship
+    cancel_at: datetime | None = None         # WO68: the first moment eBay allows its cancel (unpaid.allowed_from)
+    reminded: int = 0                         # WO68: the reminders the buyer has had (eBay's own and the agent's)
 
 
 @dataclass
@@ -215,7 +219,8 @@ def open_sales(db: Database, now: datetime) -> tuple[list[tuple[Sale, str | None
     ship again, its `label_day` set (the "check it went out" line)."""
     rows = db.query(
         "SELECT s.id, s.marketplace, s.item_id, s.listing_id, s.title_seen, s.price, s.order_id, s.sold_at, s.ship_by, "
-        "s.created_at, i.title AS item_title, i.size AS item_size, l.url AS held_url, o.status AS site_status, "
+        "s.created_at, s.payment, s.committed_at, s.cancel_from, s.pay_ref, "
+        "i.title AS item_title, i.size AS item_size, l.url AS held_url, o.status AS site_status, "
         "o.order_id AS site_order_id, o.label_at AS site_label_at, o.seen_json AS site_seen_json, e.parsed_json "
         "FROM sales s LEFT JOIN items i ON i.id = s.item_id "
         "LEFT JOIN listings l ON l.item_id = s.item_id AND l.marketplace = s.marketplace "
@@ -264,13 +269,20 @@ def open_sales(db: Database, now: datetime) -> tuple[list[tuple[Sale, str | None
         if (label := labels.get(sid)) is not None:
             sale.label_day = deadlines.local(label).date()
             sale.waiting = now - label < WAIT_FOR_SCAN and day >= today
+        if row["payment"] == "unpaid":             # WO68: not paid yet — never to ship, never numbered
+            from . import unpaid
+            sale.unpaid, sale.cancel_at = True, unpaid.allowed_from(row)
+            sale.reminded = unpaid.reminders_count(db, row, now)
+            sale.waiting = False
         out.append((sale, _base_order(site, row["order_id"] or row["site_order_id"])))
     return out, no_day
 
 
-def split(sales: list[tuple[Sale, str | None]]) -> tuple[list[tuple[Sale, str | None]], list[Sale]]:
-    """WO66: (the sales to ship, the sales waiting for their first carrier scan — the 📮 block)."""
-    return [(s, o) for s, o in sales if not s.waiting], [s for s, _ in sales if s.waiting]
+def split(sales: list[tuple[Sale, str | None]]) -> tuple[list[tuple[Sale, str | None]], list[Sale], list[Sale]]:
+    """WO66: (the sales to ship, the sales waiting for their first carrier scan — the 📮 block); WO68: and the eBay
+    orders not paid yet (the ⏳ block — never numbered, never counted as packages)."""
+    return ([(s, o) for s, o in sales if not s.waiting and not s.unpaid], [s for s, _ in sales if s.waiting],
+            [s for s, _ in sales if s.unpaid])
 
 
 def _parsed(text: str | None) -> dict:
@@ -337,8 +349,10 @@ def block(n: int, pkg: Package, today: date) -> str:
         lines += [f"• {_name(s)}" for s in pkg.sales]
     hers = all(s.hers for s in pkg.sales)
     site = site_name(pkg.site) + (" · your listing" if hers else "")
-    lines.append(" · ".join(x for x in (site, money(pkg.price), f"sold {deadlines.fmt_day(pkg.sold)}" if pkg.sold
-                                        else "") if x))
+    # WO68: paid, said on every package — Poshmark, Depop and Vinted are paid at checkout, an eBay order on this list
+    # has its checkout done (one not paid is in the ⏳ block instead)
+    lines.append(" · ".join(x for x in (site, money(pkg.price), PAID, f"sold {deadlines.fmt_day(pkg.sold)}"
+                                        if pkg.sold else "") if x))
     g, approx = group_of(pkg.ship_by, today), "≈ " if pkg.approx else ""
     day = deadlines.fmt_day(pkg.ship_by)
     if g == "overdue":
@@ -355,10 +369,12 @@ def block(n: int, pkg: Package, today: date) -> str:
     return "\n".join(lines)
 
 
-def counts_line(pkgs: list[Package], today: date) -> str:
+def counts_line(pkgs: list[Package], today: date, unpaid: int = 0) -> str:
     groups = [group_of(p.ship_by, today) for p in pkgs]
     parts = [f"{len(pkgs)} package{'s' if len(pkgs) != 1 else ''}"]
     parts += [f"{COUNT_WORDS[g][0]} {groups.count(g)} {COUNT_WORDS[g][1]}" for g, _, _ in GROUPS if groups.count(g)]
+    if unpaid:                                      # WO68: not a package — said apart
+        parts.append(f"⏳ {unpaid} not paid")
     return "  ·  ".join(parts)
 
 
@@ -401,6 +417,32 @@ def visible(text: str) -> int:
     return len(html.unescape(re.sub(r"<[^>]+>", "", text)))
 
 
+def unpaid_block(unpaid: list[Sale], now: datetime) -> str:
+    """WO68: the eBay orders not paid yet — "⏳ NOT PAID YET — DON'T SHIP (1)" and one blockquote, two lines each:
+    the title, site and price; the sale day, the reminders the buyer has had and when it cancels if still unpaid."""
+    blocks = []
+    for s in unpaid:
+        top = " · ".join(x for x in (f"<b>{_link(s.url, _esc(s.title))}</b>", site_name(s.site), money(s.price)) if x)
+        sent = f"{s.reminded} reminder{'s' if s.reminded != 1 else ''} sent"
+        if s.cancel_at is None:
+            when_ = "cancels by eBay's rule if still unpaid"
+        elif s.cancel_at > now:
+            when_ = f"cancels {_when(s.cancel_at)} if still unpaid"
+        else:
+            when_ = f"can be cancelled since {_when(s.cancel_at)} — cancelling"
+        bottom = " · ".join(x for x in (f"sold {deadlines.fmt_day(s.sold)}" if s.sold else "", sent, when_) if x)
+        blocks.append(f"{top}\n{bottom}")
+    return (f"⏳  <b>NOT PAID YET — DON'T SHIP</b> ({len(unpaid)})\n"
+            "<blockquote>" + "\n\n".join(blocks) + "</blockquote>")
+
+
+def _when(moment: datetime) -> str:
+    """"Tue Nov 17 6:37 PM" in the owner's zone."""
+    local = deadlines.local(moment)
+    hm = f"{local.hour % 12 or 12}:{local.minute:02d} {'AM' if local.hour < 12 else 'PM'}"
+    return f"{deadlines.fmt_day(local.date())} {hm}"
+
+
 def waiting_block(waiting: list[Sale]) -> str:
     """WO66: the parcels whose label is printed and that wait for their first carrier scan — one line each, no
     deadline, no number: "📮 LABEL PRINTED — WAITING FOR USPS SCAN (3)" and one blockquote."""
@@ -410,13 +452,15 @@ def waiting_block(waiting: list[Sale]) -> str:
 
 
 def render(pkgs: list[Package], today: date, footer: list[str] | None = None,
-           waiting: list[Sale] | None = None) -> list[str]:
+           waiting: list[Sale] | None = None, unpaid: list[Sale] | None = None, now: datetime | None = None) -> list[str]:
     """The message(s) (WO62's layout — see the module); `footer`: WO65's freshness lines, under the last message;
-    `waiting` (WO66): the 📮 block under the to-ship groups (not numbered, not counted)."""
+    `waiting` (WO66): the 📮 block under the to-ship groups (not numbered, not counted); `unpaid` (WO68): the ⏳ block
+    under it, above the footer (not numbered, not counted)."""
     mailed = ["\n" + waiting_block(waiting)] if waiting else []
+    mailed += ["\n" + unpaid_block(unpaid, now or util.utcnow())] if unpaid else []
     if not pkgs:
         return ["\n".join([NOTHING, *mailed, *(["\n" + "\n".join(footer)] if footer and mailed else footer or [])])]
-    head = ["📦  <b>SHIPPING LIST</b>", long_day(today), counts_line(pkgs, today)]
+    head = ["📦  <b>SHIPPING LIST</b>", long_day(today), counts_line(pkgs, today, len(unpaid or []))]
     cont = ["📦  <b>SHIPPING LIST</b> (continued)"]
     pages: list[list[str]] = []
     page: list[str] = list(head)
@@ -505,13 +549,13 @@ def night_list(db: Database, now: datetime | None = None, mode: str | None = Non
     if not preview and local.hour != hour:
         return {"sent": 0, "why": f"sent in the {hour}:00 hour New York time"}
     sales, no_day = open_sales(db, now)
-    to_ship, waiting = split(sales)
+    to_ship, waiting, unpaid = split(sales)
     pkgs = packages(to_ship)
     mark = PREVIEW
-    if preview and not pkgs and not waiting:
+    if preview and not pkgs and not waiting and not unpaid:
         pkgs, mark = sample(local.date()), SAMPLE
-    pages = render(pkgs, local.date(), freshness(db, {p.site for p in pkgs} | {s.site for s in waiting}, now),
-                   waiting)
+    pages = render(pkgs, local.date(), freshness(db, {p.site for p in pkgs} | {s.site for s in [*waiting, *unpaid]},
+                                                 now), waiting, unpaid, now)
     today = local.date().isoformat()
     out = core.Outbox(now, mode)
     with db.tx():
@@ -528,7 +572,8 @@ def night_list(db: Database, now: datetime | None = None, mode: str | None = Non
     for page in pages:
         sent += bool(telegram.send((mark + page) if preview else page, "ops" if preview else "group", now=now, mode=mode,
                                    html=True, silent=quiet_send if not preview else None))
-    got = {"sent": sent, "packages": len(pkgs), "waiting": len(waiting), "messages": len(pages), "preview": preview,
+    got = {"sent": sent, "packages": len(pkgs), "waiting": len(waiting), "not_paid": len(unpaid),
+           "messages": len(pages), "preview": preview,
            "groups": {g: sum(1 for p in pkgs if group_of(p.ship_by, local.date()) == g) for g, _, _ in GROUPS},
            "links": {"listing": sum(1 for p in pkgs for s in p.sales if s.url),
                      "order_page": sum(1 for p in pkgs if p.order[1]),
@@ -539,7 +584,7 @@ def night_list(db: Database, now: datetime | None = None, mode: str | None = Non
         return got
     numbers = {"day": today, "at": iso(now),                     # WO66: her "shipped 1 3" / "shipped all" reads it
                "packages": {str(n): [s.id for s in p.sales] for n, p in enumerate(pkgs, start=1)},
-               "waiting": [s.id for s in waiting]}
+               "waiting": [s.id for s in waiting], "unpaid": [s.id for s in unpaid]}
     with db.tx():
         core.put_setting(db, LAST, json.dumps({"at": iso(now), "day": today, **got}))
         core.put_setting(db, NUMBERS, json.dumps(numbers))
@@ -555,6 +600,6 @@ def status(db: Database, now: datetime | None = None) -> dict:
         last = json.loads(last) if last else None
     except ValueError:
         last = None
-    to_ship, waiting = split(open_sales(db, now)[0])
+    to_ship, waiting, unpaid = split(open_sales(db, now)[0])
     return {"sent_on": core.setting(db, SENT_ON), "last": last, "open_packages": len(packages(to_ship)),
-            "waiting_for_scan": len(waiting)}
+            "waiting_for_scan": len(waiting), "not_paid": len(unpaid)}

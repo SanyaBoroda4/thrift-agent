@@ -48,7 +48,8 @@ DOUBT = "order_doubt:"             # settings: an order that could be several sa
 FIELDS = ("order_id", "status", "status_text", "title", "price", "sold_at", "listing_id", "listing_url", "sku",
           "shipped_at", "delivered_at", "completed_at",
           "ship_by",                # WO57: the day the site itself says to ship by ("YYYY-MM-DD"; eBay's orders give it)
-          "label_at")               # WO66: when the site's label was made (an "awaiting_scan" order)
+          "label_at",               # WO66: when the site's label was made (an "awaiting_scan" order)
+          "pay_ref")                # WO68: eBay's "<item>-<transaction>" — the unpaid order this paid one was
 
 
 def report(db: Database, body: dict, now: datetime | None = None, mode: str | None = None) -> dict:
@@ -91,7 +92,7 @@ def clean(entry: object) -> dict | None:
     order["status"] = core._text(order["status"]).strip().lower()
     if not order["order_id"] or order["status"] not in STATUSES:
         return None
-    for key in ("status_text", "title", "listing_id", "listing_url", "sku"):
+    for key in ("status_text", "title", "listing_id", "listing_url", "sku", "pay_ref"):
         order[key] = core._text(order[key]).strip()[:300] or None
     order["price"] = util.number(order["price"])
     for key in ("sold_at", "shipped_at", "delivered_at", "completed_at", "label_at"):
@@ -134,6 +135,12 @@ def _one(db: Database, mp: str, order: dict, seen_at: datetime, now: datetime, m
             db.execute("UPDATE sales SET order_id = ? WHERE id = ?", (order["order_id"], sale["id"]))
         if action == "linked" and order["ship_by"] is not None:       # WO57: the site's own ship-by day wins
             core._fill_sale(db, sale, {"ship_by_stated": order["ship_by"]})
+        if mp == util.EBAY and sale.get("payment") == "unpaid" and order["status"] != "cancelled":
+            # WO68: eBay's Fulfillment API shows only paid orders — this one was unpaid: paid now, the notes and the
+            # cancel stop, "✅ Paid on eBay: … — ship by …" (eBay's own day)
+            from . import unpaid
+            if unpaid.mark_paid(db, sale, seen_at, order["ship_by"], out, mode):
+                action += ", paid"
         keep(db, mp, order, sale, seen_at)
         if twin := fold_twin(db, mp, order, sale):
             action += f", its twin {twin} folded in"
@@ -156,6 +163,13 @@ def find_sale(db: Database, mp: str, order: dict) -> tuple[dict | None, bool | l
                  "ORDER BY created_at LIMIT 1", (mp, order["order_id"]))
     if row:
         return row, False
+    if mp == util.EBAY and order.get("pay_ref"):
+        # WO68: the order eBay showed unpaid (GetOrders: "<item>-<transaction>"), paid now — the same sale, however long
+        # it took: never a second row
+        row = db.one("SELECT * FROM sales WHERE marketplace = ? AND pay_ref = ? AND status <> 'merged' "
+                     "ORDER BY created_at LIMIT 1", (mp, order["pay_ref"]))
+        if row:
+            return row, False
     item = match.item_for_sku(db, order["sku"]) or match.item_for_listing(db, mp, order["listing_id"],
                                                                            order["listing_url"])
     if item:
